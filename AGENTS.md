@@ -2,9 +2,15 @@
 
 Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目标说话人提取 / 回声消除，支持本地麦克风和远程网络推流。
 
-**栈**: Python 3.8+（最低；Win7 需 3.8）+ PySide6 + 纯 C 共享库（gcc/mingw 编译，ctypes 绑定）+ ONNX Runtime（==1.11.1，模型 opset 13/14/15，均 ≤16）
-**桌面入口**: `python run_pyside6.py`
+**栈**: Qt C++（CMake）+ 模块化 C++ 音频处理库（src/dsp/）+ 系统库（libpipewire / libasound / onnxruntime 1.11.1 / libsamplerate）+ pffft
+**桌面入口**: `./build/purevox`（Qt C++ 重构版；旧 Python 版在 win7 分支）
 **Android 入口**: `android/` — Kotlin + OkHttp + Opus JNI
+**构建**: `cmake -S . -B build && cmake --build build -j4`
+
+> **2026-08 重构说明**：项目从「Python + PySide6 + 纯 C 共享库(ctypes)」整体迁移到
+> **纯 Qt C++**。旧 Python 代码（`ui_pyside6.py` / `audio_processor.py` / `pvplatform/` /
+> `aimic.py` 等）保留在 `win7` 分支作为最后支持 Win7 的版本参考；`main` 已重构。
+> `aimic.c` 仍保留在仓库根（未删），但其各处理阶段已拆分至 `src/dsp/` 模块化 C++ 类。
 
 ---
 
@@ -191,7 +197,48 @@ cd android
 
 ## 架构
 
-### 桌面端 (Python/C)
+### 桌面端 (Qt C++，main 当前架构)
+
+| 模块 | 职责 |
+|---|---|
+| `src/main.cpp` | 入口，创建 QApplication + MainWindow |
+| `src/mainwindow.{h,cpp}` | 主窗口 —— 主面板（模式切换/压缩·AGC·VAD/前增益/设备选择/启动）、频谱图、EQ 曲线、菜单栏（设置/系统声音/虚拟声卡/关于） |
+| `src/audioengine.{h,cpp}` | 音频引擎封装 —— 持有 `pv::Processor`，透传各参数与 process() |
+| `src/audiothread.{h,cpp}` | 音频线程 —— 从后端读 → 引擎处理 → 写回，回调 VU/频谱信号 |
+| `src/audiobackend.h` / `pwbackend.{h,cpp}` / `alsabackend.{h,cpp}` | 音频后端抽象 + PipeWire/ALSA 实现 |
+| `src/deviceenum.{h,cpp}` | 设备枚举 —— `pw-dump` 标准 introspection，输入=Audio/Source（排除 PureVox 流），输出=Audio/Sink |
+| `src/vubar.{h,cpp}` / `src/spectrum.{h,cpp}` / `src/eqcurve.{h,cpp}` | VU 电平表 / 频谱直方图 / EQ 曲线 UI 组件 |
+| `src/segmented.{h,cpp}` | 分段模式选择控件 |
+| `src/dialog_about.{h,cpp}` | 关于对话框（介绍/使用说明/更新日志/许可证，QTabWidget 多页） |
+| `src/dsp/*.{h,cpp}` | **模块化 C++ 音频处理库（pvdsp）**—— 见下节 |
+
+**模块化 DSP 库（`src/dsp/`，每阶段独立 C++ 类，组成处理链）**：
+
+```
+pre_gain → EQ(eq.{h,cpp}) → clip → [ModeOff|denoise|aec|tse] → compressor(compressor)
+         → clip → VAD(vad) → AGC(agc)
+```
+
+| 类/文件 | 职责 |
+|---|---|
+| `OnnxModel` (`onnxmodel.{h,cpp}`) | ONNX Runtime C API RAII 封装（会话/张量/运行，三模型共用） |
+| `Vad` (`vad.{h,cpp}`) | 语音活性检测（RMS 阈值 + 起音/挂音） |
+| `Agc` (`agc.{h,cpp}`) | 自动增益控制（EMA RMS → 目标增益平滑） |
+| `Compressor` (`compressor.{h,cpp}`) | 动态范围压缩器 |
+| `Equalizer` (`eq.{h,cpp}`) | 61 段峰值 EQ（peaking biquad 级联） |
+| `Stft` (`stft.{h,cpp}`) | 统一 FFT/IFFT/OLA（2048pt/1024hop/48k，pffft） |
+| `Denoise` (`denoise.{h,cpp}`) | purevox9 降噪 ONNX（2048 FFT + Band256） |
+| `Tse` (`tse.{h,cpp}`) | tse15 目标说话人提取 ONNX（streaming，flat cache） |
+| `Aec` (`aec.{h,cpp}`) | aec9 回声消除 ONNX（Mel-256，delay line） |
+| `Resampler` (`resampler.{h,cpp}`) | libsamplerate 封装 |
+| `RingBuffer` (`ringbuffer.{h,cpp}`) | 线程安全 FIFO（std::mutex） |
+| `MelSpectrum` (`melspectrum.{h,cpp}`) | 128 段 Mel 频谱（UI 频谱图用） |
+| `Processor` (`processor.{h,cpp}`) | 处理链主类 —— 组合以上所有阶段，`process()` 入口 |
+
+- `aimic.c` 仍保留在仓库根（未删），其各阶段已拆分至上述 `src/dsp/` C++ 类；新代码一律用 `pv::Processor`，不再链接 `aimic.c`。
+- 音频热路径：回调/线程内禁锁禁分配（后端桥内 SPSC 无锁环）；`pvdsp` 处理帧用栈上固定数组。
+
+### 桌面端 (Python/C，win7 分支历史架构，已弃用)
 
 | 模块 | 职责 |
 |---|---|

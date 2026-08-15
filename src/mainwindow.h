@@ -9,6 +9,8 @@
 #include <QMainWindow>
 #include <QWidget>
 
+#include <QVector>
+
 #include "audioengine.h"
 
 class AudioBackend;
@@ -20,6 +22,9 @@ class QComboBox;
 class QCheckBox;
 class QPushButton;
 class QSlider;
+class QSystemTrayIcon;
+class QMenu;
+class QTimer;
 class VUBar;
 class SpectrumWidget;
 class EQCurveWidget;
@@ -31,6 +36,10 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
+    void changeEvent(QEvent *event) override;
 
 private:
     void buildUi();
@@ -47,6 +56,23 @@ private:
     void createMenu();
     void showAbout();
     void showVirtualMic();
+    void quitApp();
+    void createTray();
+
+    // EQ 面板
+    void setupEqPanel();
+    void onEqSlot(int slot);
+    void onEqPreset(const QVector<double> &gains);
+    void saveEqPreset(int slot);
+    void loadEqConfig();
+    void updateEqButtons();
+    void onEqChanged(const QVector<double> &gains);
+
+    // 布局常量（与 Python 版一致）
+    static constexpr int kPanelW = 320;
+    static constexpr int kSpectrumW = 551;
+    static constexpr int kEqH = 270;
+    static constexpr int kBaseH = 350;
 
     // UI 控件
     QWidget *central_;
@@ -55,7 +81,8 @@ private:
     VUBar *vuBar_;
     SpectrumWidget *spectrum_;
     EQCurveWidget *eqCurve_;
-
+    QWidget *eqPanel_;
+    QWidget *eqBtnsContainer_;
     QWidget *segWidget_;
     QComboBox *apiCombo_;
     QComboBox *inputCombo_;
@@ -70,6 +97,16 @@ private:
     QPushButton *quitBtn_;
     QSlider *preSlider_;
     QLabel *preLabel_;
+
+    // 托盘
+    QSystemTrayIcon *trayIcon_ = nullptr;
+    QMenu *trayMenu_ = nullptr;
+
+    // EQ 状态
+    QVector<QPushButton *> eqSlotButtons_;
+    QVector<QVector<double>> eqPresets_;  // 8 槽位
+    int eqActiveSlot_ = 0;
+    bool updatingEqUi_ = false;
 
     // 状态
     AudioEngine engine_;

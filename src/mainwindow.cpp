@@ -5,7 +5,9 @@
 
 #include "mainwindow.h"
 
+#include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -18,6 +20,8 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSlider>
+#include <QStyle>
+#include <QSystemTrayIcon>
 #include <QVBoxLayout>
 
 #include <QVector>
@@ -45,12 +49,14 @@ constexpr int kApiAlsa = 18;
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     setWindowTitle("PureVox");
-    setMinimumSize(720, 560);
     buildUi();
     createMenu();
+    createTray();
     initEngine();
     loadConfig();
     refreshDevices();
+    setFixedSize(kPanelW + kSpectrumW, kBaseH + kEqH);
+    show();
 }
 
 MainWindow::~MainWindow() {
@@ -59,6 +65,16 @@ MainWindow::~MainWindow() {
         delete thread_;
         thread_ = nullptr;
     }
+}
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+    // 关闭窗口 = 最小化到托盘，不退出
+    event->ignore();
+    hide();
+}
+
+void MainWindow::changeEvent(QEvent *event) {
+    QMainWindow::changeEvent(event);
 }
 
 void MainWindow::buildUi() {
@@ -194,7 +210,7 @@ void MainWindow::buildUi() {
     btnRow->addWidget(startBtn_);
     quitBtn_ = new QPushButton(QStringLiteral("退出"), panel);
     quitBtn_->setFixedHeight(38);
-    connect(quitBtn_, &QPushButton::clicked, this, &QWidget::close);
+    connect(quitBtn_, &QPushButton::clicked, this, &MainWindow::quitApp);
     btnRow->addWidget(quitBtn_);
     panelLayout->addLayout(btnRow);
 
@@ -202,25 +218,84 @@ void MainWindow::buildUi() {
     statusLabel_->setAlignment(Qt::AlignCenter);
     panelLayout->addWidget(statusLabel_);
 
-    // 面板固定在左列
-    panel->setFixedWidth(520);
+    // 面板固定在左列（与 Python 版一致：面板320 / 频谱551）
+    panel->setFixedWidth(kPanelW);
     topLayout->addWidget(panel, 0);
 
     // 右列：频谱图
     spectrum_ = new SpectrumWidget(topContainer);
-    spectrum_->setFixedWidth(460);
+    spectrum_->setFixedWidth(kSpectrumW);
     topLayout->addWidget(spectrum_, 0);
     root_->addWidget(topContainer);
 
-    // EQ 面板（下方横贯）
-    eqCurve_ = new EQCurveWidget(central_);
-    root_->addWidget(eqCurve_);
-    connect(eqCurve_, &EQCurveWidget::gainsChanged, this, [this](const QVector<double> &g) {
-        engine_.applyEqGains(g);
-        saveConfig();
-    });
+    // EQ 面板（下方横贯，总高 kEqH）：EQ 曲线在上，按钮行在下
+    eqPanel_ = new QWidget(central_);
+    auto *eqLayout = new QVBoxLayout(eqPanel_);
+    eqLayout->setContentsMargins(0, 0, 0, 0);
+    eqLayout->setSpacing(4);
+
+    eqCurve_ = new EQCurveWidget(eqPanel_);
+    eqCurve_->setMinimumHeight(kEqH - 60);
+    eqLayout->addWidget(eqCurve_, 1);
+    eqPanel_->setFixedHeight(kEqH);
+    root_->addWidget(eqPanel_);
+    setupEqPanel();
 
     setCentralWidget(central_);
+}
+
+void MainWindow::setupEqPanel() {
+    auto *eqLayout = qobject_cast<QVBoxLayout *>(eqPanel_->layout());
+    if (!eqLayout) return;
+
+    eqBtnsContainer_ = new QWidget(eqPanel_);
+    auto *btnsLayout = new QVBoxLayout(eqBtnsContainer_);
+    btnsLayout->setContentsMargins(4, 0, 0, 4);
+    btnsLayout->setSpacing(4);
+
+    // EQ 插槽按钮行
+    auto *slotRow = new QHBoxLayout();
+    slotRow->setSpacing(4);
+    auto *lbl = new QLabel(QStringLiteral("插槽"), eqBtnsContainer_);
+    lbl->setFixedWidth(40);
+    lbl->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    slotRow->addWidget(lbl);
+    eqSlotButtons_.clear();
+    for (int i = 0; i < 8; ++i) {
+        auto *btn = new QPushButton(QStringLiteral("S%1").arg(i + 1), eqBtnsContainer_);
+        btn->setFixedHeight(24);
+        btn->setFixedWidth(80);
+        connect(btn, &QPushButton::clicked, this, [this, i]() { onEqSlot(i); });
+        eqSlotButtons_.append(btn);
+        slotRow->addWidget(btn);
+    }
+    slotRow->addStretch();
+    btnsLayout->addLayout(slotRow);
+
+    // EQ 预设按钮行
+    const QVector<QVector<double>> presets = {
+        {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},  // 默认平直
+    };
+    auto *presetRow = new QHBoxLayout();
+    presetRow->setSpacing(4);
+    auto *lbl2 = new QLabel(QStringLiteral("预设"), eqBtnsContainer_);
+    lbl2->setFixedWidth(40);
+    lbl2->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    presetRow->addWidget(lbl2);
+    // 简化：当前只有"默认平直"预设，更多预设后续补
+    auto *btn = new QPushButton(QStringLiteral("默认平直"), eqBtnsContainer_);
+    btn->setFixedHeight(24);
+    btn->setFixedWidth(80);
+    connect(btn, &QPushButton::clicked, this, [this, presets]() {
+        onEqPreset(presets[0]);
+    });
+    presetRow->addWidget(btn);
+    presetRow->addStretch();
+    btnsLayout->addLayout(presetRow);
+
+    eqLayout->addWidget(eqBtnsContainer_, 0);
+
+    connect(eqCurve_, &EQCurveWidget::gainsChanged, this, &MainWindow::onEqChanged);
 }
 
 void MainWindow::createMenu() {
@@ -281,6 +356,102 @@ void MainWindow::showVirtualMic() {
             "Linux 虚拟麦克风（PipeWire）\n\n"
             "创建：purevox_out（null-sink）+ purevox_mic（remap-source）\n"
             "本版本暂未集成虚拟声卡管理，将在后续版本实现。"));
+}
+
+void MainWindow::createTray() {
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) return;
+    trayIcon_ = new QSystemTrayIcon(this);
+    trayIcon_->setIcon(windowIcon());
+    trayMenu_ = new QMenu(this);
+    trayMenu_->addAction(QStringLiteral("退出"), this, &MainWindow::quitApp);
+    trayIcon_->setContextMenu(trayMenu_);
+    connect(trayIcon_, &QSystemTrayIcon::activated, this,
+            [this](QSystemTrayIcon::ActivationReason reason) {
+                if (reason == QSystemTrayIcon::Trigger) {
+                    if (isVisible()) hide();
+                    else {
+                        show();
+                        activateWindow();
+                    }
+                }
+            });
+    trayIcon_->show();
+}
+
+void MainWindow::quitApp() {
+    if (trayIcon_) trayIcon_->hide();
+    if (thread_) {
+        thread_->stop();
+        delete thread_;
+        thread_ = nullptr;
+    }
+    QApplication::quit();
+}
+
+void MainWindow::onEqSlot(int slot) {
+    if (updatingEqUi_ || slot < 0 || slot >= eqSlotButtons_.size()) return;
+    // 保存当前展示的到旧槽位
+    eqPresets_[eqActiveSlot_] = eqCurve_->gains();
+    eqActiveSlot_ = slot;
+    // 加载新槽位
+    if (slot < eqPresets_.size()) {
+        eqCurve_->setGains(eqPresets_[slot]);
+        engine_.applyEqGains(eqPresets_[slot]);
+        saveConfig();
+    }
+    updateEqButtons();
+}
+
+void MainWindow::onEqPreset(const QVector<double> &gains) {
+    if (gains.isEmpty()) return;
+    eqPresets_[eqActiveSlot_] = gains;
+    eqCurve_->setGains(gains);
+    engine_.applyEqGains(gains);
+    saveConfig();
+}
+
+void MainWindow::saveEqPreset(int slot) {
+    if (slot >= 0 && slot < eqPresets_.size()) {
+        eqPresets_[slot] = eqCurve_->gains();
+    }
+}
+
+void MainWindow::loadEqConfig() {
+    QSettings s;
+    eqPresets_.resize(8);
+    int eqBands = pv::Processor::eqBandCount();
+    for (int i = 0; i < 8; ++i) {
+        eqPresets_[i].resize(eqBands, 0.0);
+        for (int b = 0; b < eqBands; ++b) {
+            eqPresets_[i][b] = s.value(QString("eq_preset_%1_band_%2").arg(i).arg(b), 0.0).toDouble();
+        }
+    }
+    // 恢复当前 EQ 曲线（活动槽位）
+    QVector<double> eq;
+    for (int b = 0; b < eqBands; ++b) {
+        eq.append(s.value(QString("eq_band_%1").arg(b), 0.0).toDouble());
+    }
+    eqCurve_->setGains(eq);
+    engine_.applyEqGains(eq);
+}
+
+void MainWindow::updateEqButtons() {
+    if (updatingEqUi_) return;
+    updatingEqUi_ = true;
+    for (int i = 0; i < eqSlotButtons_.size(); ++i) {
+        QString txt = eqSlotButtons_[i]->text();
+        // 简单高亮当前活动槽位
+        eqSlotButtons_[i]->setProperty("active", i == eqActiveSlot_);
+        eqSlotButtons_[i]->style()->unpolish(eqSlotButtons_[i]);
+        eqSlotButtons_[i]->style()->polish(eqSlotButtons_[i]);
+    }
+    updatingEqUi_ = false;
+}
+
+void MainWindow::onEqChanged(const QVector<double> &gains) {
+    eqPresets_[eqActiveSlot_] = gains;
+    engine_.applyEqGains(gains);
+    saveConfig();
 }
 
 void MainWindow::initEngine() {    if (!QFileInfo::exists(kModelDenoise)) {
@@ -344,17 +515,8 @@ void MainWindow::loadConfig() {
     engine_.setAgcEnabled(agcCb_->isChecked(), 0.0);
     engine_.setVadEnabled(vadCb_->isChecked());
 
-    // EQ 配置
-    QVector<double> eq;
-    int eqBands = pv::Processor::eqBandCount();
-    if (eqBands > 0) {
-        eq.resize(eqBands, 0.0);
-        for (int i = 0; i < eqBands; ++i) {
-            eq[i] = s.value(QString("eq_band_%1").arg(i), 0.0).toDouble();
-        }
-        eqCurve_->setGains(eq);
-        engine_.applyEqGains(eq);
-    }
+    // EQ 配置（含 8 槽位）
+    loadEqConfig();
 
     static_cast<SegmentedControl *>(segWidget_)->setValue(mode_);
     updateModeUi();
@@ -375,6 +537,12 @@ void MainWindow::saveConfig() {
     QVector<double> eq = eqCurve_->gains();
     for (int i = 0; i < eq.size(); ++i)
         s.setValue(QString("eq_band_%1").arg(i), eq[i]);
+    // 保存 8 个 EQ 槽位
+    for (int slot = 0; slot < eqPresets_.size(); ++slot) {
+        for (int b = 0; b < eqPresets_[slot].size(); ++b) {
+            s.setValue(QString("eq_preset_%1_band_%2").arg(slot).arg(b), eqPresets_[slot][b]);
+        }
+    }
 }
 
 void MainWindow::updateModeUi() {
