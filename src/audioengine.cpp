@@ -103,6 +103,16 @@ void AudioEngine::setTseEnabled(bool on) {
     if (proc_) proc_->setTseEnabled(on);
 }
 
+void AudioEngine::setTseReference(const float *data, size_t n) {
+    QMutexLocker lock(&mutex_);
+    if (proc_) proc_->setTseReference(data, n);
+}
+
+bool AudioEngine::tseReferenceLoaded() const {
+    QMutexLocker lock(&mutex_);
+    return proc_ && proc_->tseReferenceLoaded();
+}
+
 size_t AudioEngine::process(const float *in, size_t n, const float *far, size_t farN,
                             float *out) {
     QMutexLocker lock(&mutex_);

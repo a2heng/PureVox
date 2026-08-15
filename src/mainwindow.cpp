@@ -161,6 +161,12 @@ void MainWindow::buildUi() {
     refBtn_->setVisible(false);
     connect(refBtn_, &QPushButton::clicked, this, [this]() {
         TseReferenceDialog dlg(this);
+        connect(&dlg, &TseReferenceDialog::referenceRecorded, this,
+                [this](const std::vector<float> &samples, int) {
+                    if (!samples.empty()) {
+                        engine_.setTseReference(samples.data(), samples.size());
+                    }
+                });
         dlg.exec();
     });
     optsRow->addWidget(refBtn_);

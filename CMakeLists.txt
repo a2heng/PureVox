@@ -108,6 +108,8 @@ qt_add_executable(purevox
     src/dialog_about.h
     src/dialog_tse_reference.cpp
     src/dialog_tse_reference.h
+    src/wav_io.cpp
+    src/wav_io.h
 )
 # Linux：PipeWire / ALSA 后端 + 虚拟声卡；Windows 待 WASAPI 后端（TODO）
 if(NOT WIN32)

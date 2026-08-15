@@ -8,10 +8,19 @@
 
 #include <QDialog>
 
+#include <QTimer>
+
+#include <atomic>
+#include <thread>
+#include <vector>
+
 class QLabel;
 class QPushButton;
+class AudioBackend;
 
-// TSE 参考音频弹框：说明 + 参考状态 + 录音（基础版）
+namespace pv { class Processor; }
+
+// TSE 参考音频弹框：录音（临时降噪会话采集 10 秒）+ 播放 + 文件信息
 class TseReferenceDialog : public QDialog {
     Q_OBJECT
 
@@ -19,14 +28,38 @@ public:
     explicit TseReferenceDialog(QWidget *parent = nullptr);
     ~TseReferenceDialog() override;
 
+signals:
+    // 录音完成，把参考样本交回主窗口加载到主引擎（TSE 参考）
+    void referenceRecorded(const std::vector<float> &samples, int sampleRate);
+    // 录音线程完成（队列到主线程触发 onRecordDone）
+    void recordBufferReady();
+
 private:
     void refresh();
+    void onRecord();
+    void onPlay();
+    void doRecord();
+    void startCountdown();
+    void updateProgress();
+    void onRecordDone(bool ok);
 
     QLabel *statusLabel_;
     QLabel *infoLabel_;
     QPushButton *recBtn_;
     QPushButton *playBtn_;
-    bool recording_ = false;
+
+    std::atomic<bool> recording_{false};
+    bool playing_ = false;
+    QTimer countdownTimer_;
+    int countdown_ = 0;
+    QTimer progressTimer_;
+    int elapsedMs_ = 0;
+    std::thread recordThread_;
+    std::vector<float> recordBuffer_;
+    int recordSampleRate_ = 48000;
+    QString wavPath_;
+
+    static constexpr int kRecordDurationMs = 10000;
 };
 
 #endif // PUREVOX_DIALOG_TSE_REFERENCE_H

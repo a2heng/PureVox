@@ -52,6 +52,9 @@ public:
     void setAgcTarget(double dbfs);
     void setAecEnabled(bool on);
     void setTseEnabled(bool on);
+    // 设置 TSE 参考语音（录音完成后）
+    void setTseReference(const float *data, size_t n);
+    bool tseReferenceLoaded() const;
     // 把 UI 全部参数重放到当前 processor（重建 processor 后调用）
     void replayParams(int mode, double preGain, double postGain,
                       const QVector<double> &eqGains, bool compOn, bool agcOn,
