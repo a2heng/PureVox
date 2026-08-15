@@ -36,17 +36,15 @@ QVector<NodeInfo> listNodes() {
     for (const QJsonValue &v : doc.array()) {
         if (!v.isObject()) continue;
         QJsonObject obj = v.toObject();
-        QString type = obj.value("type").toString();
-        QJsonArray info = obj.value("info").toArray();
-        if (info.isEmpty()) continue;
-        QJsonObject props = info.first().toObject().value("props").toObject();
+        QJsonObject info = obj.value("info").toObject();
+        QJsonObject props = info.value("props").toObject();
         QString name = props.value("node.name").toString();
         if (name.isEmpty()) continue;
         NodeInfo n;
         n.name = name;
         n.description = props.value("node.description").toString();
         n.mediaClass = props.value("media.class").toString();
-        n.state = props.value("state").toString();
+        n.state = info.value("state").toString();
         if (!n.mediaClass.isEmpty()) out.append(n);
     }
     return out;
