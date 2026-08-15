@@ -38,27 +38,43 @@ void SpectrumWidget::reset() {
     update();
 }
 
-void SpectrumWidget::computeBands(const float *samples, int n, QVector<double> &out,
-                                  QVector<float> &accum) {
-    if (n <= 0) return;
-    for (int i = 0; i < n; ++i) accum.append(samples[i]);
-    int take = (int)accum.size() - ((int)accum.size() % kFftSize);
-    int count = take / kFftSize;
-    for (int c = 0; c < count; ++c) {
-        QVector<float> buf(accum.begin() + c * kFftSize, accum.begin() + (c + 1) * kFftSize);
-        QVector<float> spec(kNumBands);
-        size_t got = mel_.compute(buf.data(), kFftSize, spec.data());
-        if (got > 0) {
-            for (int i = 0; i < (int)got && i < kNumBands; ++i) out[i] = spec[i];
-        }
-    }
-    accum.erase(accum.begin(), accum.begin() + take);
-}
-
 void SpectrumWidget::updateSpectrum(const float *input, int inN, const float *output,
                                     int outN) {
-    computeBands(input, inN, inputBands_, inputAccum_);
-    computeBands(output, outN, outputBands_, outputAccum_);
+    bool updated = false;
+    // 输入帧累积 → 达 FFT_SIZE 算输入 Mel 频谱
+    if (input && inN > 0) {
+        for (int i = 0; i < inN; ++i) inputAccum_.append(input[i]);
+        if ((int)inputAccum_.size() > kFftSize * 2)
+            inputAccum_ = inputAccum_.mid(inputAccum_.size() - kFftSize);
+        if ((int)inputAccum_.size() >= kFftSize) {
+            QVector<float> buf = inputAccum_.mid(inputAccum_.size() - kFftSize);
+            QVector<float> spec(kNumBands);
+            size_t got = mel_.compute(buf.constData(), kFftSize, spec.data());
+            if (got > 0) {
+                for (int i = 0; i < (int)got && i < kNumBands; ++i) inputBands_[i] = spec[i];
+            }
+            inputAccum_ = inputAccum_.mid(inputAccum_.size() - (kFftSize / 2));  // 留半重叠
+            updated = true;
+        }
+    }
+    // 输出帧累积 → 达 FFT_SIZE 算输出 Mel 频谱
+    if (output && outN > 0) {
+        for (int i = 0; i < outN; ++i) outputAccum_.append(output[i]);
+        if ((int)outputAccum_.size() > kFftSize * 2)
+            outputAccum_ = outputAccum_.mid(outputAccum_.size() - kFftSize);
+        if ((int)outputAccum_.size() >= kFftSize) {
+            QVector<float> buf = outputAccum_.mid(outputAccum_.size() - kFftSize);
+            QVector<float> spec(kNumBands);
+            size_t got = mel_.compute(buf.constData(), kFftSize, spec.data());
+            if (got > 0) {
+                for (int i = 0; i < (int)got && i < kNumBands; ++i) outputBands_[i] = spec[i];
+            }
+            outputAccum_ = outputAccum_.mid(outputAccum_.size() - (kFftSize / 2));  // 留半重叠
+            updated = true;
+        }
+    }
+
+    if (!updated) return;
 
     // 滑动平滑
     const double alpha = 0.3;
@@ -73,7 +89,7 @@ void SpectrumWidget::updateSpectrum(const float *input, int inN, const float *ou
         pending_ = true;
         QTimer::singleShot(16, this, [this]() {
             pending_ = false;
-            update();
+            if (isVisible()) update();  // 仅窗口可见时重绘
         });
     }
 }

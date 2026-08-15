@@ -32,8 +32,6 @@ protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
-    void computeBands(const float *samples, int n, QVector<double> &out, QVector<float> &accum);
-
     QVector<double> inputBands_;   // 原始（未平滑）
     QVector<double> outputBands_;
     QVector<double> smoothedIn_;
