@@ -60,6 +60,16 @@ qt_add_executable(purevox
     src/main.cpp
     src/mainwindow.cpp
     src/mainwindow.h
+    src/audioengine.cpp
+    src/audioengine.h
+    src/audiothread.cpp
+    src/audiothread.h
+    src/vubar.cpp
+    src/vubar.h
+    src/segmented.cpp
+    src/segmented.h
+    src/deviceenum.cpp
+    src/deviceenum.h
 )
 target_include_directories(purevox PRIVATE
     ${PV_SRC_DIR}
