@@ -20,7 +20,11 @@ AudioThread::AudioThread(AudioEngine *engine, AudioBackend *backend, const QStri
     : QThread(parent), engine_(engine), backend_(backend), input_(input), output_(output),
       monitor_(monitor), mode_(mode) {}
 
-AudioThread::~AudioThread() { stop(); }
+AudioThread::~AudioThread() {
+    stop();
+    delete backend_;
+    backend_ = nullptr;
+}
 
 void AudioThread::stop() {
     running_.store(false);
@@ -60,11 +64,11 @@ void AudioThread::run() {
         for (size_t i = 0; i < on; ++i) peak = std::max(peak, std::fabs(out[i]));
         double db = peak > 1e-10 ? 20.0 * std::log10(peak) : -60.0;
         emit levelUpdated(db);
-        // 频谱数据：从引擎 viz 缓冲取（输入=pre+EQ×post，输出=最终，同基准对比）
-        if (engine_->raw()) {
+        // 频谱数据：从引擎 viz 缓冲取（线程安全）
+        {
             QVector<float> inFrame(kHop), outFrame(kHop);
-            size_t g1 = engine_->raw()->vizInputTake(inFrame.data(), kHop);
-            size_t g2 = engine_->raw()->vizOutputTake(outFrame.data(), kHop);
+            size_t g1 = engine_->vizInputTake(inFrame.data(), kHop);
+            size_t g2 = engine_->vizOutputTake(outFrame.data(), kHop);
             if (g1 > 0 || g2 > 0) {
                 inFrame.resize(g1);
                 outFrame.resize(g2);

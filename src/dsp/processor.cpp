@@ -251,12 +251,15 @@ size_t Processor::process(const float *in, size_t n, const float *far, size_t fa
     clip_buffer(outBuf, kHopLength);
     if (vadEnabled_) vad_.process(outBuf, kHopLength);
     if (agcEnabled_) measureAgcRms(outBuf);
-    // 频谱 viz：输入=原始 in × pre 增益（背景基准），输出=最终处理结果
+    // 频谱 viz：输入=原始 in × pre 增益（背景基准），输出=最终处理结果。
+    // 直通模式无处理，只送输入（不显示"处理后"对比）。
     {
         float vizIn[kHopLength];
         for (size_t i = 0; i < kHopLength; ++i) vizIn[i] = in[i] * preGain_;
         vizIn48k_.insert(vizIn48k_.end(), vizIn, vizIn + kHopLength);
-        vizOut48k_.insert(vizOut48k_.end(), outBuf, outBuf + kHopLength);
+        if (mode_ != ModeOff) {
+            vizOut48k_.insert(vizOut48k_.end(), outBuf, outBuf + kHopLength);
+        }
         // 防止长时间运行缓冲无限增长（窗口隐藏时无人取走）
         const size_t kVizCap = kHopLength * 64;  // 64 帧
         if (vizIn48k_.size() > kVizCap) vizIn48k_.erase(vizIn48k_.begin(), vizIn48k_.begin() + (vizIn48k_.size() - kVizCap));

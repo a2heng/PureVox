@@ -81,3 +81,4 @@ android/app/build/
 android/app/.cxx/
 android/local.properties
 android/opus-src/
+/build_asan

@@ -36,6 +36,9 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
+    // --selftest 生命周期自测入口（不闪退验证）
+    void runLifecycleSelfTest();
+    void quitAppForTest() { quitApp(); }
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -50,6 +53,7 @@ private:
     void loadGains(int mode);
     void onStartStop();
     void onModeChanged(int val);
+    void setModeInternal(int m);
     void updateModeUi();
     void saveConfig();
     void loadConfig();
@@ -117,7 +121,6 @@ private:
     // 状态
     AudioEngine engine_;
     AudioThread *thread_ = nullptr;
-    AudioBackend *backend_ = nullptr;
     int mode_ = AudioEngine::ModeDenoise;
     double preGain_ = 0.0;    // pre 增益（链首）
     double postGain_ = 0.0;   // post 增益（链尾）

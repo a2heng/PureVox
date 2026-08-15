@@ -511,7 +511,7 @@ void MainWindow::startWatchdog() {
     connect(watchdogTimer_, &QTimer::timeout, this, [this]() {
         if (!processing_ || !thread_) return;
         // 线程意外结束（run 返回且非用户停止）→ 自动重启
-        if (thread_->isFinished() && backend_) {
+        if (thread_->isFinished()) {
             delete thread_;
             thread_ = nullptr;
             processing_ = false;
@@ -752,14 +752,20 @@ void MainWindow::onModeChanged(int val) {
 }
 
 void MainWindow::applyMode(int oldMode) {
-    engine_.setMode(mode_);
-    engine_.setPreGain(preGain_);
-    engine_.setPostGain(postGain_);
-    if (processing_ && oldMode != mode_) {
-        // 需重启以重载模型
-        onStartStop();
-        onStartStop();
+    // 未运行时：参数保存即可（启动时会 replay）
+    if (!processing_) {
+        engine_.setMode(mode_);
+        engine_.setPreGain(preGain_);
+        engine_.setPostGain(postGain_);
         return;
+    }
+    // 运行中切换模式：异步停止（销毁处理器/桥）→ 延迟重启（重载模型）
+    // 异步避免同步 close+new PipeWire 桥竞态（旧桥未完全释放就重建）
+    if (oldMode != mode_) {
+        onStartStop();  // 停止 + cleanup
+        QTimer::singleShot(300, this, [this]() {
+            if (!processing_) onStartStop();  // 启动 + init + replay
+        });
     }
 }
 
@@ -783,6 +789,30 @@ void MainWindow::loadGains(int mode) {
     engine_.setPostGain(pg);
 }
 
+void MainWindow::runLifecycleSelfTest() {
+    // 与真实用户一致：启动(直通) → 运行中切降噪(applyMode 重启) → 停止
+    setModeInternal(0);
+    onStartStop();  // 启动直通
+    QTimer::singleShot(2000, this, [this]() {
+        setModeInternal(1);  // 运行中切降噪（applyMode 内部 stop+reinit+start）
+        QTimer::singleShot(2000, this, [this]() {
+            onStartStop();  // 停止
+        });
+    });
+}
+
+void MainWindow::setModeInternal(int m) {
+    if (m == mode_) return;
+    int old = mode_;
+    mode_ = m;
+    saveConfig();
+    saveGains(old);
+    loadGains(mode_);
+    updateModeUi();
+    applyMode(old);
+    static_cast<SegmentedControl *>(segWidget_)->setValue(mode_);
+}
+
 void MainWindow::onStartStop() {
     if (processing_) {
         if (thread_) {
@@ -791,17 +821,26 @@ void MainWindow::onStartStop() {
             thread_ = nullptr;
         }
         processing_ = false;
+        // 停止：销毁处理器（对齐 Python cleanup）
+        engine_.cleanup();
         startBtn_->setText(QStringLiteral("启动音频处理"));
         statusLabel_->setText(QStringLiteral("已停止"));
         updateRunningState();
         return;
     }
 
+    // 启动：重建处理器并重放全部参数（对齐 Python 每次启动重建）
     if (!engine_.ready()) {
-        QMessageBox::warning(this, QStringLiteral("PureVox"),
-                             QStringLiteral("音频引擎未就绪"));
-        return;
+        QString err;
+        if (!engine_.init(QString::fromUtf8(kModelDenoise), QString::fromUtf8(kModelTse),
+                          QString::fromUtf8(kModelAec), &err)) {
+            QMessageBox::warning(this, QStringLiteral("PureVox"), err);
+            return;
+        }
     }
+    engine_.replayParams(mode_, preGain_, postGain_, eqCurve_->gains(),
+                         compCb_->isChecked(), agcCb_->isChecked(), vadCb_->isChecked(),
+                         monitorCb_->isChecked());
     QString input = inputCombo_->currentData().toString();
     QString output = outputCombo_->currentData().toString();
     if (input.isEmpty() || output.isEmpty()) {
@@ -813,19 +852,20 @@ void MainWindow::onStartStop() {
                           ? monitorCombo_->currentData().toString()
                           : QString();
 
-    // 根据音频接口选择后端
+    // 根据音频接口选择后端（AudioThread 接管所有权，run 结束自行删除）
+    AudioBackend *backend = nullptr;
     int api = apiCombo_->currentData().toInt();
     if (api == kApiPipeWire) {
-        backend_ = new PwBackend();
+        backend = new PwBackend();
     } else if (api == kApiAlsa) {
-        backend_ = new AlsaBackend();
+        backend = new AlsaBackend();
     } else {
         QMessageBox::warning(this, QStringLiteral("PureVox"),
                              QStringLiteral("未知音频接口"));
         return;
     }
 
-    thread_ = new AudioThread(&engine_, backend_, input, output, monitor, mode_, this);
+    thread_ = new AudioThread(&engine_, backend, input, output, monitor, mode_, this);
     connect(thread_, &AudioThread::levelUpdated, vuBar_, &VUBar::updateLevelDb);
     connect(thread_, &AudioThread::spectrumData, this,
             [this](const QVector<float> &in, const QVector<float> &out) {
@@ -834,16 +874,13 @@ void MainWindow::onStartStop() {
     connect(thread_, &AudioThread::errorOccurred, this,
             [this](const QString &msg) { QMessageBox::critical(this, QStringLiteral("PureVox"), msg); });
     connect(thread_, &AudioThread::finished, this, [this]() {
-        delete backend_;
-        backend_ = nullptr;
         if (processing_) {
             processing_ = false;
             startBtn_->setText(QStringLiteral("启动音频处理"));
             statusLabel_->setText(QStringLiteral("已停止"));
             updateRunningState();
         }
-    });
-    processing_ = true;
+    });    processing_ = true;
     startBtn_->setText(QStringLiteral("停止"));
     statusLabel_->setText(QStringLiteral("运行中…"));
     updateRunningState();

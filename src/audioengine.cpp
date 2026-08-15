@@ -11,6 +11,7 @@ AudioEngine::~AudioEngine() = default;
 
 bool AudioEngine::init(const QString &denoiseModel, const QString &tseModel,
                        const QString &aecModel, QString *errMsg) {
+    QMutexLocker lock(&mutex_);
     proc_ = std::make_unique<pv::Processor>();
     proc_->init(denoiseModel.toStdString(), tseModel.toStdString(), aecModel.toStdString());
     if (!proc_->tseAvailable() && !proc_->aecAvailable() && proc_->mode() != pv::Processor::ModeDenoise) {
@@ -28,6 +29,29 @@ int AudioEngine::backendEffective() const {
 
 int AudioEngine::backendReason() const {
     return proc_ ? proc_->backendReason() : -1;
+}
+
+void AudioEngine::cleanup() {
+    QMutexLocker lock(&mutex_);
+    proc_.reset();
+}
+
+void AudioEngine::replayParams(int mode, double preGain, double postGain,
+                               const QVector<double> &eqGains, bool compOn, bool agcOn,
+                               bool vadOn, bool monitorOn) {
+    if (!proc_) return;
+    proc_->setMode(mode);
+    proc_->setPreGain((float)preGain);
+    proc_->setPostGain((float)postGain);
+    if (!eqGains.isEmpty()) {
+        QVector<float> g(eqGains.size());
+        for (int i = 0; i < eqGains.size(); ++i) g[i] = (float)eqGains[i];
+        proc_->setEqGains(g.constData(), (size_t)g.size());
+    }
+    proc_->setCompressorEnabled(compOn);
+    proc_->setAgcEnabled(agcOn, (float)preGain);
+    proc_->setVadEnabled(vadOn);
+    (void)monitorOn;
 }
 
 void AudioEngine::setMode(int mode) {
@@ -81,6 +105,17 @@ void AudioEngine::setTseEnabled(bool on) {
 
 size_t AudioEngine::process(const float *in, size_t n, const float *far, size_t farN,
                             float *out) {
+    QMutexLocker lock(&mutex_);
     if (!proc_) return 0;
     return proc_->process(in, n, far, farN, out);
+}
+
+size_t AudioEngine::vizInputTake(float *out, size_t cap) {
+    QMutexLocker lock(&mutex_);
+    return proc_ ? proc_->vizInputTake(out, cap) : 0;
+}
+
+size_t AudioEngine::vizOutputTake(float *out, size_t cap) {
+    QMutexLocker lock(&mutex_);
+    return proc_ ? proc_->vizOutputTake(out, cap) : 0;
 }

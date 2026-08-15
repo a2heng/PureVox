@@ -6,6 +6,7 @@
 #ifndef PUREVOX_AUDIOENGINE_H
 #define PUREVOX_AUDIOENGINE_H
 
+#include <QRecursiveMutex>
 #include <QString>
 
 #include <QVector>
@@ -31,8 +32,9 @@ public:
 
     bool init(const QString &denoiseModel, const QString &tseModel, const QString &aecModel,
               QString *errMsg);
-
-    bool ready() const { return proc_ && proc_->tseAvailable(); }
+    // 销毁处理器（停止音频处理时调用；下次启动 init() 重建）
+    void cleanup();
+    bool ready() const { return proc_ != nullptr; }
     pv::Processor *raw() { return proc_.get(); }
 
     int backendEffective() const;
@@ -50,12 +52,20 @@ public:
     void setAgcTarget(double dbfs);
     void setAecEnabled(bool on);
     void setTseEnabled(bool on);
+    // 把 UI 全部参数重放到当前 processor（重建 processor 后调用）
+    void replayParams(int mode, double preGain, double postGain,
+                      const QVector<double> &eqGains, bool compOn, bool agcOn,
+                      bool vadOn, bool monitorOn);
 
     // process: in(n) -> out(>=n)，返回输出采样数
     size_t process(const float *in, size_t n, const float *far, size_t farN, float *out);
+    // 频谱 viz 取数（线程安全）
+    size_t vizInputTake(float *out, size_t cap);
+    size_t vizOutputTake(float *out, size_t cap);
 
 private:
     std::unique_ptr<pv::Processor> proc_;
+    mutable QRecursiveMutex mutex_;  // 保护 proc_ 跨线程访问
     QString lastError_;
 };
 

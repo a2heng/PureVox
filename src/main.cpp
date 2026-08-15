@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QIcon>
+#include <QTimer>
 
 #include "mainwindow.h"
 
@@ -18,6 +19,11 @@ int main(int argc, char *argv[]) {
 
     MainWindow window;
     window.show();
+
+    // --selftest：自动跑一次 启动(直通)→切降噪→停止 生命周期，用于验证无闪退
+    if (app.arguments().contains("--selftest")) {
+        QTimer::singleShot(6000, [&window]() { window.quitAppForTest(); });
+    }
 
     return app.exec();
 }

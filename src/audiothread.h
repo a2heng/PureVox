@@ -30,6 +30,7 @@ public:
 
     void stop();
     bool running() const { return running_.load(); }
+    AudioBackend *takeBackend() { auto *b = backend_; backend_ = nullptr; return b; }
 
 signals:
     void levelUpdated(double db);
