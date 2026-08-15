@@ -106,6 +106,8 @@ qt_add_executable(purevox
     src/dialog_about.h
     src/dialog_tse_reference.cpp
     src/dialog_tse_reference.h
+    src/virtualmic.cpp
+    src/virtualmic.h
 )
 target_include_directories(purevox PRIVATE
     ${PV_SRC_DIR}

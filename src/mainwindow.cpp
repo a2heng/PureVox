@@ -36,6 +36,7 @@
 #include "pwbackend.h"
 #include "segmented.h"
 #include "spectrum.h"
+#include "virtualmic.h"
 #include "vubar.h"
 
 namespace {
@@ -382,12 +383,33 @@ void MainWindow::showAbout() {
 }
 
 void MainWindow::showVirtualMic() {
-    QMessageBox::information(
-        this, QStringLiteral("虚拟声卡"),
-        QStringLiteral(
+    QString msg;
+    if (VirtualMic::ready()) {
+        msg = QStringLiteral(
+            "虚拟麦克风已就绪。\n\n"
+            "出口：purevox_out.monitor（宽口径源）/ purevox_mic（真源）\n\n"
+            "要清理吗？");
+        auto ret = QMessageBox::question(
+            this, QStringLiteral("虚拟声卡"), msg, QMessageBox::Yes | QMessageBox::No);
+        if (ret == QMessageBox::Yes) {
+            VirtualMic::remove();
+            refreshDevices();
+        }
+    } else {
+        msg = QStringLiteral(
             "Linux 虚拟麦克风（PipeWire）\n\n"
-            "创建：purevox_out（null-sink）+ purevox_mic（remap-source）\n"
-            "本版本暂未集成虚拟声卡管理，将在后续版本实现。"));
+            "创建：purevox_out（null-sink）+ purevox_mic（remap-source）\n\n"
+            "创建虚拟麦克风？");
+        auto ret = QMessageBox::question(
+            this, QStringLiteral("虚拟声卡"), msg, QMessageBox::Yes | QMessageBox::No);
+        if (ret == QMessageBox::Yes) {
+            bool ok = VirtualMic::ensure();
+            QMessageBox::information(this, QStringLiteral("虚拟声卡"),
+                                     ok ? QStringLiteral("虚拟麦克风已创建。")
+                                        : QStringLiteral("创建失败，请检查 PipeWire 是否运行。"));
+            refreshDevices();
+        }
+    }
 }
 
 void MainWindow::createTray() {
