@@ -10,6 +10,8 @@
 
 #include <QVector>
 
+#include "dsp/melspectrum.h"
+
 // 频谱直方图：128 段 Mel 实时输入/输出频谱重叠对比
 // 降噪输出为基准，多=灰(噪声已消除)，少=亮(增强)
 class SpectrumWidget : public QWidget {
@@ -38,6 +40,7 @@ private:
     QVector<double> smoothedOut_;
     QVector<float> inputAccum_;
     QVector<float> outputAccum_;
+    pv::MelSpectrum mel_;
     bool pending_ = false;
 };
 

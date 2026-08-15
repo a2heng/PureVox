@@ -25,16 +25,39 @@ set(PV_PFFFT_SRC ${PV_PKG_DIR}/pffft)
 set(PV_SRC_DIR_LIBSR ${PV_PKG_DIR}/libsamplerate)
 file(GLOB PV_SR_SRC ${PV_SRC_DIR_LIBSR}/*.c)
 
-# ── 音频核心（原 libaimic.so，纯 C）──
+# ── 音频核心（原 libaimic.so，纯 C，保留参考不链接）──
 add_library(pvcore STATIC
     ${PV_SRC_DIR}/aimic.c
     ${PV_PFFFT_SRC}/pffft.c
     ${PV_PFFFT_SRC}/pffft_common.c
-    ${PV_SR_SRC}
 )
 target_include_directories(pvcore PUBLIC ${PV_SRC_DIR} ${PV_SRC_DIR_LIBSR} ${PV_ORT_INC} ${PV_PKG_DIR}/pffft)
 target_compile_definitions(pvcore PRIVATE HAVE_CONFIG_H)
 target_compile_options(pvcore PRIVATE -O2 -w)
+
+# ── 模块化 C++ 音频处理库（新架构，替换 aimic.c 各阶段）──
+set(PV_DSP_SRC
+    src/dsp/onnxmodel.cpp
+    src/dsp/vad.cpp
+    src/dsp/agc.cpp
+    src/dsp/compressor.cpp
+    src/dsp/eq.cpp
+    src/dsp/stft.cpp
+    src/dsp/ringbuffer.cpp
+    src/dsp/resampler.cpp
+    src/dsp/denoise.cpp
+    src/dsp/tse.cpp
+    src/dsp/aec.cpp
+    src/dsp/melspectrum.cpp
+    src/dsp/processor.cpp
+    ${PV_SR_SRC}
+    ${PV_PFFFT_SRC}/pffft.c
+    ${PV_PFFFT_SRC}/pffft_common.c
+)
+add_library(pvdsp STATIC ${PV_DSP_SRC})
+target_include_directories(pvdsp PUBLIC ${PV_SRC_DIR} ${PV_SRC_DIR_LIBSR} ${PV_ORT_INC} ${PV_PKG_DIR}/pffft)
+target_compile_definitions(pvdsp PRIVATE HAVE_CONFIG_H)
+target_compile_options(pvdsp PRIVATE -O2 -w)
 
 # ── PipeWire / ALSA 桥（系统库）──
 find_package(PkgConfig)
@@ -64,6 +87,11 @@ qt_add_executable(purevox
     src/audioengine.h
     src/audiothread.cpp
     src/audiothread.h
+    src/audiobackend.h
+    src/pwbackend.cpp
+    src/pwbackend.h
+    src/alsabackend.cpp
+    src/alsabackend.h
     src/vubar.cpp
     src/vubar.h
     src/segmented.cpp
@@ -84,7 +112,7 @@ target_include_directories(purevox PRIVATE
 target_link_directories(purevox PRIVATE ${PV_ORT_LIB})
 target_link_libraries(purevox PRIVATE
     Qt6::Widgets
-    pvcore
+    pvdsp
     onnxruntime
 )
 if(PV_PIPEWIRE_FOUND)

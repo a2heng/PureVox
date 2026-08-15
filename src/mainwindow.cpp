@@ -5,8 +5,6 @@
 
 #include "mainwindow.h"
 
-#include <aimic.h>
-
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileInfo>
@@ -24,10 +22,13 @@
 
 #include <QVector>
 
+#include "audiobackend.h"
 #include "audiothread.h"
+#include "alsabackend.h"
 #include "deviceenum.h"
 #include "dialog_about.h"
 #include "eqcurve.h"
+#include "pwbackend.h"
 #include "segmented.h"
 #include "spectrum.h"
 #include "vubar.h"
@@ -345,7 +346,7 @@ void MainWindow::loadConfig() {
 
     // EQ 配置
     QVector<double> eq;
-    int eqBands = engine_.raw() ? audio_processor_get_eq_band_count(engine_.raw()) : 0;
+    int eqBands = pv::Processor::eqBandCount();
     if (eqBands > 0) {
         eq.resize(eqBands, 0.0);
         for (int i = 0; i < eqBands; ++i) {
@@ -448,7 +449,19 @@ void MainWindow::onStartStop() {
                           ? monitorCombo_->currentData().toString()
                           : QString();
 
-    thread_ = new AudioThread(&engine_, input, output, monitor, mode_, this);
+    // 根据音频接口选择后端
+    int api = apiCombo_->currentData().toInt();
+    if (api == kApiPipeWire) {
+        backend_ = new PwBackend();
+    } else if (api == kApiAlsa) {
+        backend_ = new AlsaBackend();
+    } else {
+        QMessageBox::warning(this, QStringLiteral("PureVox"),
+                             QStringLiteral("未知音频接口"));
+        return;
+    }
+
+    thread_ = new AudioThread(&engine_, backend_, input, output, monitor, mode_, this);
     connect(thread_, &AudioThread::levelUpdated, vuBar_, &VUBar::updateLevelDb);
     connect(thread_, &AudioThread::spectrumData, this,
             [this](const QVector<float> &in, const QVector<float> &out) {
@@ -456,6 +469,15 @@ void MainWindow::onStartStop() {
             });
     connect(thread_, &AudioThread::errorOccurred, this,
             [this](const QString &msg) { QMessageBox::critical(this, QStringLiteral("PureVox"), msg); });
+    connect(thread_, &AudioThread::finished, this, [this]() {
+        delete backend_;
+        backend_ = nullptr;
+        if (processing_) {
+            processing_ = false;
+            startBtn_->setText(QStringLiteral("启动音频处理"));
+            statusLabel_->setText(QStringLiteral("已停止"));
+        }
+    });
     processing_ = true;
     startBtn_->setText(QStringLiteral("停止"));
     statusLabel_->setText(QStringLiteral("运行中…"));

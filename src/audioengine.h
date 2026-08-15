@@ -10,18 +10,18 @@
 
 #include <QVector>
 
-#include <string>
+#include <memory>
 
-struct AudioProcessor;
+#include "dsp/processor.h"
 
-// aimic C 音频引擎的 C++ RAII 封装
+// 音频处理引擎（模块化 C++ 处理链封装）
 class AudioEngine {
 public:
-    // 模式（与 aimic.h 一致）
-    static constexpr int ModeOff = 0;      // 直通
-    static constexpr int ModeDenoise = 1;  // 降噪
-    static constexpr int ModeAec = 2;      // AEC
-    static constexpr int ModeTse = 3;      // TSE
+    // 模式（与 pv::Processor 一致）
+    static constexpr int ModeOff = pv::Processor::ModeOff;
+    static constexpr int ModeDenoise = pv::Processor::ModeDenoise;
+    static constexpr int ModeAec = pv::Processor::ModeAec;
+    static constexpr int ModeTse = pv::Processor::ModeTse;
 
     AudioEngine();
     ~AudioEngine();
@@ -32,8 +32,8 @@ public:
     bool init(const QString &denoiseModel, const QString &tseModel, const QString &aecModel,
               QString *errMsg);
 
-    bool ready() const { return proc_ != nullptr; }
-    AudioProcessor *raw() { return proc_; }
+    bool ready() const { return proc_ && proc_->tseAvailable(); }
+    pv::Processor *raw() { return proc_.get(); }
 
     int backendEffective() const;
     int backendReason() const;
@@ -54,7 +54,7 @@ public:
     size_t process(const float *in, size_t n, const float *far, size_t farN, float *out);
 
 private:
-    AudioProcessor *proc_ = nullptr;
+    std::unique_ptr<pv::Processor> proc_;
     QString lastError_;
 };
 

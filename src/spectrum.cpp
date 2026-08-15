@@ -9,14 +9,11 @@
 #include <QPen>
 #include <QTimer>
 
-#include <aimic.h>
-
 #include <algorithm>
 #include <cmath>
 
 namespace {
-constexpr double kDbRng = SpectrumWidget::kDbMax - SpectrumWidget::kDbMin;
-// 频率刻度（硬编码像素偏移：bar_w=3, gap=1, 从 L 起算）
+constexpr double kDbRng = SpectrumWidget::kDbMax - SpectrumWidget::kDbMin;// 频率刻度（硬编码像素偏移：bar_w=3, gap=1, 从 L 起算）
 struct Tick {
     int px;
     const char *label;
@@ -50,7 +47,7 @@ void SpectrumWidget::computeBands(const float *samples, int n, QVector<double> &
     for (int c = 0; c < count; ++c) {
         QVector<float> buf(accum.begin() + c * kFftSize, accum.begin() + (c + 1) * kFftSize);
         QVector<float> spec(kNumBands);
-        size_t got = compute_spectrum(buf.data(), kFftSize, spec.data());
+        size_t got = mel_.compute(buf.data(), kFftSize, spec.data());
         if (got > 0) {
             for (int i = 0; i < (int)got && i < kNumBands; ++i) out[i] = spec[i];
         }

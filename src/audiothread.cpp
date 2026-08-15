@@ -5,20 +5,20 @@
 
 #include "audiothread.h"
 
-#include <pvbridge.h>
+#include "audiobackend.h"
 
-#include <QVector>
 #include <algorithm>
+#include <cmath>
 
 namespace {
 constexpr size_t kHop = 1024;
 }
 
-AudioThread::AudioThread(AudioEngine *engine, const QString &inputNode,
-                         const QString &outputNode, const QString &monitorNode, int mode,
+AudioThread::AudioThread(AudioEngine *engine, AudioBackend *backend, const QString &input,
+                         const QString &output, const QString &monitor, int mode,
                          QObject *parent)
-    : QThread(parent), engine_(engine), inputNode_(inputNode), outputNode_(outputNode),
-      monitorNode_(monitorNode), mode_(mode) {}
+    : QThread(parent), engine_(engine), backend_(backend), input_(input), output_(output),
+      monitor_(monitor), mode_(mode) {}
 
 AudioThread::~AudioThread() { stop(); }
 
@@ -28,22 +28,13 @@ void AudioThread::stop() {
 }
 
 void AudioThread::run() {
-    bridge_ = pvb_new();
-    if (!bridge_) {
-        emit errorOccurred("PipeWire 桥初始化失败");
-        return;
-    }
-    if (!pvb_open(bridge_, inputNode_.toUtf8().constData(), outputNode_.toUtf8().constData(),
-                  monitorNode_.toUtf8().constData())) {
-        QString err = QString::fromUtf8(pvb_last_error(bridge_));
-        emit errorOccurred(QString("打开音频流失败: %1").arg(err));
-        pvb_free(bridge_);
-        bridge_ = nullptr;
+    if (!backend_->open(input_, output_, monitor_)) {
+        emit errorOccurred(QStringLiteral("打开音频流失败: %1").arg(backend_->lastError()));
         return;
     }
     if (mode_ == AudioEngine::ModeAec) {
         engine_->setAecEnabled(true);
-        pvb_set_far(bridge_, outputNode_.toUtf8().constData(), 1);
+        backend_->setFar(output_, true);
     }
 
     running_.store(true);
@@ -51,32 +42,30 @@ void AudioThread::run() {
 
     QVector<float> in(kHop), out(kHop);
     QVector<float> farBuf(kHop);
-    size_t max = 0;
     while (running_.load()) {
-        size_t n = pvb_read(bridge_, in.data(), kHop);
+        size_t n = backend_->read(in.data(), kHop);
         if (n == 0) {
             msleep(2);
             continue;
         }
         size_t farN = 0;
         if (mode_ == AudioEngine::ModeAec) {
-            farN = pvb_read_far(bridge_, farBuf.data(), kHop);
+            farN = backend_->readFar(farBuf.data(), kHop);
         }
         size_t on = engine_->process(in.data(), n, farN ? farBuf.data() : nullptr, farN,
                                      out.data());
-        if (on > 0) pvb_write(bridge_, out.data(), on);
+        if (on > 0) backend_->write(out.data(), on);
         // 降噪输出峰值 → VU
         float peak = 0;
         for (size_t i = 0; i < on; ++i) peak = std::max(peak, std::fabs(out[i]));
         double db = peak > 1e-10 ? 20.0 * std::log10(peak) : -60.0;
-        if (on > max) max = on;
         emit levelUpdated(db);
         // 频谱数据（输入/输出各一帧）
-        emit spectrumData(in, out);
+        QVector<float> inFrame(in.begin(), in.begin() + n);
+        QVector<float> outFrame(out.begin(), out.begin() + on);
+        emit spectrumData(inFrame, outFrame);
     }
 
-    if (mode_ == AudioEngine::ModeAec) pvb_set_far(bridge_, outputNode_.toUtf8().constData(), 0);
-    pvb_close(bridge_);
-    pvb_free(bridge_);
-    bridge_ = nullptr;
+    if (mode_ == AudioEngine::ModeAec) backend_->setFar("", false);
+    backend_->close();
 }

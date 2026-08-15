@@ -11,6 +11,8 @@
 
 #include "audioengine.h"
 
+class AudioBackend;
+
 class QVBoxLayout;
 class QHBoxLayout;
 class QLabel;
@@ -72,6 +74,7 @@ private:
     // 状态
     AudioEngine engine_;
     AudioThread *thread_ = nullptr;
+    AudioBackend *backend_ = nullptr;
     int mode_ = AudioEngine::ModeDenoise;
     double preGain_ = 0.0;
     bool processing_ = false;

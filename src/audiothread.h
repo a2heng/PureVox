@@ -9,20 +9,23 @@
 #include <QThread>
 #include <QString>
 
+#include <QVector>
+
 #include <atomic>
 
 #include "audioengine.h"
 
+class AudioBackend;
 class VUBar;
-class PwBridge;
 
-// 音频处理线程：从 PipeWire 读 → 引擎降噪 → 写回 PipeWire，并回调 VU
+// 音频处理线程：从后端读 → 引擎降噪 → 写回，并回调 VU / 频谱
 class AudioThread : public QThread {
     Q_OBJECT
 
 public:
-    AudioThread(AudioEngine *engine, const QString &inputNode, const QString &outputNode,
-                const QString &monitorNode, int mode, QObject *parent = nullptr);
+    AudioThread(AudioEngine *engine, AudioBackend *backend, const QString &input,
+                const QString &output, const QString &monitor, int mode,
+                QObject *parent = nullptr);
     ~AudioThread() override;
 
     void stop();
@@ -38,12 +41,12 @@ protected:
 
 private:
     AudioEngine *engine_;
-    QString inputNode_;
-    QString outputNode_;
-    QString monitorNode_;
+    AudioBackend *backend_;
+    QString input_;
+    QString output_;
+    QString monitor_;
     int mode_;
     std::atomic<bool> running_{false};
-    PwBridge *bridge_ = nullptr;
 };
 
 #endif // PUREVOX_AUDIOTHREAD_H

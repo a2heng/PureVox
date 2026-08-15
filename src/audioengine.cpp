@@ -5,26 +5,15 @@
 
 #include "audioengine.h"
 
-#include <aimic.h>
-
 AudioEngine::AudioEngine() = default;
 
-AudioEngine::~AudioEngine() {
-    if (proc_) audio_processor_free(proc_);
-    proc_ = nullptr;
-}
+AudioEngine::~AudioEngine() = default;
 
 bool AudioEngine::init(const QString &denoiseModel, const QString &tseModel,
                        const QString &aecModel, QString *errMsg) {
-    if (proc_) {
-        audio_processor_free(proc_);
-        proc_ = nullptr;
-    }
-    const std::string dn = denoiseModel.toStdString();
-    const std::string ts = tseModel.toStdString();
-    const std::string ae = aecModel.toStdString();
-    proc_ = audio_processor_new(0.0, dn.c_str(), ts.c_str(), ae.c_str());
-    if (!proc_) {
+    proc_ = std::make_unique<pv::Processor>();
+    proc_->init(denoiseModel.toStdString(), tseModel.toStdString(), aecModel.toStdString());
+    if (!proc_->tseAvailable() && !proc_->aecAvailable() && proc_->mode() != pv::Processor::ModeDenoise) {
         lastError_ = "音频引擎初始化失败（模型加载错误）";
         if (errMsg) *errMsg = lastError_;
         return false;
@@ -34,60 +23,60 @@ bool AudioEngine::init(const QString &denoiseModel, const QString &tseModel,
 }
 
 int AudioEngine::backendEffective() const {
-    return proc_ ? audio_processor_backend_effective(proc_) : -1;
+    return proc_ ? proc_->backendEffective() : -1;
 }
 
 int AudioEngine::backendReason() const {
-    return proc_ ? audio_processor_backend_reason(proc_) : -1;
+    return proc_ ? proc_->backendReason() : -1;
 }
 
 void AudioEngine::setMode(int mode) {
-    if (proc_) audio_processor_set_mode(proc_, mode);
+    if (proc_) proc_->setMode(mode);
 }
 
-int AudioEngine::mode() const { return proc_ ? audio_processor_get_mode(proc_) : ModeOff; }
+int AudioEngine::mode() const { return proc_ ? proc_->mode() : pv::Processor::ModeOff; }
 
 void AudioEngine::setPreGain(double db) {
-    if (proc_) audio_processor_set_pre_gain(proc_, (float)db);
+    if (proc_) proc_->setPreGain((float)db);
 }
 
 void AudioEngine::applyEqGains(const QVector<double> &gains) {
     if (!proc_ || gains.isEmpty()) return;
     QVector<float> g(gains.size());
     for (int i = 0; i < gains.size(); ++i) g[i] = (float)gains[i];
-    audio_processor_set_eq_gains(proc_, g.constData(), (size_t)g.size());
+    proc_->setEqGains(g.constData(), (size_t)g.size());
 }
 
 void AudioEngine::setCompressorEnabled(bool on) {
-    if (proc_) audio_processor_set_compressor_enabled(proc_, on);
+    if (proc_) proc_->setCompressorEnabled(on);
 }
 
 void AudioEngine::setAgcEnabled(bool on, double initialGainDb) {
-    if (proc_) audio_processor_set_agc_enabled(proc_, on, (float)initialGainDb);
+    if (proc_) proc_->setAgcEnabled(on, (float)initialGainDb);
 }
 
 void AudioEngine::setVadEnabled(bool on) {
-    if (proc_) audio_processor_set_vad_enabled(proc_, on);
+    if (proc_) proc_->setVadEnabled(on);
 }
 
 void AudioEngine::setVadThreshold(double dbfs) {
-    if (proc_) audio_processor_set_vad_threshold(proc_, (float)dbfs);
+    if (proc_) proc_->setVadThreshold((float)dbfs);
 }
 
 void AudioEngine::setAgcTarget(double dbfs) {
-    if (proc_) audio_processor_set_agc_target(proc_, (float)dbfs);
+    if (proc_) proc_->setAgcTarget((float)dbfs);
 }
 
 void AudioEngine::setAecEnabled(bool on) {
-    if (proc_) audio_processor_set_aec_enabled(proc_, on);
+    if (proc_) proc_->setAecEnabled(on);
 }
 
 void AudioEngine::setTseEnabled(bool on) {
-    if (proc_) audio_processor_set_tse_enabled(proc_, on);
+    if (proc_) proc_->setTseEnabled(on);
 }
 
 size_t AudioEngine::process(const float *in, size_t n, const float *far, size_t farN,
                             float *out) {
     if (!proc_) return 0;
-    return audio_processor_process(proc_, in, n, far, farN, out);
+    return proc_->process(in, n, far, farN, out);
 }
