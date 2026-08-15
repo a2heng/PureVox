@@ -31,15 +31,17 @@
 
 #include "audiobackend.h"
 #include "audiothread.h"
+#ifdef Q_OS_LINUX
 #include "alsabackend.h"
+#include "pwbackend.h"
+#include "virtualmic.h"
+#endif
 #include "deviceenum.h"
 #include "dialog_about.h"
 #include "dialog_tse_reference.h"
 #include "eqcurve.h"
-#include "pwbackend.h"
 #include "segmented.h"
 #include "spectrum.h"
-#include "virtualmic.h"
 #include "vubar.h"
 
 namespace {
@@ -456,6 +458,7 @@ void MainWindow::showAbout() {
 }
 
 void MainWindow::showVirtualMic() {
+#ifdef Q_OS_LINUX
     QString msg;
     if (VirtualMic::ready()) {
         msg = QStringLiteral(
@@ -483,6 +486,12 @@ void MainWindow::showVirtualMic() {
             refreshDevices();
         }
     }
+#else
+    QMessageBox::information(
+        this, QStringLiteral("虚拟声卡"),
+        QStringLiteral("Windows 使用虚拟声卡（VB-CABLE / CABLE Input·Output），"
+                       "本版本 Windows 后端（WASAPI）尚未实现。"));
+#endif
 }
 
 void MainWindow::createTray() {
@@ -854,6 +863,7 @@ void MainWindow::onStartStop() {
 
     // 根据音频接口选择后端（AudioThread 接管所有权，run 结束自行删除）
     AudioBackend *backend = nullptr;
+#ifdef Q_OS_LINUX
     int api = apiCombo_->currentData().toInt();
     if (api == kApiPipeWire) {
         backend = new PwBackend();
@@ -864,6 +874,11 @@ void MainWindow::onStartStop() {
                              QStringLiteral("未知音频接口"));
         return;
     }
+#else
+    QMessageBox::warning(this, QStringLiteral("PureVox"),
+                         QStringLiteral("Windows 音频后端（WASAPI）尚未实现，请使用 Linux 版本。"));
+    return;
+#endif
 
     thread_ = new AudioThread(&engine_, backend, input, output, monitor, mode_, this);
     connect(thread_, &AudioThread::levelUpdated, vuBar_, &VUBar::updateLevelDb);

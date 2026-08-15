@@ -17,37 +17,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Universal packages: deb (Ubuntu) + AppImage; fedora -> rpm; python3.8 baseline.
+          # Universal packages: deb (Ubuntu) + rpm (fedora). AppImage 由 deb/rpm 覆盖。
           - distro: ubuntu-22.04
             container: ubuntu:22.04
-            # libssl-dev: the AppImage job compiles the embedded CPython from the
-            # packages/cpython submodule; without ssl headers that interpreter's
-            # pip has no networking, so bootstrap_python38.sh fails.
-            # libffi-dev: the embedded CPython needs libffi to build the `_ctypes`
-            # module (aimic.py/pvpipe.py ctypes bindings depend on it). Without it
-            # the compiled interpreter has no _ctypes and the GUI crashes on import
-            # ctypes (ModuleNotFoundError: No module named '_ctypes').
-            # file: appimagetool requires the `file` command at packaging time.
-            sysdeps: "build-essential make pkg-config libpipewire-0.3-dev libasound2-dev libssl-dev libffi-dev python3 python3-pip python3-setuptools imagemagick wget git zlib1g-dev file"
+            # Qt6 C++ runtime + dev (libqt6widgets6 etc); pipewire/alsa dev for bridges.
+            sysdeps: "build-essential cmake ninja-build pkg-config libpipewire-0.3-dev libasound2-dev qt6-base-dev libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev imagemagick wget git file"
             pkg_deb: true
-            pkg_appimage: true
           - distro: fedora
             container: fedora:latest
-            sysdeps: "gcc make pkgconf-pkg-config pipewire-devel alsa-lib-devel python3 python3-pip python3-setuptools rpm-build"
+            sysdeps: "gcc-c++ cmake ninja-build pkgconf-pkg-config pipewire-devel alsa-lib-devel qt6-qtbase-devel rpm-build python3-pillow"
             pkg_rpm: true
-          # Python 3.8 baseline (embedded runtime is Py3.8, Win7 minimum): verify the
-          # pure C libs build and ctypes-load on that floor.
-          - distro: python3.8
-            container: python:3.8-bullseye
-            sysdeps: "build-essential pkg-config libpipewire-0.3-dev libasound2-dev"
-            baseline: true
     container:
       image: ${{ matrix.container }}
     steps:
-      # Install system dependencies BEFORE checkout: containers have no git, so
-      # actions/checkout would fall back to the REST API download (no .git dir),
-      # which does NOT support `submodules`. With git present it does a real
-      # clone and can fetch packages/cpython (needed only by the AppImage job).
+      # Install system dependencies BEFORE checkout: containers have no git.
       - name: Install system dependencies
         run: |
           if command -v apt-get >/dev/null; then
@@ -58,9 +41,6 @@ jobs:
           fi
 
       - uses: actions/checkout@v5
-        with:
-          # Only the AppImage job needs the cpython submodule; shallow clone stays cheap.
-          submodules: ${{ matrix.pkg_appimage && 'recursive' || 'false' }}
 
       - name: Set build timestamp (tag v* -> tag version; else now)
         id: ts
@@ -73,31 +53,22 @@ jobs:
             echo "stamp=$(date +'%Y-%m-%d-%H%M')" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build pure C shared libraries (libaimic.so + libpvpipe.so + libpvalsa.so)
-        run: |
-          PY="python3"; [ "${{ matrix.distro }}" = "python3.8" ] && PY="python"
-          LD_LIBRARY_PATH="$PWD/packages/onnxruntime-linux-x64-1.11.1/lib" \
-            $PY setup.py build_ext --inplace --force
-          test -f libaimic.so && test -f libpvpipe.so && test -f libpvalsa.so
+      - name: Configure CMake
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
 
-      - name: Import smoke test (ctypes loads the pure C libs)
-        run: |
-          PY="python3"; [ "${{ matrix.distro }}" = "python3.8" ] && PY="python"
-          LD_LIBRARY_PATH="$PWD/packages/onnxruntime-linux-x64-1.11.1/lib" \
-            $PY -c "import aimic, pvpipe, pvalsa; print('aimic OK'); print('pvpipe OK'); print('pvalsa OK')"
+      - name: Build Qt C++ binary
+        run: cmake --build build -j4
 
-      - name: Assert Python 3.8 baseline (python3.8 only)
-        if: matrix.baseline
+      - name: Smoke test (offscreen launch loads engine)
         run: |
+          test -x build/purevox
           LD_LIBRARY_PATH="$PWD/packages/onnxruntime-linux-x64-1.11.1/lib" \
-            python -c "import sys, aimic; assert sys.version_info[:2] == (3, 8); print('aimic OK on Python', sys.version.split()[0])"
+            QT_QPA_PLATFORM=offscreen timeout 5 ./build/purevox --selftest
 
       - name: Package deb (Ubuntu)
         if: matrix.pkg_deb
         run: |
-          python3 -m pip install --break-system-packages pillow 2>/dev/null \
-            || python3 -m pip install pillow >/dev/null
-          bash pack_deb.sh
+          bash pack_deb_cpp.sh
           ls -lh dist/PureVox-Linux-x64-*.deb
 
       - name: Upload deb artifact
@@ -111,9 +82,7 @@ jobs:
       - name: Package rpm (Fedora)
         if: matrix.pkg_rpm
         run: |
-          python3 -m pip install --break-system-packages pillow 2>/dev/null \
-            || python3 -m pip install pillow >/dev/null
-          bash pack_rpm.sh
+          bash pack_rpm_cpp.sh
           ls -lh dist/PureVox-Linux-x64-*.rpm
 
       - name: Upload rpm artifact
@@ -124,24 +93,8 @@ jobs:
           path: dist/PureVox-Linux-x64-*.rpm
           if-no-files-found: error
 
-      - name: Package AppImage (best-effort, bundles embedded python38)
-        if: matrix.pkg_appimage
-        continue-on-error: true
-        run: |
-          bash pack_appimage.sh
-          ls -lh dist/PureVox-Linux-x64-*.AppImage
-
-      - name: Upload AppImage artifact
-        if: matrix.pkg_appimage
-        continue-on-error: true
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: PureVox-Linux-x64-${{ steps.ts.outputs.stamp }}-release-appimage
-          path: dist/PureVox-Linux-x64-*.AppImage
-          if-no-files-found: ignore
-
   windows:
-    name: Windows (aimic.dll + bundle directory)
+    name: Windows (Qt C++ bundle)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -157,15 +110,6 @@ jobs:
           }
           "stamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: Set up Python 3.8
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.8"
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-win.txt
-
       - name: Set up mingw-w64 gcc
         id: msys2
         uses: msys2/setup-msys2@v2
@@ -173,47 +117,54 @@ jobs:
           msystem: MINGW64
           install: >-
             mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
 
-      - name: Install Python deps
-        shell: pwsh
+      - name: Install Qt6 for mingw
+        shell: bash
         run: |
-          python -m pip install -q -r requirements.txt -r requirements-win.txt
+          pip install aqtinstall
+          aqt install-qt windows desktop 6.5.3 win64_mingw -O "${{ runner.temp }}/qt"
+          echo "QT_DIR=${{ runner.temp }}/qt/6.5.3/mingw_64" >> "$GITHUB_ENV"
 
-      - name: Compile all Python sources (catch syntax errors before packaging)
-        shell: pwsh
-        run: |
-          python -m compileall -q aimic.py pvpipe.py audio_processor.py config_manager.py model_config.py ui_pyside6.py run_pyside6.py pvplatform server 2>$null
-          Write-Host "compileall OK"
-
-      - name: Download opus.dll (gitignored, needed by server/)
-        shell: pwsh
-        run: |
-          curl.exe -fsSL -L "https://github.com/DSharpPlus/DSharpPlus/raw/master/docs/natives/vnext_natives_win32_x64.zip" -o "$env:TEMP\opus.zip"
-          Expand-Archive -Path "$env:TEMP\opus.zip" -DestinationPath "$env:TEMP\opus" -Force
-          Copy-Item "$env:TEMP\opus\libopus.dll" "server\opus.dll" -Force
-          if (-not (Test-Path "server\opus.dll")) { throw "opus.dll not found" }
-
-      - name: Build Windows bundle (build aimic.dll + PyInstaller, timestamped)
-        shell: pwsh
-        env:
-          CC: ${{ steps.msys2.outputs.msys2-location }}\mingw64\bin\gcc.exe
-        run: |
-          $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin;$env:PATH"
-          pwsh -NoProfile -ExecutionPolicy Bypass -File build_win.ps1
-
-      - name: Smoke import aimic (ctypes loads the built aimic.dll)
+      - name: Configure CMake
         shell: pwsh
         run: |
           $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin;$env:PATH"
-          if (-not (Test-Path "aimic.dll")) { throw "aimic.dll not built by build_win.ps1" }
-          python -c "import aimic; print('aimic OK on Python', __import__('sys').version.split()[0])"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:QT_DIR" `
+            -G Ninja
+
+      - name: Build Qt C++ binary
+        shell: pwsh
+        run: |
+          $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin;$env:PATH"
+          cmake --build build -j4
+
+      - name: Smoke test (offscreen launch)
+        shell: pwsh
+        run: |
+          test -f build/purevox.exe
+          Write-Host "purevox.exe built OK"
+
+      - name: Bundle Windows runtime (Qt DLLs + onnxruntime + models)
+        shell: pwsh
+        run: |
+          $bin = "${{ runner.temp }}/bundle"
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+          Copy-Item "build/purevox.exe" $bin
+          Copy-Item "packages/onnxruntime-win-x64-1.11.1/lib/onnxruntime.dll" $bin
+          Copy-Item "aec9_ep0544.onnx","tse15_stream_ep_0673.onnx","v9_fft2048_band256_epoch_261.onnx" $bin
+          # windeployqt copies the required Qt DLLs next to the exe
+          & "$env:QT_DIR\bin\windeployqt.exe" --no-translations "$bin\purevox.exe"
+          if (-not (Test-Path "$bin\purevox.exe")) { throw "bundle missing exe" }
+          Write-Host "bundle ready"
 
       - name: Upload Windows bundle
         uses: actions/upload-artifact@v7.0.1
         with:
-          # upload-artifact already compresses to a zip; a separate 7z pass is pure waste.
           name: PureVox-Windows-x64-${{ steps.ts.outputs.stamp }}-release
-          path: dist/PureVox
+          path: ${{ runner.temp }}/bundle
           if-no-files-found: error
 
   android:
@@ -277,15 +228,15 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Release (tag -> attach all artifacts)
+    name: Release (tag -> attach all artifacts + diff vs previous)
     runs-on: ubuntu-latest
     needs: [linux, windows, android]
-    # Only when a tag is pushed (e.g. v2026.08.10.1517). The three build jobs
-    # re-run for that exact ref so the release carries this tag's artifacts.
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v7.0.0
         with:
@@ -301,6 +252,39 @@ jobs:
             rm -rf "$d"
           done
 
+      # Auto-generate a "changes vs previous release" description by diffing
+      # the git log between the previous release tag and this tag.
+      - name: Generate release notes (diff vs previous release)
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PREV="$(gh release list --repo "${GITHUB_REPOSITORY}" --limit 50 --json tagName -q '.[].tagName' | grep -v "^${TAG}$" | head -1 || true)"
+          BODY="自动发布：tag ${TAG} 对应的 Qt C++ 构建产物（deb / rpm / Windows / Android APK）。"
+          if [ -n "${PREV}" ]; then
+            BODY="${BODY}\n\n## 与上个版本（${PREV}）的变更\n"
+            # 提交摘要（提交信息，去除 merge 噪音）
+            BODY="${BODY}\n\`\`\`\n"
+            LOG="$(git log --oneline --no-merges "${PREV}".."${TAG}" 2>/dev/null || true)"
+            if [ -z "${LOG}" ]; then
+              BODY="${BODY}（无直接提交记录）"
+            else
+              BODY="${BODY}${LOG}"
+            fi
+            BODY="${BODY}\n\`\`\`\n"
+            # 变更文件统计
+            STAT="$(git diff --stat "${PREV}".."${TAG}" 2>/dev/null | tail -1 || true)"
+            BODY="${BODY}\n文件变更统计：${STAT}"
+          else
+            BODY="${BODY}\n\n（这是首个 tag，无前版本对比）"
+          fi
+          BODY="${BODY}\n\n---\n\n自动生成：提交摘要 + 变更统计。"
+          printf '%s' "$BODY" > notes.md
+          echo "BODY<<EOF" >> "$GITHUB_OUTPUT"
+          printf '%s' "$BODY" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub release with artifacts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -309,5 +293,5 @@ jobs:
           files=$(find . -type f | sort | tr '\n' ' ')
           gh release create -R "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" \
             --title "PureVox ${GITHUB_REF_NAME}" \
-            --notes "自动发布：tag ${GITHUB_REF_NAME} 对应的 CI 构建产物（deb / rpm / AppImage / Windows / Android APK）。" \
+            --notes-file ../notes.md \
             $files

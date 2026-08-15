@@ -16,9 +16,14 @@ set(CMAKE_AUTOUIC ON)
 set(PV_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(PV_PKG_DIR ${PV_SRC_DIR}/packages)
 
-# ── 内嵌 ONNX Runtime（捆绑 1.11.1，纯 CPU）──
-set(PV_ORT_INC ${PV_PKG_DIR}/onnxruntime-linux-x64-1.11.1/include)
-set(PV_ORT_LIB ${PV_PKG_DIR}/onnxruntime-linux-x64-1.11.1/lib)
+# ── 内嵌 ONNX Runtime（捆绑 1.11.1，纯 CPU；按平台选目录）──
+if(WIN32)
+    set(PV_ORT_DIR onnxruntime-win-x64-1.11.1)
+else()
+    set(PV_ORT_DIR onnxruntime-linux-x64-1.11.1)
+endif()
+set(PV_ORT_INC ${PV_PKG_DIR}/${PV_ORT_DIR}/include)
+set(PV_ORT_LIB ${PV_PKG_DIR}/${PV_ORT_DIR}/lib)
 
 # ── pffft + libsamplerate（aimic 依赖，源码随仓库）──
 set(PV_PFFFT_SRC ${PV_PKG_DIR}/pffft)
@@ -89,10 +94,6 @@ qt_add_executable(purevox
     src/audiothread.cpp
     src/audiothread.h
     src/audiobackend.h
-    src/pwbackend.cpp
-    src/pwbackend.h
-    src/alsabackend.cpp
-    src/alsabackend.h
     src/vubar.cpp
     src/vubar.h
     src/segmented.cpp
@@ -107,9 +108,18 @@ qt_add_executable(purevox
     src/dialog_about.h
     src/dialog_tse_reference.cpp
     src/dialog_tse_reference.h
-    src/virtualmic.cpp
-    src/virtualmic.h
 )
+# Linux：PipeWire / ALSA 后端 + 虚拟声卡；Windows 待 WASAPI 后端（TODO）
+if(NOT WIN32)
+    target_sources(purevox PRIVATE
+        src/pwbackend.cpp
+        src/pwbackend.h
+        src/alsabackend.cpp
+        src/alsabackend.h
+        src/virtualmic.cpp
+        src/virtualmic.h
+    )
+endif()
 target_include_directories(purevox PRIVATE
     ${PV_SRC_DIR}
     ${PV_ORT_INC}
