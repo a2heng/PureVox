@@ -117,14 +117,34 @@ void MainWindow::buildUi() {
     compCb_ = new QCheckBox(QStringLiteral("压缩"), panel);
     compCb_->setFixedHeight(22);
     compCb_->setToolTip(QStringLiteral("压缩器：动态压缩大音量、提升小音量，缩小音量动态范围。"));
+    connect(compCb_, &QCheckBox::toggled, this, [this](bool on) {
+        engine_.setCompressorEnabled(on);
+        saveConfig();
+    });
     optsRow->addWidget(compCb_);
     agcCb_ = new QCheckBox(QStringLiteral("AGC"), panel);
     agcCb_->setFixedHeight(22);
     agcCb_->setToolTip(QStringLiteral("AGC 自动增益控制：自动调节增益，让声音始终稳定在合适音量。"));
+    connect(agcCb_, &QCheckBox::toggled, this, [this](bool on) {
+        double initDb = on ? preGain_ : 0.0;
+        engine_.setAgcEnabled(on, initDb);
+        if (on) {
+            preSlider_->setEnabled(false);
+            preSlider_->setStyleSheet(QStringLiteral("QSlider { opacity: 0.5; }"));
+        } else {
+            preSlider_->setEnabled(true);
+            preSlider_->setStyleSheet(QString());
+        }
+        saveConfig();
+    });
     optsRow->addWidget(agcCb_);
     vadCb_ = new QCheckBox(QStringLiteral("VAD"), panel);
     vadCb_->setFixedHeight(22);
     vadCb_->setToolTip(QStringLiteral("VAD 语音活性检测：不说话时自动静音，消除残留噪声。"));
+    connect(vadCb_, &QCheckBox::toggled, this, [this](bool on) {
+        engine_.setVadEnabled(on);
+        saveConfig();
+    });
     optsRow->addWidget(vadCb_);
     optsRow->addStretch();
     refBtn_ = new QPushButton(QStringLiteral("参考音频…"), panel);
@@ -173,6 +193,10 @@ void MainWindow::buildUi() {
     apiCombo_ = new QComboBox(panel);
     apiCombo_->addItem(QStringLiteral("PipeWire"), kApiPipeWire);
     apiCombo_->addItem(QStringLiteral("ALSA"), kApiAlsa);
+    connect(apiCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        refreshDevices();
+        saveConfig();
+    });
     devGrid->addWidget(apiCombo_, 0, 1);
 
     auto *lblIn = new QLabel(QStringLiteral("输入设备"), panel);
@@ -191,6 +215,9 @@ void MainWindow::buildUi() {
     monitorCb_->setToolTip(QStringLiteral(
         "监听（耳返）：\n"
         "将处理后的声音实时回放到指定设备。"));
+    connect(monitorCb_, &QCheckBox::toggled, this, [this](bool on) {
+        saveConfig();
+    });
     devGrid->addWidget(monitorCb_, 3, 0);
     monitorCombo_ = new QComboBox(panel);
     devGrid->addWidget(monitorCombo_, 3, 1);
