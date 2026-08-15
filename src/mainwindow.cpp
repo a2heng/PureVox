@@ -9,6 +9,8 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -308,8 +310,19 @@ void MainWindow::setupEqPanel() {
     btnsLayout->addLayout(slotRow);
 
     // EQ 预设按钮行
-    const QVector<QVector<double>> presets = {
-        {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},  // 默认平直
+    struct EqPreset {
+        const char *name;
+        const double gains[61];
+    };
+    static const EqPreset kPresets[] = {
+        {"默认平直", {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}},
+        {"清晰透亮", {-4,0,-3,0,-2,0,-2,0,-1,0,-1,0,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,1,0,0,0,0,0,0,0,0,0,0,0}},
+        {"温暖饱满", {-4,0,-3,0,-2,0,-2,0,-1,0,-1,0,-1,0,0,0,0,2,4,3,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,0,0,0,0,0,0,0}},
+        {"低沉有力", {-4,0,-3,0,-2,0,-2,0,-1,0,1,4,6,4,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}},
+        {"减少齿音", {-4,0,-3,0,-2,0,-2,0,-1,0,-1,0,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,-15,0,3,0,0,0,0,0,0,0,0}},
+        {"减少鼻音", {-4,0,-3,0,-2,0,-2,0,-1,0,-1,0,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,-14,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}},
+        {"消除沉闷", {-4,0,-3,0,-2,0,-2,0,-1,0,-1,0,-1,0,0,0,0,0,0,0,2,0,-12,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}},
+        {"增强临场", {-4,0,-3,0,-2,0,-2,0,-1,0,-1,0,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,3,4,3,1,0,0,0,0,0,0,1,2,1,0,0,0,0,0}},
     };
     auto *presetRow = new QHBoxLayout();
     presetRow->setSpacing(4);
@@ -317,14 +330,16 @@ void MainWindow::setupEqPanel() {
     lbl2->setFixedWidth(40);
     lbl2->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     presetRow->addWidget(lbl2);
-    // 简化：当前只有"默认平直"预设，更多预设后续补
-    auto *btn = new QPushButton(QStringLiteral("默认平直"), eqBtnsContainer_);
-    btn->setFixedHeight(24);
-    btn->setFixedWidth(80);
-    connect(btn, &QPushButton::clicked, this, [this, presets]() {
-        onEqPreset(presets[0]);
-    });
-    presetRow->addWidget(btn);
+    for (const EqPreset &p : kPresets) {
+        auto *btn = new QPushButton(QString::fromUtf8(p.name), eqBtnsContainer_);
+        btn->setFixedHeight(24);
+        btn->setFixedWidth(80);
+        QVector<double> g;
+        g.reserve(61);
+        for (int i = 0; i < 61; ++i) g.append(p.gains[i]);
+        connect(btn, &QPushButton::clicked, this, [this, g]() { onEqPreset(g); });
+        presetRow->addWidget(btn);
+    }
     presetRow->addStretch();
     btnsLayout->addLayout(presetRow);
 
@@ -347,6 +362,30 @@ void MainWindow::createMenu() {
     autoRun->setChecked(QSettings().value("auto_start", false).toBool());
     connect(autoRun, &QAction::toggled, [](bool on) {
         QSettings().setValue("auto_start", on);
+    });
+
+    // 开机自启（Linux：~/.config/autostart/purevox.desktop）
+    QAction *boot = settingsMenu->addAction(QStringLiteral("开机自启"));
+    boot->setCheckable(true);
+    const QString autostartDir = QDir::homePath() + "/.config/autostart";
+    const QString autostartFile = autostartDir + "/purevox.desktop";
+    boot->setChecked(QFileInfo::exists(autostartFile));
+    connect(boot, &QAction::toggled, [autostartDir, autostartFile](bool on) {
+        if (on) {
+            QDir().mkpath(autostartDir);
+            QFile f(autostartFile);
+            if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                QTextStream ts(&f);
+                ts << "[Desktop Entry]\n"
+                   << "Type=Application\n"
+                   << "Name=PureVox\n"
+                   << "Exec=/usr/bin/purevox\n"
+                   << "X-GNOME-Autostart-enabled=true\n";
+                f.close();
+            }
+        } else {
+            QFile::remove(autostartFile);
+        }
     });
 
     QMenu *themeMenu = settingsMenu->addMenu(QStringLiteral("主题"));
