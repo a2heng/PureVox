@@ -57,6 +57,8 @@ int Processor::backendReason() const { return backendReason_; }
 
 void Processor::setPreGain(float db) { preGain_ = std::pow(10.0f, db / 20.0f); }
 
+void Processor::setPostGain(float db) { postGain_ = std::pow(10.0f, db / 20.0f); }
+
 void Processor::setMode(int mode) {
     mode_ = mode;
     stft_.reset();
@@ -157,6 +159,11 @@ void Processor::applyEqClip(float *buf) {
     clip_buffer(buf, kHopLength);
 }
 
+void Processor::applyPostGain(float *buf) {
+    if (postGain_ == 0.0f) return;  // 0 dB
+    for (size_t i = 0; i < kHopLength; ++i) buf[i] *= postGain_;
+}
+
 void Processor::measureAgcRms(const float *out) {
     float sq = 0.0f;
     for (size_t i = 0; i < kHopLength; ++i) sq += out[i] * out[i];
@@ -240,6 +247,7 @@ size_t Processor::process(const float *in, size_t n, const float *far, size_t fa
     } else if (!recordingEnabled_) {
         tseRecordingBuffer_.clear();
     }
+    applyPostGain(outBuf);
     clip_buffer(outBuf, kHopLength);
     if (vadEnabled_) vad_.process(outBuf, kHopLength);
     if (agcEnabled_) measureAgcRms(outBuf);

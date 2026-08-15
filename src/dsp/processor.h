@@ -47,7 +47,9 @@ public:
     int backendReason() const;
 
     // 参数
-    void setPreGain(float db);
+    void setPreGain(float db);   // pre 增益（链首，输入侧）
+    void setPostGain(float db);  // post 增益（链尾，输出侧）
+    float postGain() const { return postGain_; }
     void setMode(int mode);
     int mode() const;
     void setEqGains(const float *gains, size_t n);
@@ -108,12 +110,14 @@ public:
 
 private:
     void applyPreGain(float *buf);
+    void applyPostGain(float *buf);
     void applyEqClip(float *buf);
     void measureAgcRms(const float *out);
     void aecStep(const float *buf, const float *far, size_t farN, float *out);
     void tseStep(const float *buf, float *out);
 
-    float preGain_ = 0;
+    float preGain_ = 0;   // pre 增益（链首）
+    float postGain_ = 0;  // post 增益（链尾）
     Equalizer eq_;
     int mode_ = ModeDenoise;
     bool eqActive_ = false;

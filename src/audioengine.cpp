@@ -40,6 +40,10 @@ void AudioEngine::setPreGain(double db) {
     if (proc_) proc_->setPreGain((float)db);
 }
 
+void AudioEngine::setPostGain(double db) {
+    if (proc_) proc_->setPostGain((float)db);
+}
+
 void AudioEngine::applyEqGains(const QVector<double> &gains) {
     if (!proc_ || gains.isEmpty()) return;
     QVector<float> g(gains.size());

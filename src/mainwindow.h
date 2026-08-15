@@ -98,8 +98,10 @@ private:
     QPushButton *refBtn_;
     QPushButton *startBtn_;
     QPushButton *quitBtn_;
-    QSlider *preSlider_;
-    QLabel *preLabel_;
+    QSlider *preGainSlider_;
+    QLabel *preGainLabel_;
+    QSlider *postGainSlider_;
+    QLabel *postGainLabel_;
 
     // 托盘
     QSystemTrayIcon *trayIcon_ = nullptr;
@@ -117,7 +119,8 @@ private:
     AudioThread *thread_ = nullptr;
     AudioBackend *backend_ = nullptr;
     int mode_ = AudioEngine::ModeDenoise;
-    double preGain_ = 0.0;
+    double preGain_ = 0.0;    // pre 增益（链首）
+    double postGain_ = 0.0;   // post 增益（链尾）
     bool processing_ = false;
 
     static constexpr const char *kModelDenoise = "v9_fft2048_band256_epoch_261.onnx";

@@ -40,7 +40,8 @@ public:
 
     void setMode(int mode);
     int mode() const;
-    void setPreGain(double db);
+    void setPreGain(double db);   // pre 增益（链首）
+    void setPostGain(double db);  // post 增益（链尾）
     void applyEqGains(const QVector<double> &gains);
     void setCompressorEnabled(bool on);
     void setAgcEnabled(bool on, double initialGainDb);

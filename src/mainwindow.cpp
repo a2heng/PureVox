@@ -135,11 +135,11 @@ void MainWindow::buildUi() {
         double initDb = on ? preGain_ : 0.0;
         engine_.setAgcEnabled(on, initDb);
         if (on) {
-            preSlider_->setEnabled(false);
-            preSlider_->setStyleSheet(QStringLiteral("QSlider { opacity: 0.5; }"));
+            preGainSlider_->setEnabled(false);
+            preGainSlider_->setStyleSheet(QStringLiteral("QSlider { opacity: 0.5; }"));
         } else {
-            preSlider_->setEnabled(true);
-            preSlider_->setStyleSheet(QString());
+            preGainSlider_->setEnabled(true);
+            preGainSlider_->setStyleSheet(QString());
         }
         saveConfig();
     });
@@ -164,29 +164,51 @@ void MainWindow::buildUi() {
     optsRow->addWidget(refBtn_);
     panelLayout->addLayout(optsRow);
 
-    // 第3行：前增益
+    // 第3行：pre 增益 + post 增益
     auto *gainGrid = new QGridLayout();
     gainGrid->setSpacing(4);
-    auto *lblPre = new QLabel(QStringLiteral("前增益"), panel);
+
+    auto *lblPre = new QLabel(QStringLiteral("Pre 增益"), panel);
     lblPre->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     lblPre->setToolTip(QStringLiteral(
-        "前增益 — 麦克风输入增益\n"
-        "提高前增益 → 信号更强，降噪效果更好。\n"
+        "Pre 增益 — 输入增益，位于处理链首\n"
+        "提高 Pre 增益 → 信号更强，降噪效果更好。\n"
         "但过高会导致削波失真。\n"
         "建议: 正常说话时峰值在 -12 ~ -6 dBFS 为最佳。"));
     gainGrid->addWidget(lblPre, 0, 0);
-    preSlider_ = new QSlider(Qt::Horizontal, panel);
-    preSlider_->setRange(-30, 30);
-    preSlider_->setValue((int)preGain_);
-    gainGrid->addWidget(preSlider_, 0, 1);
-    preLabel_ = new QLabel("+0 dB", panel);
-    preLabel_->setFixedWidth(44);
-    preLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    gainGrid->addWidget(preLabel_, 0, 2);
-    connect(preSlider_, &QSlider::valueChanged, this, [this](int v) {
+    preGainSlider_ = new QSlider(Qt::Horizontal, panel);
+    preGainSlider_->setRange(-30, 30);
+    preGainSlider_->setValue((int)preGain_);
+    gainGrid->addWidget(preGainSlider_, 0, 1);
+    preGainLabel_ = new QLabel("+0 dB", panel);
+    preGainLabel_->setFixedWidth(44);
+    preGainLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    gainGrid->addWidget(preGainLabel_, 0, 2);
+    connect(preGainSlider_, &QSlider::valueChanged, this, [this](int v) {
         preGain_ = v;
-        preLabel_->setText(QString("%1 dB").arg((double)v));
+        preGainLabel_->setText(QString("%1 dB").arg((double)v));
         engine_.setPreGain(preGain_);
+        saveConfig();
+    });
+
+    auto *lblPost = new QLabel(QStringLiteral("Post 增益"), panel);
+    lblPost->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    lblPost->setToolTip(QStringLiteral(
+        "Post 增益 — 输出增益，位于处理链尾\n"
+        "调整降噪后的整体响度。"));
+    gainGrid->addWidget(lblPost, 1, 0);
+    postGainSlider_ = new QSlider(Qt::Horizontal, panel);
+    postGainSlider_->setRange(-30, 30);
+    postGainSlider_->setValue((int)postGain_);
+    gainGrid->addWidget(postGainSlider_, 1, 1);
+    postGainLabel_ = new QLabel("+0 dB", panel);
+    postGainLabel_->setFixedWidth(44);
+    postGainLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    gainGrid->addWidget(postGainLabel_, 1, 2);
+    connect(postGainSlider_, &QSlider::valueChanged, this, [this](int v) {
+        postGain_ = v;
+        postGainLabel_->setText(QString("%1 dB").arg((double)v));
+        engine_.setPostGain(postGain_);
         saveConfig();
     });
     panelLayout->addLayout(gainGrid);
@@ -664,9 +686,13 @@ void MainWindow::loadConfig() {
     QSettings s;
     mode_ = s.value("mode", kModeDenoise).toInt();
     preGain_ = s.value("pre_gain_db", 0.0).toDouble();
-    preSlider_->setValue((int)preGain_);
-    preLabel_->setText(QString("%1 dB").arg(preGain_, 0, 'f', 0));
+    postGain_ = s.value("post_gain_db", 0.0).toDouble();
+    preGainSlider_->setValue((int)preGain_);
+    preGainLabel_->setText(QString("%1 dB").arg(preGain_, 0, 'f', 0));
+    postGainSlider_->setValue((int)postGain_);
+    postGainLabel_->setText(QString("%1 dB").arg(postGain_, 0, 'f', 0));
     engine_.setPreGain(preGain_);
+    engine_.setPostGain(postGain_);
 
     compCb_->setChecked(s.value("compressor_enabled", false).toBool());
     agcCb_->setChecked(s.value("agc_enabled", false).toBool());
@@ -687,6 +713,7 @@ void MainWindow::saveConfig() {
     QSettings s;
     s.setValue("mode", mode_);
     s.setValue("pre_gain_db", preGain_);
+    s.setValue("post_gain_db", postGain_);
     s.setValue("compressor_enabled", compCb_->isChecked());
     s.setValue("agc_enabled", agcCb_->isChecked());
     s.setValue("vad_enabled", vadCb_->isChecked());
@@ -727,6 +754,7 @@ void MainWindow::onModeChanged(int val) {
 void MainWindow::applyMode(int oldMode) {
     engine_.setMode(mode_);
     engine_.setPreGain(preGain_);
+    engine_.setPostGain(postGain_);
     if (processing_ && oldMode != mode_) {
         // 需重启以重载模型
         onStartStop();
@@ -738,15 +766,21 @@ void MainWindow::applyMode(int oldMode) {
 void MainWindow::saveGains(int mode) {
     QSettings s;
     s.setValue(QString("pre_gain_%1").arg(mode), preGain_);
+    s.setValue(QString("post_gain_%1").arg(mode), postGain_);
 }
 
 void MainWindow::loadGains(int mode) {
     QSettings s;
     double g = s.value(QString("pre_gain_%1").arg(mode), 0.0).toDouble();
     preGain_ = g;
-    preSlider_->setValue((int)g);
-    preLabel_->setText(QString("%1 dB").arg(g, 0, 'f', 0));
+    preGainSlider_->setValue((int)g);
+    preGainLabel_->setText(QString("%1 dB").arg(g, 0, 'f', 0));
     engine_.setPreGain(g);
+    double pg = s.value(QString("post_gain_%1").arg(mode), 0.0).toDouble();
+    postGain_ = pg;
+    postGainSlider_->setValue((int)pg);
+    postGainLabel_->setText(QString("%1 dB").arg(pg, 0, 'f', 0));
+    engine_.setPostGain(pg);
 }
 
 void MainWindow::onStartStop() {
