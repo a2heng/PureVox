@@ -58,6 +58,7 @@ private:
     void showVirtualMic();
     void quitApp();
     void createTray();
+    void applyTheme(const QString &mode);
 
     // EQ 面板
     void setupEqPanel();

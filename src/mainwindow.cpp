@@ -361,13 +361,23 @@ void MainWindow::createMenu() {
         a->setChecked(curTheme == QString::fromUtf8(t.value));
         connect(a, &QAction::triggered, this, [this, t]() {
             QSettings().setValue("theme", QString::fromUtf8(t.value));
-            // 简化：仅保存，主题应用由系统调色板驱动
+            applyTheme(QString::fromUtf8(t.value));
         });
     }
 
     QAction *snd = mb->addAction(QStringLiteral("系统声音"));
     connect(snd, &QAction::triggered, this, []() {
-        QProcess::startDetached("pw-control", QStringList());
+        // 优先 pavucontrol，回退 gnome-control-center / systemsettings
+        const char *cmds[][2] = {
+            {"pavucontrol", ""},
+            {"gnome-control-center", "sound"},
+            {"systemsettings", ""},
+        };
+        for (auto &c : cmds) {
+            if (QProcess::startDetached(QString::fromUtf8(c[0]),
+                                        c[1][0] ? QStringList{QString::fromUtf8(c[1])} : QStringList()))
+                return;
+        }
     });
 
     QAction *vmic = mb->addAction(QStringLiteral("虚拟声卡"));
@@ -440,6 +450,32 @@ void MainWindow::quitApp() {
         thread_ = nullptr;
     }
     QApplication::quit();
+}
+
+void MainWindow::applyTheme(const QString &mode) {
+    bool dark;
+    if (mode == QStringLiteral("light")) dark = false;
+    else if (mode == QStringLiteral("dark")) dark = true;
+    else {
+        // 系统：按调色板亮度判定
+        dark = QApplication::palette().window().color().lightness() < 128;
+    }
+    if (dark) {
+        QPalette p;
+        p.setColor(QPalette::Window, QColor(45, 45, 48));
+        p.setColor(QPalette::WindowText, QColor(220, 220, 220));
+        p.setColor(QPalette::Base, QColor(30, 30, 32));
+        p.setColor(QPalette::AlternateBase, QColor(42, 42, 45));
+        p.setColor(QPalette::Text, QColor(220, 220, 220));
+        p.setColor(QPalette::Button, QColor(55, 55, 58));
+        p.setColor(QPalette::ButtonText, QColor(220, 220, 220));
+        p.setColor(QPalette::Highlight, QColor(0, 122, 204));
+        p.setColor(QPalette::HighlightedText, Qt::white);
+        p.setColor(QPalette::PlaceholderText, QColor(150, 150, 150));
+        QApplication::setPalette(p);
+    } else {
+        QApplication::setPalette(QApplication::style()->standardPalette());
+    }
 }
 
 void MainWindow::onEqSlot(int slot) {
