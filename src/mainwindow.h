@@ -42,6 +42,9 @@ private:
     void updateModeUi();
     void saveConfig();
     void loadConfig();
+    void createMenu();
+    void showAbout();
+    void showVirtualMic();
 
     // UI 控件
     QWidget *central_;

@@ -13,7 +13,10 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
+#include <QProcess>
 #include <QPushButton>
 #include <QSettings>
 #include <QSlider>
@@ -23,6 +26,7 @@
 
 #include "audiothread.h"
 #include "deviceenum.h"
+#include "dialog_about.h"
 #include "eqcurve.h"
 #include "segmented.h"
 #include "spectrum.h"
@@ -42,6 +46,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     setWindowTitle("PureVox");
     setMinimumSize(720, 560);
     buildUi();
+    createMenu();
     initEngine();
     loadConfig();
     refreshDevices();
@@ -217,8 +222,67 @@ void MainWindow::buildUi() {
     setCentralWidget(central_);
 }
 
-void MainWindow::initEngine() {
-    if (!QFileInfo::exists(kModelDenoise)) {
+void MainWindow::createMenu() {
+    QMenuBar *mb = menuBar();
+
+    QMenu *settingsMenu = mb->addMenu(QStringLiteral("设置"));
+    QAction *hk = settingsMenu->addAction(QStringLiteral("快捷键 (右Alt+>)"));
+    hk->setCheckable(true);
+    hk->setChecked(QSettings().value("hotkey_enabled", true).toBool());
+    connect(hk, &QAction::toggled, [](bool on) { QSettings().setValue("hotkey_enabled", on); });
+
+    QAction *autoRun = settingsMenu->addAction(QStringLiteral("启动时自动运行"));
+    autoRun->setCheckable(true);
+    autoRun->setChecked(QSettings().value("auto_start", false).toBool());
+    connect(autoRun, &QAction::toggled, [](bool on) {
+        QSettings().setValue("auto_start", on);
+    });
+
+    QMenu *themeMenu = settingsMenu->addMenu(QStringLiteral("主题"));
+    struct ThemeItem {
+        const char *label;
+        const char *value;
+    };
+    const ThemeItem themes[] = {{"系统", "system"}, {"白天", "light"}, {"黑夜", "dark"}};
+    QSettings st;
+    QString curTheme = st.value("theme", "system").toString();
+    for (const ThemeItem &t : themes) {
+        QAction *a = themeMenu->addAction(QString::fromUtf8(t.label));
+        a->setCheckable(true);
+        a->setChecked(curTheme == QString::fromUtf8(t.value));
+        connect(a, &QAction::triggered, this, [this, t]() {
+            QSettings().setValue("theme", QString::fromUtf8(t.value));
+            // 简化：仅保存，主题应用由系统调色板驱动
+        });
+    }
+
+    QAction *snd = mb->addAction(QStringLiteral("系统声音"));
+    connect(snd, &QAction::triggered, this, []() {
+        QProcess::startDetached("pw-control", QStringList());
+    });
+
+    QAction *vmic = mb->addAction(QStringLiteral("虚拟声卡"));
+    connect(vmic, &QAction::triggered, this, &MainWindow::showVirtualMic);
+
+    QAction *about = mb->addAction(QStringLiteral("关于"));
+    connect(about, &QAction::triggered, this, &MainWindow::showAbout);
+}
+
+void MainWindow::showAbout() {
+    AboutDialog dlg(this);
+    dlg.exec();
+}
+
+void MainWindow::showVirtualMic() {
+    QMessageBox::information(
+        this, QStringLiteral("虚拟声卡"),
+        QStringLiteral(
+            "Linux 虚拟麦克风（PipeWire）\n\n"
+            "创建：purevox_out（null-sink）+ purevox_mic（remap-source）\n"
+            "本版本暂未集成虚拟声卡管理，将在后续版本实现。"));
+}
+
+void MainWindow::initEngine() {    if (!QFileInfo::exists(kModelDenoise)) {
         statusLabel_->setText(QStringLiteral("未找到模型文件，请从仓库根目录运行"));
         return;
     }

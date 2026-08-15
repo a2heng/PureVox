@@ -74,6 +74,8 @@ qt_add_executable(purevox
     src/eqcurve.h
     src/spectrum.cpp
     src/spectrum.h
+    src/dialog_about.cpp
+    src/dialog_about.h
 )
 target_include_directories(purevox PRIVATE
     ${PV_SRC_DIR}
