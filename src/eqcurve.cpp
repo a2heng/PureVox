@@ -7,6 +7,7 @@
 
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPen>
 #include <QWheelEvent>
 
@@ -45,105 +46,142 @@ void EQCurveWidget::setGains(const QVector<double> &gains) {
 }
 
 double EQCurveWidget::freqX(double freq, int gw) const {
-    double r = (std::log10(freq) - kLogMin) / (kLogMax - kLogMin);
-    return r * gw;
+    // 与 Python 一致：3% 边距 + 对数映射
+    const double m = 0.03;
+    double u = gw * (1 - 2 * m);
+    double n = (std::log10(freq) - std::log10(20.0)) / (std::log10(20000.0) - std::log10(20.0));
+    return gw * m + n * u;
 }
 
 int EQCurveWidget::bandAt(int x) const {
     int w = width();
-    int L = 38, R = 14;
+    int L = 28, R = 10;
     int gw = w - L - R;
-    double logDist = 1e9;
+    x = std::max(L, std::min(w - R, x)) - L;
+    const double m = 0.03;
+    double u = gw * (1 - 2 * m);
+    double n = (x - gw * m) / u;
+    double freq = std::pow(10.0, std::log10(20.0) + n * (std::log10(20000.0) - std::log10(20.0)));
+    double bestDist = 1e18;
     int best = 0;
     for (int i = 0; i < kNumBands; ++i) {
-        double d = std::fabs(freqX(kFreqs[i], gw) + L - x);
-        if (d < logDist) {
-            logDist = d;
-            best = i;
-        }
+        double d = std::fabs(std::log10(freq) - std::log10(kFreqs[i]));
+        if (d < bestDist) { bestDist = d; best = i; }
     }
     return best;
 }
 
 double EQCurveWidget::responseAt(double freq) const {
-    double acc = 0;
-    double wSum = 0;
+    // 与 Python 一致：全部频段 peaking biquad 幅频响应之和
+    const double q = 1.414;
+    const double sr = 48000.0;
+    double total = 0.0;
     for (int i = 0; i < kNumBands; ++i) {
-        double a = std::fabs(values_[i]);
-        if (a < 0.1) continue;
-        double diff = std::fabs(std::log10(freq) - std::log10(kFreqs[i]));
-        double w = a / (1.0 + diff * diff * 20.0);
-        acc += values_[i] * w;
-        wSum += w;
+        double gain = values_[i];
+        if (std::fabs(gain) < 0.1) continue;
+        double A = std::pow(10.0, gain / 40.0);
+        double cf = kFreqs[i];
+        double w0 = 2.0 * M_PI * cf / sr;
+        double alpha = std::sin(w0) / (2.0 * q);
+        double cosW0 = std::cos(w0);
+        double b0 = 1.0 + alpha * A, b1 = -2.0 * cosW0, b2 = 1.0 - alpha * A;
+        double a0 = 1.0 + alpha / A, a1 = -2.0 * cosW0, a2 = 1.0 - alpha / A;
+        b0 /= a0; b1 /= a0; b2 /= a0; a1 /= a0; a2 /= a0;
+        double w = 2.0 * M_PI * freq / sr;
+        double c = std::cos(w), s = std::sin(w);
+        double c2 = std::cos(2 * w), s2 = std::sin(2 * w);
+        double nr = b0 + b1 * c + b2 * c2;
+        double ni = -(b1 * s + b2 * s2);
+        double dr = 1.0 + a1 * c + a2 * c2;
+        double di = -(a1 * s + a2 * s2);
+        double mag = std::sqrt((nr * nr + ni * ni) / (dr * dr + di * di));
+        total += 20.0 * std::log10(mag);
     }
-    return wSum > 1e-9 ? acc / wSum : 0.0;
+    return total;
 }
 
 void EQCurveWidget::drawResponse(QPainter &p, int L, int T, int R, int B, int gw, int gh) {
+    // 与 Python 一致：200 点真实响应计算
     QColor accent = palette().highlight().color();
-    QPen pen(accent, 2);
+    QPen pen(accent, 2.5);
     p.setPen(pen);
-    QPointF prev;
-    for (int px = 0; px <= gw; px += 2) {
-        double freq = std::pow(10, kLogMin + (double)px / gw * (kLogMax - kLogMin));
+    QPainterPath path;
+    bool first = true;
+    for (int i = 0; i < 200; ++i) {
+        double freq = 20.0 * std::pow(10.0, (double)i / 199 * 3.0);
         double resp = responseAt(freq);
+        double x = L + freqX(freq, gw);
         double y = T + gh / 2.0 - (resp / kYRange) * (gh / 2.0);
-        QPointF pt(L + px, y);
-        if (px > 0) p.drawLine(prev, pt);
-        prev = pt;
+        if (first) { path.moveTo(x, y); first = false; }
+        else path.lineTo(x, y);
     }
+    p.drawPath(path);
 }
 
 void EQCurveWidget::paintEvent(QPaintEvent *) {
     int w = width(), h = height();
-    int L = 38, R = 14, T = 18, B = 18;
+    int L = 22, R = 10, T = 12, B = 18;
     int gw = w - L - R, gh = h - T - B;
 
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
     QColor gridColor = palette().mid().color();
     QColor textColor = palette().windowText().color();
+    QColor numColor = palette().placeholderText().color();
+    QColor accent = palette().highlight().color();
 
-    // 水平网格线（dB）
+    // 背景
+    p.fillRect(0, 0, w, h, palette().base().color());
+
+    QFont smallFont = p.font();
+    smallFont.setPointSize(6);
+    p.setFont(smallFont);
+
+    // 水平网格线（每 10dB）
     for (int db = -kYRange; db <= kYRange; db += 10) {
         double y = T + gh / 2.0 - ((double)db / kYRange) * (gh / 2.0);
-        p.setPen(QPen(gridColor, 1, Qt::DotLine));
+        p.setPen(QPen(gridColor, 0.5));
         p.drawLine(L, (int)y, w - R, (int)y);
-        p.setPen(textColor);
+        p.setPen(QPen(numColor));
         p.drawText(QRectF(0, (int)y - 7, L - 4, 14), Qt::AlignRight | Qt::AlignVCenter,
                    QString::number(db));
     }
-    // 0 dB 参考线
+    // 0 dB 中线（稍粗）
     double y0 = T + gh / 2.0;
-    p.setPen(QPen(gridColor, 1, Qt::SolidLine));
+    p.setPen(QPen(gridColor, 1));
     p.drawLine(L, (int)y0, w - R, (int)y0);
 
-    // 垂直网格线（频点）
+    // 垂直网格线（频点），每 5 个标一个标签
+    const int labelStep = 5;
     for (int i = 0; i < kNumBands; ++i) {
         double x = L + freqX(kFreqs[i], gw);
-        p.setPen(QPen(gridColor, 1, Qt::DotLine));
+        p.setPen(QPen(gridColor, 0.5));
         p.drawLine((int)x, T, (int)x, h - B);
-        p.setPen(textColor);
-        QFont f = p.font();
-        f.setPointSize(7);
-        p.setFont(f);
-        p.drawText(QRectF((int)x - 12, T - 12, 24, 10), Qt::AlignCenter,
-                   formatFreq(kFreqs[i]));
+        if (i % labelStep == 0) {
+            p.setPen(QPen(numColor));
+            p.drawText(QRectF((int)x - 12, T - 12, 24, 10), Qt::AlignCenter,
+                       formatFreq(kFreqs[i]));
+        }
     }
 
-    // 频响曲线
+    // 频响曲线（200 点）
     drawResponse(p, L, T, R, B, gw, gh);
 
-    // 增益点 + 值
+    // 增益圆点 + 值（透明度随正负/零）
+    double radius = std::max(3.0, 4.5 * w / 800.0);
     for (int i = 0; i < kNumBands; ++i) {
         double x = L + freqX(kFreqs[i], gw);
         double y = T + gh / 2.0 - (values_[i] / kYRange) * (gh / 2.0);
-        if (std::fabs(values_[i]) > 0.1) {
-            QColor c = values_[i] > 0 ? QColor("#00cc44") : QColor("#cc2200");
-            p.setPen(QPen(c, 2));
-            p.setBrush(c);
-            p.drawEllipse(QPointF(x, y), 3, 3);
-            p.drawText(QRectF((int)x - 10, (int)y - 16, 20, 12), Qt::AlignCenter,
+        QColor dot;
+        if (values_[i] > 0) dot = QColor(accent.red(), accent.green(), accent.blue(), 200);
+        else if (values_[i] < 0) dot = QColor(accent.red(), accent.green(), accent.blue(), 120);
+        else dot = QColor(textColor.red(), textColor.green(), textColor.blue(), 60);
+        p.setPen(Qt::NoPen);
+        p.setBrush(dot);
+        p.drawEllipse(QPointF(x, y), radius, radius);
+        if (values_[i] != 0.0) {
+            p.setPen(QPen(numColor));
+            p.drawText(QRectF(x - 10, h - B + 1, 20, 10), Qt::AlignCenter,
                        QString("%1").arg(values_[i], 0, 'f', 0));
         }
     }

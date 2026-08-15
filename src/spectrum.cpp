@@ -48,6 +48,11 @@ void SpectrumWidget::updateSpectrum(const float *input, int inN, const float *ou
             inputAccum_ = inputAccum_.mid(inputAccum_.size() - kFftSize);
         if ((int)inputAccum_.size() >= kFftSize) {
             QVector<float> buf = inputAccum_.mid(inputAccum_.size() - kFftSize);
+            // 去 DC（去除麦克风低频漂移，避免频谱只有低频）
+            float mean = 0.0f;
+            for (int i = 0; i < buf.size(); ++i) mean += buf[i];
+            mean /= buf.size();
+            for (int i = 0; i < buf.size(); ++i) buf[i] -= mean;
             QVector<float> spec(kNumBands);
             size_t got = mel_.compute(buf.constData(), kFftSize, spec.data());
             if (got > 0) {
@@ -64,6 +69,11 @@ void SpectrumWidget::updateSpectrum(const float *input, int inN, const float *ou
             outputAccum_ = outputAccum_.mid(outputAccum_.size() - kFftSize);
         if ((int)outputAccum_.size() >= kFftSize) {
             QVector<float> buf = outputAccum_.mid(outputAccum_.size() - kFftSize);
+            // 去 DC
+            float mean = 0.0f;
+            for (int i = 0; i < buf.size(); ++i) mean += buf[i];
+            mean /= buf.size();
+            for (int i = 0; i < buf.size(); ++i) buf[i] -= mean;
             QVector<float> spec(kNumBands);
             size_t got = mel_.compute(buf.constData(), kFftSize, spec.data());
             if (got > 0) {
