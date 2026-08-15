@@ -83,6 +83,7 @@ qt_add_executable(purevox
     src/main.cpp
     src/mainwindow.cpp
     src/mainwindow.h
+    resources.qrc
     src/audioengine.cpp
     src/audioengine.h
     src/audiothread.cpp

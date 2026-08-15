@@ -1,0 +1,6 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file alias="purevox_icon.png">audio_icon_base_on_1024.png</file>
+    </qresource>
+</RCC>

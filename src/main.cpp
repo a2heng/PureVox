@@ -4,6 +4,7 @@
 // The built-in AI models are NOT covered by the GPL (see MODEL-LICENSE.md).
 
 #include <QApplication>
+#include <QIcon>
 
 #include "mainwindow.h"
 
@@ -11,6 +12,9 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("PureVox");
     app.setApplicationDisplayName("PureVox");
+
+    QIcon icon(":/purevox_icon.png");
+    app.setWindowIcon(icon);
 
     MainWindow window;
     window.show();
