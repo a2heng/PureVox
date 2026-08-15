@@ -59,6 +59,8 @@ private:
     void quitApp();
     void createTray();
     void applyTheme(const QString &mode);
+    void startWatchdog();
+    void updateRunningState();
 
     // EQ 面板
     void setupEqPanel();
@@ -102,6 +104,7 @@ private:
     // 托盘
     QSystemTrayIcon *trayIcon_ = nullptr;
     QMenu *trayMenu_ = nullptr;
+    QTimer *watchdogTimer_ = nullptr;
 
     // EQ 状态
     QVector<QPushButton *> eqSlotButtons_;

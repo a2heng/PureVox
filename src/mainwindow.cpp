@@ -22,6 +22,7 @@
 #include <QSlider>
 #include <QStyle>
 #include <QSystemTrayIcon>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <QVector>
@@ -54,6 +55,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     buildUi();
     createMenu();
     createTray();
+    startWatchdog();
     initEngine();
     loadConfig();
     refreshDevices();
@@ -442,6 +444,36 @@ void MainWindow::createTray() {
     trayIcon_->show();
 }
 
+void MainWindow::startWatchdog() {
+    watchdogTimer_ = new QTimer(this);
+    watchdogTimer_->setInterval(3000);
+    connect(watchdogTimer_, &QTimer::timeout, this, [this]() {
+        if (!processing_ || !thread_) return;
+        // 线程意外结束（run 返回且非用户停止）→ 自动重启
+        if (thread_->isFinished() && backend_) {
+            delete thread_;
+            thread_ = nullptr;
+            processing_ = false;
+            startBtn_->setText(QStringLiteral("启动音频处理"));
+            // 延迟重启一次
+            QTimer::singleShot(500, this, [this]() {
+                if (!processing_) onStartStop();
+            });
+        }
+    });
+    watchdogTimer_->start();
+}
+
+void MainWindow::updateRunningState() {
+    // 更新窗口/托盘图标与提示（运行=亮，停止=暗）
+    QString tip = processing_ ? QStringLiteral("PureVox - 运行中") : QStringLiteral("PureVox - 未运行");
+    if (trayIcon_) {
+        trayIcon_->setToolTip(tip);
+    }
+    statusLabel_->setText(processing_ ? QStringLiteral("运行中…")
+                                      : QStringLiteral("PureVox 引擎就绪"));
+}
+
 void MainWindow::quitApp() {
     if (trayIcon_) trayIcon_->hide();
     if (thread_) {
@@ -688,6 +720,7 @@ void MainWindow::onStartStop() {
         processing_ = false;
         startBtn_->setText(QStringLiteral("启动音频处理"));
         statusLabel_->setText(QStringLiteral("已停止"));
+        updateRunningState();
         return;
     }
 
@@ -734,11 +767,13 @@ void MainWindow::onStartStop() {
             processing_ = false;
             startBtn_->setText(QStringLiteral("启动音频处理"));
             statusLabel_->setText(QStringLiteral("已停止"));
+            updateRunningState();
         }
     });
     processing_ = true;
     startBtn_->setText(QStringLiteral("停止"));
     statusLabel_->setText(QStringLiteral("运行中…"));
+    updateRunningState();
     thread_->start();
     saveConfig();
 }
