@@ -104,6 +104,8 @@ qt_add_executable(purevox
     src/spectrum.h
     src/dialog_about.cpp
     src/dialog_about.h
+    src/dialog_tse_reference.cpp
+    src/dialog_tse_reference.h
 )
 target_include_directories(purevox PRIVATE
     ${PV_SRC_DIR}

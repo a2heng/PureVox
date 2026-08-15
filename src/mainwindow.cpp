@@ -31,6 +31,7 @@
 #include "alsabackend.h"
 #include "deviceenum.h"
 #include "dialog_about.h"
+#include "dialog_tse_reference.h"
 #include "eqcurve.h"
 #include "pwbackend.h"
 #include "segmented.h"
@@ -151,6 +152,10 @@ void MainWindow::buildUi() {
     refBtn_->setFixedHeight(22);
     refBtn_->setMinimumWidth(86);
     refBtn_->setVisible(false);
+    connect(refBtn_, &QPushButton::clicked, this, [this]() {
+        TseReferenceDialog dlg(this);
+        dlg.exec();
+    });
     optsRow->addWidget(refBtn_);
     panelLayout->addLayout(optsRow);
 
