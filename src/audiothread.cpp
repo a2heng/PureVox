@@ -71,6 +71,8 @@ void AudioThread::run() {
         double db = peak > 1e-10 ? 20.0 * std::log10(peak) : -60.0;
         if (on > max) max = on;
         emit levelUpdated(db);
+        // 频谱数据（输入/输出各一帧）
+        emit spectrumData(in, out);
     }
 
     if (mode_ == AudioEngine::ModeAec) pvb_set_far(bridge_, outputNode_.toUtf8().constData(), 0);

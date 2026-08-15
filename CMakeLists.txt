@@ -70,6 +70,10 @@ qt_add_executable(purevox
     src/segmented.h
     src/deviceenum.cpp
     src/deviceenum.h
+    src/eqcurve.cpp
+    src/eqcurve.h
+    src/spectrum.cpp
+    src/spectrum.h
 )
 target_include_directories(purevox PRIVATE
     ${PV_SRC_DIR}

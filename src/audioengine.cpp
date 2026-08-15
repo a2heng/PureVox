@@ -51,6 +51,13 @@ void AudioEngine::setPreGain(double db) {
     if (proc_) audio_processor_set_pre_gain(proc_, (float)db);
 }
 
+void AudioEngine::applyEqGains(const QVector<double> &gains) {
+    if (!proc_ || gains.isEmpty()) return;
+    QVector<float> g(gains.size());
+    for (int i = 0; i < gains.size(); ++i) g[i] = (float)gains[i];
+    audio_processor_set_eq_gains(proc_, g.constData(), (size_t)g.size());
+}
+
 void AudioEngine::setCompressorEnabled(bool on) {
     if (proc_) audio_processor_set_compressor_enabled(proc_, on);
 }

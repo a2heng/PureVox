@@ -8,6 +8,8 @@
 
 #include <QString>
 
+#include <QVector>
+
 #include <string>
 
 struct AudioProcessor;
@@ -39,6 +41,7 @@ public:
     void setMode(int mode);
     int mode() const;
     void setPreGain(double db);
+    void applyEqGains(const QVector<double> &gains);
     void setCompressorEnabled(bool on);
     void setAgcEnabled(bool on, double initialGainDb);
     void setVadEnabled(bool on);

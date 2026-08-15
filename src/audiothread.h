@@ -30,6 +30,7 @@ public:
 
 signals:
     void levelUpdated(double db);
+    void spectrumData(const QVector<float> &in, const QVector<float> &out);
     void errorOccurred(const QString &msg);
 
 protected:

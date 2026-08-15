@@ -19,6 +19,8 @@ class QCheckBox;
 class QPushButton;
 class QSlider;
 class VUBar;
+class SpectrumWidget;
+class EQCurveWidget;
 class AudioThread;
 
 class MainWindow : public QMainWindow {
@@ -46,6 +48,8 @@ private:
     QVBoxLayout *root_;
     QLabel *statusLabel_;
     VUBar *vuBar_;
+    SpectrumWidget *spectrum_;
+    EQCurveWidget *eqCurve_;
 
     QWidget *segWidget_;
     QComboBox *apiCombo_;

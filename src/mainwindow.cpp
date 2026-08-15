@@ -5,6 +5,8 @@
 
 #include "mainwindow.h"
 
+#include <aimic.h>
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileInfo>
@@ -21,7 +23,9 @@
 
 #include "audiothread.h"
 #include "deviceenum.h"
+#include "eqcurve.h"
 #include "segmented.h"
+#include "spectrum.h"
 #include "vubar.h"
 
 namespace {
@@ -57,6 +61,17 @@ void MainWindow::buildUi() {
     root_->setSpacing(4);
     root_->setContentsMargins(4, 4, 4, 4);
 
+    // 左列控制面板 + 右列频谱图
+    auto *topContainer = new QWidget(central_);
+    auto *topLayout = new QHBoxLayout(topContainer);
+    topLayout->setContentsMargins(0, 0, 0, 0);
+    topLayout->setSpacing(0);
+
+    auto *panel = new QWidget(topContainer);
+    auto *panelLayout = new QVBoxLayout(panel);
+    panelLayout->setSpacing(4);
+    panelLayout->setContentsMargins(0, 0, 4, 0);
+
     // 第1行：模式选择
     QVector<SegmentedControl::Item> items = {
         {QStringLiteral("直通"), kModeOff},
@@ -64,7 +79,7 @@ void MainWindow::buildUi() {
         {QStringLiteral("AEC"), kModeAec},
         {QStringLiteral("TSE"), kModeTse},
     };
-    auto *seg = new SegmentedControl(items, central_);
+    auto *seg = new SegmentedControl(items, panel);
     seg->setToolTip(QStringLiteral(
         "直通 — 原始麦克风信号，轻处理（前增益+EQ+AGC+VAD）\n"
         "降噪 — AI 深度学习降噪，消除键盘、风扇、空调等噪声\n"
@@ -72,35 +87,35 @@ void MainWindow::buildUi() {
         "TSE  — 目标说话人提取，只保留指定人的声音"));
     segWidget_ = seg;
     connect(seg, &SegmentedControl::valueChanged, this, &MainWindow::onModeChanged);
-    root_->addWidget(seg);
+    panelLayout->addWidget(seg);
 
     // 第2行：压缩/AGC/VAD + 参考音频
     auto *optsRow = new QHBoxLayout();
     optsRow->setSpacing(6);
-    compCb_ = new QCheckBox(QStringLiteral("压缩"), central_);
+    compCb_ = new QCheckBox(QStringLiteral("压缩"), panel);
     compCb_->setFixedHeight(22);
     compCb_->setToolTip(QStringLiteral("压缩器：动态压缩大音量、提升小音量，缩小音量动态范围。"));
     optsRow->addWidget(compCb_);
-    agcCb_ = new QCheckBox(QStringLiteral("AGC"), central_);
+    agcCb_ = new QCheckBox(QStringLiteral("AGC"), panel);
     agcCb_->setFixedHeight(22);
     agcCb_->setToolTip(QStringLiteral("AGC 自动增益控制：自动调节增益，让声音始终稳定在合适音量。"));
     optsRow->addWidget(agcCb_);
-    vadCb_ = new QCheckBox(QStringLiteral("VAD"), central_);
+    vadCb_ = new QCheckBox(QStringLiteral("VAD"), panel);
     vadCb_->setFixedHeight(22);
     vadCb_->setToolTip(QStringLiteral("VAD 语音活性检测：不说话时自动静音，消除残留噪声。"));
     optsRow->addWidget(vadCb_);
     optsRow->addStretch();
-    refBtn_ = new QPushButton(QStringLiteral("参考音频…"), central_);
+    refBtn_ = new QPushButton(QStringLiteral("参考音频…"), panel);
     refBtn_->setFixedHeight(22);
     refBtn_->setMinimumWidth(86);
     refBtn_->setVisible(false);
     optsRow->addWidget(refBtn_);
-    root_->addLayout(optsRow);
+    panelLayout->addLayout(optsRow);
 
     // 第3行：前增益
     auto *gainGrid = new QGridLayout();
     gainGrid->setSpacing(4);
-    auto *lblPre = new QLabel(QStringLiteral("前增益"), central_);
+    auto *lblPre = new QLabel(QStringLiteral("前增益"), panel);
     lblPre->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     lblPre->setToolTip(QStringLiteral(
         "前增益 — 麦克风输入增益\n"
@@ -108,11 +123,11 @@ void MainWindow::buildUi() {
         "但过高会导致削波失真。\n"
         "建议: 正常说话时峰值在 -12 ~ -6 dBFS 为最佳。"));
     gainGrid->addWidget(lblPre, 0, 0);
-    preSlider_ = new QSlider(Qt::Horizontal, central_);
+    preSlider_ = new QSlider(Qt::Horizontal, panel);
     preSlider_->setRange(-30, 30);
     preSlider_->setValue((int)preGain_);
     gainGrid->addWidget(preSlider_, 0, 1);
-    preLabel_ = new QLabel("+0 dB", central_);
+    preLabel_ = new QLabel("+0 dB", panel);
     preLabel_->setFixedWidth(44);
     preLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     gainGrid->addWidget(preLabel_, 0, 2);
@@ -122,7 +137,7 @@ void MainWindow::buildUi() {
         engine_.setPreGain(preGain_);
         saveConfig();
     });
-    root_->addLayout(gainGrid);
+    panelLayout->addLayout(gainGrid);
 
     // 第4行：设备
     auto *devGrid = new QGridLayout();
@@ -130,56 +145,74 @@ void MainWindow::buildUi() {
     devGrid->setColumnMinimumWidth(0, 56);
     devGrid->setColumnStretch(1, 1);
 
-    auto *lblApi = new QLabel(QStringLiteral("音频接口"), central_);
+    auto *lblApi = new QLabel(QStringLiteral("音频接口"), panel);
     lblApi->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     devGrid->addWidget(lblApi, 0, 0);
-    apiCombo_ = new QComboBox(central_);
+    apiCombo_ = new QComboBox(panel);
     apiCombo_->addItem(QStringLiteral("PipeWire"), kApiPipeWire);
     apiCombo_->addItem(QStringLiteral("ALSA"), kApiAlsa);
     devGrid->addWidget(apiCombo_, 0, 1);
 
-    auto *lblIn = new QLabel(QStringLiteral("输入设备"), central_);
+    auto *lblIn = new QLabel(QStringLiteral("输入设备"), panel);
     lblIn->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     devGrid->addWidget(lblIn, 1, 0);
-    inputCombo_ = new QComboBox(central_);
+    inputCombo_ = new QComboBox(panel);
     devGrid->addWidget(inputCombo_, 1, 1);
 
-    auto *lblOut = new QLabel(QStringLiteral("输出设备"), central_);
+    auto *lblOut = new QLabel(QStringLiteral("输出设备"), panel);
     lblOut->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     devGrid->addWidget(lblOut, 2, 0);
-    outputCombo_ = new QComboBox(central_);
+    outputCombo_ = new QComboBox(panel);
     devGrid->addWidget(outputCombo_, 2, 1);
 
-    monitorCb_ = new QCheckBox(QStringLiteral("监听"), central_);
+    monitorCb_ = new QCheckBox(QStringLiteral("监听"), panel);
     monitorCb_->setToolTip(QStringLiteral(
         "监听（耳返）：\n"
         "将处理后的声音实时回放到指定设备。"));
     devGrid->addWidget(monitorCb_, 3, 0);
-    monitorCombo_ = new QComboBox(central_);
+    monitorCombo_ = new QComboBox(panel);
     devGrid->addWidget(monitorCombo_, 3, 1);
-    root_->addLayout(devGrid);
+    panelLayout->addLayout(devGrid);
 
     // VU
-    vuBar_ = new VUBar(central_);
-    root_->addWidget(vuBar_);
+    vuBar_ = new VUBar(panel);
+    panelLayout->addWidget(vuBar_);
 
     // 第5行：启动/退出
     auto *btnRow = new QHBoxLayout();
     btnRow->setSpacing(4);
-    startBtn_ = new QPushButton(QStringLiteral("启动音频处理"), central_);
+    startBtn_ = new QPushButton(QStringLiteral("启动音频处理"), panel);
     startBtn_->setFixedHeight(38);
     startBtn_->setToolTip(QStringLiteral("启动/停止音频处理引擎。\n快捷键: 右 Alt + >"));
     connect(startBtn_, &QPushButton::clicked, this, &MainWindow::onStartStop);
     btnRow->addWidget(startBtn_);
-    quitBtn_ = new QPushButton(QStringLiteral("退出"), central_);
+    quitBtn_ = new QPushButton(QStringLiteral("退出"), panel);
     quitBtn_->setFixedHeight(38);
     connect(quitBtn_, &QPushButton::clicked, this, &QWidget::close);
     btnRow->addWidget(quitBtn_);
-    root_->addLayout(btnRow);
+    panelLayout->addLayout(btnRow);
 
-    statusLabel_ = new QLabel(QStringLiteral("PureVox"), central_);
+    statusLabel_ = new QLabel(QStringLiteral("PureVox"), panel);
     statusLabel_->setAlignment(Qt::AlignCenter);
-    root_->addWidget(statusLabel_);
+    panelLayout->addWidget(statusLabel_);
+
+    // 面板固定在左列
+    panel->setFixedWidth(520);
+    topLayout->addWidget(panel, 0);
+
+    // 右列：频谱图
+    spectrum_ = new SpectrumWidget(topContainer);
+    spectrum_->setFixedWidth(460);
+    topLayout->addWidget(spectrum_, 0);
+    root_->addWidget(topContainer);
+
+    // EQ 面板（下方横贯）
+    eqCurve_ = new EQCurveWidget(central_);
+    root_->addWidget(eqCurve_);
+    connect(eqCurve_, &EQCurveWidget::gainsChanged, this, [this](const QVector<double> &g) {
+        engine_.applyEqGains(g);
+        saveConfig();
+    });
 
     setCentralWidget(central_);
 }
@@ -246,6 +279,18 @@ void MainWindow::loadConfig() {
     engine_.setAgcEnabled(agcCb_->isChecked(), 0.0);
     engine_.setVadEnabled(vadCb_->isChecked());
 
+    // EQ 配置
+    QVector<double> eq;
+    int eqBands = engine_.raw() ? audio_processor_get_eq_band_count(engine_.raw()) : 0;
+    if (eqBands > 0) {
+        eq.resize(eqBands, 0.0);
+        for (int i = 0; i < eqBands; ++i) {
+            eq[i] = s.value(QString("eq_band_%1").arg(i), 0.0).toDouble();
+        }
+        eqCurve_->setGains(eq);
+        engine_.applyEqGains(eq);
+    }
+
     static_cast<SegmentedControl *>(segWidget_)->setValue(mode_);
     updateModeUi();
 }
@@ -262,6 +307,9 @@ void MainWindow::saveConfig() {
         s.setValue("input_device", inputCombo_->currentData().toString());
     if (outputCombo_->currentData().isValid())
         s.setValue("output_device", outputCombo_->currentData().toString());
+    QVector<double> eq = eqCurve_->gains();
+    for (int i = 0; i < eq.size(); ++i)
+        s.setValue(QString("eq_band_%1").arg(i), eq[i]);
 }
 
 void MainWindow::updateModeUi() {
@@ -338,6 +386,10 @@ void MainWindow::onStartStop() {
 
     thread_ = new AudioThread(&engine_, input, output, monitor, mode_, this);
     connect(thread_, &AudioThread::levelUpdated, vuBar_, &VUBar::updateLevelDb);
+    connect(thread_, &AudioThread::spectrumData, this,
+            [this](const QVector<float> &in, const QVector<float> &out) {
+                spectrum_->updateSpectrum(in.constData(), in.size(), out.constData(), out.size());
+            });
     connect(thread_, &AudioThread::errorOccurred, this,
             [this](const QString &msg) { QMessageBox::critical(this, QStringLiteral("PureVox"), msg); });
     processing_ = true;
