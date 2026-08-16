@@ -38,50 +38,54 @@ void SpectrumWidget::reset() {
     update();
 }
 
+// 累积输入帧，滚动到最近 maxLen 个；返回最近 fftSize 个（若够）
+static bool accumulate(std::vector<float> &acc, const float *data, int n, int fftSize,
+                       std::vector<float> &out) {
+    if (n <= 0) return false;
+    acc.insert(acc.end(), data, data + n);
+    // 滚动到最近 fftSize*2，避免无限增长
+    if ((int)acc.size() > fftSize * 2)
+        acc.erase(acc.begin(), acc.end() - fftSize * 2);
+    if ((int)acc.size() < fftSize) return false;
+    out.resize(fftSize);
+    std::copy_n(acc.end() - fftSize, fftSize, out.begin());
+    return true;
+}
+
 void SpectrumWidget::updateSpectrum(const float *input, int inN, const float *output,
                                     int outN) {
     bool updated = false;
     // 输入帧累积 → 达 FFT_SIZE 算输入 Mel 频谱
-    if (input && inN > 0) {
-        for (int i = 0; i < inN; ++i) inputAccum_.append(input[i]);
-        if ((int)inputAccum_.size() > kFftSize * 2)
-            inputAccum_ = inputAccum_.mid(inputAccum_.size() - kFftSize);
-        if ((int)inputAccum_.size() >= kFftSize) {
-            QVector<float> buf = inputAccum_.mid(inputAccum_.size() - kFftSize);
-            // 去 DC（去除麦克风低频漂移，避免频谱只有低频）
-            float mean = 0.0f;
-            for (int i = 0; i < buf.size(); ++i) mean += buf[i];
-            mean /= buf.size();
-            for (int i = 0; i < buf.size(); ++i) buf[i] -= mean;
-            QVector<float> spec(kNumBands);
-            size_t got = mel_.compute(buf.constData(), kFftSize, spec.data());
-            if (got > 0) {
-                for (int i = 0; i < (int)got && i < kNumBands; ++i) inputBands_[i] = spec[i];
-            }
-            inputAccum_ = inputAccum_.mid(inputAccum_.size() - (kFftSize / 2));  // 留半重叠
-            updated = true;
+    if (accumulate(inputAccum_, input, inN, kFftSize, fftBuf_)) {
+        // 去 DC（去除麦克风低频漂移，避免频谱只有低频）
+        float mean = 0.0f;
+        for (auto v : fftBuf_) mean += v;
+        mean /= fftBuf_.size();
+        for (auto &v : fftBuf_) v -= mean;
+        QVector<float> spec(kNumBands);
+        size_t got = mel_.compute(fftBuf_.data(), kFftSize, spec.data());
+        if (got > 0) {
+            for (int i = 0; i < (int)got && i < kNumBands; ++i) inputBands_[i] = spec[i];
         }
+        // 留半重叠
+        if ((int)inputAccum_.size() > kFftSize / 2)
+            inputAccum_.erase(inputAccum_.begin(), inputAccum_.end() - kFftSize / 2);
+        updated = true;
     }
     // 输出帧累积 → 达 FFT_SIZE 算输出 Mel 频谱
-    if (output && outN > 0) {
-        for (int i = 0; i < outN; ++i) outputAccum_.append(output[i]);
-        if ((int)outputAccum_.size() > kFftSize * 2)
-            outputAccum_ = outputAccum_.mid(outputAccum_.size() - kFftSize);
-        if ((int)outputAccum_.size() >= kFftSize) {
-            QVector<float> buf = outputAccum_.mid(outputAccum_.size() - kFftSize);
-            // 去 DC
-            float mean = 0.0f;
-            for (int i = 0; i < buf.size(); ++i) mean += buf[i];
-            mean /= buf.size();
-            for (int i = 0; i < buf.size(); ++i) buf[i] -= mean;
-            QVector<float> spec(kNumBands);
-            size_t got = mel_.compute(buf.constData(), kFftSize, spec.data());
-            if (got > 0) {
-                for (int i = 0; i < (int)got && i < kNumBands; ++i) outputBands_[i] = spec[i];
-            }
-            outputAccum_ = outputAccum_.mid(outputAccum_.size() - (kFftSize / 2));  // 留半重叠
-            updated = true;
+    if (accumulate(outputAccum_, output, outN, kFftSize, fftBuf_)) {
+        float mean = 0.0f;
+        for (auto v : fftBuf_) mean += v;
+        mean /= fftBuf_.size();
+        for (auto &v : fftBuf_) v -= mean;
+        QVector<float> spec(kNumBands);
+        size_t got = mel_.compute(fftBuf_.data(), kFftSize, spec.data());
+        if (got > 0) {
+            for (int i = 0; i < (int)got && i < kNumBands; ++i) outputBands_[i] = spec[i];
         }
+        if ((int)outputAccum_.size() > kFftSize / 2)
+            outputAccum_.erase(outputAccum_.begin(), outputAccum_.end() - kFftSize / 2);
+        updated = true;
     }
 
     if (!updated) return;

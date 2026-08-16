@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- 苹果风格圆角矩形背景 -->
+  <rect x="4" y="4" width="56" height="56" rx="14" ry="14" fill="#34C759" />
+  
+  <!-- 麦克风主体：白色胶囊 -->
+  <rect x="26" y="14" width="12" height="22" rx="6" ry="6" fill="#FFFFFF" />
+  
+  <!-- 底部支架：流畅弧线，从主体两侧向下弯曲 -->
+  <path d="M22 36 Q32 46 42 36" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+  
+  <!-- 支架竖线 -->
+  <line x1="32" y1="46" x2="32" y2="50" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+  
+  <!-- 底座横线 -->
+  <line x1="25" y1="50" x2="39" y2="50" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" />
+</svg>

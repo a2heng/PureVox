@@ -10,6 +10,8 @@
 
 #include <QVector>
 
+#include <vector>
+
 #include "dsp/melspectrum.h"
 
 // 频谱直方图：128 段 Mel 实时输入/输出频谱重叠对比
@@ -36,8 +38,9 @@ private:
     QVector<double> outputBands_;
     QVector<double> smoothedIn_;
     QVector<double> smoothedOut_;
-    QVector<float> inputAccum_;
-    QVector<float> outputAccum_;
+    std::vector<float> inputAccum_;    // 预分配累积缓冲（避免反复 append/mid 分配）
+    std::vector<float> outputAccum_;
+    std::vector<float> fftBuf_;        // 复用 FFT 缓冲
     pv::MelSpectrum mel_;
     bool pending_ = false;
 };

@@ -88,6 +88,21 @@ void VUBar::ensureBgCache(int w, int h) {
     p.fillRect(barLeft, barTop, x1 - barLeft, barH, QColor(0, 40, 24));
     p.fillRect(x1, barTop, x2 - x1, barH, QColor(60, 60, 0));
     p.fillRect(x2, barTop, barRight - x2, barH, QColor(70, 20, 0));
+
+    // 刻度线 + 标签一次性预渲染到缓存（避免每帧 QString::number/drawText）
+    QFont tickFont = p.font();
+    tickFont.setPointSize(7);
+    p.setFont(tickFont);
+    QColor vuText = palette().placeholderText().color();
+    for (int tick : kTicks) {
+        double r = std::max(0.0, std::min(1.0, (tick - kDbMin) / kDbRng));
+        int x = barLeft + (int)(r * barW);
+        p.setPen(QPen(vuText, 0.5));
+        p.drawLine(x, barTop + barH, x, barTop + barH + 3);
+        p.setPen(vuText);
+        p.drawText(QRectF(x - 20, barTop + barH, 40, 16), Qt::AlignHCenter | Qt::AlignVCenter,
+                   QString::number(tick));
+    }
     p.end();
 }
 
@@ -130,19 +145,6 @@ void VUBar::paintEvent(QPaintEvent *) {
         }
     }
 
-    QFont tickFont = p.font();
-    tickFont.setPointSize(7);
-    p.setFont(tickFont);
-    QColor vuText = palette().placeholderText().color();
-    for (int tick : kTicks) {
-        double r = std::max(0.0, std::min(1.0, (tick - kDbMin) / kDbRng));
-        int x = barLeft + (int)(r * barW);
-        p.setPen(QPen(vuText, 0.5));
-        p.drawLine(x, barTop + barH, x, barTop + barH + 3);
-        p.setPen(vuText);
-        p.drawText(QRectF(x - 20, barTop + barH, 40, 16), Qt::AlignHCenter | Qt::AlignVCenter,
-                   QString::number(tick));
-    }
     p.end();
 }
 

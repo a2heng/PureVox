@@ -1,6 +1,10 @@
 <!DOCTYPE RCC>
 <RCC version="1.0">
     <qresource prefix="/">
-        <file alias="purevox_icon.png">audio_icon_base_on_1024.png</file>
+        <file alias="purevox_icon.svg">audio_icon.svg</file>
+        <file alias="purevox_icon_on.svg">audio_icon_on.svg</file>
+        <file alias="purevox_icon_off.svg">audio_icon_off.svg</file>
+        <file alias="purevox_tray_on.png">audio_icon_on_tray.png</file>
+        <file alias="purevox_tray_off.png">audio_icon_off_tray.png</file>
     </qresource>
 </RCC>
