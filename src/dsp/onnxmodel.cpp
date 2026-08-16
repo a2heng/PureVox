@@ -18,7 +18,15 @@ namespace {
 // 平台相关：Windows 用宽字符路径创建会话
 int createSessionPath(const OrtApi *api, OrtEnv *env, const char *path,
                       OrtSessionOptions *opts, OrtSession **out) {
+#ifdef _WIN32
+    // Windows: CreateSession 需宽字符路径
+    wchar_t wpath[4096];
+    std::size_t n = std::mbstowcs(wpath, path, 4096);
+    if (n == static_cast<std::size_t>(-1)) { std::fprintf(stderr, "pv: path encode error\n"); return 0; }
+    OrtStatus *st = api->CreateSession(env, wpath, opts, out);
+#else
     OrtStatus *st = api->CreateSession(env, path, opts, out);
+#endif
     if (st) {
         const char *msg = api->GetErrorMessage(st);
         std::fprintf(stderr, "pv: onnxruntime error: %s\n", msg ? msg : "unknown");
@@ -62,7 +70,9 @@ bool OnnxModel::open(const std::string &name, const std::string &path) {
     if (!ok(api_, api_->SetSessionExecutionMode(opts_, ORT_SEQUENTIAL))) return false;
     if (!ok(api_, api_->SetSessionGraphOptimizationLevel(opts_, ORT_ENABLE_BASIC))) return false;
     if (!ok(api_, api_->GetAllocatorWithDefaultOptions(&allocator_))) return false;
-    if (!ok(api_, api_->CreateMemoryInfo("Cpu", OrtArenaAllocator, 0, OrtMemTypeDefault,
+    // 用非 arena 分配器：onnxruntime 默认 OrtArenaAllocator 会预分配大块内存池
+    // （128M/64M 匿名段来源），改用 OrtDeviceAllocator 按需分配不保留
+    if (!ok(api_, api_->CreateMemoryInfo("Cpu", OrtDeviceAllocator, 0, OrtMemTypeDefault,
                                          &meminfo_))) return false;
     if (!createSessionPath(api_, env_, path.c_str(), opts_, &session_)) return false;
 

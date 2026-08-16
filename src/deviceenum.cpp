@@ -5,13 +5,28 @@
 
 #include "deviceenum.h"
 
+#include <QtGlobal>
+
+// ── 平台头文件 ──
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <mmdeviceapi.h>
+#include <functiondiscoverykeys_devpkey.h>
+#endif  // Q_OS_WIN
+
+#ifdef Q_OS_LINUX
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
-
 #include <QVector>
 
+#include <algorithm>
+#endif  // Q_OS_LINUX
+
+// ── 平台私有实现（各自独立块，不混排）──
+
+#ifdef Q_OS_LINUX
 namespace {
 
 struct NodeInfo {
@@ -50,49 +65,149 @@ QVector<NodeInfo> listNodes() {
     return out;
 }
 
-}  // namespace
-
-namespace DeviceEnum {
-
-QStringList listSources() {
+// 按媒体类别过滤节点名
+QStringList nodeNamesOfClass(const QString &mediaClass) {
     QStringList out;
     for (const NodeInfo &n : listNodes()) {
-        if (n.mediaClass != "Audio/Source") continue;
-        if (n.name.isEmpty() || n.name.startsWith("PureVox-")) continue;
-        if (n.name.startsWith("purevox")) continue;
-        if (n.state == "error") continue;
-        if (!out.contains(n.name)) out.append(n.name);
-    }
-    return out;
-}
-
-QStringList listDestinations() {
-    QStringList out;
-    for (const NodeInfo &n : listNodes()) {
-        if (n.mediaClass != "Audio/Sink") continue;
+        if (n.mediaClass != mediaClass) continue;
         if (n.name.isEmpty() || n.name.startsWith("PureVox-")) continue;
         if (!out.contains(n.name)) out.append(n.name);
     }
     return out;
 }
 
-QString nodeDescription(const QString &name) {
+QString describeNode(const QString &name) {
     if (name == "purevox_out.monitor") return "PureVox out";
-    for (const NodeInfo &n : listNodes()) {
+    for (const NodeInfo &n : listNodes())
         if (n.name == name) return n.description.isEmpty() ? name : n.description;
-    }
     return name;
 }
 
+}  // namespace
+#endif  // Q_OS_LINUX
+
+#ifdef Q_OS_WIN
+#include <mmsystem.h>
+
+namespace {
+
+// MME 设备枚举：返回设备 friendly name（供 MmeBackend 按名称匹配）
+QStringList mmeEndpointNames(bool capture) {
+    QStringList out;
+    if (capture) {
+        UINT n = waveInGetNumDevs();
+        for (UINT i = 0; i < n; ++i) {
+            WAVEINCAPS caps;
+            if (waveInGetDevCaps(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR)
+                out.append(QString::fromWCharArray(caps.szPname));
+        }
+    } else {
+        UINT n = waveOutGetNumDevs();
+        for (UINT i = 0; i < n; ++i) {
+            WAVEOUTCAPS caps;
+            if (waveOutGetDevCaps(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR)
+                out.append(QString::fromWCharArray(caps.szPname));
+        }
+    }
+    return out;
+}
+
+// WASAPI MMDevice 枚举：返回设备 friendly name（供 WasapiBackend 按名称匹配）
+QStringList endpointNames(bool capture) {
+    QStringList out;
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    IMMDeviceEnumerator *en = nullptr;
+    if (CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                         __uuidof(IMMDeviceEnumerator), (void **)&en) != S_OK)
+        return out;
+    IMMDeviceCollection *coll = nullptr;
+    if (en->EnumAudioEndpoints(capture ? eCapture : eRender, DEVICE_STATE_ACTIVE, &coll) == S_OK) {
+        UINT count = 0;
+        coll->GetCount(&count);
+        for (UINT i = 0; i < count; ++i) {
+            IMMDevice *d = nullptr;
+            if (coll->Item(i, &d) != S_OK) continue;
+            IPropertyStore *ps = nullptr;
+            if (d->OpenPropertyStore(STGM_READ, &ps) == S_OK) {
+                PROPVARIANT pv;
+                PropVariantInit(&pv);
+                if (ps->GetValue(PKEY_Device_FriendlyName, &pv) == S_OK &&
+                    pv.vt == VT_LPWSTR && pv.pwszVal) {
+                    QString n = QString::fromWCharArray(pv.pwszVal);
+                    if (!out.contains(n)) out.append(n);
+                    PropVariantClear(&pv);
+                }
+                ps->Release();
+            }
+            d->Release();
+        }
+        coll->Release();
+    }
+    en->Release();
+    return out;
+}
+
+}  // namespace
+#endif  // Q_OS_WIN
+
+// ── 公共接口 ──
+
+namespace DeviceEnum {
+
+QStringList listSources(Api api) {
+#ifdef Q_OS_WIN
+    if (api == Api::Mme) return mmeEndpointNames(true);
+    return endpointNames(true);
+#else
+    (void)api;
+    QStringList out = nodeNamesOfClass("Audio/Source");
+    // 排除虚拟麦克风与错误节点
+    out.erase(std::remove_if(out.begin(), out.end(),
+                             [](const QString &n) {
+                                 return n.startsWith("purevox") ||
+                                        n == "purevox_mic";
+                             }),
+              out.end());
+    return out;
+#endif
+}
+
+QStringList listDestinations(Api api) {
+#ifdef Q_OS_WIN
+    if (api == Api::Mme) return mmeEndpointNames(false);
+    return endpointNames(false);
+#else
+    (void)api;
+    return nodeNamesOfClass("Audio/Sink");
+#endif
+}
+
+QString nodeDescription(const QString &name) {
+#ifdef Q_OS_WIN
+    // Windows：设备标识即 friendly name
+    return name;
+#else
+    return describeNode(name);
+#endif
+}
+
 QString sourceLabel(const QString &name) {
+#ifdef Q_OS_WIN
+    return QStringLiteral("麦克风 · %1").arg(name);
+#else
     if (name == "purevox_mic") return "PureVox mic（虚拟麦克风）";
     if (name.startsWith("purevox")) return "PureVox out";
-    return QString("麦克风 · %1").arg(nodeDescription(name));
+    return QStringLiteral("麦克风 · %1").arg(nodeDescription(name));
+#endif
 }
 
 QString destLabel(const QString &name) {
+#ifdef Q_OS_WIN
+    return QStringLiteral("播放 · %1").arg(name);
+#else
     if (name == "purevox_out") return "PureVox out（默认）";
-    return QString("播放 · %1").arg(nodeDescription(name));
+    return QStringLiteral("播放 · %1").arg(nodeDescription(name));
+#endif
 }
 
 }  // namespace DeviceEnum

@@ -6,6 +6,9 @@
 #ifndef PUREVOX_DIALOG_VBCABLE_H
 #define PUREVOX_DIALOG_VBCABLE_H
 
+// 需在检查 Q_OS_WIN 前定义它（QDialog → QtGlobal）
+#include <QtGlobal>
+
 #ifdef Q_OS_WIN
 
 #include <QDialog>

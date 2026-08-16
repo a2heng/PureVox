@@ -6,16 +6,26 @@
 #ifndef PUREVOX_DEVICEENUM_H
 #define PUREVOX_DEVICEENUM_H
 
+#include <QtGlobal>
+
 #include <QString>
 #include <QStringList>
 
-// 用 `pw-dump` 标准 introspection 枚举 PipeWire 节点
+// 设备枚举：Windows 下 Wasapi/Mme 用各自的底层 API；Linux 下 PipeWire/Alsa 共用
 namespace DeviceEnum {
 
-// 输入 = 物理麦克风（media.class=Audio/Source），排除 PureVox 自身流/虚拟麦克风/error
-QStringList listSources();
-// 输出 = Audio/Sink（扬声器 + purevox_out）
-QStringList listDestinations();
+// 音频接口（对应 UI「音频接口」下拉与后端选择）
+enum class Api {
+    PipeWire,
+    Alsa,
+    Wasapi,
+    Mme,
+};
+
+// 输入 = 物理麦克风，排除 PureVox 自身流/虚拟麦克风/error
+QStringList listSources(Api api);
+// 输出 = 扬声器（+ purevox_out）
+QStringList listDestinations(Api api);
 // 节点名 → node.description（无则返回节点名）
 QString nodeDescription(const QString &name);
 // 输入下拉显示名
