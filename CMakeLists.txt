@@ -143,6 +143,9 @@ target_link_libraries(purevox PRIVATE
     onnxruntime
     opus
 )
+if(WIN32)
+    target_link_libraries(purevox PRIVATE ole32 uuid winmm)
+endif()
 if(PV_PIPEWIRE_FOUND)
     target_link_libraries(purevox PRIVATE pvpipe)
 endif()
