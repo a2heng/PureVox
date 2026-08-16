@@ -50,6 +50,7 @@ public:
     void setVadEnabled(bool on);
     void setVadThreshold(double dbfs);
     void setAgcTarget(double dbfs);
+    double agcGainDb() const;
     void setAecEnabled(bool on);
     void setTseEnabled(bool on);
     // 设置 TSE 参考语音（录音完成后）

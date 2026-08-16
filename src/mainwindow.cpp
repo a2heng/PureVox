@@ -141,9 +141,11 @@ void MainWindow::buildUi() {
         if (on) {
             preGainSlider_->setEnabled(false);
             preGainSlider_->setStyleSheet(QStringLiteral("QSlider { opacity: 0.5; }"));
+            if (processing_ && agcPollTimer_) agcPollTimer_->start();
         } else {
             preGainSlider_->setEnabled(true);
             preGainSlider_->setStyleSheet(QString());
+            if (agcPollTimer_) agcPollTimer_->stop();
         }
         saveConfig();
     });
@@ -541,6 +543,23 @@ void MainWindow::startWatchdog() {
         }
     });
     watchdogTimer_->start();
+
+    // AGC 增益滑块跟随轮询（16ms）
+    agcPollTimer_ = new QTimer(this);
+    agcPollTimer_->setInterval(16);
+    connect(agcPollTimer_, &QTimer::timeout, this, &MainWindow::updateAgcSlider);
+}
+
+void MainWindow::updateAgcSlider() {
+    if (!agcCb_->isChecked() || !processing_) return;
+    double db = engine_.agcGainDb();
+    int v = (int)db;
+    if (v != preGainSlider_->value()) {
+        preGainSlider_->blockSignals(true);
+        preGainSlider_->setValue(v);
+        preGainSlider_->blockSignals(false);
+        preGainLabel_->setText(QString("%1 dB").arg(db, 0, 'f', 0));
+    }
 }
 
 void MainWindow::updateRunningState() {
@@ -846,6 +865,7 @@ void MainWindow::onStartStop() {
         processing_ = false;
         // 停止：销毁处理器（对齐 Python cleanup）
         engine_.cleanup();
+        if (agcPollTimer_) agcPollTimer_->stop();
         startBtn_->setText(QStringLiteral("启动音频处理"));
         statusLabel_->setText(QStringLiteral("已停止"));
         updateRunningState();
@@ -930,7 +950,9 @@ void MainWindow::onStartStop() {
             statusLabel_->setText(QStringLiteral("已停止"));
             updateRunningState();
         }
-    });    processing_ = true;
+    });
+    processing_ = true;
+    if (agcCb_->isChecked() && agcPollTimer_) agcPollTimer_->start();
     startBtn_->setText(QStringLiteral("停止"));
     statusLabel_->setText(QStringLiteral("运行中…"));
     updateRunningState();

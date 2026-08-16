@@ -66,6 +66,7 @@ private:
     void applyTheme(const QString &mode);
     void startWatchdog();
     void updateRunningState();
+    void updateAgcSlider();
 
     // EQ 面板
     void setupEqPanel();
@@ -112,6 +113,7 @@ private:
     QSystemTrayIcon *trayIcon_ = nullptr;
     QMenu *trayMenu_ = nullptr;
     QTimer *watchdogTimer_ = nullptr;
+    QTimer *agcPollTimer_ = nullptr;
 
     // EQ 状态
     QVector<QPushButton *> eqSlotButtons_;

@@ -95,6 +95,11 @@ void AudioEngine::setAgcTarget(double dbfs) {
     if (proc_) proc_->setAgcTarget((float)dbfs);
 }
 
+double AudioEngine::agcGainDb() const {
+    QMutexLocker lock(&mutex_);
+    return proc_ ? proc_->agcGainDb() : 0.0;
+}
+
 void AudioEngine::setAecEnabled(bool on) {
     if (proc_) proc_->setAecEnabled(on);
 }
