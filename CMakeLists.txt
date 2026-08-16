@@ -82,7 +82,7 @@ if(PV_ALSA_FOUND)
 endif()
 
 # ── Qt6 GUI ──
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets WebSockets)
 
 qt_add_executable(purevox
     src/main.cpp
@@ -110,6 +110,8 @@ qt_add_executable(purevox
     src/dialog_tse_reference.h
     src/wav_io.cpp
     src/wav_io.h
+    src/networkserver.cpp
+    src/networkserver.h
 )
 # Linux：PipeWire / ALSA 后端 + 虚拟声卡；Windows 待 WASAPI 后端（TODO）
 if(NOT WIN32)
@@ -129,8 +131,10 @@ target_include_directories(purevox PRIVATE
 target_link_directories(purevox PRIVATE ${PV_ORT_LIB})
 target_link_libraries(purevox PRIVATE
     Qt6::Widgets
+    Qt6::WebSockets
     pvdsp
     onnxruntime
+    opus
 )
 if(PV_PIPEWIRE_FOUND)
     target_link_libraries(purevox PRIVATE pvpipe)

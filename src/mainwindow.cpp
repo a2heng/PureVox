@@ -40,6 +40,7 @@
 #include "dialog_about.h"
 #include "dialog_tse_reference.h"
 #include "eqcurve.h"
+#include "networkserver.h"
 #include "segmented.h"
 #include "spectrum.h"
 #include "vubar.h"
@@ -52,6 +53,7 @@ constexpr int kModeTse = 3;
 const char *kModeNames[] = {"直通", "降噪", "AEC", "TSE"};
 constexpr int kApiPipeWire = 17;  // 与旧版 api_type 一致
 constexpr int kApiAlsa = 18;
+constexpr int kApiNetwork = 19;
 }  // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
@@ -233,6 +235,7 @@ void MainWindow::buildUi() {
     apiCombo_ = new QComboBox(panel);
     apiCombo_->addItem(QStringLiteral("PipeWire"), kApiPipeWire);
     apiCombo_->addItem(QStringLiteral("ALSA"), kApiAlsa);
+    apiCombo_->addItem(QStringLiteral("网络"), kApiNetwork);
     connect(apiCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
         refreshDevices();
         saveConfig();
@@ -835,6 +838,11 @@ void MainWindow::onStartStop() {
             delete thread_;
             thread_ = nullptr;
         }
+        if (netServer_) {
+            netServer_->stop();
+            delete netServer_;
+            netServer_ = nullptr;
+        }
         processing_ = false;
         // 停止：销毁处理器（对齐 Python cleanup）
         engine_.cleanup();
@@ -858,6 +866,28 @@ void MainWindow::onStartStop() {
                          monitorCb_->isChecked());
     QString input = inputCombo_->currentData().toString();
     QString output = outputCombo_->currentData().toString();
+
+    int api = apiCombo_->currentData().toInt();
+    // 网络推流模式：启动接收服务器，不采集本地麦克风
+    if (api == kApiNetwork) {
+        netServer_ = new NetworkServer(this);
+        netServer_->setOutputSink(output);
+        QString err;
+        if (!netServer_->start(8443, &err)) {
+            QMessageBox::warning(this, QStringLiteral("PureVox"),
+                                 QStringLiteral("网络服务器启动失败: %1").arg(err));
+            delete netServer_;
+            netServer_ = nullptr;
+            return;
+        }
+        processing_ = true;
+        startBtn_->setText(QStringLiteral("停止"));
+        statusLabel_->setText(QStringLiteral("网络推流监听中 (ws://本机:8443/ws/audio)"));
+        updateRunningState();
+        saveConfig();
+        return;
+    }
+
     if (input.isEmpty() || output.isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("PureVox"),
                              QStringLiteral("请选择输入与输出设备"));
@@ -870,7 +900,6 @@ void MainWindow::onStartStop() {
     // 根据音频接口选择后端（AudioThread 接管所有权，run 结束自行删除）
     AudioBackend *backend = nullptr;
 #ifdef Q_OS_LINUX
-    int api = apiCombo_->currentData().toInt();
     if (api == kApiPipeWire) {
         backend = new PwBackend();
     } else if (api == kApiAlsa) {

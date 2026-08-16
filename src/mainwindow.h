@@ -29,6 +29,7 @@ class VUBar;
 class SpectrumWidget;
 class EQCurveWidget;
 class AudioThread;
+class NetworkServer;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -121,6 +122,7 @@ private:
     // 状态
     AudioEngine engine_;
     AudioThread *thread_ = nullptr;
+    NetworkServer *netServer_ = nullptr;
     int mode_ = AudioEngine::ModeDenoise;
     double preGain_ = 0.0;    // pre 增益（链首）
     double postGain_ = 0.0;   // post 增益（链尾）
