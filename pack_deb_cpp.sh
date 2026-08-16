@@ -77,7 +77,7 @@ Maintainer: a2heng <752848283@qq.com>
 Section: sound
 Priority: optional
 Description: PureVox — real-time AI audio denoise / target speaker extraction / echo cancellation (Qt C++ rewrite)
-Depends: libqt6widgets6, libqt6gui6, libqt6core6, qt6-wayland, libpipewire-0.3-0t64, libasound2t64
+Depends: libqt6widgets6, libqt6gui6, libqt6core6, libqt6websockets6, qt6-wayland, libpipewire-0.3-0t64, libasound2t64, libopus0
 EOF
 
 echo "==> .desktop"

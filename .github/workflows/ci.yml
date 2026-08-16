@@ -21,11 +21,11 @@ jobs:
           - distro: ubuntu-22.04
             container: ubuntu:22.04
             # Qt6 C++ runtime + dev (libqt6widgets6 etc); pipewire/alsa dev for bridges.
-            sysdeps: "build-essential cmake ninja-build pkg-config libpipewire-0.3-dev libasound2-dev qt6-base-dev libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev imagemagick wget git file"
+            sysdeps: "build-essential cmake ninja-build pkg-config libpipewire-0.3-dev libasound2-dev qt6-base-dev qt6-websockets-dev libopus-dev libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev imagemagick wget git file"
             pkg_deb: true
           - distro: fedora
             container: fedora:latest
-            sysdeps: "gcc-c++ cmake ninja-build pkgconf-pkg-config pipewire-devel alsa-lib-devel qt6-qtbase-devel rpm-build python3-pillow"
+            sysdeps: "gcc-c++ cmake ninja-build pkgconf-pkg-config pipewire-devel alsa-lib-devel qt6-qtbase-devel qt6-qtwebsockets-devel opus-devel rpm-build python3-pillow"
             pkg_rpm: true
     container:
       image: ${{ matrix.container }}
