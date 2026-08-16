@@ -30,12 +30,13 @@ set(PV_PFFFT_SRC ${PV_PKG_DIR}/pffft)
 set(PV_SRC_DIR_LIBSR ${PV_PKG_DIR}/libsamplerate)
 file(GLOB PV_SR_SRC ${PV_SRC_DIR_LIBSR}/*.c)
 
-# ── 音频核心（原 libaimic.so，纯 C，保留参考不链接）──
+# ── 音频核心（原 libaimic.so 参考，已拆分至 src/dsp/；aimic.c 用已移除的
+#    onnxruntime API，不再编译）──
 add_library(pvcore STATIC
-    ${PV_SRC_DIR}/aimic.c
     ${PV_PFFFT_SRC}/pffft.c
     ${PV_PFFFT_SRC}/pffft_common.c
 )
+set_target_properties(pvcore PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
 target_include_directories(pvcore PUBLIC ${PV_SRC_DIR} ${PV_SRC_DIR_LIBSR} ${PV_ORT_INC} ${PV_PKG_DIR}/pffft)
 target_compile_definitions(pvcore PRIVATE HAVE_CONFIG_H)
 target_compile_options(pvcore PRIVATE -O2 -w)
@@ -60,29 +61,34 @@ set(PV_DSP_SRC
     ${PV_PFFFT_SRC}/pffft_common.c
 )
 add_library(pvdsp STATIC ${PV_DSP_SRC})
+set_target_properties(pvdsp PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
 target_include_directories(pvdsp PUBLIC ${PV_SRC_DIR} ${PV_SRC_DIR_LIBSR} ${PV_ORT_INC} ${PV_PKG_DIR}/pffft)
 target_compile_definitions(pvdsp PRIVATE HAVE_CONFIG_H)
 target_compile_options(pvdsp PRIVATE -O2 -w)
 
-# ── PipeWire / ALSA 桥（系统库）──
+# ── PipeWire / ALSA 桥（仅 Linux，Windows 用 WASAPI）──
+if(NOT WIN32)
 find_package(PkgConfig)
 pkg_check_modules(PV_PIPEWIRE IMPORTED_TARGET libpipewire-0.3)
 pkg_check_modules(PV_ALSA IMPORTED_TARGET alsa)
+endif()
 
-if(PV_PIPEWIRE_FOUND)
+if(NOT WIN32 AND PV_PIPEWIRE_FOUND)
     add_library(pvpipe STATIC ${PV_SRC_DIR}/pipewire_client.c)
+    set_target_properties(pvpipe PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
     target_include_directories(pvpipe PUBLIC ${PV_SRC_DIR})
     target_link_libraries(pvpipe PUBLIC PkgConfig::PV_PIPEWIRE)
 endif()
 
-if(PV_ALSA_FOUND)
+if(NOT WIN32 AND PV_ALSA_FOUND)
     add_library(pvalsa STATIC ${PV_SRC_DIR}/alsa_client.c)
+    set_target_properties(pvalsa PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
     target_include_directories(pvalsa PUBLIC ${PV_SRC_DIR})
     target_link_libraries(pvalsa PUBLIC PkgConfig::PV_ALSA)
 endif()
 
 # ── Qt6 GUI ──
-find_package(Qt6 REQUIRED COMPONENTS Widgets WebSockets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets WebSockets Svg)
 
 qt_add_executable(purevox
     src/main.cpp
@@ -113,11 +119,15 @@ qt_add_executable(purevox
     src/networkserver.cpp
     src/networkserver.h
 )
-# Windows：VB-CABLE 虚拟声卡检测面板
+# Windows：VB-CABLE 虚拟声卡检测面板 + WASAPI 音频后端
 if(WIN32)
     target_sources(purevox PRIVATE
         src/dialog_vbcable.cpp
         src/dialog_vbcable.h
+        src/wasapibackend.cpp
+        src/wasapibackend.h
+        src/mmebackend.cpp
+        src/mmebackend.h
     )
 endif()
 # Linux：PipeWire / ALSA 后端 + 虚拟声卡；Windows 待 WASAPI 后端（TODO）
@@ -136,19 +146,33 @@ target_include_directories(purevox PRIVATE
     ${PV_ORT_INC}
 )
 target_link_directories(purevox PRIVATE ${PV_ORT_LIB})
-target_link_libraries(purevox PRIVATE
-    Qt6::Widgets
-    Qt6::WebSockets
-    pvdsp
-    onnxruntime
-    opus
-)
 if(WIN32)
-    target_link_libraries(purevox PRIVATE ole32 uuid winmm)
+    # Windows: 捆绑的 opus 静态库（packages/opus-win-x64）
+    set(PV_OPUS_DIR ${PV_PKG_DIR}/opus-win-x64)
+    target_include_directories(purevox PRIVATE ${PV_OPUS_DIR})
+    target_link_directories(purevox PRIVATE ${PV_OPUS_DIR})
+    target_link_libraries(purevox PRIVATE
+        Qt6::Widgets
+        Qt6::WebSockets
+        Qt6::Svg
+        pvdsp
+        onnxruntime
+        opus
+        ole32 uuid winmm
+    )
+else()
+    target_link_libraries(purevox PRIVATE
+        Qt6::Widgets
+        Qt6::WebSockets
+        Qt6::Svg
+        pvdsp
+        onnxruntime
+        opus
+    )
 endif()
-if(PV_PIPEWIRE_FOUND)
+if(NOT WIN32 AND PV_PIPEWIRE_FOUND)
     target_link_libraries(purevox PRIVATE pvpipe)
 endif()
-if(PV_ALSA_FOUND)
+if(NOT WIN32 AND PV_ALSA_FOUND)
     target_link_libraries(purevox PRIVATE pvalsa)
 endif()

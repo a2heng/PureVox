@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace {
 constexpr size_t kHop = 1024;
@@ -44,6 +45,10 @@ void AudioThread::run() {
     running_.store(true);
     engine_->setMode(mode_);
 
+    // 累积缓冲：后端 read 按可用量返回（可能不足 kHop），攒满 kHop 才处理
+    // （对齐 win7 Python 版 _accum 逻辑）
+    std::vector<float> accum;
+    accum.reserve(kHop * 4);
     QVector<float> in(kHop), out(kHop);
     QVector<float> farBuf(kHop);
     while (running_.load()) {
@@ -52,18 +57,24 @@ void AudioThread::run() {
             msleep(2);
             continue;
         }
-        size_t farN = 0;
-        if (mode_ == AudioEngine::ModeAec) {
-            farN = backend_->readFar(farBuf.data(), kHop);
+        accum.insert(accum.end(), in.begin(), in.begin() + n);
+        while (accum.size() >= kHop) {
+            std::copy_n(accum.data(), kHop, in.data());
+            accum.erase(accum.begin(), accum.begin() + kHop);
+            size_t farN = 0;
+            if (mode_ == AudioEngine::ModeAec) {
+                farN = backend_->readFar(farBuf.data(), kHop);
+            }
+            size_t on = engine_->process(in.data(), kHop,
+                                         farN ? farBuf.data() : nullptr, farN,
+                                         out.data());
+            if (on > 0) backend_->write(out.data(), on);
+            // 降噪输出峰值 → VU
+            float peak = 0;
+            for (size_t i = 0; i < on; ++i) peak = std::max(peak, std::fabs(out[i]));
+            double db = peak > 1e-10 ? 20.0 * std::log10(peak) : -60.0;
+            emit levelUpdated(db);
         }
-        size_t on = engine_->process(in.data(), n, farN ? farBuf.data() : nullptr, farN,
-                                     out.data());
-        if (on > 0) backend_->write(out.data(), on);
-        // 降噪输出峰值 → VU
-        float peak = 0;
-        for (size_t i = 0; i < on; ++i) peak = std::max(peak, std::fabs(out[i]));
-        double db = peak > 1e-10 ? 20.0 * std::log10(peak) : -60.0;
-        emit levelUpdated(db);
         // 频谱数据：从引擎 viz 缓冲取（线程安全）
         {
             QVector<float> inFrame(kHop), outFrame(kHop);

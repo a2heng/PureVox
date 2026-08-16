@@ -5,6 +5,12 @@
 
 #include "mainwindow.h"
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <shellapi.h>
+#include <QAbstractNativeEventFilter>
+#endif
+
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -13,6 +19,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGridLayout>
+#include <QDialog>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
@@ -41,6 +49,8 @@
 #include "dialog_tse_reference.h"
 #ifdef Q_OS_WIN
 #include "dialog_vbcable.h"
+#include "wasapibackend.h"
+#include "mmebackend.h"
 #endif
 #include "eqcurve.h"
 #include "networkserver.h"
@@ -57,6 +67,8 @@ const char *kModeNames[] = {"直通", "降噪", "AEC", "TSE"};
 constexpr int kApiPipeWire = 17;  // 与旧版 api_type 一致
 constexpr int kApiAlsa = 18;
 constexpr int kApiNetwork = 19;
+constexpr int kApiWasapi = 20;
+constexpr int kApiMme = 21;
 }  // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
@@ -238,9 +250,15 @@ void MainWindow::buildUi() {
     lblApi->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     devGrid->addWidget(lblApi, 0, 0);
     apiCombo_ = new QComboBox(panel);
+#ifdef Q_OS_WIN
+    apiCombo_->addItem(QStringLiteral("WASAPI"), kApiWasapi);
+    apiCombo_->addItem(QStringLiteral("MME"), kApiMme);
+    apiCombo_->addItem(QStringLiteral("网络"), kApiNetwork);
+#else
     apiCombo_->addItem(QStringLiteral("PipeWire"), kApiPipeWire);
     apiCombo_->addItem(QStringLiteral("ALSA"), kApiAlsa);
     apiCombo_->addItem(QStringLiteral("网络"), kApiNetwork);
+#endif
     connect(apiCombo_, &QComboBox::currentIndexChanged, this, [this](int) {
         refreshDevices();
         saveConfig();
@@ -431,9 +449,10 @@ void MainWindow::createMenu() {
         const char *label;
         const char *value;
     };
-    const ThemeItem themes[] = {{"系统", "system"}, {"白天", "light"}, {"黑夜", "dark"}};
+    const ThemeItem themes[] = {{"白天", "light"}, {"黑夜", "dark"}};
     QSettings st;
-    QString curTheme = st.value("theme", "system").toString();
+    QString curTheme = st.value("theme", "dark").toString();
+    if (curTheme != "light" && curTheme != "dark") curTheme = "dark";
     for (const ThemeItem &t : themes) {
         QAction *a = themeMenu->addAction(QString::fromUtf8(t.label));
         a->setCheckable(true);
@@ -446,6 +465,10 @@ void MainWindow::createMenu() {
 
     QAction *snd = mb->addAction(QStringLiteral("系统声音"));
     connect(snd, &QAction::triggered, this, []() {
+#ifdef Q_OS_WIN
+        // Windows：打开系统声音控制面板（mmsys.cpl）
+        QProcess::startDetached(QStringLiteral("control"), {QStringLiteral("mmsys.cpl")});
+#else
         // 优先 pavucontrol，回退 gnome-control-center / systemsettings
         const char *cmds[][2] = {
             {"pavucontrol", ""},
@@ -457,6 +480,7 @@ void MainWindow::createMenu() {
                                         c[1][0] ? QStringList{QString::fromUtf8(c[1])} : QStringList()))
                 return;
         }
+#endif
     });
 
     QAction *vmic = mb->addAction(QStringLiteral("虚拟声卡"));
@@ -513,9 +537,14 @@ void MainWindow::showVirtualMic() {
 }
 
 void MainWindow::createTray() {
+#ifdef Q_OS_WIN
+    // Windows：mingw Qt6 的 QSystemTrayIcon.isSystemTrayAvailable() 误报 false
+    // （系统托盘实际正常），用 Win32 Shell_NotifyIcon 直接实现，绕开此缺陷。
+    createTrayWin32();
+#else
     if (!QSystemTrayIcon::isSystemTrayAvailable()) return;
     trayIcon_ = new QSystemTrayIcon(this);
-    trayIcon_->setIcon(windowIcon());
+    trayIcon_->setIcon(QIcon(":/purevox_icon_on.svg"));
     trayMenu_ = new QMenu(this);
     trayMenu_->addAction(QStringLiteral("退出"), this, &MainWindow::quitApp);
     trayIcon_->setContextMenu(trayMenu_);
@@ -530,7 +559,116 @@ void MainWindow::createTray() {
                 }
             });
     trayIcon_->show();
+#endif
 }
+
+#ifdef Q_OS_WIN
+namespace {
+// Win32 托盘：绕开 mingw Qt6 isSystemTrayAvailable 缺陷，直接 Shell_NotifyIcon。
+constexpr UINT kTrayMsg = WM_APP + 1;
+constexpr UINT kTrayId = 1;
+
+MainWindow *g_trayWindow = nullptr;  // 收到托盘消息后转发
+
+QIcon trayPixmapIcon(bool on) {
+    return QIcon(on ? ":/purevox_tray_on.png" : ":/purevox_tray_off.png");
+}
+
+HICON makeTrayIcon(bool on) {
+    QPixmap pm = trayPixmapIcon(on).pixmap(QSize(16, 16));
+    if (pm.isNull()) return nullptr;
+    QImage img = pm.toImage();
+    return img.toHICON();
+}
+
+// 原生事件过滤器：处理托盘回调消息
+class TrayNativeFilter : public QAbstractNativeEventFilter {
+public:
+    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *) override {
+        if (eventType != "windows_generic_MSG") return false;
+        MSG *msg = static_cast<MSG *>(message);
+        if (msg->message != kTrayMsg) return false;
+        if (LOWORD(msg->lParam) != kTrayId) return false;
+        UINT reason = HIWORD(msg->lParam);
+        if (reason == WM_LBUTTONUP) {
+            if (g_trayWindow) {
+                if (g_trayWindow->isVisible()) g_trayWindow->hide();
+                else { g_trayWindow->show(); g_trayWindow->activateWindow(); }
+            }
+        } else if (reason == WM_RBUTTONUP) {
+            // 右键：弹出「退出」菜单
+            if (g_trayWindow) {
+                POINT pt; GetCursorPos(&pt);
+                HMENU hmenu = CreatePopupMenu();
+                AppendMenuW(hmenu, MF_STRING, 1, L"退出");
+                SetForegroundWindow(msg->hwnd);
+                UINT sel = TrackPopupMenu(hmenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, msg->hwnd, nullptr);
+                if (sel == 1) g_trayWindow->quitApp();
+                DestroyMenu(hmenu);
+            }
+        }
+        return false;
+    }
+};
+
+TrayNativeFilter *g_trayFilter = nullptr;
+}  // namespace
+
+void MainWindow::createTrayWin32() {
+    trayHost_ = new QWidget(this);
+    trayHost_->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint);
+    HWND hwnd = reinterpret_cast<HWND>(trayHost_->winId());
+    // 安装原生事件过滤器
+    if (!g_trayFilter) {
+        g_trayFilter = new TrayNativeFilter;
+        QCoreApplication::instance()->installNativeEventFilter(g_trayFilter);
+    }
+    g_trayWindow = this;
+    // 添加托盘图标
+    NOTIFYICONDATA nid;
+    memset(&nid, 0, sizeof(nid));
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = hwnd;
+    nid.uID = kTrayId;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    nid.uCallbackMessage = kTrayMsg;
+    HICON hicon = makeTrayIcon(true);
+    nid.hIcon = hicon;
+    lstrcpynW(nid.szTip, L"PureVox", sizeof(nid.szTip) / sizeof(wchar_t));
+    Shell_NotifyIcon(NIM_ADD, &nid);
+    if (hicon) DestroyIcon(hicon);
+    trayWin32_ = true;
+}
+
+void MainWindow::updateTrayWin32() {
+    if (!trayWin32_ || !trayHost_) return;
+    HWND hwnd = reinterpret_cast<HWND>(trayHost_->winId());
+    NOTIFYICONDATA nid;
+    memset(&nid, 0, sizeof(nid));
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = hwnd;
+    nid.uID = kTrayId;
+    nid.uFlags = NIF_ICON | NIF_TIP;
+    HICON hicon = makeTrayIcon(processing_);
+    nid.hIcon = hicon;
+    lstrcpynW(nid.szTip, L"PureVox", sizeof(nid.szTip) / sizeof(wchar_t));
+    Shell_NotifyIcon(NIM_MODIFY, &nid);
+    if (hicon) DestroyIcon(hicon);
+}
+
+void MainWindow::removeTrayWin32() {
+    if (trayWin32_ && trayHost_) {
+        HWND hwnd = reinterpret_cast<HWND>(trayHost_->winId());
+        NOTIFYICONDATA nid;
+        memset(&nid, 0, sizeof(nid));
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = hwnd;
+        nid.uID = kTrayId;
+        Shell_NotifyIcon(NIM_DELETE, &nid);
+        trayWin32_ = false;
+    }
+}
+#endif  // Q_OS_WIN
 
 void MainWindow::startWatchdog() {
     watchdogTimer_ = new QTimer(this);
@@ -572,15 +710,25 @@ void MainWindow::updateAgcSlider() {
 void MainWindow::updateRunningState() {
     // 更新窗口/托盘图标与提示（运行=亮，停止=暗）
     QString tip = processing_ ? QStringLiteral("PureVox - 运行中") : QStringLiteral("PureVox - 未运行");
+#ifdef Q_OS_WIN
+    if (trayWin32_) updateTrayWin32();
+#else
     if (trayIcon_) {
         trayIcon_->setToolTip(tip);
+        // 运行=绿(on)，停止=红(off)
+        trayIcon_->setIcon(QIcon(processing_ ? ":/purevox_icon_on.svg" : ":/purevox_icon_off.svg"));
     }
+#endif
     statusLabel_->setText(processing_ ? QStringLiteral("运行中…")
                                       : QStringLiteral("PureVox 引擎就绪"));
 }
 
 void MainWindow::quitApp() {
+#ifdef Q_OS_WIN
+    removeTrayWin32();
+#else
     if (trayIcon_) trayIcon_->hide();
+#endif
     if (thread_) {
         thread_->stop();
         delete thread_;
@@ -590,13 +738,7 @@ void MainWindow::quitApp() {
 }
 
 void MainWindow::applyTheme(const QString &mode) {
-    bool dark;
-    if (mode == QStringLiteral("light")) dark = false;
-    else if (mode == QStringLiteral("dark")) dark = true;
-    else {
-        // 系统：按调色板亮度判定
-        dark = QApplication::palette().window().color().lightness() < 128;
-    }
+    const bool dark = (mode != QStringLiteral("light"));
     if (dark) {
         QPalette p;
         p.setColor(QPalette::Window, QColor(45, 45, 48));
@@ -681,13 +823,18 @@ void MainWindow::onEqChanged(const QVector<double> &gains) {
     saveConfig();
 }
 
-void MainWindow::initEngine() {    if (!QFileInfo::exists(kModelDenoise)) {
-        statusLabel_->setText(QStringLiteral("未找到模型文件，请从仓库根目录运行"));
+QString MainWindow::modelPath(const char *name) {
+    return QCoreApplication::applicationDirPath() + QLatin1Char('/') + QString::fromUtf8(name);
+}
+
+void MainWindow::initEngine() {
+    if (!QFileInfo::exists(modelPath(kModelDenoise))) {
+        statusLabel_->setText(QStringLiteral("未找到模型文件，请确认与程序同目录"));
         return;
     }
     QString err;
-    if (!engine_.init(QString::fromUtf8(kModelDenoise), QString::fromUtf8(kModelTse),
-                      QString::fromUtf8(kModelAec), &err)) {
+    if (!engine_.init(modelPath(kModelDenoise), modelPath(kModelTse),
+                      modelPath(kModelAec), &err)) {
         statusLabel_->setText(err);
         return;
     }
@@ -700,8 +847,15 @@ void MainWindow::initEngine() {    if (!QFileInfo::exists(kModelDenoise)) {
 }
 
 void MainWindow::refreshDevices() {
-    QStringList srcs = DeviceEnum::listSources();
-    QStringList dsts = DeviceEnum::listDestinations();
+    DeviceEnum::Api api = DeviceEnum::Api::PipeWire;
+    int apiId = apiCombo_->currentData().toInt();
+#ifdef Q_OS_WIN
+    api = (apiId == kApiMme) ? DeviceEnum::Api::Mme : DeviceEnum::Api::Wasapi;
+#else
+    api = (apiId == kApiAlsa) ? DeviceEnum::Api::Alsa : DeviceEnum::Api::PipeWire;
+#endif
+    QStringList srcs = DeviceEnum::listSources(api);
+    QStringList dsts = DeviceEnum::listDestinations(api);
 
     inputCombo_->clear();
     for (const QString &s : srcs) {
@@ -728,6 +882,10 @@ void MainWindow::refreshDevices() {
 
 void MainWindow::loadConfig() {
     QSettings s;
+    // 主题：只有明/暗，默认暗
+    QString theme = s.value("theme", "dark").toString();
+    if (theme != "light" && theme != "dark") theme = "dark";
+    applyTheme(theme);
     mode_ = s.value("mode", kModeDenoise).toInt();
     preGain_ = s.value("pre_gain_db", 0.0).toDouble();
     postGain_ = s.value("post_gain_db", 0.0).toDouble();
@@ -857,6 +1015,61 @@ void MainWindow::setModeInternal(int m) {
     static_cast<SegmentedControl *>(segWidget_)->setValue(mode_);
 }
 
+bool MainWindow::checkDevices48k(const QString &input, const QString &output,
+                                 const QString &monitor, int mode, int api) {
+#ifdef Q_OS_WIN
+    // Windows：WASAPI 用 Initialize 试探 48k；MME 由驱动自动重采样（放行）
+    if (api == kApiMme) return true;
+    QVector<QString> badNames, badTags;
+    auto test = [&](const QString &name, const QString &tag) {
+        if (!name.isEmpty() && !WasapiBackend::check48k(name, tag == "录制"))
+            { badNames.append(name); badTags.append(tag); }
+    };
+    test(input, "录制");
+    test(output, "播放");
+    if (monitorCb_->isChecked()) test(monitor, "监听");
+    if (mode == AudioEngine::ModeAec) test(output, "AEC播放");
+    if (badNames.isEmpty()) return true;
+    // 弹框：列出不支持 48k 的设备
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("PureVox"));
+    dlg.setMinimumWidth(380);
+    auto *layout = new QVBoxLayout(&dlg);
+    layout->setSpacing(10);
+    layout->setContentsMargins(16, 16, 16, 12);
+    auto *title = new QLabel(QStringLiteral("以下设备不支持 48kHz，无法启动："), &dlg);
+    title->setStyleSheet(QStringLiteral("font-size: 11pt;"));
+    layout->addWidget(title);
+    auto *devFrame = new QFrame(&dlg);
+    auto *devLayout = new QVBoxLayout(devFrame);
+    devLayout->setSpacing(4);
+    for (int i = 0; i < badNames.size(); ++i) {
+        auto *row = new QHBoxLayout();
+        auto *tag = new QLabel(badTags[i], devFrame);
+        tag->setStyleSheet(QStringLiteral(
+            "border: 1px solid #888; border-radius: 3px; font-size: 9pt; padding: 1px 4px;"));
+        row->addWidget(tag);
+        row->addWidget(new QLabel(badNames[i], devFrame));
+        row->addStretch();
+        devLayout->addLayout(row);
+    }
+    devFrame->setStyleSheet(QStringLiteral(
+        "QFrame { border: 1px solid palette(mid); border-radius: 4px; "
+        "background: palette(base); padding: 4px 6px; }"));
+    layout->addWidget(devFrame);
+    layout->addWidget(new QLabel(QStringLiteral("请将设备采样率设为 48kHz 后重试。"), &dlg));
+    auto *btn = new QPushButton(QStringLiteral("确定"), &dlg);
+    connect(btn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    layout->addWidget(btn, 0, Qt::AlignRight);
+    dlg.exec();
+    return false;
+#else
+    // Linux：PipeWire/ALSA 格式协商固定 48k，重采样由底层处理（放行）
+    (void)input; (void)output; (void)monitor; (void)mode; (void)api;
+    return true;
+#endif
+}
+
 void MainWindow::onStartStop() {
     if (processing_) {
         if (thread_) {
@@ -882,8 +1095,8 @@ void MainWindow::onStartStop() {
     // 启动：重建处理器并重放全部参数（对齐 Python 每次启动重建）
     if (!engine_.ready()) {
         QString err;
-        if (!engine_.init(QString::fromUtf8(kModelDenoise), QString::fromUtf8(kModelTse),
-                          QString::fromUtf8(kModelAec), &err)) {
+        if (!engine_.init(modelPath(kModelDenoise), modelPath(kModelTse),
+                          modelPath(kModelAec), &err)) {
             QMessageBox::warning(this, QStringLiteral("PureVox"), err);
             return;
         }
@@ -924,6 +1137,9 @@ void MainWindow::onStartStop() {
                           ? monitorCombo_->currentData().toString()
                           : QString();
 
+    // 48k 检测：设备不支持 48kHz 时弹框阻止
+    if (!checkDevices48k(input, output, monitor, mode_, api)) return;
+
     // 根据音频接口选择后端（AudioThread 接管所有权，run 结束自行删除）
     AudioBackend *backend = nullptr;
 #ifdef Q_OS_LINUX
@@ -937,9 +1153,21 @@ void MainWindow::onStartStop() {
         return;
     }
 #else
+#ifdef Q_OS_WIN
+    if (api == kApiWasapi) {
+        backend = new WasapiBackend();
+    } else if (api == kApiMme) {
+        backend = new MmeBackend();
+    } else {
+        QMessageBox::warning(this, QStringLiteral("PureVox"),
+                             QStringLiteral("未知音频接口"));
+        return;
+    }
+#else
     QMessageBox::warning(this, QStringLiteral("PureVox"),
-                         QStringLiteral("Windows 音频后端（WASAPI）尚未实现，请使用 Linux 版本。"));
+                         QStringLiteral("当前平台无可用音频后端。"));
     return;
+#endif
 #endif
 
     thread_ = new AudioThread(&engine_, backend, input, output, monitor, mode_, this);

@@ -11,6 +11,7 @@
 
 # Build outputs
 /build
+/build-win
 /dist
 /config.json
 

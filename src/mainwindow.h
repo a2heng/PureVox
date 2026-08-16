@@ -40,6 +40,7 @@ public:
     // --selftest 生命周期自测入口（不闪退验证）
     void runLifecycleSelfTest();
     void quitAppForTest() { quitApp(); }
+    void quitApp();  // public：供托盘/菜单调用
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -48,11 +49,14 @@ protected:
 private:
     void buildUi();
     void initEngine();
+    QString modelPath(const char *name);
     void refreshDevices();
     void applyMode(int mode);
     void saveGains(int mode);
     void loadGains(int mode);
     void onStartStop();
+    bool checkDevices48k(const QString &input, const QString &output,
+                         const QString &monitor, int mode, int api);
     void onModeChanged(int val);
     void setModeInternal(int m);
     void updateModeUi();
@@ -61,8 +65,12 @@ private:
     void createMenu();
     void showAbout();
     void showVirtualMic();
-    void quitApp();
     void createTray();
+#ifdef Q_OS_WIN
+    void createTrayWin32();
+    void updateTrayWin32();
+    void removeTrayWin32();
+#endif
     void applyTheme(const QString &mode);
     void startWatchdog();
     void updateRunningState();
@@ -112,6 +120,11 @@ private:
     // 托盘
     QSystemTrayIcon *trayIcon_ = nullptr;
     QMenu *trayMenu_ = nullptr;
+#ifdef Q_OS_WIN
+    // Windows Win32 托盘（绕开 mingw Qt isSystemTrayAvailable 缺陷）
+    QWidget *trayHost_ = nullptr;  // 隐藏宿主窗口，接收托盘消息
+    bool trayWin32_ = false;
+#endif
     QTimer *watchdogTimer_ = nullptr;
     QTimer *agcPollTimer_ = nullptr;
 
