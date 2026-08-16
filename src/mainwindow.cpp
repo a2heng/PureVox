@@ -39,6 +39,9 @@
 #include "deviceenum.h"
 #include "dialog_about.h"
 #include "dialog_tse_reference.h"
+#ifdef Q_OS_WIN
+#include "dialog_vbcable.h"
+#endif
 #include "eqcurve.h"
 #include "networkserver.h"
 #include "segmented.h"
@@ -498,10 +501,14 @@ void MainWindow::showVirtualMic() {
         }
     }
 #else
+#ifdef Q_OS_WIN
+    VbCableDialog dlg(this);
+    dlg.exec();
+#else
     QMessageBox::information(
         this, QStringLiteral("虚拟声卡"),
-        QStringLiteral("Windows 使用虚拟声卡（VB-CABLE / CABLE Input·Output），"
-                       "本版本 Windows 后端（WASAPI）尚未实现。"));
+        QStringLiteral("虚拟声卡功能在 Linux（PipeWire）与 Windows（VB-CABLE）提供。"));
+#endif
 #endif
 }
 

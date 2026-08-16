@@ -113,6 +113,13 @@ qt_add_executable(purevox
     src/networkserver.cpp
     src/networkserver.h
 )
+# Windows：VB-CABLE 虚拟声卡检测面板
+if(WIN32)
+    target_sources(purevox PRIVATE
+        src/dialog_vbcable.cpp
+        src/dialog_vbcable.h
+    )
+endif()
 # Linux：PipeWire / ALSA 后端 + 虚拟声卡；Windows 待 WASAPI 后端（TODO）
 if(NOT WIN32)
     target_sources(purevox PRIVATE
