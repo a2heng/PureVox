@@ -461,6 +461,30 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
   旧 `WASAPI_*` / 通用设备键一律丢弃回退默认。设备键为带接口后缀的
   `<方向>_device_<接口后缀>`（如 `input_device_wasapi`、`input_device_mme`）。
 
+### Qt C++ 版内存调查（2026-08-16，真实 GUI 下 450M）
+
+**现象**：Qt C++ 版在 Linux NVIDIA+Wayland 下 RSS ~450M，比 Python 版（100M）高很多。
+
+**二分定位法**（strace -k + `/proc/<pid>/smaps` 逐层排除）：
+- 空 Qt6 Widgets 窗口：RSS 161M，含 128M **预留**（PROT_NONE 不占 RSS）
+- onnxruntime 单会话 10M / 三会话 39M heap，**无 128M**
+- Qt WebSockets：无 128M
+- 频谱/VU 绘制：临时禁用后 RSS 仍 450M（**非大头**）
+- **结论**：128M+64M 匿名段来自 **Qt6Core `QFactoryLoader::update()`（插件加载）→ glibc `alloc_new_heap`（每线程 heap）**。
+  极简 Qt 窗口也有同款 128M 预留，但 RSS 只占 161M；PureVox 因功能多把它**占满**到 128M RSS。
+- X11(xcb) RSS 387M，Wayland 450M，**两者都有 128M**（差 63M 是 Wayland 图形栈额外）。
+- offscreen 模式（无真实显示）RSS 116M（应用本体，与 Python 相当）——**证明应用本体正常**，高内存是真实 GUI 下 Qt 插件加载 + 图形栈固有，非应用代码泄漏。
+
+**已做优化**（减少运行期分配抖动，非降峰值 RSS）：
+- 频谱 `src/spectrum.cpp`：QVector 反复 `append`/`mid()`（每次分配拷贝）→ 改 `std::vector` 预分配 + `memmove` 滚动，复用 FFT 缓冲（`fftBuf_`）。
+- VU `src/vubar.cpp`：每帧 11 个 tick 的 `QString::number`/`drawText` → 预渲染进背景缓存 `bgCache_`。
+
+**排查命令速查**：
+- 空 Qt 挂起：`QTimer` 保活，`/proc/<pid>/smaps` 看大段
+- 定位 mmap 来源：`strace -f -k -e trace=mmap ./build/purevox --selftest 2>&1 | grep -A20 134217728`
+- offscreen 测应用本体：`QT_QPA_PLATFORM=offscreen ./build/purevox --selftest`
+- X11/Wayland 对比：`QT_QPA_PLATFORM=xcb` vs 默认 wayland
+
 ### 长时间运行稳定性观察（2026-08-10，代码走查记录，尚未实测）
 
 **结论**：2 小时连续运行**声音本身不会劣化**（无累积延迟/爆音/数值漂移），但存在一个内存型长期隐患和一个事件型弱点：
