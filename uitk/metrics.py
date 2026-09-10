@@ -80,7 +80,7 @@ def make_sizes(zoom):
         "pad_md": r(6),
         "pad_lg": r(10),
         # 窗口基准（已含倍率）
-        "win_w": r(420),
+        "win_w": r(500),
         "win_h": r(700),
     }
 
@@ -114,21 +114,27 @@ def fix_tk_scaling(root):
         pass
 
 
-FONT_FAMILY_CANDIDATES = ["Ark Pixel 12px Monospaced zh_cn",
-                          "Ark Pixel 12px Mono zh_cn",
-                          "Ark Pixel 12px Mono",
-                          "Microsoft YaHei UI", "Microsoft YaHei",
-                          "PingFang SC", "Noto Sans CJK SC", "Segoe UI"]
+# UI 正文字体候选（按优先级）。图标字体（FontAwesome）绝不进本表——
+# 被选为全局字体会让整窗文字变图标；它只在 main_window 单独取用。
+FONT_FAMILY_CANDIDATES = [
+    "WenQuanYi Micro Hei",               # 随包中文字体（assets/fonts，load_pixel_font 注册）
+    "文泉驿微米黑",                       # 同一字体在中文 Windows 的 GDI 枚举名（本地化名）
+    "Ark Pixel 12px Monospaced zh_cn",   # 系统装有像素字体时优先（像素主题）
+    "Ark Pixel 12px Mono zh_cn",
+    "Ark Pixel 12px Mono",
+    "Microsoft YaHei UI", "Microsoft YaHei",
+    "Noto Sans CJK SC", "Segoe UI",
+]
 
 # 像素字体（仓库唯一副本 assets/fonts/；lite_mic/lite_net 与打包脚本共用）
-_FONT_FILE = "ark-pixel-12px-monospaced-zh_cn.ttf"
+_FONT_FILE = "before-subset.TTF"
 
 
-def find_pixel_font_ttf() -> str:
-    """定位内置像素字体：PyInstaller 资源目录 → 应用根/仓库根 → 上级目录。
+def _font_roots() -> list:
+    """字体目录候选根：PyInstaller 资源目录 → 仓库根（uitk 上一级）→ 再上一级。
 
     源码态仓库根 = uitk/ 上一级；打包态（deb/rpm/AppImage）= /opt/purevox
-    等应用根，字体随 assets/fonts/ 携带。找不到返回空串。
+    等应用根，字体随 assets/fonts/ 携带。
     """
     here = os.path.dirname(os.path.abspath(__file__))
     roots = []
@@ -137,9 +143,23 @@ def find_pixel_font_ttf() -> str:
         roots.append(meipass)
     roots.append(os.path.dirname(here))
     roots.append(os.path.dirname(os.path.dirname(here)))
-    for r in roots:
+    return roots
+
+
+def find_pixel_font_ttf() -> str:
+    """定位内置像素字体（lite_mic/lite_net 共用）。找不到返回空串。"""
+    for r in _font_roots():
         p = os.path.join(r, "assets", "fonts", _FONT_FILE)
         if os.path.isfile(p):
+            return p
+    return ""
+
+
+def bundled_font_dir() -> str:
+    """随包字体目录 assets/fonts（load_pixel_font 注册其中全部字体）。"""
+    for r in _font_roots():
+        p = os.path.join(r, "assets", "fonts")
+        if os.path.isdir(p):
             return p
     return ""
 
@@ -182,32 +202,52 @@ def install_fonts_fontconfig(font_dir: str) -> None:
 
 
 def load_pixel_font():
-    """注册内置 Ark Pixel 字体（跨平台；失败静默回退系统字体）。
+    """注册随包字体目录（assets/fonts）内全部 ttf/otf；失败静默回退系统字体。
 
-    Windows: GDI AddFontResourceExW(FR_PRIVATE) 仅本进程可见；
+    Windows: GDI AddFontResourceExW(FR_PRIVATE=0x10) 仅本进程可见、
+    不污染系统字体表；注册后须异步广播 WM_FONTCHANGE（SendNotifyMessage，
+    同步 SendMessage 会被不泵消息的顶层窗口挂死）——Tk 建窗时缓存了
+    字体族表，不广播则 font families 里永远看不到新字体。
     Linux/macOS: 经 fontconfig 用户字体目录注册——此前仅 Windows 生效，
-    Linux 包内又未携带字体文件，无 CJK 字体的系统会中文豆腐/缺字形。
+    无 CJK 字体的系统中文会豆腐/缺字形，随包字体补齐。
     """
-    src = find_pixel_font_ttf()
-    if not src:
+    font_dir = bundled_font_dir()
+    if not font_dir:
+        return
+    font_files = [f for f in os.listdir(font_dir)
+                  if f.lower().endswith((".ttf", ".otf"))]
+    if not font_files:
         return
     try:
         if sys.platform.startswith("win"):
             import ctypes
-            # 0x10 = FR_PRIVATE：仅本进程可见，不污染系统
-            ctypes.windll.gdi32.AddFontResourceExW(src, 0x10, 0)
+            for font_file in font_files:
+                ctypes.windll.gdi32.AddFontResourceExW(
+                    os.path.join(font_dir, font_file), 0x10, 0)
+            # HWND_BROADCAST(0xFFFF) + WM_FONTCHANGE(0x1D)
+            ctypes.windll.user32.SendNotifyMessageW(0xFFFF, 0x001D, 0, 0)
         else:
-            install_fonts_fontconfig(os.path.dirname(src))
+            install_fonts_fontconfig(font_dir)
     except Exception:
         pass
 
 
-def pick_font_family(root):
-    load_pixel_font()
+def font_families(root) -> set:
+    """Tk 当前可见的字体族集合（须在 load_pixel_font 之后调用才含随包字体）。"""
     try:
-        avail = set(root.tk.call("font", "families"))
+        return set(root.tk.call("font", "families"))
     except Exception:
-        avail = set()
+        return set()
+
+
+def pick_font_family(root):
+    """注册随包字体后，按 FONT_FAMILY_CANDIDATES 顺序选第一个可见族名。
+
+    只返回确实存在于 font families 的名字——Tk 对未知族名不报错、
+    静默替换成默认字体（文件名/拼错的族名都会这样无声失效）。
+    """
+    load_pixel_font()
+    avail = font_families(root)
     for name in FONT_FAMILY_CANDIDATES:
         if name in avail:
             return name

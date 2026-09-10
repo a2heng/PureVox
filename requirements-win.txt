@@ -30,6 +30,12 @@ qrcode==8.2
 # ── 音频后端 ──
 PyAudio==0.2.14
 
+# ── Windows Core Audio 端点音量（VB-CABLE 音量条）──
+# pycaw 依赖 comtypes（COM 互操作）+ psutil（仅 AudioSession 用，端点音量不需）
+pycaw==20251023
+comtypes==1.4.16
+psutil==7.2.2
+
 # ── 打包工具链 + 系统服务 ──
 altgraph
 pefile

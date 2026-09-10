@@ -46,6 +46,7 @@ STOP_BG     = "#E57373"
 STOP_HOVER  = "#EF5350"
 
 ACCENT      = "#FFB74D"   # 强调色 = 南瓜橙
+ACCENT_DEEP = "#EF6C00"   # 深强调色（浅底上的小图标/勾选态，需高对比）
 ACCENT_TEXT = "#5D4037"   # accent 底上的前景
 
 

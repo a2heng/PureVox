@@ -149,6 +149,95 @@ class VUCanvas(tk.Canvas):
                                   fill=fill, width=0)
 
 
+class AgcGainMeter(tk.Canvas):
+    """AGC 实时增益可视化条：0dB 居中，向右绿色=放大，向左橙色=衰减，
+    条上叠加当前 dB 数字。±30dB 范围（与 AgcController gain_min/gain_max 对齐）。"""
+
+    GAIN_RANGE = 30.0  # ±dB
+
+    def __init__(self, parent, sizes=None, height=26):
+        self.sizes = sizes or make_sizes(100)
+        s = self.sizes["scale"]
+        self._font = ("TkDefaultFont", max(8, int(round(9 * s))), "bold")
+        super().__init__(parent,
+                         bg=theme.PANEL,
+                         highlightthickness=0, bd=0, height=height)
+        self._gain = 0.0
+        self._target = 0.0
+        self._active = False
+        self._t = time.monotonic()
+        self._last_painted = -999.0
+        self.bind("<Configure>", lambda e: self.redraw(force=True))
+
+    def set_active(self, active: bool):
+        if active != self._active:
+            self._active = active
+            if not active:
+                self._target = 0.0
+            self.redraw(force=True)
+
+    def update_gain(self, gain_db: float | None):
+        """33ms 周期调用。None 表示无数据（显示「AGC 未运行」）。
+        注意：AgcController.gain_db 已经过 EMA + attack/release 平滑，
+        这里直接用传入值，不做二次平滑，避免响应迟钝看不见变化。"""
+        if gain_db is None:
+            self._active = False
+            self._gain = 0.0
+        else:
+            self._active = True
+            self._gain = max(-self.GAIN_RANGE, min(self.GAIN_RANGE, gain_db))
+        if abs(self._gain - self._last_painted) >= 0.3 or not self._active:
+            self._last_painted = self._gain
+            self.redraw()
+
+    def redraw(self, force=False):
+        w = max(self.winfo_width(), 60)
+        h = max(self.winfo_height(), 16)
+        self.delete("all")
+        pad = 3
+        T, B = pad, h - pad
+        cy = (T + B) // 2
+        # 背景槽（浅灰）
+        self.create_rectangle(0, 0, w, h, fill="#F5F5F5", width=0)
+        # 0dB 中线
+        mid_x = w // 2
+        self.create_line(mid_x, T, mid_x, B, fill=theme.MID, width=1)
+        if not self._active:
+            self.create_text(mid_x, cy, text="AGC 未运行",
+                             font=self._font, fill=theme.TEXT_FAINT)
+            return
+        # 增益条：从中线向两侧填充
+        half_w = mid_x - pad - 2
+        ratio = self._gain / self.GAIN_RANGE  # -1..1
+        bar_w = 0  # 确保 ratio==0 路径下也有定义，避免 UnboundLocalError
+        if ratio > 0:
+            bar_w = int(round(ratio * half_w))
+            x0, x1 = mid_x, mid_x + bar_w
+            fill = "#4CAF50" if ratio < 0.5 else "#388E3C"
+        elif ratio < 0:
+            bar_w = int(round(-ratio * half_w))
+            x0, x1 = mid_x - bar_w, mid_x
+            fill = "#FFB74D" if ratio > -0.5 else "#F57C00"
+        else:
+            x0 = x1 = mid_x
+            fill = "#BDBDBD"
+        if bar_w > 1:
+            self.create_rectangle(x0, T, x1, B, fill=fill, width=0)
+        # 数字标签：先在文字下方画浅灰底色块，确保深棕字在任何条色上都清晰
+        sign = "+" if self._gain >= 0 else ""
+        txt = f"{sign}{self._gain:.1f} dB"
+        bbox = self.create_text(mid_x, cy, text=txt, font=self._font,
+                                fill=theme.TEXT)
+        x1_t, y1_t, x2_t, y2_t = self.bbox(bbox)
+        pad_t = 3
+        # 底色块（与背景槽同色）覆盖文字区域，再重画文字
+        self.create_rectangle(x1_t - pad_t, y1_t - pad_t,
+                              x2_t + pad_t, y2_t + pad_t,
+                              fill="#F5F5F5", outline=theme.MID, width=1)
+        self.create_text(mid_x, cy, text=txt, font=self._font,
+                         fill=theme.TEXT)
+
+
 class SpectrumCanvas(tk.Canvas):
     """128 段 Mel 频谱重叠对比（legacy SpectrumWidget 的 tk 移植）。"""
 

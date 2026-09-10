@@ -65,6 +65,16 @@ Linux / macOS 提供各自实现，上层 UI 无需平台分支。
 
 from .. import IS_WINDOWS, IS_LINUX, IS_MACOS
 
+# VB-CABLE 端点逻辑键常量（平台感知）：
+# Windows 从 _win 导出；非 Windows 给占位值（音量条不显示，但 UI 引用不报错）。
+# 这些字符串是后端 _STABLE_RULES 的键，代表"哪个端点"的逻辑标识，
+# 不是设备 FriendlyName（可被用户重命名）。所有调用方必须引用此常量。
+if IS_WINDOWS:
+    from ._win import CABLE_OUTPUT_KEY, CABLE_INPUT_KEY
+else:
+    CABLE_OUTPUT_KEY = "CABLE Output"
+    CABLE_INPUT_KEY = "CABLE Input"
+
 
 def acquire_single_instance(lock_name: str) -> bool:
     """跨平台单实例锁。Windows 用命名 Mutex，POSIX 用 flock 锁文件。"""
@@ -172,3 +182,69 @@ def remove_virtual_mic(logger) -> None:
         return
     from ._posix import remove_virtual_mic as _remove
     _remove(logger)
+
+
+def get_endpoint_volume_pct(name_sub: str):
+    """读 Windows endpoint 主音量百分比(0.0~1.0)。非 Windows 返回 None。
+
+    name_sub 用设备友好名子串匹配（如 "CABLE Output"）。用于 UI 实时回显
+    系统端点音量；非 Windows 无对应实现，返回 None 令 UI 隐藏音量条。
+    """
+    if IS_WINDOWS:
+        from ._win import get_endpoint_volume_pct_win
+        return get_endpoint_volume_pct_win(name_sub)
+    return None
+
+
+def set_endpoint_volume_pct(name_sub: str, pct: float) -> bool:
+    """写 Windows endpoint 主音量百分比(0.0~1.0)。非 Windows 返回 False。"""
+    if IS_WINDOWS:
+        from ._win import set_endpoint_volume_pct_win
+        return set_endpoint_volume_pct_win(name_sub, pct)
+    return False
+
+
+def invalidate_endpoint_volume_cache(name_sub=None) -> None:
+    """失效端点音量缓存（设备拔插/重命名后调用）。非 Windows 空实现。"""
+    if IS_WINDOWS:
+        from ._win import invalidate_endpoint_volume_cache_win
+        invalidate_endpoint_volume_cache_win(name_sub)
+
+
+def get_vb_cable_names() -> set:
+    """返回所有 VB-CABLE 设备的 FriendlyName 集合。非 Windows 返回空集。
+
+    UI 层用此集合判断选中设备是否 VB-CABLE，替代硬编码 'CABLE' 子串
+    匹配（用户重命名设备后仍生效）。
+    """
+    if IS_WINDOWS:
+        from ._win import get_vb_cable_names_win
+        return get_vb_cable_names_win()
+    return set()
+
+
+def get_cable_output_name():
+    """返回 CABLE Output 录音端点的实际 FriendlyName。非 Windows 返回 None。
+
+    UI 标签用此动态显示实际设备名（抗用户重命名），替代硬编码文本。
+    """
+    if IS_WINDOWS:
+        from ._win import get_cable_output_name_win
+        return get_cable_output_name_win()
+    return None
+
+
+def get_endpoint_mute(name_sub: str):
+    """读 Windows endpoint 静音状态。True=静音,False=未静音,非 Windows/失败返回 None。"""
+    if IS_WINDOWS:
+        from ._win import get_endpoint_mute_win
+        return get_endpoint_mute_win(name_sub)
+    return None
+
+
+def set_endpoint_mute(name_sub: str, mute: bool) -> bool:
+    """写 Windows endpoint 静音状态。返回是否成功。非 Windows 返回 False。"""
+    if IS_WINDOWS:
+        from ._win import set_endpoint_mute_win
+        return set_endpoint_mute_win(name_sub, mute)
+    return False

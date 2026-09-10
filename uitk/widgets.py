@@ -28,27 +28,74 @@ from . import theme
 from .metrics import make_sizes
 
 
-class FlatButton(tk.Label):
-    """自绘扁平按钮（Label 实现，可完全控色）。"""
+class FlatButton(tk.Frame):
+    """自绘扁平按钮（Frame + 内部 Label，可完全控色）。
+
+    icon/icon_font 可选：传入时左侧渲染图标 Label。图标（FontAwesome
+    私有区码点）与中文正文分属两个字体族，Tk 单 Label 无法混排两族
+    字体，必须拆成两个 Label；icon_font 缺失（系统无 FontAwesome）
+    时自动退化为纯文字按钮。
+    """
 
     def __init__(self, parent, text, command=None, bg=theme.BUTTON,
-                 fg=theme.TEXT, font=None, sizes=None, pad=None, **kw):
+                 fg=theme.TEXT, font=None, sizes=None, pad=None,
+                 icon=None, icon_font=None, **kw):
         self.sizes = sizes if sizes is not None else make_sizes(100)
-        super().__init__(parent, text=text, bg=bg, fg=fg,
-                         font=font, padx=self.sizes["pad_lg"] if pad is None else pad,
-                         pady=max(0, (self.sizes["ctl_h"] - (font.metrics("linespace") if font else 16)) // 2),
-                         **kw)
+        super().__init__(parent, bg=bg)
         self._bg = bg
+        self._fg = fg
+        self._font = font
+        self._pad = self.sizes["pad_lg"] if pad is None else pad
         self._cmd = command
-        self.bind("<Button-1>", self._click)
-        # 悬停色按【当前】底色计算（运行态会绿↔红切换，不能用构造时快照）
-        self.bind("<Enter>", lambda e: self.configure(bg=theme.hover(self._bg)))
-        self.bind("<Leave>", lambda e: self.configure(bg=self._bg))
+        self._lbl = tk.Label(self, text=text, bg=bg, fg=fg, font=font, **kw)
+        self._icon = None
+        if icon and icon_font:
+            self._icon = tk.Label(self, text=icon, bg=bg, fg=fg,
+                                  font=icon_font)
+            self._icon.pack(side=tk.LEFT)
+        self._lbl.pack(side=tk.LEFT)
+        self._layout()
+        widgets = [self, self._lbl]
+        if self._icon is not None:
+            widgets.insert(1, self._icon)
+        for w in widgets:
+            w.bind("<Button-1>", self._click)
+            # 悬停色按【当前】底色计算（运行态会绿↔红切换，不能用构造时快照）
+            w.bind("<Enter>", lambda e: self._apply_bg(theme.hover(self._bg)))
+            w.bind("<Leave>", lambda e: self._apply_bg(self._bg))
+
+    def _layout(self):
+        """按当前 sizes/字体重排内边距（构造与 apply_sizes 共用）。
+
+        Label.padx 只收单值（对称），不对称的左右留白经 pack padx 实现
+        （留白区归 Frame，底色同按钮，点击/悬停已绑在 Frame 上）。
+        """
+        def _pady(f):
+            try:
+                ls = f.metrics("linespace")
+            except Exception:
+                ls = 16
+            return max(0, (self.sizes["ctl_h"] - ls) // 2)
+        if self._icon is not None:
+            self._icon.configure(pady=_pady(self._icon.cget("font")))
+            self._icon.pack_configure(padx=(self._pad, self.sizes["pad_sm"]))
+            self._lbl.configure(pady=_pady(self._font))
+            self._lbl.pack_configure(padx=(0, self._pad))
+        else:
+            self._lbl.configure(pady=_pady(self._font))
+            self._lbl.pack_configure(padx=(self._pad, self._pad))
+
+    def _apply_bg(self, bg):
+        # Frame 自身走 tk.Frame.configure，避免经 self.configure 的 bg 路由回环
+        tk.Frame.configure(self, bg=bg)
+        self._lbl.configure(bg=bg)
+        if self._icon is not None:
+            self._icon.configure(bg=bg)
 
     def set_bg(self, bg):
         """运行态换底色（同步更新悬停基准）。"""
         self._bg = bg
-        self.configure(bg=bg)
+        self._apply_bg(bg)
 
     def _click(self, _e):
         if self._cmd:
@@ -57,17 +104,44 @@ class FlatButton(tk.Label):
             except Exception:
                 pass
 
-    def set_bg(self, bg):
-        self._bg = bg
-        self.configure(bg=bg)
+    def configure(self, cnf=None, **kw):
+        """路由常用项：text→正文、bg→整体、fg/state→正文+图标、font→正文。"""
+        if cnf:
+            kw.update(cnf)
+        rest = {}
+        for key, val in kw.items():
+            if key == "text":
+                self._lbl.configure(text=val)
+            elif key == "bg":
+                self._bg = val
+                self._apply_bg(val)
+            elif key == "fg":
+                self._fg = val
+                self._lbl.configure(fg=val)
+                if self._icon is not None:
+                    self._icon.configure(fg=val)
+            elif key == "font":
+                self._font = val
+                self._lbl.configure(font=val)
+                self._layout()
+            elif key == "state":
+                self._lbl.configure(state=val)
+                if self._icon is not None:
+                    self._icon.configure(state=val)
+            else:
+                rest[key] = val
+        if rest:
+            self._lbl.configure(**rest)
+
+    config = configure
+
+    def cget(self, key):
+        if key == "font":
+            return self._font
+        return self._lbl.cget(key)
 
     def apply_sizes(self):
-        try:
-            ls = self.cget("font").metrics("linespace")
-        except Exception:
-            ls = 16
-        self.configure(padx=self.sizes["pad_lg"],
-                       pady=max(0, (self.sizes["ctl_h"] - ls) // 2))
+        self._layout()
 
 
 class DarkCheck(tk.Frame):
@@ -142,7 +216,11 @@ class HSlider(tk.Canvas):
         self.lo, self.hi, self.step = float(lo), float(hi), float(step)
         self.value = float(value)
         self.command = command
+        self._muted = False                   # 静音态：把手+填充条变灰
         self._hw = max(6, S["ctl_h"] // 3)   # 把手半宽（行程夹紧用）
+        # 右端内边距：轨道/把手行程不到画布最右，留出空间给外部数值标签，
+        # 避免最大值处把手被右侧数值（如 -6）文字遮挡。
+        self._end_pad = max(self._hw - 2, 6)
         self.bind("<Button-1>", self._on_drag)
         self.bind("<B1-Motion>", self._on_drag)
         self.bind("<Configure>", lambda e: self._draw())
@@ -158,20 +236,41 @@ class HSlider(tk.Canvas):
         return w if w > 8 else int(self["width"])
 
     def _val_to_x(self, v):
-        w = self._width()
-        span = w - 2 * self._hw
+        # 优先用 pack 后实际渲染宽度；仅在未映射（winfo_width<=1）时
+        # 回退到请求宽度。此前用 max(winfo_width, self["width"]) 会在
+        # pack 压缩画布时取到过大的请求宽度，导致把手画到可见区域外、
+        # 拖拽映射允许值超过最大值（滑到数值标签背后仍能动）。
+        _ww = self.winfo_width()
+        w = _ww if _ww > 1 else int(self["width"])
+        span = w - 2 * self._hw - self._end_pad
         return self._hw + int((v - self.lo) / (self.hi - self.lo) * span)
 
     def _draw(self):
         S = self.sizes
-        w = self._width()
+        # 优先用 pack 后实际渲染宽度；仅在未映射（winfo_width<=1）时
+        # 回退到请求宽度。此前用 max(winfo_width, self["width"]) 会在
+        # pack 压缩画布时取到过大的请求宽度，导致把手画到可见区域外、
+        # 拖拽映射允许值超过最大值（滑到数值标签背后仍能动）。
+        _ww = self.winfo_width()
+        w = _ww if _ww > 1 else int(self["width"])
         h = max(self.winfo_height(), int(self["height"]))
         self.delete("all")
         cy = h // 2
         th = max(8, S["ctl_h"] // 3)      # 加粗槽厚
-        # 槽顶满全宽（0 → w-1，留 1px 防描边被裁）
-        self.create_rectangle(0, cy - th // 2, w - 1, cy + th // 2,
+        # 槽左端贴边、右端内缩 _end_pad，给外部数值标签留位
+        right = w - 1 - self._end_pad
+        self.create_rectangle(0, cy - th // 2, right, cy + th // 2,
                               fill=theme.TRACK, width=0)
+        # 静音态：填充条+把手统一变灰（TEXT_FAINT/TEXT_DIM）；
+        # 正常态：ACCENT 橙填充 + TEXT 深棕把手 + ACCENT 描边
+        if self._muted:
+            fill_clr = theme.TEXT_FAINT
+            handle_fill = theme.TEXT_DIM
+            handle_outline = theme.TEXT_DIM
+        else:
+            fill_clr = theme.ACCENT
+            handle_fill = theme.TEXT
+            handle_outline = theme.ACCENT
         x = self._val_to_x(self.value)
         # 有符号量程（跨 0，如 dB 增益）：填充从 0 位到把手——
         # 增/减两侧各自向把手延伸，默认值不在"看起来已拉满"的位置
@@ -179,22 +278,27 @@ class HSlider(tk.Canvas):
             z = self._val_to_x(0.0)
             self.create_rectangle(min(x, z), cy - th // 2,
                                   max(x, z), cy + th // 2,
-                                  fill=theme.ACCENT, width=0)
+                                  fill=fill_clr, width=0)
         else:
-            self.create_rectangle(0, cy - th // 2, min(x, w - 1),
+            self.create_rectangle(0, cy - th // 2, min(x, right),
                                   cy + th // 2,
-                                  fill=theme.ACCENT, width=0)
+                                  fill=fill_clr, width=0)
         # 把手（行程夹在两端内并留 1px，防止右端描边被画布裁掉）
         hh = S["ctl_h"] - 4
-        x = max(self._hw + 1, min(w - self._hw - 1, x))
+        x = max(self._hw + 1, min(w - self._hw - self._end_pad - 1, x))
         self.create_rectangle(x - self._hw, cy - hh // 2,
                               x + self._hw, cy + hh // 2,
-                              fill=theme.ACCENT, outline=theme.TEXT_DIM,
-                              width=1)
+                              fill=handle_fill, outline=handle_outline,
+                              width=2)
 
     def _set_from_x(self, ex):
-        w = self._width()
-        frac = (ex - self._hw) / max(1, w - 2 * self._hw)
+        # 优先用 pack 后实际渲染宽度；仅在未映射（winfo_width<=1）时
+        # 回退到请求宽度。此前用 max(winfo_width, self["width"]) 会在
+        # pack 压缩画布时取到过大的请求宽度，导致把手画到可见区域外、
+        # 拖拽映射允许值超过最大值（滑到数值标签背后仍能动）。
+        _ww = self.winfo_width()
+        w = _ww if _ww > 1 else int(self["width"])
+        frac = (ex - self._hw) / max(1, w - 2 * self._hw - self._end_pad)
         frac = max(0.0, min(1.0, frac))
         v = self.lo + frac * (self.hi - self.lo)
         if self.step:
@@ -215,6 +319,13 @@ class HSlider(tk.Canvas):
         self._draw()
         if not silent and self.command:
             self.command()
+
+    def set_muted(self, muted: bool):
+        """切换静音态：把手+填充条变灰。状态未变则跳过重绘。"""
+        m = bool(muted)
+        if m != self._muted:
+            self._muted = m
+            self._draw()
 
     def _on_drag(self, e):
         self._set_from_x(e.x)

@@ -1,5 +1,14 @@
 # 更新日志
 
+## 2026-09-10 — 工具条按钮图标改用 FontAwesome 独立渲染
+
+- 「退出 / 添加 / 设置」三个工具条按钮的图标（电源 / 加号 / 齿轮）从正文
+  文本中的码点改为随包 FontAwesome 字体单独渲染的图标 Label：此前图标
+  码点混在正文字体里，能否显示取决于系统字体回退，缺字形时会显示为
+  方框或不显示；现图标必定呈现，无 FontAwesome 时自动退化为纯文字按钮；
+- FlatButton 组件支持可选 icon 参数（图标与中文正文拆分为两个 Label——
+  Tk 单 Label 无法混排两个字体族），运行态文字/底色/状态切换行为不变。
+
 ## 2026-09-05 — AEC far/mic 改外部时钟时间戳配对（GridHistory）+ 移除 FarSync/FarTap
 
 - **far 与 mic 按外部时钟（QPC/perf 秒）配对**：mic 每 hop 带采集时间戳
@@ -40,6 +49,24 @@
   与真实回声源不一致，延迟也对不上。现在端点选择与主设备选择一致：按名字
   相似度模糊匹配活动渲染端点（匹配不到才回退默认）。顺带修复立体声端点
   按单声道误读、以及设备切换后采集线程不跟随新客户端的问题。
+
+## 2026-09-05 — 内置随包字体注册修复，界面正文字体与关闭钮图标生效
+
+- **随包字体注册修复**：assets/fonts 内置字体（文泉驿微米黑中文字体、
+  FontAwesome 图标字体）此前从未注册成功——字体目录被错误解析到不存在
+  的 uitk/assets/fonts，注册函数静默空转，界面字体一直回退系统默认。
+  现按 PyInstaller 资源目录 → 仓库根多级探测定位字体目录，Windows 经
+  AddFontResourceExW（仅本进程可见，不污染系统字体表）注册目录内全部
+  字体并广播 WM_FONTCHANGE 刷新 Tk 字体族缓存；Linux/macOS 仍走
+  fontconfig 用户字体目录。
+- **界面正文字体**：优先使用随包中文字体文泉驿微米黑（同一字体在中文
+  Windows 按「文泉驿微米黑」枚举、英文环境按「WenQuanYi Micro Hei」
+  枚举，两种名字均已适配），其后依次回退 YaHei Consolas Hybrid /
+  Ark Pixel 像素字体系 / 微软雅黑 / Noto Sans CJK / Segoe UI；图标
+  字体不再混入正文候选。
+- **标题栏关闭钮**：FontAwesome 注册成功时显示窗口关闭图标，注册失败
+  回退普通字符 ×，不再出现图标位空白（原实现把 Pillow 读到的族名元组
+  直接传给 Tk 字体构造，族名非法被静默替换，图标码点丢失）。
 
 ## 2026-09-03 — 运行中勾选 TSE 即时生效（免重启）+ viz 未勾选空行修复
 
@@ -184,6 +211,156 @@
 - **修复节点面板滚轮回调报错**：滚轮每次滚动抛 AttributeError——
   Canvas.yview_pickplace 在 Python 3.12 tkinter 已不存在（仅 Text 有），
   移除该无效调用；滚轮滚动行为保持不变。
+
+## 2026-08-31 — 音量条数值/静音图标贴近滑条右端
+
+- **VB-CABLE 音量条右侧标签贴近滑杆**：音量条右侧百分比/静音标签
+  （vol_lbl）原用 `anchor="e"` + `width=8` + `padx=(pad_sm,0)`，文字右对齐
+  在 8 字符宽标签内，短数值（如 `50%`）左侧留出大片死区，视觉上滑杆与
+  🔇 静音图标/百分比距离很远。改为 `anchor="w"` + `width=7` +
+  `padx=(2,0)`，文字从标签左边界起始直接贴近滑杆；width=7 仍容纳最长
+  文本 `🔇 静音`（emoji 2 宽 + 空格 + 两中文 ≈ 6~7 字符）与 `100%`，
+  不裁剪、不跳变，死区转移到标签右侧朝窗口边缘处不可见。静音/非静音
+  态切换稳定。
+
+## 2026-08-31 — 修复节点面板鼠标滚轮滚动崩溃
+
+- **修复滚轮滚动时 `AttributeError: 'Canvas' object has no attribute 'yview_pickplace'`**：
+  节点面板 `_wheel` 回调在已调用 `yview_scroll(-d, "units")` 完成滚动后，
+  又多余调用了 `yview_pickplace("")`——该方法并非 Python Tkinter Canvas 的
+  公开绑定（Tcl/Tk 虽有 `yview pickplace` 但参数形式不同且未被 Python 封装），
+  触发属性错误导致滚动失效并向控制台抛异常。删除该冗余调用，滚动与边界
+  夹紧完全由 `yview_scroll` 负责。长链场景（如 9 节点链）滚动恢复正常。
+
+## 2026-08-31 — 收紧 HSlider 右端内边距
+
+- **HSlider 把手与右侧数值间隙收紧**：自绘水平滑杆的右端内边距
+  `_end_pad` 原为 `max(_hw + pad_sm, 12)`，基准缩放下 ctl_h=26 →
+  _hw=8、pad_sm=4，恒为 12px；叠加 val_lbl 左侧 4px padx 后，最大值处
+  把手到数值文字间隙偏空。改经两轮收紧：先到 `max(_hw, 8)`（基准 8px），
+  再到 `max(_hw - 2, 6)`（基准 6px、大缩放跟随把手、极小缩放保底 6px），
+  累计省 6px，把手与数值更贴近，仍保留不遮挡数字的最小安全距离。
+  对所有使用 HSlider 的组件（参数节点滑杆、音量条、音乐播放器进度条）生效。
+
+## 2026-08-31 — 修复音量条后台线程失效与硬编码设备名
+
+- **修复音量条在实际运行时不显示**：根因是 `refresh_devices` 后台线程
+  调用 pycaw 时未初始化 COM 套间，报 `OSError: 尚未调用 CoInitialize`
+  被吞掉，导致 `_vb_cable_names` 始终为空集合、音量条永不显示。COM
+  套间是线程级的（Tkinter 主线程自动初始化，后台线程不会）。现新增
+  `_ensure_com()` 辅助函数，在每个 pycaw 入口（`_find_dev` /
+  `get_vb_cable_names_win`）调用，用 thread-local 标记每线程只初始化
+  一次 `CoInitialize()`（STA，与 pycaw 内部一致）。修复后后台线程
+  `get_vb_cable_names()` 正常返回 VB-CABLE 设备名集合，音量条按预期
+  显示与回显。同时为设备缓存加 `threading.Lock`（枚举在锁外、缓存
+  读写加 double-check），保证主线程 `_viz_tick` 与后台预热并发安全。
+- **消除硬编码 "CABLE Output" 字符串**：原 UI 层散布裸字符串
+  `"CABLE Output"` 传入后端读写音量/静音，虽然后端按稳定规则匹配
+  不依赖该名字，但可读性差且易误解为设备名匹配。现引入命名常量
+  `CABLE_OUTPUT_KEY` / `CABLE_INPUT_KEY`（定义于 `_win.py`，经
+  `pvplatform.system` 平台感知导出），后端 `_STABLE_RULES` 与 UI
+  层所有调用方均引用常量，代码明确表达"这是逻辑键而非 FriendlyName"。
+- **音量条标签动态显示实际设备名**：原标签写死 "CABLE Output 音量"，
+  用户重命名设备后标签不更新。现新增 `get_cable_output_name()` 跨平台
+  函数，按稳定规则定位录音端点返回其实际 FriendlyName，`_viz_tick`
+  中动态更新标签文本（仅在变化时刷新，零额外开销），重命名后标签
+  自动跟随。
+
+## 2026-08-31 — 本地输出设备行新增 CABLE Output 音量条
+
+- **音频输出行选 VB-CABLE 端点时显示 CABLE Output 录音端点音量条**：
+  其他软件（Voicemeeter 等）的 AGC 会动态调整 Windows 录音端点
+  `CABLE Output` 的主音量百分比，原界面无法直观看到该变化。现在
+  「本地输出设备-音频输出」行内新增音量条，仅当所选输出设备为
+  VB-CABLE 端点（含 "CABLE"）时显示，其余设备自动隐藏。
+- **实时回显 + 可拖动调整**：音量条复用既有 HSlider 组件（深棕把手 +
+  橙色填充，与全局滑杆风格一致），右侧百分比标签。33ms 周期复用 viz
+  tick 读取端点音量回显滑杆，拖动时暂停外部读回防拽回；拖动过程只刷新
+  百分比标签、不写 COM，松手时一次性写回端点主音量，避免 30+/s 写入
+  卡顿。写失败时下个 tick 读回真实音量自然拽回滑杆。底层用 pycaw
+  （Core Audio Python 包装，纯 Python）读写 endpoint master volume
+  scalar，AudioDevice 按设备名缓存避免重复枚举；pycaw + comtypes +
+  psutil 均为纯 Python、无自编译二进制，按 sys_platform 标记限定
+  Windows 安装，符合项目硬约束。
+- **跨平台抽象**：`pvplatform.system` 新增 `get/set_endpoint_volume_pct`、
+  `get/set_endpoint_mute` 与 `invalidate_endpoint_volume_cache` 跨平台
+  包装函数，非 Windows 优雅降级（返回 None/False），Linux 不受影响。
+- **静音状态可视化**：端点被静音时，音量条把手与填充条统一变灰
+  （TEXT_DIM/TEXT_FAINT），右侧百分比标签变为「🔇 静音」；33ms tick
+  实时检测外部静音变化（如系统托盘或其他软件静音）自动回显。交互上
+  支持点击百分比标签切换静音（Windows 音量惯例），拖动滑杆时自动取消
+  静音——用户明确调音量即解除静音，无需额外点击。
+- **抗设备重命名**：原实现按 FriendlyName 子串匹配（如 "CABLE Output"），
+  用户在 Windows 设置里重命名设备后即失效。现改为按驱动描述
+  （'VB-Audio Virtual Cable'，INF 写入不可改）+ 设备 ID 前缀
+  （`{0.0.1.*}`=录音端点 / `{0.0.0.*}`=播放端点）稳定识别，重命名后
+  仍正常读写音量与静音状态。UI 层同步改用 `get_vb_cable_names()` 返回
+  的设备名集合判断是否显示音量条，不再硬编码 'CABLE' 子串。
+
+## 2026-08-30 — AGC 节点实时增益改为可视化条
+
+- **AGC 增益显示从文字标签升级为可视化增益条**：原文字标签因字体小、
+  背景对比度不足，用户反馈看不清且难以感知变化。现改用 Canvas 绘制的
+  水平增益条（uitk/viz.py 新增 AgcGainMeter），0dB 居中：
+  向右绿色填充=放大（声音小时 AGC 提升增益），向左橙色填充=衰减
+  （声音大时 AGC 压缩增益），条上叠加加粗大号数字显示当前 dB 值。
+  ±30dB 范围与 AgcController 增益限幅对齐，快攻慢放平滑过渡防闪烁。
+  引擎未运行或节点禁用时条内显示「AGC 未运行」提示。
+
+## 2026-08-29 — 修复滑杆数值变化时滑条长度抖动
+
+- **ParamSlider 数值标签固定字符宽度**：行内参数滑杆右侧数值标签（val_lbl）
+  原无宽度约束，数值位数变化（如 AGC 目标从 `-12` 变 `-6`，两位变一位）时
+  Label 宽度跳变，挤压/释放左侧 HSlider 的 expand 区域，导致滑条长度随数值
+  不断抖动。现按 lo/hi 格式化后的最大字符数 + step 小数位 + 单位长度固定
+  val_lbl 宽度（如压缩比 step=0.5 会产生 `10.5` 等带小数的中间值，已预留
+  小数位），`anchor="e"` 保持文字右对齐；HSlider 可用宽度恒定，滑条长度不再
+  抖动。对所有使用 ParamSlider 的参数节点（增益/AGC/压缩器/EQ/音效板等）生效。
+
+## 2026-08-29 — 修复滑杆最大值处把手被数值遮挡
+
+- **HSlider 宽度计算用反导致把手超出可见区域（根因修复）**：自绘水平滑杆
+  `_val_to_x` / `_draw` / `_set_from_x` 三处都用 `max(winfo_width, self["width"])`
+  取画布宽度。当 pack 布局压缩画布（如节点行内滑杆请求宽 250px 实际只分到
+  220px）时，`max` 会取到过大的请求宽度 250px——把手被画到 220px 可见区域
+  之外（数值标签下方），拖拽映射也基于 250px 计算，导致「滑块消失在数字背后
+  还能继续往右滑」。改为优先用 `winfo_width()` 实际渲染宽度，仅在未映射时
+  回退请求宽度。
+- **HSlider 右端增加内边距，轨道与把手行程内缩**：同步引入 `_end_pad` 右端
+  内边距（约一个把手宽度 + 间距），轨道右端、填充条右端、把手行程上界同步
+  内缩，填充条自然缩短，最大值处把手与数值标签之间留出清晰间隙。拖拽映射
+  公式同步调整，保证鼠标拖动与数值映射一致；该修复对所有使用 HSlider 的
+  组件（参数节点、音乐播放器进度条）生效。
+
+## 2026-08-29 — 加宽主窗口
+
+- **主窗口基准宽度由 420px 加宽到 500px**：调整 `uitk/metrics.py` 的
+  `win_w` 基准值（按分辨率挡位缩放），节点面板获得更多横向空间，参数滑杆、
+  设备下拉与文本显示更宽松。高度不变。所有依赖 `win_w` 的布局（设备下拉宽、
+  HSlider 默认宽、文本换行宽度等）自动按比例缩放。
+
+## 2026-08-29 — 修复自绘滑杆把手在最大值处消失
+
+- **修复 HSlider 把手与填充条同色导致最大值处视觉融合**：自绘水平滑杆
+  （`uitk/widgets.py` 的 `HSlider`）把手原用 `ACCENT`（南瓜橙）填充，与
+  已填充轨道段同色。当滑杆值到最大（如 AGC 目标 -6dBFS）时整条轨道被橙色
+  填满，把手仅靠 1px 深棕描边区分，视觉上几乎「消失」。改把手为 `TEXT`
+  深棕填充 + `ACCENT` 橙色 2px 描边——深棕在橙色填充条与浅棕轨道上均有
+  高对比，两端都清晰可见；该修复对所有使用 HSlider 的参数节点
+  （增益/AGC/压缩器/EQ/音效板等）生效。
+
+## 2026-08-29 — 修复自动增益 AGC 节点静默失效
+
+- **修复 AGC 节点带参数时创建失败被静默吞掉的问题**：`AgcPlugin.__init__`
+  原先调 `super().__init__(params)` 再建 `self.agc` 控制器；基类在 params
+  非空（用户调过目标 dB 并保存配置）时会触发 `on_params_changed()` 访问
+  尚未创建的 `self.agc`，抛 `AttributeError` 被 `set_plugins` 的 except 吞掉，
+  表现为 AGC 节点加入链后完全无效。改为先建控制器再调 super（与
+  GainPlugin / CompressorPlugin 同模式）；
+- **修正 AGC 时间常数与实际帧长不匹配**：`AgcController` 原用默认
+  `call_interval_ms=10ms` 计算 attack/release/rms_ema，但实际帧长为
+  1024@48k ≈ 21.33ms，导致全部包络响应偏慢约 2 倍。现按真实帧时长传入，
+  AGC 收敛速度符合设计预期。
 
 ## 2026-08-29 — 应用图标重设计：像素字体「P」单一绿色，取消运行/停用双态
 

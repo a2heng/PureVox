@@ -189,6 +189,23 @@ class AudioProcessor:
             out.append({"type": ptype, "enabled": bool(st.enabled), "params": params})
         return out
 
+    def get_live_agc_gain(self, index: int) -> float | None:
+        """取 AGC 节点当前实时增益（dB）。index 为 UI 行索引。
+        返回 None 表示该索引不是 AGC 或插件未就绪。"""
+        if not (0 <= index < len(self._entries)):
+            return None
+        t, st, _p, _en = self._entries[index]
+        if t != "agc" or st is None:
+            return None
+        obj = getattr(st, "eff", st)
+        agc = getattr(obj, "agc", None)
+        if agc is None:
+            return None
+        try:
+            return float(agc.gain_db)
+        except Exception:
+            return None
+
     def update_plugin_param(self, index: int, key: str, value):
         if 0 <= index < len(self._entries):
             t, st, p, _en = self._entries[index]

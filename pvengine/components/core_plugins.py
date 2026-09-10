@@ -54,13 +54,22 @@ class AgcPlugin(Effect):
 
     NAME = "agc"
     LABEL = "自动增益 AGC"
-    PARAMS = {"target_db": ("目标 dBFS", -40.0, -6.0, -20.0, 1.0)}
+    PARAMS = {"target_db": ("目标 dBFS", -40.0, 40.0, -20.0, 1.0)}
 
     def __init__(self, params=None, engine_cache=None):
-        super().__init__(params)
+        # 必须先建 agc 控制器再调 super().__init__——基类在 params 非空时会
+        # 触发 on_params_changed()，此时访问 self.agc，若控制器尚未创建会抛
+        # AttributeError 被 set_plugins 的 except 吞掉，导致 AGC 节点静默缺失。
+        # （与 GainPlugin / CompressorPlugin 同模式：先建 stage 再调 super）
         from pvengine.components.gain import AgcController
-        self.agc = AgcController(target_dbfs=self.params["target_db"])
+        from pvengine.context import HOP_LENGTH, SAMPLE_RATE
+        # 帧时长 = HOP_LENGTH / SAMPLE_RATE（1024@48k ≈ 21.33ms），用实际值算
+        # attack/release/rms_ema 时间常数；不能用 AgcController 默认的 10ms，
+        # 否则全部包络偏慢约 2 倍。
+        dt_ms = HOP_LENGTH / SAMPLE_RATE * 1000.0
+        self.agc = AgcController(call_interval_ms=dt_ms)
         self.agc.set_enabled(True, 0.0)
+        super().__init__(params)
 
     def on_params_changed(self):
         self.agc.target_dbfs = self.params["target_db"]

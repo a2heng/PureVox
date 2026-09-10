@@ -41,10 +41,10 @@ import tkinter.font as tkfont
 from logger import Logger
 from . import theme
 from .metrics import make_sizes, detect_zoom_for_screen, \
-    fix_tk_scaling, pick_font_family
+    fix_tk_scaling, font_families, pick_font_family
 from .widgets import FlatButton, DarkCheck, DarkCombo, ScrollFrame
 from .engine import EngineController, enum_io_devices
-from .viz import VUCanvas, SpectrumCanvas
+from .viz import VUCanvas, SpectrumCanvas, AgcGainMeter
 
 KIND_LABELS = {"input": "输入", "output": "输出", "fx": "处理", "viz": "可视化"}
 KIND_ORDER = ["input", "fx", "viz", "output"]
@@ -73,10 +73,23 @@ class ParamSlider(tk.Frame):
             tk.Label(self, text=label, bg=self["bg"], fg=theme.TEXT_DIM,
                      font=fonts.get("small")).pack(side=tk.LEFT,
                                                    padx=(0, sizes["pad_sm"]))
-        # 数值+单位在右（× 前），大号加粗醒目
+        # 数值+单位在右（× 前），大号加粗醒目。
+        # 固定字符宽度（取 lo/hi 格式化后的最大字符数 + step 小数位 + 单位），
+        # 防止数值位数变化（如 -12→-6，或 2→11.5）时 Label 宽度跳变，
+        # 挤压/释放 HSlider 的 expand 区域导致滑条长度抖动。
+        # anchor="e" 保证文字始终右对齐。
+        val_w = max(len(f"{lo:g}"), len(f"{hi:g}"))
+        # 非整数 step 会产生带小数的中间值（如 step=0.5 → 11.5），预留小数位
+        if step and float(step) != int(float(step)):
+            step_str = f"{step:g}"
+            if "." in step_str:
+                val_w += 1 + len(step_str.split(".")[1])
+        if self._unit:
+            val_w += 1 + len(self._unit)
         self.val_lbl = tk.Label(self, text=f"{default:g} {self._unit}".strip(),
                                 bg=self["bg"], fg=theme.TEXT,
-                                font=fonts.get("bold"), anchor="e")
+                                font=fonts.get("bold"), anchor="e",
+                                width=val_w)
         self.val_lbl.pack(side=tk.RIGHT, padx=(self.sizes["pad_sm"], 0))
         from .widgets import HSlider
         ref = {}
@@ -96,15 +109,14 @@ class ParamSlider(tk.Frame):
 class NodeRow(tk.Frame):
     """节点行：手柄 + 名称 + 启用勾选 + 删除 + inline 参数区。
 
-    手柄「‖」与删除「×」用像素字体渲染；手柄支持拖拽排序。
+    手柄与删除钮优先用 FontAwesome 图标字体渲染；手柄支持拖拽排序。
     """
 
-    GRIP_GLYPH = "‖"
     CLOSE_GLYPH = "×"
 
     def __init__(self, parent, cfg, spec, sizes, fonts,
                  on_remove=None, on_toggle=None, on_drag_preview=None,
-                 on_drag_commit=None, on_param=None):
+                 on_drag_commit=None, on_param=None, icon_font=None):
         self.sizes = sizes
         self.fonts = fonts
         self._on_drag_preview = on_drag_preview
@@ -117,23 +129,45 @@ class NodeRow(tk.Frame):
         self.head = head
         # 布局（左→右）：手柄 · 开关 · 名称 ······ 用户操作区（下拉/滑杆）· 删除 ×
         # 类型名不再占横向空间；中间全部让给用户操作控件
-        self.grip = tk.Label(head, text=self.GRIP_GLYPH,
+        # 拖拽手柄：FontAwesome 可用时用其 ellipsis-v 图标（U+F142，私有区
+        # 码点仅该字体有），否则回退「‖」（任何字体都有）——与删除钮同款回退
+        self.grip = tk.Label(head, text="\uF142" if icon_font else "‖",
                              bg=theme.PANEL, fg=theme.MID,
-                             font=fonts.get("bold"), cursor="fleur")
+                             font=icon_font or fonts.get("bold"),
+                             cursor="fleur")
         self.grip.pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
         self.grip.bind("<ButtonPress-1>", self._drag_begin)
         self.grip.bind("<B1-Motion>", self._drag_motion)
         self.grip.bind("<ButtonRelease-1>", self._drag_release)
         self.on_var = tk.BooleanVar(value=bool(cfg.get("enabled", True)))
-        self.check = DarkCheck(head, "", self.on_var, command=self._toggled,
-                               sizes=sizes, fonts=fonts)
+        # 启用开关：FontAwesome 可用时用 toggle 图标两态显示（U+F204 关 /
+        # U+F205 开，私有区码点仅该字体有），否则回退 DarkCheck 方块对勾
+        # ——与手柄/删除钮同款回退策略
+        if icon_font:
+            # 开关图标专用放大字体（≈1.4×body），比默认图标字号大更醒目
+            toggle_font = tkfont.Font(font=icon_font)
+            toggle_font.configure(size=-int(self.sizes["font_body"] * 1.4))
+            self.check = tk.Label(head, text="\uF204", bg=theme.PANEL,
+                                  fg=theme.MID, font=toggle_font,
+                                  cursor="hand2")
+            self.check.bind("<Button-1>",
+                            lambda e: self._toggle_icon())
+            self.on_var.trace_add("write",
+                                  lambda *a: self._sync_toggle_icon())
+            self._sync_toggle_icon()
+        else:
+            self.check = DarkCheck(head, "", self.on_var, command=self._toggled,
+                                   sizes=sizes, fonts=fonts)
         self.check.pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
         self.title_lbl = tk.Label(head, text=f"{spec.label}", bg=theme.PANEL,
                                   fg=theme.TEXT, anchor="w",
                                   font=fonts.get("body"))
         self.title_lbl.pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
-        rm = tk.Label(head, text=self.CLOSE_GLYPH, bg=theme.PANEL,
-                      fg=theme.TEXT_DIM, font=fonts.get("bold"),
+        # 删除钮：FontAwesome 可用时用其 trash 图标（U+F014，私有区码点
+        # 仅该字体有），否则回退普通字符 ×（任何字体都有）——与主窗关闭钮同款
+        rm = tk.Label(head, text="\uF014" if icon_font else self.CLOSE_GLYPH,
+                      bg=theme.PANEL,
+                      fg=theme.TEXT_DIM, font=icon_font or fonts.get("bold"),
                       cursor="hand2")
         if on_remove:
             rm.bind("<Button-1>", lambda e: on_remove())
@@ -250,7 +284,8 @@ class NodeRow(tk.Frame):
         delay_line = self._ec_line("Far 延迟")
         self._aec_delay_var = tk.DoubleVar(value=0.0)
         auto_btn = FlatButton(delay_line, "校准", sizes=self.sizes,
-                              command=self._on_aec_auto_calibrate)
+                              command=self._on_aec_auto_calibrate,
+                              font=self.fonts.get("body"))
         auto_btn.pack(side=tk.RIGHT, padx=(0, 4))
         self._aec_auto_btn = auto_btn
         delay_lbl = tk.Label(delay_line, text="0ms", bg=theme.BASE,
@@ -411,6 +446,27 @@ class NodeRow(tk.Frame):
             ps._key = key
             ps.pack(fill=tk.X, padx=self.sizes["pad_sm"],
                     pady=0 if inline_ok else 2)
+        # AGC 节点额外显示实时增益可视化条，方便直观看到自动调节效果
+        self.gain_meter = None
+        if self.spec.name == "agc":
+            self.gain_meter = AgcGainMeter(
+                self.body_frame, sizes=self.sizes, height=26)
+            self.gain_meter.pack(fill=tk.X,
+                                  padx=self.sizes["pad_sm"], pady=3)
+
+    def _toggle_icon(self):
+        self.on_var.set(not bool(self.on_var.get()))
+        self._sync_toggle_icon()
+        self._toggled()
+
+    def _sync_toggle_icon(self):
+        # 选中 F046（toggle-on，深橙高亮）/ 未选中 F096（toggle-off，弱化）
+        on = bool(self.on_var.get())
+        try:
+            self.check.configure(text="\uF046" if on else "\uF096",
+                                 fg=theme.ACCENT_DEEP if on else theme.MID)
+        except Exception:
+            pass
 
     def _toggled(self):
         self.cfg["enabled"] = bool(self.on_var.get())
@@ -474,6 +530,7 @@ class MainWindowTk:
         from .metrics import enable_hidpi
         enable_hidpi()
         self.config = config
+        self._vb_cable_names = set()   # VB-CABLE 设备名集合（refresh_devices 填充）
         self.root = tk.Tk()
         fix_tk_scaling(self.root)
         family = pick_font_family(self.root)
@@ -489,6 +546,12 @@ class MainWindowTk:
                                  weight="bold"),
             "small": tkfont.Font(family=family, size=-S["font_small"]),
         }
+        # 图标字体：FontAwesome4.7.ttf（随包，pick_font_family 内已注册进
+        # 本进程）。只认 font families 里真实存在的族名——Tk 对未知族名
+        # 不报错、静默替换成默认字体，图标码点（私有区）随之丢失。
+        self.font_icon = (
+            tkfont.Font(family="FontAwesome", size=-S["font_body"])
+            if "FontAwesome" in font_families(self.root) else None)
         try:
             from _build_version import BUILD_DATE   # 打包脚本生成；源码态缺失
             _ver = str(BUILD_DATE).strip()
@@ -522,8 +585,12 @@ class MainWindowTk:
                               width=S["titlebar_h"], height=S["titlebar_h"])
         close_wrap.pack(side=tk.RIGHT)
         close_wrap.pack_propagate(False)
-        btn_x = tk.Label(close_wrap, text="×", bg=theme.TITLE_BG,
-                         fg=theme.TITLE_FG, font=self.fonts["bold"],
+        # 关闭钮字符：FontAwesome 可用时用其 window-close 图标（U+F2D4，
+        # 私有区码点仅该字体有），否则回退普通字符 ×（任何字体都有）
+        btn_x = tk.Label(close_wrap,
+                         text="\uF00D" if self.font_icon else "×",
+                         bg=theme.TITLE_BG, fg=theme.TITLE_FG,
+                         font=self.font_icon or self.fonts["bold"],
                          cursor="hand2")
         btn_x.place(relx=0.5, rely=0.5, anchor="center")
         btn_x.bind("<Button-1>", lambda e: self._close_request())
@@ -553,6 +620,7 @@ class MainWindowTk:
         bar.pack(fill=tk.X, padx=S["pad_md"], pady=S["pad_md"])
         self.btn_start = FlatButton(bar, "启动音频处理",
                                     command=self._on_start,
+                                    icon="\uf275", icon_font=self.font_icon,
                                     bg=theme.START_BG, fg=theme.ACCENT_TEXT,
                                     font=self.fonts["body"], sizes=self.sizes)
         self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -560,17 +628,20 @@ class MainWindowTk:
         self.btn_quit = FlatButton(bar, "退出", command=self.quit_app,
                                    bg=theme.STOP_BG,
                                    font=self.fonts["body"],
-                                   sizes=self.sizes, pad=S["pad_md"])
+                                   sizes=self.sizes, pad=S["pad_md"],
+                                   icon="\uF011", icon_font=self.font_icon)
         self.btn_quit.pack(side=tk.LEFT, padx=(S["pad_sm"], 0))
 
-        self.btn_add = FlatButton(bar, "添加 ▾", command=self._add_menu,
+        self.btn_add = FlatButton(bar, "添加", command=self._add_menu,
                                   font=self.fonts["body"], sizes=self.sizes,
-                                  pad=S["pad_md"])
+                                  pad=S["pad_md"],
+                                  icon="\uF0FE", icon_font=self.font_icon)
         self.btn_add.pack(side=tk.LEFT, padx=(S["pad_sm"], 0))
 
-        self.btn_gear = FlatButton(bar, "设置 ▾", command=self._gear_menu,
+        self.btn_gear = FlatButton(bar, "设置", command=self._gear_menu,
                                    font=self.fonts["body"], sizes=self.sizes,
-                                   pad=S["pad_md"])
+                                   pad=S["pad_md"],
+                                   icon="\uF013", icon_font=self.font_icon)
         self.btn_gear.pack(side=tk.LEFT, padx=(S["pad_sm"], 0))
 
         # ── 节点面板（滚动）──
@@ -1051,7 +1122,8 @@ class MainWindowTk:
                       on_remove=lambda: self.remove_row(row),
                       on_drag_preview=self._move_row_live,
                       on_drag_commit=self._apply_chain_change,
-                      on_param=lambda r, k, v: self._on_param(r, k, v))
+                      on_param=lambda r, k, v: self._on_param(r, k, v),
+                      icon_font=self.font_icon)
         row.set_toggle_cb(self._apply_chain_change)
         row.set_hot_toggle_cb(self._hot_toggle)
         row._on_param_cb = self._apply_chain_change
@@ -1095,6 +1167,9 @@ class MainWindowTk:
         # 虚拟输出设备行：内嵌 VB-CABLE 驱动状态卡（原检测面板内容）
         if spec.name == "virtual_output":
             self._attach_vb_card(row)
+        # 本地输出设备行：选 VB-CABLE 端点时显示 CABLE Output 音量条
+        if spec.name == "audio_output":
+            self._attach_local_output_volume(row)
         # 全部行内内容就绪后统一显示参数区（无展开收起）
         row.ensure_body()
         self._pack_row(row)
@@ -1212,6 +1287,85 @@ class MainWindowTk:
                         justify="left")
         hint.pack(fill=tk.X, padx=self.sizes["pad_lg"],
                   pady=self.sizes["pad_sm"])
+
+    def _attach_local_output_volume(self, row):
+        """本地输出设备行内 CABLE Output 端点音量条（实时回显 + 可调）。
+
+        仅当所选输出设备为 VB-CABLE 端点（CABLE Input）时显示；滑杆读写
+        Windows 录音端点 "CABLE Output" 主音量——其他软件 AGC 调的就是它。
+        显示/隐藏与回显均在 _viz_tick 33ms 周期内完成，拖动时设 vol_dragging
+        防止外部读回把滑杆拽回去。非 Windows 或无端点时面板隐藏。
+        """
+        S, F = self.sizes, self.fonts
+        from pvplatform.system import CABLE_OUTPUT_KEY
+        _KEY = CABLE_OUTPUT_KEY   # 后端逻辑键，非 FriendlyName（可重命名）
+        holder = tk.Frame(row.body_frame, bg=theme.BASE)
+        row.vol_holder = holder
+        row.vol_dragging = False
+        row.vol_visible = False
+        # 标签文本动态更新（_viz_tick 中用实际 FriendlyName 替换）；
+        # 初始用通用占位，避免写死可重命名的 "CABLE Output"
+        row.vol_title_lbl = tk.Label(holder, text="VB-CABLE 音量", bg=theme.BASE,
+                                     fg=theme.TEXT_DIM, font=F.get("small"))
+        row.vol_title_lbl.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
+        row.vol_lbl = tk.Label(holder, text="--%", bg=theme.BASE,
+                              fg=theme.TEXT, font=F.get("bold"),
+                              anchor="w", width=7, cursor="hand2")
+        row.vol_lbl.pack(side=tk.RIGHT, padx=(2, 0))
+        ref = {"s": None, "muted": False}
+
+        def _on_vol():
+            # 拖动中只更新百分比标签，不写 COM（避免 30+/s 端点写入卡顿）
+            # 静音态下拖动时临时显示百分比，松手写回时自动取消静音
+            pct = ref["s"].value
+            row.vol_lbl.configure(text=f"{pct:.0f}%")
+
+        def _commit_vol():
+            # 松手时一次性写回 Windows 端点主音量；写失败时下个 viz tick
+            # 会读回真实音量并把滑杆拽回，形成自然的视觉反馈
+            try:
+                from pvplatform.system import set_endpoint_volume_pct, set_endpoint_mute
+                # 拖动滑杆 = 用户明确要调音量，无条件取消静音（Windows 惯例）。
+                # 不能只看 ref["muted"]——外部静音（系统托盘/其他软件）时该
+                # flag 不会更新，必须无条件取消才能保证拖动后有声音。
+                set_endpoint_mute(_KEY, False)
+                ref["muted"] = False
+                set_endpoint_volume_pct(_KEY, ref["s"].value / 100.0)
+            except Exception:
+                pass
+
+        def _toggle_mute(e=None):
+            # 点击百分比标签切换静音（Windows 音量惯例）
+            try:
+                from pvplatform.system import set_endpoint_mute, get_endpoint_mute
+                cur = get_endpoint_mute(_KEY)
+                if cur is None:
+                    return
+                new_mute = not cur
+                if set_endpoint_mute(_KEY, new_mute):
+                    ref["muted"] = new_mute
+                    ref["s"].set_muted(new_mute)
+                    if new_mute:
+                        row.vol_lbl.configure(text="🔇静音")
+                    else:
+                        # 取消静音后立即刷新百分比
+                        from pvplatform.system import get_endpoint_volume_pct
+                        v = get_endpoint_volume_pct(_KEY)
+                        if v is not None:
+                            row.vol_lbl.configure(text=f"{int(round(v * 100))}%")
+            except Exception:
+                pass
+
+        from .widgets import HSlider
+        s = HSlider(holder, 0, 100, 50, 1, sizes=S, command=_on_vol)
+        ref["s"] = s
+        row.vol_slider = s
+        row.vol_toggle_mute = _toggle_mute
+        s.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        s.bind("<ButtonPress-1>", lambda e: setattr(row, "vol_dragging", True))
+        s.bind("<ButtonRelease-1>",
+               lambda e: (setattr(row, "vol_dragging", False), _commit_vol()))
+        row.vol_lbl.bind("<Button-1>", _toggle_mute)
 
     def _attach_music_player(self, row):
         """音乐播放器行内控制：选曲目 + 进度滑块（可拖 seek）；
@@ -1442,6 +1596,67 @@ class MainWindowTk:
                     w.update_spectrum(None, data)
             except Exception:
                 pass
+        # AGC 实时增益刷新（33ms 周期，复用 viz tick 避免新增定时器）
+        for i, row in enumerate(self.rows):
+            meter = getattr(row, "gain_meter", None)
+            if meter is None:
+                continue
+            try:
+                if proc and row.on_var.get():
+                    g = proc.get_live_agc_gain(i)
+                    meter.update_gain(g)
+                else:
+                    meter.update_gain(None)
+            except Exception as e:
+                meter.update_gain(None)
+        # 本地输出设备行：CABLE Output 端点音量实时回显（复用 viz tick 33ms）
+        for row in self.rows:
+            holder = getattr(row, "vol_holder", None)
+            if holder is None:
+                continue
+            try:
+                dev = str((row.cfg.get("params") or {}).get("device", ""))
+                # 用 refresh_devices 缓存的 VB-CABLE 设备名集合判断，
+                # 替代硬编码 'CABLE' 子串匹配（用户重命名设备后仍生效）
+                vb_names = getattr(self, "_vb_cable_names", set())
+                if dev not in vb_names:
+                    if getattr(row, "vol_visible", False):
+                        holder.pack_forget()
+                        row.vol_visible = False
+                    continue
+                if not getattr(row, "vol_visible", False):
+                    holder.pack(fill=tk.X, padx=self.sizes["pad_lg"],
+                                pady=(0, self.sizes["pad_sm"]))
+                    row.vol_visible = True
+                if getattr(row, "vol_dragging", False):
+                    continue
+                from pvplatform.system import (CABLE_OUTPUT_KEY,
+                                               get_endpoint_volume_pct,
+                                               get_endpoint_mute,
+                                               get_cable_output_name)
+                # 动态标签：用实际 FriendlyName（抗重命名），仅在变化时更新
+                actual_name = get_cable_output_name()
+                if actual_name:
+                    title = f"{actual_name} 音量"
+                    if row.vol_title_lbl.cget("text") != title:
+                        row.vol_title_lbl.configure(text=title)
+                pct = get_endpoint_volume_pct(CABLE_OUTPUT_KEY)
+                if pct is None:
+                    row.vol_lbl.configure(text="--%")
+                    row.vol_slider.set_muted(False)
+                    continue
+                # 静音状态：与音量一起读（同一缓存 AudioDevice，开销极小）
+                muted = get_endpoint_mute(CABLE_OUTPUT_KEY)
+                if muted:
+                    row.vol_slider.set_muted(True)
+                    row.vol_lbl.configure(text="🔇静音")
+                else:
+                    row.vol_slider.set_muted(False)
+                    v = int(round(pct * 100))
+                    row.vol_slider.set_value(v, silent=True)
+                    row.vol_lbl.configure(text=f"{v}%")
+            except Exception:
+                pass
         # ── AEC 行 VU 电平表更新（10fps，降 CPU）──
         aec_thread = self.engine.thread if self.engine.running else None
         if now >= getattr(self, "_aec_vu_next", 0.0):
@@ -1600,10 +1815,39 @@ class MainWindowTk:
                 devs = enum_io_devices()
             except Exception:
                 return
+            # 设备重枚举时主动失效端点音量 COM 缓存：拔插/重命名后旧指针
+            # 可能已失效，清掉让下次 _viz_tick 读时重新枚举绑定
+            try:
+                from pvplatform.system import invalidate_endpoint_volume_cache
+                invalidate_endpoint_volume_cache()
+            except Exception:
+                pass
             out_names = [t for t, _d in devs.get("outputs", [])]
             in_names = [t for t, _d in devs.get("inputs", [])]
-            vb_ok = (any("CABLE Input" in t for t in out_names)
-                     and any("CABLE Output" in t for t in in_names))
+            # VB-CABLE 设备名集合（抗用户重命名）：后端按驱动描述识别，
+            # 不依赖 FriendlyName 子串。UI 层用此集合判断选中设备是否
+            # VB-CABLE，替代硬编码 'CABLE' 匹配。
+            vb_names = set()
+            try:
+                from pvplatform.system import get_vb_cable_names
+                vb_names = get_vb_cable_names()
+            except Exception:
+                pass
+            self._vb_cable_names = vb_names
+            # 双端存在判断：输出设备列表与 VB 集合有交集，且输入设备列表
+            # 也有交集（CABLE Input 是输出端点，CABLE Output 是输入端点）
+            vb_ok = bool(vb_names and (set(out_names) & vb_names)
+                         and (set(in_names) & vb_names))
+            # 预热 CABLE Output 端点音量缓存：后台线程内完成首次全量枚举，
+            # 避免首个 _viz_tick 在主线程 cache miss 卡顿。仅 VB-CABLE 双端
+            # 都存在时才预热（非 VB 场景不浪费一次设备枚举）
+            if vb_ok:
+                try:
+                    from pvplatform.system import (get_endpoint_volume_pct,
+                                                   CABLE_OUTPUT_KEY)
+                    get_endpoint_volume_pct(CABLE_OUTPUT_KEY)
+                except Exception:
+                    pass
 
             def _apply():
                 for r in self.rows:
