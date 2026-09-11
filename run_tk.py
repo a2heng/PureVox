@@ -20,9 +20,7 @@
 import sys
 import datetime
 
-# Fix console encoding for Windows
-import os
-os.system('chcp 65001 >nul')
+# 管道输出（IDE/重定向）统一 UTF-8；真实控制台走宽字符 API，无需 chcp
 if sys.stdout is not None:
     sys.stdout.reconfigure(encoding='utf-8')
 
