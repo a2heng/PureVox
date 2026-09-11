@@ -23,7 +23,8 @@ import datetime
 # Fix console encoding for Windows
 import os
 os.system('chcp 65001 >nul')
-sys.stdout.reconfigure(encoding='utf-8')
+if sys.stdout is not None:
+    sys.stdout.reconfigure(encoding='utf-8')
 
 def _early_log(msg, tag="SYS"):
     try:
