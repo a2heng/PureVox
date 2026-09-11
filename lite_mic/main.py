@@ -346,6 +346,10 @@ def main():
     # 仅当窗口被最小化（iconic）时才隐藏，避免 withdraw 触发误隐藏
     ui.root.bind("<Unmap>", lambda e: on_close() if ui.root.state() == "iconic" else None)
 
+    # 开机自启已配置：启动即隐藏到托盘，静默运行
+    if cfg.get("autostart"):
+        ui.root.after(100, _hide_window)
+
     ui.run()
     if tray:
         tray.stop()
