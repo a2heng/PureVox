@@ -34,12 +34,13 @@ engine_cache：AudioProcessor 持有的 dict，AI 插件共享模型 Stage，
 from dataclasses import dataclass, field
 
 from pvengine.components.core_plugins import (
-    GainPlugin, AgcPlugin, GatePlugin,
+    GainPlugin, GatePlugin,
     Eq10Plugin, Eq31Plugin, Eq61Plugin,
     CompressorPlugin,
     DenoiserPlugin, DenoiserVadPlugin,
     TsePlugin,
 )
+from pvengine.components.agc import AgcPlugin
 from pvengine.components.soundpad import SoundPadPlugin
 from pvengine.components.music_player import MusicPlayerPlugin
 from pvengine.components.desktop_audio import DesktopAudioPlugin

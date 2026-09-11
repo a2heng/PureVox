@@ -22,6 +22,7 @@
 节点类型清单唯一来源 = pvengine.plugins.all_specs()，UI 禁止自建。
 """
 
+import math
 import os
 import sys
 import threading
@@ -411,6 +412,16 @@ class NodeRow(tk.Frame):
             ps._key = key
             ps.pack(fill=tk.X, padx=self.sizes["pad_sm"],
                     pady=0 if inline_ok else 2)
+        # AGC 节点：增益值显示在标题栏右侧（× 之前）
+        if self.spec.name == "agc":
+            self._agc_gain_lbl = tk.Label(
+                self.head, text="",
+                bg=theme.PANEL, fg=theme.ACCENT,
+                font=self.fonts.get("bold"), anchor="e")
+            self._agc_gain_lbl.pack(side=tk.RIGHT, padx=(0, self.sizes["pad_sm"]))
+            self._agc_instance_id = None
+            self._agc_last_val = None
+            self._agc_last_change = 0.0
 
     def _toggled(self):
         self.cfg["enabled"] = bool(self.on_var.get())
@@ -1056,6 +1067,7 @@ class MainWindowTk:
         row.set_hot_toggle_cb(self._hot_toggle)
         row._on_param_cb = self._apply_chain_change
         row._apply_enabled_look()
+        # AGC 行：实时增益值显示标签在 _build_inline 中创建
         # echo_cancel 行：延迟滑杆 + 自动校准回调
         if spec.name == "echo_cancel":
             row._on_aec_delay_cb = self._on_aec_delay_change
@@ -1442,6 +1454,35 @@ class MainWindowTk:
                     w.update_spectrum(None, data)
             except Exception:
                 pass
+        # ── AGC 增益值实时更新（10fps，降 CPU）──
+        if now >= getattr(self, "_agc_update_next", 0.0):
+            self._agc_update_next = now + 0.1
+            if proc:
+                try:
+                    agc = proc._find("agc")
+                except Exception:
+                    agc = None
+                for r in self.rows:
+                    if r.spec.name != "agc" or not r.on_var.get():
+                        continue
+                    gain_lbl = getattr(r, "_agc_gain_lbl", None)
+                    if not gain_lbl:
+                        continue
+                    if agc and hasattr(agc, 'get_debug_info'):
+                        info = agc.get_debug_info()
+                        pk = info.get("peak", 0)
+                        pk_db = max(20.0 * math.log10(max(pk, 1e-10)), -90.0)
+                        gain_db = agc.get_agc_gain_db()
+                        gain_str = f"{gain_db:+.1f} dB  峰值 {pk_db:.1f} dB"
+                        prev = getattr(r, "_agc_last_val", None)
+                        if prev is not None and gain_str != prev:
+                            r._agc_last_change = now
+                        r._agc_last_val = gain_str
+                        age = now - getattr(r, "_agc_last_change", 0.0)
+                        fg = theme.ACCENT if age < 1.5 else theme.TEXT_DIM
+                        gain_lbl.config(text=gain_str, fg=fg)
+                    else:
+                        gain_lbl.config(text="no agc found", fg=theme.TEXT_DIM)
         # ── AEC 行 VU 电平表更新（10fps，降 CPU）──
         aec_thread = self.engine.thread if self.engine.running else None
         if now >= getattr(self, "_aec_vu_next", 0.0):

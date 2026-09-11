@@ -49,33 +49,6 @@ class GainPlugin(Effect):
         self.stage.reset()
 
 
-class AgcPlugin(Effect):
-    """AGC 自动增益（自包含）：测本插件输入 RMS → 平滑增益 → 施加。"""
-
-    NAME = "agc"
-    LABEL = "自动增益 AGC"
-    PARAMS = {"target_db": ("目标 dBFS", -40.0, -6.0, -20.0, 1.0)}
-
-    def __init__(self, params=None, engine_cache=None):
-        super().__init__(params)
-        from pvengine.components.gain import AgcController
-        self.agc = AgcController(target_dbfs=self.params["target_db"])
-        self.agc.set_enabled(True, 0.0)
-
-    def on_params_changed(self):
-        self.agc.target_dbfs = self.params["target_db"]
-        self.agc.target_linear = 10.0 ** (self.params["target_db"] / 20.0)
-
-    def process(self, frame, ctx):
-        rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64)))) if len(frame) else 0.0
-        self.agc.update_rms(rms)
-        g = self.agc.tick()
-        return frame * np.float32(g)
-
-    def reset(self):
-        self.agc.reset()
-
-
 class GatePlugin(Effect):
     """噪声门（原 VAD 硬门升级为带参数的门）。"""
 
