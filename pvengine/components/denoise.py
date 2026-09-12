@@ -78,23 +78,3 @@ class DenoiseStage(Stage):
 
     def release(self):
         self.engine.release()
-
-
-class DenoiseVadStage(Stage):
-    """降噪 VAD 模式组件：与 DenoiseStage 同接口，使用 VAD 变体模型。"""
-
-    name = "denoise_vad"
-    active_modes = frozenset({1, 2, 3})
-
-    def __init__(self, model_path: str):
-        super().__init__()
-        self.engine = DenoiseEngine(model_path)
-
-    def process(self, frame, ctx):
-        return self.engine.process_chunk(frame)
-
-    def reset(self):
-        self.engine.reset()
-
-    def release(self):
-        self.engine.release()

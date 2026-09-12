@@ -243,14 +243,6 @@ class DenoiserPlugin(_AiPluginBase):
     _KIND = "denoise"
 
 
-class DenoiserVadPlugin(_AiPluginBase):
-    """AI 智能降噪 VAD（202609 VAD 变体模型）。引擎经 cache 共享，重建链不重复加载。"""
-
-    NAME = "denoiser_vad"
-    LABEL = "AI 降噪 VAD"
-    _KIND = "denoise_vad"
-
-
 class TsePlugin(_AiPluginBase):
     """目标说话人提取（202609 TSE）。需先加载参考音频；无参考时直通。"""
 
@@ -299,9 +291,6 @@ def _make_stage(kind):
     if kind == "denoise":
         from pvengine.components.denoise import DenoiseStage
         return DenoiseStage(_model_file(_mc.DENOISE_MODEL))
-    if kind == "denoise_vad":
-        from pvengine.components.denoise import DenoiseVadStage
-        return DenoiseVadStage(_model_file(_mc.DENOISE_VAD_MODEL))
     if kind == "tse":
         from pvengine.components.tse import TseStage
         return TseStage(_model_file(_mc.TSE_MODEL))

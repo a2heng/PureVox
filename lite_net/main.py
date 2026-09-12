@@ -110,7 +110,7 @@ def main():
 
     # 模型常驻（仓库根 models/；冻结态在 _MEIPASS/models/）
     def _find_model():
-        rel = os.path.join("models", "purevox_denoise_202609_ep0312.onnx")
+        rel = os.path.join("models", "purevox_denoise_202609_ep0000.onnx")
         meipass = getattr(sys, "_MEIPASS", None)
         cands = []
         if meipass:

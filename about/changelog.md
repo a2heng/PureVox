@@ -1,5 +1,13 @@
 # 更新日志
 
+## 2026-09-12 — 降噪模型收敛为 ep0000（删除 ep0312 与 VAD 模型/节点）
+
+- 主降噪模型切换为 `purevox_denoise_202609_ep0000.onnx`；删除旧主降噪
+  `..._ep0312.onnx` 与 `..._vad_ep0138.onnx`，`models/` 只保留 ep0000 一个降噪模型；
+- 移除「AI 降噪 VAD」节点：`DenoiserVadPlugin` / `DenoiseVadStage` /
+  `model_config.DENOISE_VAD_MODEL` 及 `pvengine.plugins` 目录条目一并删除；
+- `lite_mic` / `lite_net` 内置降噪模型引用同步改指 ep0000。
+
 ## 2026-09-12 — 设备选择修复与合并 + Linux 采集/虚拟声卡/网络输入对齐
 
 - **修复 Linux 无声/VU 非空即满的根因**：`_libpulse` 的 `PA_SAMPLE_FLOAT32LE`
