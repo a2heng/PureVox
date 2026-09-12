@@ -101,9 +101,8 @@ class MicCaptureLinux:
     def read_ts(self, n_samples: int):
         """读取 n 样本 → (首样本主时钟秒, samples)；不足返回 None。
 
-        时间戳取读取瞬间的 perf（Linux 暂以采集/读取边界近似，后续接 libpulse
-        流时间精化；与 Windows 同一外部钟量纲）。"""
-        data = self.read(n_samples)
-        if not data:
+        时间戳为流写入时的真实采集时刻（libpulse 流延迟），与 Windows
+        MicCapture 的 TimedFifo 同一语义（far 与 mic 同一外部时钟域）。"""
+        if not self._active or self._bridge is None or self._far_handle < 0:
             return None
-        return (__import__('time').perf_counter(), data)
+        return self._bridge.read_far_ts(self._far_handle, n_samples)

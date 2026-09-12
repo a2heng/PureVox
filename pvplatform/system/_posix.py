@@ -296,14 +296,6 @@ def ensure_virtual_mic(logger) -> bool:
         logger.err("虚拟 sink 创建后未就绪")
         return False
 
-    # 把 purevox_out 设为默认 sink：ALSA 接口下降噪输出经 pcm.pulse 走默认 sink，
-    # 从而同样汇入本虚拟麦克风（一个中转设备兼顾 PipeWire / ALSA 两种接口）。
-    try:
-        subprocess.run(["pactl", "set-default-sink", VIRTUAL_MIC_SINK],
-                       capture_output=True, text=True, timeout=5)
-    except Exception:
-        pass
-
     if _create_virtual_mic_source(logger):
         logger.sys(f"虚拟麦克风已就绪 ({VIRTUAL_MIC_SOURCE} / {VIRTUAL_MIC_MIC})")
     else:

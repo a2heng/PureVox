@@ -87,9 +87,13 @@ class DarkDialog(tk.Toplevel):
         except Exception:
             pos_x = pos_y = 60
         self.geometry(f"+{pos_x}+{pos_y}")
+        # 主窗可能处于 -topmost（托盘呼出），无边框子窗必须同样置顶才会
+        # 显示在主窗之上，否则会被压在后面点不到。
+        self.attributes("-topmost", True)
         self.deiconify()
         self.lift()
         self.focus_force()
+        self.bind("<Escape>", lambda e: self.destroy())
 
     def _drag_begin(self, e):
         self._tdx, self._tdy = e.x, e.y
@@ -101,6 +105,35 @@ class DarkDialog(tk.Toplevel):
             self.geometry(f"+{x}+{y}")
         except Exception:
             pass
+
+
+def show_message(parent, title, message, sizes=None, fonts=None):
+    """深色提示框（确定按钮）。
+
+    必须用自定义 override-redirect 弹窗，不能用原生 messagebox：主窗是
+    override-redirect，Mutter 会把受 WM 管理（含原生 messagebox）的窗口排在
+    它下面，导致提示框被主窗盖住看不见；override 弹窗才能浮在其上。
+    """
+    from .widgets import FlatButton
+    sizes = sizes or make_sizes(100)
+    fonts = fonts or {}
+    scale = sizes.get("scale", 1)
+    text = str(message)
+    w = 440
+    # 依换行 + 估算折行行数定高
+    lines = text.count("\n") + 1 + len(text) // 44
+    h = min(360, 110 + lines * 22)
+    dlg = DarkDialog(parent, title, w, h, sizes=sizes, fonts=fonts)
+    tk.Label(dlg.body, text=text, bg=theme.WINDOW, fg=theme.TEXT,
+             font=fonts.get("body"), justify="left", anchor="w",
+             wraplength=max(280, int(w * scale) - 40)).pack(
+        fill=tk.BOTH, expand=True, padx=16, pady=(14, 4))
+    bar = tk.Frame(dlg.body, bg=theme.WINDOW)
+    bar.pack(fill=tk.X, pady=(0, 12))
+    FlatButton(bar, "确定", sizes=sizes, command=dlg.destroy).pack(
+        side=tk.RIGHT, padx=16)
+    dlg.bind("<Return>", lambda e: dlg.destroy())
+    return dlg
 
 
 def _md_to_text_widget(parent, md_text, fonts):
@@ -534,7 +567,6 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
     """
     import os
     import time as _t
-    from tkinter import messagebox
     from audio_processor import (get_tse_recorder, RECORD_DURATION,
                                  _samples_to_wav_bytes, load_tse_reference,
                                  CFG_REF_WAV_PATH)
@@ -565,7 +597,8 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
     def do_record():
         th = engine.thread
         if th is None or not engine.running:
-            messagebox.showinfo("PureVox", "请先启动音频处理，再录制参考。")
+            show_message(parent, "PureVox", "请先启动音频处理，再录制参考。",
+                         sizes=sizes, fonts=fonts)
             return
         rec = get_tse_recorder()
         rec.start()   # 打开 _active 门（feed/wait_and_get 均由此 gate，缺失即"未捕获到音频"）

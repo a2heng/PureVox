@@ -220,8 +220,31 @@ class HSlider(tk.Canvas):
         self._set_from_x(e.x)
 
 
+def _combo_pairs(values):
+    """规范化下拉项为 [(显示, 值)]：str → (str, str)；二元组原样保留。
+
+    Linux PipeWire 设备需要「显示标签 ≠ 真实 node.name」（value 存 node.name），
+    等价于旧 PySide 版的 userData；Windows 下显示=值，行为不变。
+    """
+    pairs = []
+    for v in list(values):
+        if isinstance(v, (tuple, list)) and len(v) == 2:
+            disp, val = v
+        else:
+            disp = val = v
+        disp = "" if disp is None else str(disp)
+        val = "" if val is None else str(val)
+        if not disp.strip():
+            continue
+        pairs.append((disp, val))
+    return pairs
+
+
 class DarkCombo(tk.Frame):
     """深色下拉（弹层与外框严格同宽，长项像素级省略）——参考 lite BlackCombo。
+
+    values 元素可为 str（显示=值）或 (显示, 值) 二元组；var 始终存「值」，
+    控件按值反查显示文本。设备下拉据此把 node.name 存进配置、标签只用于显示。
     """
 
     def __init__(self, parent, values, var, on_change=None,
@@ -233,7 +256,11 @@ class DarkCombo(tk.Frame):
             else theme.BASE
         super().__init__(parent, bg=host_bg, bd=0, padx=0, pady=0)
         self.var = var
-        self.values = [v for v in list(values) if v and str(v).strip()]
+        self._pairs = _combo_pairs(values)
+        self.values = [d for d, _v in self._pairs]
+        self._disp_by_val = {}
+        for d, v in self._pairs:
+            self._disp_by_val.setdefault(v, d)
         self.on_change = on_change
         self._popup = None
         inner = tk.Frame(self, bg=theme.BASE,
@@ -258,8 +285,8 @@ class DarkCombo(tk.Frame):
         inner.configure(height=self.sizes["combo_h"])
         for w in (self, inner, self.lbl, self.arrow):
             w.bind("<Button-1>", lambda e: self._toggle())
-        if var.get() not in self.values and self.values:
-            var.set(self.values[0])
+        if self._pairs and var.get() not in self._disp_by_val:
+            var.set(self._pairs[0][1])
 
     def _elide(self, v, avail):
         try:
@@ -274,6 +301,7 @@ class DarkCombo(tk.Frame):
 
     def _sync_display(self, *a):
         v = self.var.get() or ""
+        v = self._disp_by_val.get(v, v)
         try:
             avail = (self.inner.winfo_width()
                      - self.arrow.winfo_reqwidth()
@@ -284,9 +312,13 @@ class DarkCombo(tk.Frame):
         self._display.set(v)
 
     def set_values(self, values):
-        self.values = [v for v in list(values) if v and str(v).strip()]
-        if self.var.get() not in self.values and self.values:
-            self.var.set(self.values[0])
+        self._pairs = _combo_pairs(values)
+        self.values = [d for d, _v in self._pairs]
+        self._disp_by_val = {}
+        for d, v in self._pairs:
+            self._disp_by_val.setdefault(v, d)
+        if self._pairs and self.var.get() not in self._disp_by_val:
+            self.var.set(self._pairs[0][1])
         self._sync_display()
         # 弹层开着时原地重建——异步枚举回来后列表即时变新
         if self._popup is not None and self._popup.winfo_exists():
@@ -357,7 +389,8 @@ class DarkCombo(tk.Frame):
                 pass
         canvas.bind("<Configure>", _sync_w)
         for idx, disp in enumerate(self.values):
-            is_sel = disp == self.var.get()
+            is_sel = disp == self._disp_by_val.get(self.var.get(),
+                                                   self.var.get())
             bgc = theme.PANEL if is_sel else theme.BASE
             # 外壳锁定行高（pack_propagate 关闭），与 lite BlackCombo 同构
             item = tk.Frame(inner, bg=bgc, bd=0, height=row_h)
@@ -388,7 +421,8 @@ class DarkCombo(tk.Frame):
         _update_thumb("0", "1")
         # 初始滚动到选中项（尾部贴底避免空行）
         try:
-            idx = self.values.index(self.var.get())
+            cur_disp = self._disp_by_val.get(self.var.get(), self.var.get())
+            idx = self.values.index(cur_disp)
             n = len(self.values)
             vis = S["popup_rows"]
             top = max(0, min(idx, n - vis)) / max(1, n) if n > vis else 0
@@ -455,8 +489,8 @@ class DarkCombo(tk.Frame):
         self._close()
 
     def _pick(self, idx):
-        if 0 <= idx < len(self.values):
-            self.var.set(self.values[idx])
+        if 0 <= idx < len(self._pairs):
+            self.var.set(self._pairs[idx][1])
             if self.on_change:
                 try:
                     self.on_change()

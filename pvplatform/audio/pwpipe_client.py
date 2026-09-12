@@ -32,9 +32,10 @@ mainloop + pa_stream 读写回调）。历史：曾用自编 C 库 libpvpipe.so�
   read(hop) 混合消费。
 
 设备列表 = `pw-dump` 解析的节点名（node.name 稳定）：
-  - 输入：media.class=Audio/Source（物理麦克风 + 虚拟麦克风 monitor）
-  - 输出：media.class=Audio/Sink（扬声器 + purevox_out）
-  排除 PureVox 自身流节点与真源 purevox_mic（对外虚拟麦克风，不参与自身输入）。
+  - 输入：media.class=Audio/Source 的**物理麦克风**（排除 PureVox-* 流与
+    一切 purevox* 虚拟源——purevox_mic / purevox_out.monitor 是 PureVox
+    自身输出，当输入会回授）
+  - 输出：media.class=Audio/Sink（扬声器 + purevox_out 虚拟麦克风 sink）
 """
 
 import json
@@ -51,7 +52,7 @@ IS_LINUX = sys.platform.startswith("linux")
 # 桥接数据面粒度：10ms @48kHz = 480（与 pvengine.context.HOP_LENGTH 一致）。
 HOP = 480
 
-from pvplatform.audio.common import RingBuffer
+from pvplatform.audio.common import TimedFifo
 from pvplatform.audio._libpulse import (
     PA_STREAM_READY, U32_MINUS1, PaBufferAttr, _Link, libpulse_available)
 
@@ -211,9 +212,13 @@ _REC_ATTR = PaBufferAttr(U32_MINUS1, U32_MINUS1, U32_MINUS1,
                          U32_MINUS1, _REC_FRAG)
 
 
-def _make_record_reader(ring: RingBuffer):
-    """读回调：pa_stream_peek 循环 → F32 样本入环形缓冲。"""
-    from pvplatform.audio._libpulse import read_float32
+def _make_record_reader(fifo: TimedFifo):
+    """读回调：pa_stream_peek 循环 → F32 样本带采集时间戳入 TimedFifo。
+
+    时间戳来自 libpulse 流延迟（stream_capture_ts），与 Windows
+    input_buffer_adc_time 等价——AEC far/mic 按真实采集时刻配对。
+    """
+    from pvplatform.audio._libpulse import read_float32, stream_capture_ts
 
     def on_read(s, nbytes: int) -> None:
         from pvplatform.audio._libpulse import _get_funcs
@@ -228,7 +233,8 @@ def _make_record_reader(ring: RingBuffer):
             if size.value == 0:
                 break
             if data.value:           # data==NULL 且 size>0 = 洞，只 drop
-                ring.write(read_float32(data.value, size.value))
+                fifo.write_ts(stream_capture_ts(s),
+                              read_float32(data.value, size.value))
             f.s_drop(s)
             total += 1
             if size.value == 0:
@@ -250,12 +256,12 @@ class PwBridge:
 
     def __init__(self):
         self._link: Optional[_Link] = None
-        self._in_rings: List[RingBuffer] = []
+        self._in_rings: List[TimedFifo] = []
         self._in_streams: List = []
         self._out_streams: List = []
         self._out_pull: List[Callable] = []
         self._far_streams: List = []    # AEC far 专用流（与输入环同构，多路）
-        self._far_rings: List[RingBuffer] = []
+        self._far_rings: List[TimedFifo] = []
         self._error: str = ""
         self._lock = threading.Lock()   # open/close/open_far 与回调的簿记互斥
 
@@ -291,7 +297,7 @@ class PwBridge:
         deadline = time.time() + 5.0
         try:
             for i, name in enumerate(inputs):
-                ring = RingBuffer(_RING_CAP)
+                ring = TimedFifo(48000, _RING_CAP)
                 s = self._link.add_stream(
                     f"PureVox-in{i}", 48000, 1, record=True, dev=name,
                     attr=_REC_ATTR, on_read=_make_record_reader(ring))
@@ -381,7 +387,10 @@ class PwBridge:
             return None
         with self._lock:
             rings = list(self._in_rings)
-        hops = [ring.read(n) for ring in rings]
+        hops = []
+        for ring in rings:
+            got = ring.read_ts(n)
+            hops.append(got[1] if got is not None else None)
         if not any(h is not None for h in hops):
             return None
         return hops
@@ -389,18 +398,14 @@ class PwBridge:
     def read_each_ts(self, n: int):
         """同 read_each，但每路带回采时间戳 [(ts0, hop)|None]。
 
-        时间戳取读取瞬间的 perf（Linux 暂以采集/读取边界近似，后续用
-        libpulse 流时间精化；与 Windows 同一外部钟量纲）。AEC 行按时间戳
+        时间戳来自 libpulse 流延迟（写入时的真实采集时刻），与 Windows
+        input_buffer_adc_time→LinearClock 同一外部钟量纲；AEC 行按时间戳
         与 far 网格配对。"""
         if self._link is None:
             return None
         with self._lock:
             rings = list(self._in_rings)
-        now = __import__('time').perf_counter()
-        out = []
-        for ring in rings:
-            h = ring.read(n)
-            out.append((now, h) if h is not None else None)
+        out = [ring.read_ts(n) for ring in rings]
         if not any(o is not None for o in out):
             return None
         return out
@@ -442,7 +447,7 @@ class PwBridge:
             if monitor and not src.endswith(".monitor"):
                 src = f"{src}.monitor"
             try:
-                ring = RingBuffer(_RING_CAP)
+                ring = TimedFifo(48000, _RING_CAP)
                 s = self._link.add_stream(
                     f"PureVox-far{len(self._far_streams)}", 48000, 1,
                     record=True, dev=src, attr=_REC_ATTR,
@@ -466,6 +471,14 @@ class PwBridge:
 
     def read_far_h(self, handle: int, n: int) -> Optional[List[float]]:
         """从指定 far 流读 n 个样本（FIFO；无数据返回 None）。"""
+        got = self.read_far_ts(handle, n)
+        return got[1] if got is not None else None
+
+    def read_far_ts(self, handle: int, n: int):
+        """从指定 far 流读 n 样本 → (首样本采集时刻, samples)；无数据 None。
+
+        时间戳为写入时的真实采集时刻（libpulse 流延迟），供 AEC 行网格配对，
+        与 Windows SpeakerCapture/MicCapture 的 TimedFifo 语义一致。"""
         if self._link is None:
             return None
         with self._lock:
@@ -473,7 +486,7 @@ class PwBridge:
                 if 0 <= handle < len(self._far_rings) else None
         if ring is None:
             return None
-        return ring.read(n)
+        return ring.read_ts(n)
 
     def far_available(self, handle: int) -> int:
         """指定 far 流当前可用样本数（句柄失效返回 0）。"""

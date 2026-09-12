@@ -117,7 +117,6 @@ _SYSTEM_SPECS = [
     NodeSpec("echo_cancel", "回声消除 AEC", "input"),
     NodeSpec("remote_mic", "远程推流输入", "input"),
     NodeSpec("audio_output", "音频输出", "output"),
-    NodeSpec("virtual_output", "虚拟输出设备", "output"),
     NodeSpec("vu_meter", "VU 电平表", "viz"),
     NodeSpec("spectrum", "频谱图", "viz"),
 ]

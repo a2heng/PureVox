@@ -55,8 +55,7 @@ KIND_ORDER = ["input", "fx", "viz", "output"]
 DEV_KEY = {"audio_input": ("device", "inputs"),
            "audio_output": ("device", "outputs"),
            "remote_mic": None,
-           "virtual_output": ("device", "voutputs"),
-           "loopback": ("device", "outputs"),
+           "loopback": ("device", "speakers"),
            "echo_cancel": ("device", "inputs")}
 
 
@@ -176,17 +175,16 @@ class NodeRow(tk.Frame):
             return
         key, _dir = dspec
         holder: dict = {}
-        var = tk.StringVar(value=str((self.cfg.get("params") or {}).get(key, "")))
+        cur = str((self.cfg.get("params") or {}).get(key, "") or "")
+        var = tk.StringVar(value=cur)
         self.dev_var = var
         self.dev_combo = DarkCombo(
-            self.mid, [var.get()] if var.get() else ["（默认）"], var,
+            self.mid, [(cur, cur)] if cur else [("（默认）", "")], var,
             on_change=lambda: self._on_dev_changed(holder, key),
             sizes=self.sizes, fonts=self.fonts)
-        # 下拉置于中间操作区右缘（紧挨 ×）；inner 锁宽高（propagate 已关）
-        self.dev_combo.inner.configure(
-            width=int(self.sizes["win_w"] * 0.42),
-            height=self.sizes["combo_h"])
-        self.dev_combo.pack(side=tk.RIGHT, fill=tk.Y)
+        # 下拉铺满标题与「×」之间的可用宽度：长设备名不被截短，
+        # 也不在标题后留下悬空空隙（独占操作区，无同行滑杆）
+        self.dev_combo.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         holder["row"] = self
 
     def _on_dev_changed(self, holder, key):
@@ -194,6 +192,9 @@ class NodeRow(tk.Frame):
         if val in ("（默认）",):
             val = ""
         self.cfg.setdefault("params", {})[key] = val
+        sync = getattr(self, "_linux_vm_apply", None)
+        if sync:
+            sync(val)
         cb = getattr(self, "_on_param_cb", None)
         if cb:
             cb()
@@ -239,10 +240,11 @@ class NodeRow(tk.Frame):
         self.far_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
         # ── 麦克风（本行消回声的输入麦，与 audio_input 同一套 device 机制）──
         var = tk.StringVar(value=str((self.cfg.get("params") or {}).get(
-            "device", "")))
+            "device", "") or ""))
         self.dev_var = var
         self.dev_combo = DarkCombo(
-            self._ec_line("麦克风"), [var.get()] if var.get() else [],
+            self._ec_line("麦克风"),
+            [(var.get(), var.get())] if var.get() else [],
             var, on_change=lambda: self._on_dev_changed({}, "device"),
             sizes=self.sizes, fonts=self.fonts)
         self.dev_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -308,83 +310,77 @@ class NodeRow(tk.Frame):
             cb()
 
     def _refresh_far_combo(self, devices):
-        """按输出/输入分组成 far 候选；恢复已存选择，缺省首个扬声器。"""
+        """按输出/输入分组成 far 候选；恢复已存选择，缺省首个扬声器。
+
+        far_device 存真实设备名（Linux=node.name），标签只用于显示；
+        keymap 把已存 (kind, 设备名) 反查回下拉标签。
+        """
         if self.spec.name != "echo_cancel" or self.far_combo is None:
             return
         items = {}
-        for t, _d in devices.get("outputs", []):
-            items[self._far_label("speaker", t)] = ("speaker", t)
-        for t, _d in devices.get("inputs", []):
-            items[self._far_label("mic", t)] = ("mic", t)
+        keymap = {}
+        for t, d in devices.get("speakers", []):
+            lb = self._far_label("speaker", t)
+            items[lb] = ("speaker", d)
+            keymap[("speaker", d)] = lb
+        for t, d in devices.get("inputs", []):
+            lb = self._far_label("mic", t)
+            items[lb] = ("mic", d)
+            keymap[("mic", d)] = lb
         self._far_items = items
         labels = list(items) or []
         self.far_combo.set_values(labels)
-        saved = ((self.cfg.get("params") or {}).get("far_kind", ""),
-                 (self.cfg.get("params") or {}).get("far_device", ""))
-        cur = self._far_label(*saved) if saved[1] and \
-            self._far_label(*saved) in items else ""
+        params = self.cfg.setdefault("params", {})
+        saved = (str(params.get("far_kind", "") or ""),
+                 str(params.get("far_device", "") or ""))
+        cur = keymap.get(saved, "")
         if not cur:
             # 缺省首个扬声器并回写（行配置显式化，不留空歧义）
             for lb, (k, n) in items.items():
                 if k == "speaker":
                     cur = lb
-                    self.cfg.setdefault("params", {})["far_kind"] = k
-                    self.cfg.setdefault("params", {})["far_device"] = n
+                    params["far_kind"] = k
+                    params["far_device"] = n
                     break
             else:
                 cur = labels[0] if labels else ""
         self.far_var.set(cur)
         if cur in items:
             k, n = items[cur]
-            self.cfg.setdefault("params", {})["far_kind"] = k
-            self.cfg.setdefault("params", {})["far_device"] = n
+            params["far_kind"] = k
+            params["far_device"] = n
 
     def set_devices(self, devices):
-        """刷新设备下拉（保持当前选择）。"""
+        """刷新设备下拉（保持当前选择）。
+
+        传入项为 (显示, 值) 对：值写进 params[key]（Linux=node.name），
+        标签仅用于下拉显示（DarkCombo 按值反查显示）。
+        """
         dspec = self._dev_spec()
         if not dspec or not hasattr(self, "dev_combo"):
             return
-        _, direction = dspec
-        if self.spec.name == "virtual_output":
-            items = [t for t, _d in devices.get("voutputs", [])]
-            cur = str((self.cfg.get("params") or {}).get(dspec[0], ""))
-            self.dev_combo.set_values(items)
-            # 未选或失效时自动选第一个 VB 端点（模糊匹配结果）
-            if items and cur not in items:
-                self.dev_var.set(items[0])
-                self.cfg.setdefault("params", {})["device"] = items[0]
-                cb = getattr(self, "_on_param_cb", None)
-                if cb:
-                    cb()
-            return
-        items = [t for t, _d in devices.get(direction, [])]
-        if self.spec.name == "audio_input" and getattr(self, "_prefer_virtual", False):
-            # 虚拟输入：从 CABLE 输入端点里选（模糊匹配，排除 16ch）
-            vb = [t for t, _d in devices.get("vinputs", [])]
-            if vb:
-                self._prefer_virtual = False
-                self.dev_combo.set_values(items)
-                self.dev_var.set(vb[0])
-                self.cfg.setdefault("params", {})["device"] = vb[0]
-                cb = getattr(self, "_on_param_cb", None)
-                if cb:
-                    cb()
-                return
-        if not items:
-            items = ["（默认）"]
-        saved_dev = str((self.cfg.get("params") or {}).get(dspec[0], ""))
-        cur = saved_dev
-        self.dev_combo.set_values(items)
-        if cur in items:
+        key, direction = dspec
+        params = self.cfg.setdefault("params", {})
+        defaults = devices.get("defaults", {})
+        pairs = list(devices.get(direction, [])) or [("（默认）", "")]
+        self.dev_combo.set_values(pairs)
+        vals = [v for _d, v in pairs]
+        cur = str(params.get(key, "") or "")
+        if cur in vals:
             self.dev_var.set(cur)
-        elif items:
-            # 未选/失效：自动选第一个真实设备（空设备会被 SessionPlan 跳过）
-            first = items[0]
-            self.dev_var.set(first)
-            self.cfg.setdefault("params", {})[dspec[0]] = first
+        elif vals:
+            # 未选/失效：优先平台默认（Linux 输出默认 purevox_out），否则第一个
+            default = defaults.get(direction, "")
+            pick = default if default in vals else vals[0]
+            self.dev_var.set(pick)
+            params[key] = pick
             cb = getattr(self, "_on_param_cb", None)
-            if cb and first != saved_dev:
+            if cb:
                 cb()
+        # 设备变化后同步输出行的虚拟声卡卡显隐（Linux）
+        sync = getattr(self, "_linux_vm_apply", None)
+        if sync:
+            sync(str(params.get(key, "") or ""))
         # echo_cancel 行同步刷新 far 第二下拉（mic 走上面同一套机制）
         self._refresh_far_combo(devices)
 
@@ -762,6 +758,13 @@ class MainWindowTk:
         except Exception:
             pass
 
+    def _dialog(self, kind, title, message):
+        """提示框：走自定义深色弹窗。主窗是 override-redirect，原生
+        messagebox（受 WM 管理）会被排到主窗下面而看不见，故不用原生。"""
+        from .dialogs import show_message
+        show_message(self.root, title, message,
+                     sizes=self.sizes, fonts=self.fonts)
+
     def _apply_chain_change(self):
         """结构变更（增删/排序/开关）→ 持久化；运行中则热重建音频链。"""
         was_running = self.engine.running
@@ -773,8 +776,7 @@ class MainWindowTk:
         self.engine.stop()
         err = self.engine.start(self.to_config())
         if err:
-            from tkinter import messagebox
-            messagebox.showwarning("PureVox", f"链已更新，但重启失败：\n{err}")
+            self._dialog("showwarning", "PureVox", f"链已更新，但重启失败：\n{err}")
             self._set_running_ui(False)
         else:
             self._set_running_ui(True)
@@ -801,8 +803,7 @@ class MainWindowTk:
             if "48kHz" in err:
                 self._warn_48k(err)
             else:
-                from tkinter import messagebox
-                messagebox.showwarning("PureVox", err)
+                self._dialog("showwarning", "PureVox", err)
             self._set_running_ui(False)
             return
         self._set_running_ui(True)
@@ -886,12 +887,10 @@ class MainWindowTk:
                 remove_virtual_mic(Logger())
             else:
                 ensure_virtual_mic(Logger())
-            from tkinter import messagebox
-            messagebox.showinfo("虚拟声卡", "已创建，请重启音频处理生效。" if not ready
-                                else "已清理。")
+            self._dialog("showinfo", "虚拟声卡",
+                         "已创建，请重启音频处理生效。" if not ready else "已清理。")
         except Exception as e:
-            from tkinter import messagebox
-            messagebox.showwarning("虚拟声卡", str(e))
+            self._dialog("showwarning", "虚拟声卡", str(e))
 
     def _show_about(self):
         from .dialogs import show_about_dialog
@@ -992,25 +991,22 @@ class MainWindowTk:
         m = tk.Menu(self.root, tearoff=0, bg=theme.BUTTON, fg=theme.TEXT,
                     activebackground=theme.DARK, activeforeground=theme.TEXT,
                     bd=0, font=self.fonts["body"])
-        # 设备组：三类输入/输出 + 虚拟输入设备（自动锁定 CABLE 端点）
+        # 设备组：输入/输出即全部设备（Linux 输出含 purevox_out，Windows 含
+        # CABLE Input；VB 检测卡内嵌在输出行），网络输入 + AEC + 桌面输入
         dev = tk.Menu(m, tearoff=0, bg=theme.BUTTON, fg=theme.TEXT,
                       activebackground=theme.DARK,
                       activeforeground=theme.TEXT, bd=0,
                       font=self.fonts["body"])
-        dev.add_command(label="本地输入设备",
+        dev.add_command(label="输入设备",
                         command=lambda: self.add_spec(get_spec("audio_input")))
-        dev.add_command(label="虚拟输入设备",
-                        command=self.add_virtual_input)
         dev.add_command(label="网络输入设备",
                         command=lambda: self.add_spec(get_spec("remote_mic")))
         dev.add_command(label="回声消除输入",
                         command=lambda: self.add_spec(get_spec("echo_cancel")))
         dev.add_command(label="桌面输入",
                         command=lambda: self.add_spec(get_spec("loopback")))
-        dev.add_command(label="本地输出设备",
+        dev.add_command(label="输出设备",
                         command=lambda: self.add_spec(get_spec("audio_output")))
-        dev.add_command(label="虚拟输出设备",
-                        command=lambda: self.add_spec(get_spec("virtual_output")))
         m.add_cascade(label="设备", menu=dev)
         # 媒体输入分类：设备外音源（相互独立的插件节点）
         media = tk.Menu(m, tearoff=0, bg=theme.BUTTON, fg=theme.TEXT,
@@ -1050,12 +1046,9 @@ class MainWindowTk:
         self._make_row({"type": spec.name, "enabled": True, "params": params},
                        spec)
         self._apply_chain_change()
-
-    def add_virtual_input(self):
-        """虚拟输入设备：audio_input 行 + 自动锁定第一个 CABLE 输入端点。"""
-        from pvengine.plugins import get_spec
-        self.add_spec(get_spec("audio_input"))
-        self.rows[-1]._prefer_virtual = True
+        # 新建设备节点即刷新设备列表，避免下拉为空只能看到「（默认）」
+        if spec.name in DEV_KEY and DEV_KEY[spec.name]:
+            self.refresh_devices()
 
     def _make_row(self, cfg, spec):
         row = NodeRow(self.panel, cfg, spec, self.sizes, self.fonts,
@@ -1104,9 +1097,16 @@ class MainWindowTk:
         # 桌面声音输入行：loopback 说明（音量滑杆自动生成）
         if spec.name == "desktop_audio":
             self._attach_desktop_audio(row)
-        # 虚拟输出设备行：内嵌 VB-CABLE 驱动状态卡（原检测面板内容）
-        if spec.name == "virtual_output":
-            self._attach_vb_card(row)
+        # 网络输入行：推流地址（手机/浏览器访问）+ 说明
+        if spec.name == "remote_mic":
+            self._attach_remote_mic(row)
+        # 输出设备行：Windows 内嵌 VB-CABLE 状态卡；Linux 输出选中虚拟麦克风
+        # （purevox_out）时显示虚拟声卡创建/清理卡
+        if spec.name == "audio_output":
+            if sys.platform.startswith("linux"):
+                self._attach_linux_virtual_mic(row)
+            else:
+                self._attach_vb_card(row)
         # 全部行内内容就绪后统一显示参数区（无展开收起）
         row.ensure_body()
         self._pack_row(row)
@@ -1167,7 +1167,7 @@ class MainWindowTk:
                 render()
 
         def _add():
-            from tkinter import filedialog, messagebox
+            from tkinter import filedialog
             path = filedialog.askopenfilename(
                 title="添加音效",
                 filetypes=[("音频/容器", "*.wav *.mp3 *.flac *.ogg *.m4a "
@@ -1181,7 +1181,7 @@ class MainWindowTk:
                 from pvengine.components.audio_decode import ensure_playable
                 real = ensure_playable(path)
             except Exception as e:
-                messagebox.showwarning("PureVox", f"该文件无法解码：\n{e}")
+                self._dialog("showwarning", "PureVox", f"该文件无法解码：\n{e}")
                 return
             ps = pads()
             ps.append({"name": os.path.splitext(os.path.basename(path))[0],
@@ -1225,6 +1225,47 @@ class MainWindowTk:
         hint.pack(fill=tk.X, padx=self.sizes["pad_lg"],
                   pady=self.sizes["pad_sm"])
 
+    def _attach_remote_mic(self, row):
+        """网络输入行内：推流地址（可编辑，默认本机 https://<lan-ip>:<port>）。
+        地址非空是启动前提（SessionPlan 校验）；实际服务器绑定 server_port。"""
+        S, F = self.sizes, self.fonts
+        params = row.cfg.setdefault("params", {})
+        holder = tk.Frame(row.body_frame, bg=theme.BASE)
+        holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
+        tk.Label(holder, text="推流地址", bg=theme.BASE, fg=theme.TEXT_DIM,
+                 font=F.get("small")).pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
+        if not params.get("url"):
+            ip = ""
+            try:
+                from audio_processor import get_local_lan_ip
+                ip = get_local_lan_ip()
+            except Exception:
+                ip = ""
+            port = 59123
+            if self.config:
+                try:
+                    port = int(self.config.get("server_port", 59123) or 59123)
+                except Exception:
+                    pass
+            params["url"] = f"https://{ip or '127.0.0.1'}:{port}"
+        var = tk.StringVar(value=str(params.get("url", "")))
+        ent = tk.Entry(holder, textvariable=var, bg=theme.BASE, fg=theme.TEXT,
+                       insertbackground=theme.TEXT, relief=tk.FLAT,
+                       highlightbackground=theme.MID, highlightthickness=1,
+                       font=F.get("body"))
+        ent.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def _commit(event=None):
+            params["url"] = var.get().strip()
+            self._persist()
+        ent.bind("<Return>", _commit)
+        ent.bind("<FocusOut>", _commit)
+        tk.Label(row.body_frame,
+                 text="手机/浏览器访问该地址推流（HTTPS，首次需信任自签证书）；"
+                      "地址可改，实际监听端口 = 设置中的服务器端口。",
+                 bg=theme.BASE, fg=theme.TEXT_FAINT, font=F.get("small"),
+                 anchor="w", justify="left").pack(fill=tk.X, padx=S["pad_lg"])
+
     def _attach_music_player(self, row):
         """音乐播放器行内控制：选曲目 + 进度滑块（可拖 seek）；
         播放开关 = 行启用复选框（硬启停，无暂停/开始按钮），
@@ -1256,7 +1297,7 @@ class MainWindowTk:
             self._persist()
 
         def _pick():
-            from tkinter import filedialog, messagebox
+            from tkinter import filedialog
             path = filedialog.askopenfilename(
                 title="选择音乐/媒体文件",
                 filetypes=[("音频/容器", "*.mp3 *.flac *.ogg *.wav *.m4a "
@@ -1274,7 +1315,7 @@ class MainWindowTk:
                 path = ensure_playable(path)
             except Exception as e:
                 refresh_name()
-                messagebox.showwarning("PureVox", f"该文件无法解码：\n{e}")
+                self._dialog("showwarning", "PureVox", f"该文件无法解码：\n{e}")
                 return
             _set("path", path)
             _set("resume_sec", 0.0)
@@ -1396,9 +1437,8 @@ class MainWindowTk:
         （返回 None）时保留原值并提示，不把用户手调值清 0。
         """
         if self.engine.running:
-            from tkinter import messagebox
-            messagebox.showinfo("校准", "请先关闭音频处理（并保持环境安静），"
-                                        "再点击自动校准。")
+            self._dialog("showinfo", "校准",
+                         "请先关闭音频处理（并保持环境安静），再点击自动校准。")
             return
         mic = str((row.cfg.get("params") or {}).get("device", ""))
         far_dev = str((row.cfg.get("params") or {}).get("far_device", ""))
@@ -1415,10 +1455,9 @@ class MainWindowTk:
                 delay_ms = None
             def _update():
                 if delay_ms is None:
-                    from tkinter import messagebox
-                    messagebox.showwarning(
-                        "校准", "延迟校准失败，已保留原值。\n"
-                        "请保持环境安静并确认麦克风能听到扬声器测试音后重试。")
+                    self._dialog("showwarning",
+                                 "校准", "延迟校准失败，已保留原值。\n"
+                                 "请保持环境安静并确认麦克风能听到扬声器测试音后重试。")
                 elif hasattr(row, "_aec_delay_slider") and row._aec_delay_slider:
                     row._aec_delay_slider.set_value(delay_ms)
                     row._aec_delay_lbl.config(text=f"{delay_ms:.0f}ms")
@@ -1508,6 +1547,74 @@ class MainWindowTk:
                         if w:
                             w.update_level(vu[key], now)
         self.root.after(33, self._viz_tick)
+
+    def _attach_linux_virtual_mic(self, row):
+        """Linux 输出行内虚拟声卡卡：仅当该行输出选中 `purevox_out`（虚拟麦克风）
+        时显示，提供创建/清理（幂等），状态实时反映；创建/清理后刷新设备列表。"""
+        from .widgets import FlatButton
+        S, F = self.sizes, self.fonts
+        green, red = "#3aa76d", "#d9534f"
+        card = tk.Frame(row.body_frame, bg=theme.PANEL)
+        head = tk.Frame(card, bg=theme.PANEL)
+        head.pack(fill=tk.X, padx=8, pady=(6, 2))
+        dot = tk.Canvas(head, bg=theme.PANEL, width=12, height=12,
+                        highlightthickness=0)
+        dot.pack(side=tk.LEFT)
+        dot.create_oval(1, 1, 11, 11, fill=red, outline="")
+        state_lbl = tk.Label(head, text="", bg=theme.PANEL, fg=theme.TEXT_DIM,
+                             font=F.get("bold"))
+        state_lbl.pack(side=tk.LEFT, padx=(6, 0))
+        btn = FlatButton(head, "创建", sizes=S, command=lambda: _on_action())
+        btn.pack(side=tk.RIGHT)
+        tk.Label(card,
+                 text="输出选中 PureVox 虚拟麦克风：由 PureVox 构造 purevox_out "
+                      "sink 与 purevox_mic 两个出口（monitor 供多数软件，"
+                      "purevox_mic 供 OBS 等只列真源的软件）。创建/清理均幂等，"
+                      "创建后其它软件将其设为麦克风即可收到降噪声音。",
+                 bg=theme.PANEL, fg=theme.TEXT_DIM, font=F.get("small"),
+                 justify="left", anchor="w",
+                 wraplength=max(320, S["win_w"] - 80)).pack(
+            fill=tk.X, padx=8, pady=(2, 6))
+
+        def _ready():
+            try:
+                from pvplatform.system import virtual_mic_ready
+                return bool(virtual_mic_ready())
+            except Exception:
+                return False
+
+        def _refresh():
+            ready = _ready()
+            dot.delete("all")
+            dot.create_oval(1, 1, 11, 11,
+                            fill=(green if ready else red), outline="")
+            state_lbl.configure(text=("已创建" if ready else "未创建"),
+                                fg=(green if ready else red))
+            btn.configure(text=("清理" if ready else "创建"))
+
+        def _on_action():
+            try:
+                from pvplatform.system import (ensure_virtual_mic,
+                                               remove_virtual_mic)
+                from logger import Logger
+                if _ready():
+                    remove_virtual_mic(Logger())
+                else:
+                    ensure_virtual_mic(Logger())
+            except Exception as e:
+                self.engine.log.warn(f"[虚拟声卡] 操作失败: {e}")
+            _refresh()
+            self.refresh_devices()
+
+        def _active(sel):
+            if sel == "purevox_out":
+                _refresh()
+                card.pack(fill=tk.X, padx=S["pad_sm"], pady=(0, S["pad_sm"]))
+            else:
+                card.pack_forget()
+
+        row._linux_vm_apply = _active
+        _active(str((row.cfg.get("params") or {}).get("device", "")))
 
     def _attach_vb_card(self, row):
         """VB-CABLE 卡片——完整实现 legacy 弹框的内容：

@@ -25,8 +25,8 @@ python tests/test_devices.py
 2. 有音频设备的环境（开发机/带声卡 runner）：枚举一致性、默认设备合法、
    Windows 精确名/前缀匹配 get_device_id；
 3. 虚拟麦克风真实建立→使用→卸载（Linux + PipeWire）：**需显式开启**
-   `PUREVOX_TEST_VIRTUAL_MIC=1`——会真实创建 purevox_out/purevox_mic 并
-   临时改默认 sink，测毕卸载恢复（CI 容器无 PipeWire 自动跳过，走降级档）。
+   `PUREVOX_TEST_VIRTUAL_MIC=1`——会真实创建 purevox_out/purevox_mic，
+   测毕卸载（CI 容器无 PipeWire 自动跳过，走降级档）。
 """
 
 import os
@@ -206,20 +206,23 @@ def test_virtual_mic_lifecycle():
     want_real = os.environ.get("PUREVOX_TEST_VIRTUAL_MIC") == "1"
     if _IS_LINUX and want_real:
         from pvplatform.audio.pwpipe_client import (
-            list_sources, list_destinations)
+            list_sources, list_destinations, _list_nodes)
         assert sysmod.ensure_virtual_mic(log) is True
         assert sysmod.virtual_mic_ready() is True
-        # "使用"面：虚拟出口进入标准枚举（monitor 出口 + 真源）
+        # "使用"面：虚拟 sink 进入输出枚举；真源 purevox_mic 实际创建，
+        # 但按回授防护不得进入 PureVox 自身输入枚举（只对其它软件可见）。
         assert "purevox_out" in list_destinations(), \
             "虚拟 sink 未出现在输出枚举"
-        assert "purevox_mic" in list_sources(), \
-            "虚拟真源未出现在输入枚举"
+        node_names = {n["name"] for n in _list_nodes()}
+        assert "purevox_mic" in node_names, "虚拟真源节点未创建"
+        assert "purevox_mic" not in list_sources(), \
+            "虚拟源不得进入 PureVox 输入枚举（回授防护）"
         time.sleep(0.3)
         sysmod.remove_virtual_mic(log)
         time.sleep(0.5)
         assert sysmod.virtual_mic_ready() is False
         assert "purevox_out" not in list_destinations()
-        assert "purevox_mic" not in list_sources()
+        assert "purevox_mic" not in {n["name"] for n in _list_nodes()}
         print("  虚拟麦克风 真实建立→进入枚举→卸载→枚举消失  OK")
     elif _IS_LINUX:
         from pvplatform.audio.pwpipe_client import pw_available

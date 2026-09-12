@@ -1,5 +1,55 @@
 # 更新日志
 
+## 2026-09-12 — 设备选择修复与合并 + Linux 采集/虚拟声卡/网络输入对齐
+
+- **修复 Linux 无声/VU 非空即满的根因**：`_libpulse` 的 `PA_SAMPLE_FLOAT32LE`
+  常量写成了 3，而 `pa_sample_format_t` 里 3 是 `S16LE`（FLOAT32LE 应为 5）。
+  于是流按 16 位整型协商，字节却被当 float32 解读 → denormal/NaN（VU 要么
+  贴近 0 要么爆满、输出听不到降噪声音）。改回 5 后采样值正常（旧版 C 库用的
+  就是正确 F32，纯 Python 迁移时抄错）；
+- **新建设备节点自动刷新设备列表**：菜单添加「输入/输出设备」后立即触发
+  `refresh_devices()`，不再只显示「（默认）」；
+- **Linux 输出行内虚拟声卡卡**：输出选中 `purevox_out` 时，行内显示状态灯 +
+  「创建 / 清理」按钮（复用 `ensure_virtual_mic`/`remove_virtual_mic`，幂等），
+  创建/清理后刷新设备列表；对齐旧版虚拟声卡面板与 Windows 的 VB-CABLE 卡；
+- **弹框被主窗盖住修复**：主窗为 `overrideredirect` 无边框窗，Mutter 会把受
+  WM 管理（含原生 `messagebox`）的窗口排在 override 窗**下面**——原生提示框
+  因此被主窗压住看不见（与 `-topmost` 无关）。现所有提示框改用自定义
+  override-redirect 深色弹窗 `show_message`（确定按钮），与主窗同一层，
+  稳定浮在主窗之上；`DarkDialog`（关于/EQ/TSE）本就能浮于主窗，补充 Esc 关闭。
+- **修复 Linux 设备选择失效（PipeWire 建流失败）**：节点式 UI 此前把下拉的显示标签
+  写进了链配置，真实 PipeWire `node.name` 被丢弃，传给 libpulse 无法解析导致流创建
+  失败。现下拉改为「显示标签 / 真实值 node.name」双轨，配置与建流始终使用
+  node.name（对齐旧 PySide 版的 userData 语义）；
+- **输入/输出合并为完整列表，去独立虚拟设备节点**：菜单只保留「输入设备」「输出设备」。
+  Linux 输出列全部 sink（含 `purevox_out`，默认选它，对齐 legacy 三下拉）、
+  桌面输入/AEC far 列物理扬声器；Windows 输入/输出本就含 CABLE 端点，合并后直接选；
+- **Windows 不丢失 VB-CABLE 检测**：虚拟输出节点删除后，VB-CABLE 状态卡（双端点说明 /
+  驱动下载 / 教程 / 启动检测开关）内嵌到「输出设备」行上；
+- **节点行标题与下拉框间距缩小、下拉铺满操作区**：下拉紧贴标题并延伸到「×」前
+  （不再固定 42% 宽、不再挤在最右端留大段空隙），长设备名完整显示；
+- **AEC far 参考设备改存真实节点名**：修复 far 下拉选择同样被显示标签污染的问题；
+- **移除虚拟麦克风创建时的 `pactl set-default-sink purevox_out`**：ALSA 接口移除后的
+  遗留，该操作会把全部系统声音灌入虚拟麦克风且不还原，仅保留虚拟麦克风的
+  monitor / `purevox_mic` 双出口；
+- **修复 libpulse 建连/关闭致命缺陷**：连接就绪等待原为单次事件等待，事件在
+  `CONNECTING` 即置位，导致上下文未 READY 就判定失败（表现为「连接失败: OK」、
+  启动即报错）；关闭时先释放 Python 回调再 `ctx_disconnect`，libpulse 回调闭包
+  已 GC（callable=NULL）触发段错误。现改为「持锁轮询上下文状态到 READY」+
+  「回调闭包活到 C 资源彻底销毁」，建流/启停不再崩溃；
+- **Linux 采集时间戳改为真实采集时刻（看齐 Windows）**：此前主输入/AEC far/回环
+  的时间戳取「引擎读取瞬间的 perf」，含调度抖动、且长块只标一个读数时刻，AEC
+  far/mic 配对精度低于 Windows（Windows 用 PortAudio `input_buffer_adc_time`→
+  QPC）。现经 libpulse `pa_stream_get_latency` 计算缓冲内最早样本的采集时刻
+  （`now − latency`）写入 TimedFifo，`read_each_ts`/`read_far_ts` 返回真实时刻，
+  与 Windows 同一外部钟量纲；
+- **网络输入在 Tk 节点式 UI 中接通**：此前 `remote_mic` 节点既不启动服务器、也不
+  传 `RemoteAudioSource`，无输入会话被误判为「纯媒体会话」而静默播放静音。现
+  `EngineController` 起 `PureVoxServer`（HTTPS + mDNS，平台无关）、把
+  `audio_source` 作为网络输入源；节点行内提供可编辑推流地址（默认
+  `https://<本机IP>:<服务器端口>`），地址为空按 SessionPlan 阻断启动。
+  本地/网络共用同一处理循环，平台差异只在传输后端（PwBridge / PaBridge）。
+
 ## 2026-09-05 — AEC far/mic 改外部时钟时间戳配对（GridHistory）+ 移除 FarSync/FarTap
 
 - **far 与 mic 按外部时钟（QPC/perf 秒）配对**：mic 每 hop 带采集时间戳

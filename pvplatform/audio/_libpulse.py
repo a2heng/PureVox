@@ -35,11 +35,15 @@ AttributeError。本绑定只含数据面所需的最小集合，依赖面显式
 import ctypes
 import ctypes.util
 import threading
+import time
 from ctypes import (CFUNCTYPE, POINTER, byref, c_char_p, c_int, c_int64,
-                    c_size_t, c_uint8, c_uint32, c_void_p, string_at)
+                    c_size_t, c_uint8, c_uint32, c_uint64, c_void_p, string_at)
 
 # ── libpulse 常量（pulse/def.h · enums.h · sample.h）──
-PA_SAMPLE_FLOAT32LE = 3
+# pa_sample_format_t：U8=0 ALAW=1 ULAW=2 S16LE=3 S16BE=4 FLOAT32LE=5
+# FLOAT32BE=6 S32LE=7 S32BE=8 —— 必须用 5，3 是 S16LE（会按 float32 解读成
+# denormal/NaN，表现为 VU 非空即满、无声音）。
+PA_SAMPLE_FLOAT32LE = 5
 PA_CONTEXT_UNCONNECTED = 0
 PA_CONTEXT_CONNECTING = 1
 PA_CONTEXT_AUTHORIZING = 2
@@ -133,6 +137,11 @@ class LibPulseFuncs:
                                          POINTER(PaBufferAttr), c_int,
                                          c_void_p, c_void_p])
         self.s_get_state = _bind(L, "pa_stream_get_state", c_int, [c_void_p])
+        self.s_get_time = _bind(L, "pa_stream_get_time", c_int,
+                                [c_void_p, POINTER(c_uint64)])
+        self.s_get_latency = _bind(L, "pa_stream_get_latency", c_int,
+                                   [c_void_p, POINTER(c_uint64),
+                                    POINTER(c_int)])
         self.s_writable = _bind(L, "pa_stream_writable_size", c_size_t,
                                 [c_void_p])
         self.s_write = _bind(L, "pa_stream_write", c_int,
@@ -194,6 +203,8 @@ class _Link:
         self._f = _get_funcs()
         self._err = ""
         self._handlers = {}       # int(指针) -> _StreamHandler（含回调引用）
+        self._cb_refs = []        # 所有 ctypes 回调闭包：活到 link 彻底销毁，
+                                  # 防 libpulse 在断流/断 context 时调用已 GC 的闭包
         self._closed = False
         self._state_evt = threading.Event()
         self._stream_evts = {}    # int(指针) -> Event（建流就绪等待）
@@ -216,10 +227,17 @@ class _Link:
             self._save_errno()
             self.close()
             raise OSError(f"pa_context_connect 失败: {self._err}")
-        if not self._state_evt.wait(timeout):
-            self._err = "连接超时"
-            self.close()
-            raise OSError("libpulse 连接超时")
+        # 事件在首个状态变更（CONNECTING）即置位，未必已 READY：轮询状态
+        # 到 READY/FAILED/TERMINATED 再判定（state() 持 mainloop 锁，避免竞态）
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.state() in (PA_CONTEXT_READY, PA_CONTEXT_FAILED,
+                                PA_CONTEXT_TERMINATED):
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self._state_evt.wait(min(remaining, 0.1))
         if self.state() != PA_CONTEXT_READY:
             if not self._err:
                 self._save_errno()
@@ -234,7 +252,12 @@ class _Link:
     def state(self) -> int:
         if not self._ctx or self._closed:
             return PA_CONTEXT_FAILED
-        return self._f.ctx_get_state(self._ctx)
+        # 持 mainloop 锁读取：context 由主循环线程修改，无锁读会竞态
+        self._f.ml_lock(self._ml)
+        try:
+            return self._f.ctx_get_state(self._ctx)
+        finally:
+            self._f.ml_unlock(self._ml)
 
     def last_error(self) -> str:
         return self._err
@@ -266,6 +289,7 @@ class _Link:
             h.on_read, h.on_write, h.on_state = on_read, on_write, on_state
             h.cbs = [PA_STATE_CB_T(self._make_state_cb(s)),
                      PA_REQUEST_CB_T(self._make_request_cb(s))]
+            self._cb_refs.extend(h.cbs)
             self._handlers[int(s)] = h
             ev = threading.Event()
             self._stream_evts[int(s)] = ev
@@ -293,7 +317,14 @@ class _Link:
         ev = self._stream_evts.get(int(s))
         if ev is None:
             return False
-        ev.wait(timeout)
+        deadline = time.monotonic() + timeout
+        while True:
+            st = self.stream_state(s)
+            if st in (PA_STREAM_READY, PA_STREAM_FAILED, PA_STREAM_TERMINATED):
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not ev.wait(min(remaining, 0.2)):
+                break
         st = self.stream_state(s)
         if st != PA_STREAM_READY:
             if not self._err:
@@ -355,6 +386,9 @@ class _Link:
         if self._closed:
             return
         self._closed = True
+        # 1. mainloop 运行中持锁断流 + 断 context。关键：此时**不可**释放
+        #    Python 回调引用——ctx_disconnect 会触发 libpulse 回调，回调闭包
+        #    若已被 GC（callable=NULL）会段错误。
         self._f.ml_lock(self._ml)
         try:
             for s in list(self._handlers.keys()):
@@ -362,10 +396,13 @@ class _Link:
                     self._f.s_disconnect(s)
                 except Exception:
                     pass
+            if self._ctx:
+                self._f.ctx_disconnect(self._ctx)
         finally:
             self._f.ml_unlock(self._ml)
-        # 主循环线程可能仍在派发断开回调，等它停稳后再 unref
+        # 2. 停 mainloop（等待回调线程退出）
         self._f.ml_stop(self._ml)
+        # 3. mainloop 已停，安全回收资源；回调引用最后释放
         self._f.ml_lock(self._ml)
         try:
             for s in list(self._handlers.keys()):
@@ -373,16 +410,17 @@ class _Link:
                     self._f.s_unref(s)
                 except Exception:
                     pass
-            self._handlers.clear()
-            self._stream_evts.clear()
             if self._ctx:
-                self._f.ctx_disconnect(self._ctx)
                 self._f.ctx_unref(self._ctx)
                 self._ctx = None
+            self._handlers.clear()
+            self._stream_evts.clear()
         finally:
             self._f.ml_unlock(self._ml)
         self._f.ml_free(self._ml)
         self._ml = None
+        # 所有 C 资源已销毁，回调闭包此刻才可释放
+        self._cb_refs.clear()
 
     def _teardown_ml(self):
         try:
@@ -391,6 +429,28 @@ class _Link:
                 self._ml = None
         except Exception:
             pass
+
+
+def stream_capture_ts(s: c_void_p) -> float:
+    """记录流缓冲内最旧样本的采集时刻（perf 主时钟秒）。
+
+    libpulse 的 pa_stream_get_latency 返回缓冲中最早数据相对「现在」的延迟
+    （微秒），故 采集时刻 ≈ now − latency。失败/负值回退 now。与 Windows
+    PortAudio input_buffer_adc_time→LinearClock 等价：给 AEC far/mic 提供
+    真实采集时间戳（而非引擎读取瞬间）。
+    """
+    now = time.perf_counter()
+    try:
+        f = _get_funcs()
+        usec = c_uint64(0)
+        neg = c_int(0)
+        if f.s_get_latency(s, byref(usec), byref(neg)) >= 0 and not neg.value:
+            ts = now - usec.value / 1e6
+            if ts > 0.0:
+                return ts
+    except Exception:
+        pass
+    return now
 
 
 def read_float32(ptr, nbytes: int) -> list:
