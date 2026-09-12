@@ -7,6 +7,7 @@
 *.spec
 **__pycache__
 /.venv
+/.venv-win
 /.vercel
 
 # Build outputs

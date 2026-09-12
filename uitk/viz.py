@@ -19,9 +19,10 @@
 
 VUBar   连续三区电平条（绿 -60..-20 / 黄 -20..-9 / 红 -9..0），
         峰值保持 10s 后以 20dB/s 回落，刻度线 + 标签。
-Spectrum 128 段 Mel 实时输入/输出频谱重叠对比（pvengine.compute_spectrum，
+Spectrum 64 段 Mel 实时输入/输出频谱重叠对比（pvengine.compute_spectrum，
         dB 域 -90..-20；输出=绿基准，输入>输出=灰(噪声残留)，
-        输入<输出=浅(增强)；EMA α=0.3 平滑；960 窗(=2×hop) / 480 步进累积）。
+        输入<输出=浅(增强)；EMA α=0.3 平滑；960 窗(=2×hop) / 480 步进累积；
+        每段一列连续槽位，静音段也铺底槽，不断裂）。
 LevelRing 圆形运行指示灯。
 """
 
@@ -47,18 +48,21 @@ try:
     from pvengine import SPECTRUM_NUM_BANDS as NUM_BANDS
     from pvengine import SPECTRUM_FFT as FFT_SIZE
 except Exception:
-    NUM_BANDS = 128
+    NUM_BANDS = 64
     FFT_SIZE = 960              # 2×hop @48kHz（FFT 无损窗长）
+# 频谱段数 = Mel 滤波器组段数（20Hz–16kHz）；底槽用主题令牌，静音段也铺满
+SPEC_BANDS = NUM_BANDS
+SPEC_SLOT = theme.SPEC_SLOT      # 每段底槽（连续无缝，避免断开空洞）
 MIN_SAMPLES = FFT_SIZE // 2     # 累积步进 = 480 = hop
-SPEC_BANDS = 80   # 频谱只画前 80 段（自 20Hz 起）
 DB_MIN, DB_MAX = -90.0, -20.0
 DB_RANGE = DB_MAX - DB_MIN
 SPEC_EMA = 0.3
-SPEC_BAR_OUT = "#4CAF50"
-SPEC_BAR_MORE = "#1B5E20"    # 噪声残留：深绿
-SPEC_BAR_LESS = "#A5D6A7"    # 增强：浅绿
-SPEC_GRID = "#3a3a50"
-SPEC_TEXT_C = "#666688"
+# 三色柱（类 VU）：按高度分三区，每段最多 3 个矩形（省计算，非逐像素）
+SPEC_Z1_DB, SPEC_Z2_DB = -45.0, -30.0
+SPEC_Z1 = "#4CAF50"             # 低段 绿
+SPEC_Z2 = "#FFD54F"             # 中段 黄
+SPEC_Z3 = "#EF5350"             # 高段 红
+SPEC_NOISE = "#B0BEC5"          # 输入高于输出：蓝灰 = 噪声残留
 
 
 VU_LIT_GREEN, VU_LIT_YELLOW, VU_LIT_RED = "#4CAF50", "#FFD54F", "#EF5350"
@@ -79,8 +83,7 @@ class VUCanvas(tk.Canvas):
         s = self.sizes["scale"]
         self.seg_w = max(4, int(round(self.SEG_W * s)))
         self.seg_gap = max(1, int(round(self.SEG_GAP * s)))
-        super().__init__(parent,
-                         bg=parent.cget('bg') if isinstance(parent, tk.Widget) else theme.PANEL,
+        super().__init__(parent, bg=theme.VIZ_BG,
                          highlightthickness=0, bd=0, height=height)
         self._db = VU_DB_MIN
         self._peak = VU_DB_MIN
@@ -150,15 +153,12 @@ class VUCanvas(tk.Canvas):
 
 
 class SpectrumCanvas(tk.Canvas):
-    """128 段 Mel 频谱重叠对比（legacy SpectrumWidget 的 tk 移植）。"""
+    """64 段 Mel 频谱重叠对比（20Hz–16kHz，legacy SpectrumWidget 的 tk 移植）。"""
 
-    BAR_W, GAP = 3, 1
-
-    def __init__(self, parent, sizes=None, height=220):
+    def __init__(self, parent, sizes=None, height=150):
         self.sizes = sizes or make_sizes(100)
         self._lbl_font = ("TkDefaultFont", max(7, int(round(7 * self.sizes["scale"]))))
-        super().__init__(parent,
-                         bg=parent.cget('bg') if isinstance(parent, tk.Widget) else theme.PANEL,
+        super().__init__(parent, bg=theme.SPEC_BG,
                          highlightthickness=0, bd=0, height=height)
         self._input_bands = [DB_MIN] * SPEC_BANDS
         self._output_bands = [DB_MIN] * SPEC_BANDS
@@ -212,38 +212,46 @@ class SpectrumCanvas(tk.Canvas):
         if gw < 20 or gh < 10:
             return
 
-        # 频谱柱：固定条宽/间隔（随缩放），铺满全宽
+        # 每段一整列：先铺满底槽（静音段也在，连续不断裂），再叠三色柱。
+        # 三色柱按高度分绿/黄/红三区，每段最多 3 个矩形（省计算）。
         step = gw / SPEC_BANDS
-        bar_w = max(2.0, step - max(1, int(self.GAP * self.sizes["scale"])))
+        gap = 1 if step >= 4 else 0
+        col_w = max(1.0, step - gap)
+
+        def y_of(db):
+            db = max(DB_MIN, min(DB_MAX, db))
+            return T + gh - (db - DB_MIN) / DB_RANGE * gh
+
+        zones = ((DB_MIN, SPEC_Z1_DB, SPEC_Z1),
+                 (SPEC_Z1_DB, SPEC_Z2_DB, SPEC_Z2),
+                 (SPEC_Z2_DB, DB_MAX, SPEC_Z3))
         for i in range(SPEC_BANDS):
+            bx = i * step
             in_db = max(DB_MIN, self._smoothed_in[i])
             out_db = max(DB_MIN, self._smoothed_out[i])
-            out_h = (out_db - DB_MIN) / DB_RANGE * gh
-            in_h = (in_db - DB_MIN) / DB_RANGE * gh
-            if out_h < 1 and in_h < 1:
-                continue
-            bx = i * step
-            y_out = T + gh - out_h
-            y_in = T + gh - in_h
-            if out_h > 1:
-                self.create_rectangle(bx, y_out, bx + bar_w, T + gh,
-                                      fill=SPEC_BAR_OUT, width=0)
-            if in_db > out_db and in_h > 1:
-                # 输入高于输出：上方灰色段 = 噪声残留
-                self.create_rectangle(bx, y_in, bx + bar_w, y_out,
-                                      fill=SPEC_BAR_MORE, width=0)
-            elif in_db < out_db and out_h > 1:
-                # 输出更强：浅色段 = 增强
-                self.create_rectangle(bx, y_out, bx + bar_w, y_in,
-                                      fill=SPEC_BAR_LESS, width=0)
+            # 底槽：整列满高（含静音段），保证槽位连续
+            self.create_rectangle(bx, T, bx + col_w, T + gh,
+                                  fill=SPEC_SLOT, width=0)
+            if out_db > DB_MIN:
+                for lo_db, hi_db, color in zones:
+                    seg_lo = max(DB_MIN, lo_db)
+                    seg_hi = min(out_db, hi_db)
+                    if seg_hi > seg_lo:
+                        self.create_rectangle(bx, y_of(seg_hi),
+                                              bx + col_w, y_of(seg_lo),
+                                              fill=color, width=0)
+            if in_db > out_db:
+                # 输入高于输出：上方蓝灰段 = 噪声残留
+                self.create_rectangle(bx, y_of(in_db), bx + col_w,
+                                      y_of(out_db), fill=SPEC_NOISE, width=0)
 
     @staticmethod
     def _hz_to_frac(hz):
-        """Hz → Mel 轴 0..1（20Hz~8kHz，与 80 段显示范围一致）。"""
+        """Hz → Mel 轴 0..1（20Hz~16kHz，与 Mel 段显示范围一致）。"""
         def hz_to_mel(f):
             return 2595.0 * math.log10(1.0 + f / 700.0)
-        lo, hi = hz_to_mel(20.0), hz_to_mel(8000.0)
-        return (hz_to_mel(max(20.0, min(8000.0, hz))) - lo) / (hi - lo)
+        lo, hi = hz_to_mel(20.0), hz_to_mel(16000.0)
+        return (hz_to_mel(max(20.0, min(16000.0, hz))) - lo) / (hi - lo)
 
 
 class LevelRing(tk.Canvas):

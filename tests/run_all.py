@@ -31,6 +31,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 TEST_FILES = [
     "test_session_plan.py",     # L3 会话计划（纯函数）
     "test_playback_sink.py",    # 播放正确性（合成时钟，无硬件）
+    "test_agc.py",              # AGC 弹道/门限（合成 DSP，无硬件）
+    "test_spectrum.py",         # Mel 频谱 64 段/20Hz-16kHz（合成 DSP，无硬件）
     "test_aec_rows.py",         # 行级 AEC：HopQueue 严格配对/AecRow（桩会话，无硬件）
     "test_aec_calib.py",        # AEC far 延迟校准：探测音+延迟估计（合成，无硬件）
     "test_transport.py",        # 传输层导入与优雅降级

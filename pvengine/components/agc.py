@@ -15,10 +15,13 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""AGC 自动增益控制组件（峰值判定）。
+"""AGC 自动增益控制组件（峰值包络 + 非对称平滑）。
 
-目标 -10 dBFS peak、瞬时更新、增益限幅 ±30 dB。
-无用户可调参数，开箱即用。
+目标 -12 dBFS peak、衰减下限 -30 dB、最大提升由「最大增益」滑杆设定
+（0~30 dB，默认 30）。基于峰值包络（attack ~3ms / release ~80ms）计算
+目标增益，再以非对称弹道平滑增益（降快 attack ~4ms 防削波、升慢
+release ~300ms 防抽吸）。静音门（~-55 dBFS）之下不补增益、增益缓慢回落
+到 1.0，避免词间底噪被抬高。输出仍走 soft clip 防削顶。
 """
 
 import math
@@ -26,20 +29,35 @@ import numpy as np
 
 from pvengine.components.effect_base import Effect
 
-_TARGET_LINEAR = 10.0 ** (-10.0 / 20.0)
-_GAIN_MIN = 10.0 ** (-30.0 / 20.0)
-_GAIN_MAX = 10.0 ** (30.0 / 20.0)
-_RMS_FLOOR = 10.0 ** (-60.0 / 20.0)
-_DT = 0.01
-_DECAY_FACTOR = 0.5 ** _DT
-_DEAD_ZONE = 10.0 ** (0.5 / 20.0)
+_SAMPLE_RATE = 48000
+_TARGET_DB = -12.0
+_GAIN_MIN_DB = -30.0
+_GAIN_MAX_DB = 30.0
+_FLOOR_DB = -55.0
+_MAX_GAIN_DEFAULT = 30.0
+
+# 峰值包络弹道：快跟峰、慢释放（人声 10ms 帧峰值起伏大，直接判定会抽吸）
+_ENV_ATTACK_TAU = 0.003
+_ENV_RELEASE_TAU = 0.080
+# 增益弹道：降增益快（防削波）、升增益慢（防底噪/喘息）
+_GAIN_ATTACK_TAU = 0.004
+_GAIN_RELEASE_TAU = 0.300
 
 _KNEE = 0.8
 _SOFT_SCALE = 1.0 / math.tanh(_KNEE)
 
 
+def _db_to_lin(db: float) -> float:
+    return 10.0 ** (db / 20.0)
+
+
+def _coeff(dt: float, tau: float) -> float:
+    """一阶平滑系数：dt 秒内逼近目标的比例（1 - e^{-dt/tau}）。"""
+    return 1.0 - math.exp(-dt / max(tau, 1e-4))
+
+
 def _soft_clip(frame: np.ndarray) -> np.ndarray:
-    """平滑饱和：0~knee 线性，knee~1 渐压，>1 饱和。"""
+    """平滑饱和：|x|≤knee 线性，之外 tanh 渐压至 ±1 以内。"""
     out = np.empty_like(frame)
     lo = frame > -_KNEE
     hi = frame < _KNEE
@@ -53,13 +71,18 @@ def _soft_clip(frame: np.ndarray) -> np.ndarray:
 
 
 class AgcPlugin(Effect):
-    """AGC 自动增益插件——峰值判定，目标 -10 dBFS，无用户参数。"""
+    """AGC 自动增益插件——峰值包络 + 非对称平滑，目标 -12 dBFS，无用户参数。"""
 
     NAME = "agc"
     LABEL = "自动增益 AGC"
-    PARAMS = {}
+    PARAMS = {
+        # 手动上限：自动提升最多到该值（0 = 只衰减不提升），衰减下限固定 -30dB
+        "max_gain_db": ("最大增益 dB", 0.0, _GAIN_MAX_DB,
+                        _MAX_GAIN_DEFAULT, 1.0),
+    }
 
     def __init__(self, params=None, engine_cache=None):
+        self._env = 0.0
         self._gain = 1.0
         self._initialized = False
         self._frame_count = 0
@@ -74,35 +97,60 @@ class AgcPlugin(Effect):
         n = len(frame)
         if n == 0:
             return frame
-        peak = float(np.max(np.abs(frame)))
+        x = np.asarray(frame, dtype=np.float32)
+        peak = float(np.max(np.abs(x)))
         self._last_peak = peak
-        if peak > _RMS_FLOOR:
-            target = _TARGET_LINEAR / peak
-            target = min(max(target, _GAIN_MIN), _GAIN_MAX)
-            if not self._initialized:
+
+        dt = min(0.1, max(0.001, n / float(_SAMPLE_RATE)))
+
+        # 峰值包络跟随（快 attack / 慢 release）
+        ca = _coeff(dt, _ENV_ATTACK_TAU)
+        cr = _coeff(dt, _ENV_RELEASE_TAU)
+        if peak >= self._env:
+            self._env += ca * (peak - self._env)
+        else:
+            self._env += cr * (peak - self._env)
+        env = self._env
+
+        target_lin = _db_to_lin(_TARGET_DB)
+        floor_lin = _db_to_lin(_FLOOR_DB)
+        gmin = _db_to_lin(_GAIN_MIN_DB)
+        max_db = float(self.params.get("max_gain_db", _MAX_GAIN_DEFAULT))
+        gmax = _db_to_lin(min(max(max_db, 0.0), _GAIN_MAX_DB))
+
+        if env > floor_lin:
+            desired = target_lin / env
+            desired = min(max(desired, gmin), gmax)
+        else:
+            # 静音门之下：不补增益，缓慢回落到 unity（避免抬高底噪）
+            desired = 1.0
+
+        if not self._initialized:
+            if peak > floor_lin:
+                # 首个有声帧直接就位，避免开头上冲
+                self._gain = desired
                 self._initialized = True
-                self._gain = target
-            else:
-                ratio = target / self._gain
-                if not (_DEAD_ZONE <= ratio <= 1.0 / _DEAD_ZONE):
-                    self._gain = target
-        elif self._gain > 1.0:
-            self._gain *= _DECAY_FACTOR
-            if self._gain < 1.0:
-                self._gain = 1.0
+        elif desired < self._gain:
+            self._gain += _coeff(dt, _GAIN_ATTACK_TAU) * (desired - self._gain)
+        else:
+            self._gain += _coeff(dt, _GAIN_RELEASE_TAU) * (desired - self._gain)
+
         g = self._gain
         if g != 1.0:
-            frame = frame * np.float32(g)
-        frame = _soft_clip(frame)
-        return frame
+            x = x * np.float32(g)
+        return _soft_clip(x)
 
     def get_agc_gain_db(self) -> float:
         """当前增益 dB（正值=增强），供 UI 读取。"""
         return 20.0 * math.log10(max(self._gain, 1e-10))
 
     def get_debug_info(self) -> dict:
-        return {"frames": self._frame_count, "gain": self._gain, "peak": self._last_peak}
+        return {"frames": self._frame_count, "gain": self._gain,
+                "peak": self._last_peak, "env": self._env}
 
     def reset(self):
+        self._env = 0.0
         self._gain = 1.0
         self._initialized = False
+        self._frame_count = 0
+        self._last_peak = 0.0

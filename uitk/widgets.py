@@ -100,9 +100,9 @@ class DarkCheck(tk.Frame):
         g = self.sizes["pad_sm"]   # 内边距
         c = self.canvas
         c.delete("all")
-        # 严格正方形外框
+        # 严格正方形外框（未勾选=羊皮纸底，避免白色割裂）
         c.create_rectangle(0, 0, sz - 1, sz - 1,
-                           fill=theme.ACCENT if on else theme.BASE,
+                           fill=theme.ACCENT if on else theme.WINDOW,
                            outline=theme.MID, width=1)
         if on:
             # 像素风直角对勾（两段粗线，无抗锯齿斜线）
@@ -253,7 +253,7 @@ class DarkCombo(tk.Frame):
         self.fonts = fonts if fonts is not None else {}
         # 外壳与宿主同色（不产生第二圈色），边框只由 inner 的 1px 描边承担
         host_bg = parent.cget("bg") if isinstance(parent, tk.Widget) \
-            else theme.BASE
+            else theme.WINDOW
         super().__init__(parent, bg=host_bg, bd=0, padx=0, pady=0)
         self.var = var
         self._pairs = _combo_pairs(values)
@@ -263,7 +263,7 @@ class DarkCombo(tk.Frame):
             self._disp_by_val.setdefault(v, d)
         self.on_change = on_change
         self._popup = None
-        inner = tk.Frame(self, bg=theme.BASE,
+        inner = tk.Frame(self, bg=theme.WINDOW,
                          highlightbackground=theme.MID,
                          highlightthickness=1)
         self.inner = inner
@@ -272,7 +272,7 @@ class DarkCombo(tk.Frame):
         var.trace_add("write", lambda *a: self._sync_display())
         self._sync_display()
         self.lbl = tk.Label(inner, textvariable=self._display,
-                            bg=theme.BASE, fg=theme.TEXT, anchor="w",
+                            bg=theme.WINDOW, fg=theme.TEXT, anchor="w",
                             padx=self.sizes["pad_md"],
                             font=self.fonts.get("body"))
         self.lbl.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -355,7 +355,7 @@ class DarkCombo(tk.Frame):
         outer.pack(fill=tk.BOTH, expand=True)
         # 滚轮一格一设备，行高/滚动步长全部来自尺寸表
         self.canvas = canvas = tk.Canvas(
-            outer, bg=theme.BASE, bd=0, highlightthickness=0,
+            outer, bg=theme.WINDOW, bd=0, highlightthickness=0,
             yscrollincrement=row_h + 2)
         bar = tk.Frame(outer, bg=theme.BUTTON, width=S["scrollbar_w"],
                        bd=1, relief=tk.FLAT,
@@ -379,7 +379,7 @@ class DarkCombo(tk.Frame):
                 pass
 
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        inner = tk.Frame(canvas, bg=theme.BASE)
+        inner = tk.Frame(canvas, bg=theme.WINDOW)
         win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
         def _sync_w(event=None):
@@ -391,7 +391,7 @@ class DarkCombo(tk.Frame):
         for idx, disp in enumerate(self.values):
             is_sel = disp == self._disp_by_val.get(self.var.get(),
                                                    self.var.get())
-            bgc = theme.PANEL if is_sel else theme.BASE
+            bgc = theme.PANEL if is_sel else theme.WINDOW
             # 外壳锁定行高（pack_propagate 关闭），与 lite BlackCombo 同构
             item = tk.Frame(inner, bg=bgc, bd=0, height=row_h)
             item.pack(fill=tk.X, padx=1, pady=1)
@@ -410,7 +410,7 @@ class DarkCombo(tk.Frame):
                            lb.configure(bg=f.cget("bg"))))
                 w.bind("<Leave>",
                        lambda e, f=item, lb=l1, sel=is_sel: (
-                           f.configure(bg=theme.BASE if not sel else theme.PANEL),
+                           f.configure(bg=theme.WINDOW if not sel else theme.PANEL),
                            lb.configure(bg=f.cget("bg"))))
         inner.update_idletasks()
         h = min(len(self.values), S["popup_rows"]) * (row_h + 2)

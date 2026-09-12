@@ -15,9 +15,9 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""128 段 Mel 频谱直方图（UI 频谱显示数据源）。
+"""64 段 Mel 频谱直方图（UI 频谱显示数据源）。
 
-HTK mel 刻度 20Hz–20kHz 三角滤波器组，Hann 窗 FFT，
+HTK mel 刻度 20Hz–16kHz 三角滤波器组，Hann 窗 FFT，
 功率谱 scale=1/nfft²，dB 输出 clamp [-90, -20]，静音带钉在 -90。
 窗长恒为 2×hop（NFFT=960，FFT 无损窗长，随 hop 派生）。
 """
@@ -26,11 +26,11 @@ import numpy as np
 
 from pvengine.context import NFFT, SAMPLE_RATE
 
-SPECTRUM_NUM_BANDS = 128
+SPECTRUM_NUM_BANDS = 64
 SPECTRUM_FFT = NFFT                    # 2×hop = 960 @48kHz
 _SPECTRUM_SR = float(SAMPLE_RATE)
 _MEL_LOW = 20.0
-_MEL_HIGH = 20000.0
+_MEL_HIGH = 16000.0
 _DB_FLOOR = -90.0
 _DB_CEIL = -20.0
 

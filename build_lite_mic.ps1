@@ -47,7 +47,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --exclude-module torchaudio `
     --exclude-module numba `
     --exclude-module pytest `
-    --add-data "models\purevox_denoise_202609_ep0312.onnx;models" `
+    --add-data "models\purevox_denoise_202609_ep0000.onnx;models" `
     --add-data "assets\fonts\*.ttf;assets/fonts" `
     --add-data "assets\icons\lite_tray.ico;assets\icons" `
     --add-data "assets\icons\lite_tray.png;assets\icons" `

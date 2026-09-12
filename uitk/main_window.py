@@ -151,16 +151,20 @@ class NodeRow(tk.Frame):
         self._far_items = {}
         self._build_far_combo()
         # 多参数/编辑入口/viz 走下方参数区（始终显示）
-        self.body_frame = tk.Frame(self, bg=theme.BASE)
+        self.body_frame = tk.Frame(self, bg=theme.PANEL)
         self._build_ec_body()
         self._build_inline(on_param)
         self.ensure_body()
 
     def ensure_body(self):
-        """参数区有内容即显示（无展开收起概念）。"""
-        if self.body_frame.winfo_children():
+        """参数区有「可见（已 pack）」内容才显示，避免隐藏卡片留下空占位。"""
+        has_visible = any(c.winfo_manager()
+                          for c in self.body_frame.winfo_children())
+        if has_visible:
             self.body_frame.pack(fill=tk.X, padx=self.sizes["pad_lg"],
                                  pady=(0, 4))
+        else:
+            self.body_frame.pack_forget()
 
     def _dev_spec(self):
         return DEV_KEY.get(self.spec.name)
@@ -213,9 +217,9 @@ class NodeRow(tk.Frame):
 
     def _ec_line(self, label):
         """下方参数区一行：固定宽左标签 + 右侧控件（撑满剩余宽度）。"""
-        line = tk.Frame(self.body_frame, bg=theme.BASE)
+        line = tk.Frame(self.body_frame, bg=theme.PANEL)
         line.pack(fill=tk.X, padx=self.sizes["pad_sm"], pady=2)
-        tk.Label(line, text=label, bg=theme.BASE, fg=theme.TEXT_DIM,
+        tk.Label(line, text=label, bg=theme.PANEL, fg=theme.TEXT_DIM,
                  font=self.fonts.get("small"), width=self._LBL_W,
                  anchor="w").pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
         return line
@@ -256,7 +260,7 @@ class NodeRow(tk.Frame):
                               command=self._on_aec_auto_calibrate)
         auto_btn.pack(side=tk.RIGHT, padx=(0, 4))
         self._aec_auto_btn = auto_btn
-        delay_lbl = tk.Label(delay_line, text="0ms", bg=theme.BASE,
+        delay_lbl = tk.Label(delay_line, text="0ms", bg=theme.PANEL,
                              fg=theme.TEXT, font=self.fonts.get("small"),
                              width=7, anchor="e")
         delay_lbl.pack(side=tk.RIGHT, padx=(4, 0))
@@ -274,13 +278,13 @@ class NodeRow(tk.Frame):
             delay_slider.set_value(min(1000.0, max(0.0, saved_ms)))
             delay_lbl.config(text=f"{saved_ms:.0f}ms")
         # ── 三路电平 Mic/Far/Out（放在延迟滑块下方）──
-        vu_frame = tk.Frame(self.body_frame, bg=theme.BASE)
+        vu_frame = tk.Frame(self.body_frame, bg=theme.PANEL)
         vu_frame.pack(fill=tk.X, padx=self.sizes["pad_sm"], pady=2)
         self._aec_vu_widgets = {}
         for key, label in [("mic", "Mic"), ("far", "Far"), ("out", "Out")]:
-            row = tk.Frame(vu_frame, bg=theme.BASE)
+            row = tk.Frame(vu_frame, bg=theme.PANEL)
             row.pack(fill=tk.X, pady=1)
-            tk.Label(row, text=label, bg=theme.BASE, fg=theme.TEXT_DIM,
+            tk.Label(row, text=label, bg=theme.PANEL, fg=theme.TEXT_DIM,
                      font=self.fonts.get("small"), width=self._LBL_W,
                      anchor="w").pack(side=tk.LEFT,
                                       padx=(0, self.sizes["pad_sm"]))
@@ -388,10 +392,12 @@ class NodeRow(tk.Frame):
         saved = self.cfg.get("params") or {}
         params = self.spec.params or {}
         # 单参数节点：滑杆直接放进行中间操作区（与下拉同一行）
-        # 多参数/expand（eq/tse）/viz：走下方参数区
+        # 多参数/expand（eq/tse）/viz/agc：走下方参数区
+        # （AGC 标题栏恒显「标题 + 增益/峰值数据」，滑杆放下方避免挤掉数据）
         inline_ok = (len(params) == 1
                      and self.spec.tier != "expand"
-                     and self.spec.kind != "viz")
+                     and self.spec.kind != "viz"
+                     and self.spec.name != "agc")
         for key, pdef in params.items():
             label, lo, hi, default, step = pdef
             cur = saved.get(key, default)
@@ -408,13 +414,14 @@ class NodeRow(tk.Frame):
             ps._key = key
             ps.pack(fill=tk.X, padx=self.sizes["pad_sm"],
                     pady=0 if inline_ok else 2)
-        # AGC 节点：增益值显示在标题栏右侧（× 之前）
+        # AGC 节点：标题行 = 「标题 + 增益/峰值数据」（数据紧贴标题）；
+        # 最大增益滑杆在下方参数区（inline_ok 已排除 agc）
         if self.spec.name == "agc":
             self._agc_gain_lbl = tk.Label(
-                self.head, text="",
+                self.mid, text="", width=28,
                 bg=theme.PANEL, fg=theme.ACCENT,
-                font=self.fonts.get("bold"), anchor="e")
-            self._agc_gain_lbl.pack(side=tk.RIGHT, padx=(0, self.sizes["pad_sm"]))
+                font=self.fonts.get("bold"), anchor="w")
+            self._agc_gain_lbl.pack(side=tk.LEFT, padx=(self.sizes["pad_sm"], 0))
             self._agc_instance_id = None
             self._agc_last_val = None
             self._agc_last_change = 0.0
@@ -819,7 +826,7 @@ class MainWindowTk:
                  font=self.fonts.get("bold"),
                  justify="left", anchor="w").pack(
             fill=tk.X, padx=14, pady=(10, 4))
-        tk.Label(dlg.body, text=detail, bg=theme.BASE, fg=theme.TEXT_DIM,
+        tk.Label(dlg.body, text=detail, bg=theme.PANEL, fg=theme.TEXT_DIM,
                  font=self.fonts.get("body"), justify="left", anchor="nw",
                  wraplength=360, padx=10, pady=8).pack(
             fill=tk.X, padx=14)
@@ -1072,7 +1079,7 @@ class MainWindowTk:
         # eq 行（三种规格）：展开区提供曲线编辑入口
         if spec.name in ("eq10", "eq31", "eq61"):
             eb = tk.Label(row.body_frame,
-                          text="打开均衡器编辑…", bg=theme.BASE,
+                          text="打开均衡器编辑…", bg=theme.PANEL,
                           fg=theme.ACCENT, cursor="hand2",
                           font=self.fonts.get("body"))
             eb.pack(anchor="w", padx=self.sizes["pad_lg"],
@@ -1081,7 +1088,7 @@ class MainWindowTk:
         # tse 行：展开区提供参考录音入口
         if spec.name == "tse":
             tb = tk.Label(row.body_frame,
-                          text="参考音频录制…", bg=theme.BASE,
+                          text="参考音频录制…", bg=theme.PANEL,
                           fg=theme.ACCENT, cursor="hand2",
                           font=self.fonts.get("body"))
             tb.pack(anchor="w", padx=self.sizes["pad_lg"],
@@ -1115,7 +1122,7 @@ class MainWindowTk:
     def _attach_soundpad(self, row):
         """音效板行内垫子区：播放/停止/热键勾选/移除 + 添加音效。"""
         S, F = self.sizes, self.fonts
-        holder = tk.Frame(row.body_frame, bg=theme.BASE)
+        holder = tk.Frame(row.body_frame, bg=theme.PANEL)
         holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
 
         def pads():
@@ -1126,20 +1133,20 @@ class MainWindowTk:
             self._refresh_pad_hotkeys()
 
         def pad_row(idx, info):
-            r = tk.Frame(holder, bg=theme.BASE)
+            r = tk.Frame(holder, bg=theme.PANEL)
             r.pack(fill=tk.X, pady=1)
-            play = tk.Label(r, text="▶", bg=theme.BASE, fg=theme.ACCENT,
+            play = tk.Label(r, text="▶", bg=theme.PANEL, fg=theme.ACCENT,
                             cursor="hand2", font=F.get("bold"))
             play.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
             play.bind("<Button-1>",
                       lambda e, i=idx: self.engine.soundpad_play(i))
-            stop = tk.Label(r, text="■", bg=theme.BASE, fg=theme.TEXT_DIM,
+            stop = tk.Label(r, text="■", bg=theme.PANEL, fg=theme.TEXT_DIM,
                             cursor="hand2", font=F.get("bold"))
             stop.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
             stop.bind("<Button-1>",
                       lambda e, i=idx: self.engine.soundpad_stop(i))
             name = tk.Label(r, text=str(info.get("name") or "未命名"),
-                            bg=theme.BASE, fg=theme.TEXT, anchor="w",
+                            bg=theme.PANEL, fg=theme.TEXT, anchor="w",
                             font=F.get("body"))
             name.pack(side=tk.LEFT, fill=tk.X, expand=True)
             hk_var = tk.BooleanVar(value=bool(info.get("hotkey")))
@@ -1147,7 +1154,7 @@ class MainWindowTk:
                            command=lambda: _toggle_hk(idx, hk_var),
                            sizes=S, fonts=F)
             hk.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
-            rm = tk.Label(r, text="×", bg=theme.BASE, fg=theme.TEXT_DIM,
+            rm = tk.Label(r, text="×", bg=theme.PANEL, fg=theme.TEXT_DIM,
                           cursor="hand2", font=F.get("bold"))
             rm.pack(side=tk.LEFT)
             rm.bind("<Button-1>", lambda e, i=idx: _remove(i))
@@ -1194,21 +1201,21 @@ class MainWindowTk:
                 w.destroy()
             for i, info in enumerate(pads()):
                 pad_row(i, info)
-            bar = tk.Frame(holder, bg=theme.BASE)
+            bar = tk.Frame(holder, bg=theme.PANEL)
             bar.pack(fill=tk.X, pady=(2, 0))
-            add = tk.Label(bar, text="＋ 添加音效", bg=theme.BASE,
+            add = tk.Label(bar, text="＋ 添加音效", bg=theme.PANEL,
                            fg=theme.ACCENT, cursor="hand2",
                            font=F.get("body"))
             add.pack(side=tk.LEFT)
             add.bind("<Button-1>", lambda e: _add())
-            stopall = tk.Label(bar, text="全部停止", bg=theme.BASE,
+            stopall = tk.Label(bar, text="全部停止", bg=theme.PANEL,
                                fg=theme.TEXT_DIM, cursor="hand2",
                                font=F.get("body"))
             stopall.pack(side=tk.LEFT, padx=(S["pad_md"], 0))
             stopall.bind("<Button-1>",
                          lambda e: self.engine.soundpad_stop_all())
             hint = tk.Label(bar, text="热键 = Ctrl+Alt+序号，勾选即生效",
-                            bg=theme.BASE, fg=theme.TEXT_DIM,
+                            bg=theme.PANEL, fg=theme.TEXT_DIM,
                             font=F.get("small"))
             hint.pack(side=tk.RIGHT)
 
@@ -1219,7 +1226,7 @@ class MainWindowTk:
         hint = tk.Label(row.body_frame,
                         text="捕获默认输出设备的系统混音（loopback），"
                              "音量滑杆实时生效；随引擎启停自动开关。",
-                        bg=theme.BASE, fg=theme.TEXT_DIM,
+                        bg=theme.PANEL, fg=theme.TEXT_DIM,
                         font=self.fonts.get("small"), anchor="w",
                         justify="left")
         hint.pack(fill=tk.X, padx=self.sizes["pad_lg"],
@@ -1230,9 +1237,9 @@ class MainWindowTk:
         地址非空是启动前提（SessionPlan 校验）；实际服务器绑定 server_port。"""
         S, F = self.sizes, self.fonts
         params = row.cfg.setdefault("params", {})
-        holder = tk.Frame(row.body_frame, bg=theme.BASE)
+        holder = tk.Frame(row.body_frame, bg=theme.PANEL)
         holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
-        tk.Label(holder, text="推流地址", bg=theme.BASE, fg=theme.TEXT_DIM,
+        tk.Label(holder, text="推流地址", bg=theme.PANEL, fg=theme.TEXT_DIM,
                  font=F.get("small")).pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
         if not params.get("url"):
             ip = ""
@@ -1263,7 +1270,7 @@ class MainWindowTk:
         tk.Label(row.body_frame,
                  text="手机/浏览器访问该地址推流（HTTPS，首次需信任自签证书）；"
                       "地址可改，实际监听端口 = 设置中的服务器端口。",
-                 bg=theme.BASE, fg=theme.TEXT_FAINT, font=F.get("small"),
+                 bg=theme.PANEL, fg=theme.TEXT_FAINT, font=F.get("small"),
                  anchor="w", justify="left").pack(fill=tk.X, padx=S["pad_lg"])
 
     def _attach_music_player(self, row):
@@ -1271,14 +1278,14 @@ class MainWindowTk:
         播放开关 = 行启用复选框（硬启停，无暂停/开始按钮），
         播放位置经事件（拖动/停止/退出）触发持久化。"""
         S, F = self.sizes, self.fonts
-        holder = tk.Frame(row.body_frame, bg=theme.BASE)
+        holder = tk.Frame(row.body_frame, bg=theme.PANEL)
         holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
         state = {"dragging": False, "dur": 0.0, "after": None,
                  "was_playing": False}
-        name_lbl = tk.Label(holder, text="（未选择曲目）", bg=theme.BASE,
+        name_lbl = tk.Label(holder, text="（未选择曲目）", bg=theme.PANEL,
                             fg=theme.TEXT, anchor="w", font=F.get("body"))
         name_lbl.pack(fill=tk.X, pady=(0, 2))
-        bar = tk.Frame(holder, bg=theme.BASE)
+        bar = tk.Frame(holder, bg=theme.PANEL)
         bar.pack(fill=tk.X)
 
         def _idx():
@@ -1322,17 +1329,17 @@ class MainWindowTk:
             state["dur"] = 0.0
             refresh_name()
 
-        pick_btn = tk.Label(bar, text="选择曲目", bg=theme.BASE,
+        pick_btn = tk.Label(bar, text="选择曲目", bg=theme.PANEL,
                             fg=theme.ACCENT, cursor="hand2",
                             font=F.get("body"))
         pick_btn.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
         pick_btn.bind("<Button-1>", lambda e: _pick())
-        time_lbl = tk.Label(bar, text="00:00 / 00:00", bg=theme.BASE,
+        time_lbl = tk.Label(bar, text="00:00 / 00:00", bg=theme.PANEL,
                             fg=theme.TEXT_DIM, font=F.get("small"))
         time_lbl.pack(side=tk.RIGHT)
         # 进度滑块（与进度条一体）：拖动=定位，回显=播放位置
         from .widgets import HSlider
-        seek_holder = tk.Frame(holder, bg=theme.BASE)
+        seek_holder = tk.Frame(holder, bg=theme.PANEL)
         seek_holder.pack(fill=tk.X)
         seek = {"slider": None}
 
@@ -1402,7 +1409,7 @@ class MainWindowTk:
             w = VUCanvas(row.body_frame, sizes=self.sizes, height=26)
             w.pack(fill=tk.X, pady=self.sizes["pad_sm"])
         elif name == "spectrum":
-            # 可视化面积最大化：随窗口高度拉伸
+            # 紧凑高度（数据/段数不变，只减纵向占用）
             w = SpectrumCanvas(row.body_frame, sizes=self.sizes)
             w.pack(fill=tk.BOTH, expand=True,
                    pady=self.sizes["pad_sm"])
@@ -1612,6 +1619,7 @@ class MainWindowTk:
                 card.pack(fill=tk.X, padx=S["pad_sm"], pady=(0, S["pad_sm"]))
             else:
                 card.pack_forget()
+            row.ensure_body()   # 切换后收起/展开参数区，不留空占位
 
         row._linux_vm_apply = _active
         _active(str((row.cfg.get("params") or {}).get("device", "")))
@@ -1667,7 +1675,7 @@ class MainWindowTk:
                          font=self.fonts.get("small"), justify="left",
                          anchor="w", wraplength=wrap)
 
-        btns = tk.Frame(card, bg=theme.BASE,
+        btns = tk.Frame(card, bg=theme.PANEL,
                         highlightbackground=theme.MID, highlightthickness=1)
         btns.pack(fill=tk.X, padx=8, pady=(0, 4))
         tk.Label(btns, text=" VB-CABLE 驱动 ", bg=theme.TRACK,
@@ -1814,7 +1822,8 @@ class MainWindowTk:
                 # 内容不满一屏时禁止滚动（杜绝滚出下方空白）
                 if (self.panel.body.winfo_reqheight()
                         > self.panel.canvas.winfo_height()):
-                    self.panel.canvas.yview_scroll(-d, "units")
+                    # d 已按 yview_scroll 语义（负=上/前，正=下/后）
+                    self.panel.canvas.yview_scroll(d, "units")
                 return
             w = getattr(w, "master", None)
 
@@ -1834,14 +1843,23 @@ class MainWindowTk:
 
 
 def sys_wheel_delta(e):
-    import sys as _sys
-    if _sys.platform.startswith("win"):
-        return int(e.delta / 120)
-    if getattr(e, "num", 0) == 4:
+    """滚轮事件 → yview_scroll 单位增量（负=上/前，正=下/后）。
+
+    统一各平台符号约定后直接交给 canvas.yview_scroll：
+      Windows/macOS 走 <MouseWheel> e.delta；X11 走 Button-4(上)/Button-5(下)。
+    历史上 Linux 分支返回了相反符号又被调用方取反，导致列表滚动反向。
+    """
+    num = getattr(e, "num", 0)
+    if num == 4:
         return -1
-    if getattr(e, "num", 0) == 5:
+    if num == 5:
         return 1
-    return 0
+    d = getattr(e, "delta", 0)
+    if not d:
+        return 0
+    if abs(d) >= 120:
+        return int(-d / 120)
+    return -1 if d > 0 else 1
 
 
 if __name__ == "__main__":
