@@ -110,10 +110,10 @@ EXPAND_TITLES = {
 # loopback 是回环输入种节点（一路扬声器播出直采为输入，代码名 loopback）；
 # AEC 行 far=扬声器与它继承同一套回环采集机制（两者的组合即完整 AEC 行）。
 _SYSTEM_SPECS = [
-    NodeSpec("audio_input", "音频输入", "input"),
-    NodeSpec("loopback", "桌面输入", "input"),
-    NodeSpec("echo_cancel", "回声消除 AEC", "input"),
-    NodeSpec("remote_mic", "远程推流输入", "input"),
+    NodeSpec("audio_input", "录音输入", "input"),
+    NodeSpec("remote_mic", "网络输入", "input"),
+    NodeSpec("loopback", "播放输入", "input"),
+    NodeSpec("echo_cancel", "AEC 输入", "input"),
     NodeSpec("audio_output", "音频输出", "output"),
     NodeSpec("vu_meter", "VU 电平表", "viz"),
     NodeSpec("spectrum", "频谱图", "viz"),

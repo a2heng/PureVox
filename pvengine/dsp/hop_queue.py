@@ -82,6 +82,27 @@ class GridHistory:
             self._start += over
             self._drops += over
 
+    def push_contig(self, samples) -> None:
+        """连续流式写入（不做时间戳对齐）。
+
+        用于只求「连续」、不需跨时钟配对的输入（如播放输入回环行）：
+        时间戳取整会让每次推入的网格推进与样本数差 ±1，push_ts 的补偿逻辑
+        随即丢/补样本，形成周期性微小时基抖动（听感为轻微「嘀嗒」毛刺）。
+        """
+        seq = [float(s) for s in samples]
+        if not seq:
+            return
+        if self._buf is None:
+            self._buf = seq
+            self._start = 0
+        else:
+            self._buf.extend(seq)
+        over = len(self._buf) - self._cap
+        if over > 0:
+            self._buf = self._buf[over:]
+            self._start += over
+            self._drops += over
+
     def start_grid(self) -> Optional[int]:
         return self._start
 

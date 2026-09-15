@@ -560,9 +560,10 @@ def open_eq_editor(parent, freqs, q, get_gains, set_gains, sizes=None,
 
 # ── 快捷键与提示音 ──
 
-def open_hotkey_dialog(parent, get_toggle, set_toggle,
-                       get_cue, set_cue, get_cue_enabled,
-                       set_cue_enabled, sizes=None, fonts=None):
+def open_hotkey_dialog(parent, get_toggle, set_toggle, get_toggle_enabled,
+                       set_toggle_enabled, get_cue, set_cue,
+                       get_cue_enabled, set_cue_enabled, sizes=None,
+                       fonts=None):
     """全局快捷键 + 启停提示音设置（音效板快捷键在音效行内直接录制）。
 
     - 热键字段点一下即进入录制，按下组合键完成；Delete 清除；空串 = 不监听。
@@ -570,66 +571,45 @@ def open_hotkey_dialog(parent, get_toggle, set_toggle,
       （写配置后立即生效）。
     所有写操作经回调交回主窗（持久化 + 重注册全局热键）。
     """
-    from .widgets import FlatButton, HotkeyField, DarkCheck, DarkCombo
+    from .widgets import FlatButton, HotkeyField, DarkCheck
     from .cues import play as play_cue
     from pvengine.cues import PRESETS
 
     S = sizes or make_sizes(100)
     F = fonts or {}
-    dlg = DarkDialog(parent, "快捷键与提示音", 420, 300, sizes=S, fonts=F)
+    dlg = DarkDialog(parent, "快捷键与提示音", 420, 190, sizes=S, fonts=F)
     body = dlg.body
 
-    def section(text):
-        tk.Label(body, text=text, bg=theme.WINDOW, fg=theme.ACCENT,
-                 font=F.get("bold"), anchor="w").pack(
-            fill=tk.X, padx=14, pady=(10, 2))
-
-    def hint(text):
-        tk.Label(body, text=text, bg=theme.WINDOW, fg=theme.TEXT_FAINT,
-                 font=F.get("small"), anchor="w", justify="left").pack(
-            fill=tk.X, padx=14)
-
-    # ── 启停 ──
-    section("启动 / 停止音频处理")
-    row = tk.Frame(body, bg=theme.WINDOW)
-    row.pack(fill=tk.X, padx=14, pady=(2, 0))
-    HotkeyField(row, spec=get_toggle(), command=set_toggle,
-                sizes=S, fonts=F).pack(side=tk.LEFT)
-    hint("点击方框后按下组合键；Delete 清除（清空 = 不监听）")
-
-    # ── 提示音 ──
-    section("启停提示音")
-    cue_values = [(label, pid) for pid, label in PRESETS]
-    from .widgets import DarkCombo
-    on_var = tk.BooleanVar(value=bool(get_cue_enabled()))
-
-    def toggle_cues():
-        set_cue_enabled(bool(on_var.get()))
-    check = DarkCheck(body, "启用启停提示音", on_var, command=toggle_cues,
-                      sizes=S, fonts=F)
-    check.pack(anchor="w", padx=14, pady=(2, 4))
-
-    def cue_row(kind, label):
+    def row(pady=(0, 0)):
         r = tk.Frame(body, bg=theme.WINDOW)
-        r.pack(fill=tk.X, padx=14, pady=2)
-        tk.Label(r, text=label, bg=theme.WINDOW, fg=theme.TEXT,
-                 font=F.get("body"), width=6, anchor="w").pack(side=tk.LEFT)
-        var = tk.StringVar(value=get_cue(kind))
+        r.pack(fill=tk.X, padx=16, pady=pady)
+        return r
 
-        def on_change(*_a):
-            set_cue(kind, var.get())
-            play_cue(var.get(), kind)
-        DarkCombo(r, cue_values, var, on_change=on_change,
-                  sizes=S, fonts=F).pack(side=tk.LEFT, padx=(3, 6))
+    # ── 第一行：启停快捷键（复选框 = 总开关；录制框无清除×）──
+    r = row(pady=(18, 0))
+    tg_var = tk.BooleanVar(value=bool(get_toggle_enabled()))
+    DarkCheck(r, "启停快捷键", tg_var,
+              command=lambda: set_toggle_enabled(bool(tg_var.get())),
+              sizes=S, fonts=F).pack(side=tk.LEFT)
+    HotkeyField(r, spec=get_toggle(), command=set_toggle,
+                sizes=S, fonts=F, show_clear=False).pack(
+        side=tk.LEFT, padx=(S["pad_md"], 0))
 
-        def preview():
-            play_cue(var.get(), kind)
-        FlatButton(r, "试听", command=preview, font=F.get("body"),
-                   sizes=S).pack(side=tk.LEFT)
-    cue_row("start", "启动音")
-    cue_row("stop", "停止音")
-    hint("复选框＝总开关；「试听」始终可听。提示音从系统默认输出设备播放，"
-         "与音频处理的输出设备无关。")
+    # ── 第二行：启停提示音（复选框 = 总开关；两个按钮即试听，一套音色不切换）──
+    default_pid = PRESETS[0][0]
+
+    def audition(kind):
+        play_cue(get_cue(kind) or default_pid, kind)
+
+    on_var = tk.BooleanVar(value=bool(get_cue_enabled()))
+    r = row(pady=(18, 0))
+    DarkCheck(r, "启停提示音", on_var,
+              command=lambda: set_cue_enabled(bool(on_var.get())),
+              sizes=S, fonts=F).pack(side=tk.LEFT)
+    for kind, text in (("start", "启动提示音"), ("stop", "停止提示音")):
+        FlatButton(r, text, command=lambda k=kind: audition(k),
+                   font=F.get("body"), sizes=S, pad=S["pad_sm"]).pack(
+            side=tk.LEFT, padx=(S["pad_md"], 0))
 
     return dlg
 

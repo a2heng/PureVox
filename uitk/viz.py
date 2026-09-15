@@ -83,7 +83,7 @@ class VUCanvas(tk.Canvas):
         s = self.sizes["scale"]
         self.seg_w = max(4, int(round(self.SEG_W * s)))
         self.seg_gap = max(1, int(round(self.SEG_GAP * s)))
-        super().__init__(parent, bg=theme.VIZ_BG,
+        super().__init__(parent, bg=theme.PANEL,
                          highlightthickness=0, bd=0, height=height)
         self._db = VU_DB_MIN
         self._peak = VU_DB_MIN

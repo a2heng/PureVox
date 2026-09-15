@@ -121,8 +121,11 @@ class EngineController:
             # 不启动 AudioThread——播放库（miniaudio PlaybackDevice）拉模型
             # 直出，设备时钟即节拍；跨时钟域由注入的 PlaybackSink 消化；
             # 确定性本地播放与不确定实时流（网络）互不掺杂 ──
+            # 回环输入行（播放输入）是「设备输入」的一种：它靠本地采集循环
+            # 拉 hop 才有声音，绝不能落进纯媒体会话（那样恒静音）。故仅当
+            # 既无麦克风输入、又无回环输入、也无网络输入时才算纯媒体会话。
             network = plan.remote_url is not None
-            if not plan.inputs and not network:
+            if not plan.inputs and not plan.loopbacks and not network:
                 from pvplatform.audio.media_session import MediaSession
                 from pvengine import PlaybackSink
                 self._media = MediaSession(

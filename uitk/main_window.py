@@ -113,7 +113,8 @@ class NodeRow(tk.Frame):
         self.spec = spec
         super().__init__(parent.body, bg=theme.PANEL, bd=0)
         head = tk.Frame(self, bg=theme.PANEL)
-        head.pack(fill=tk.X, padx=self.sizes["pad_md"], pady=2)
+        # 标题行内部零留白：左右顶到卡片边缘，× 钮正好落在卡片右上角
+        head.pack(fill=tk.X)
         self.head = head
         # 布局（左→右）：手柄 · 开关 · 名称 ······ 用户操作区（下拉/滑杆）· 删除 ×
         # 类型名不再占横向空间；中间全部让给用户操作控件
@@ -163,10 +164,11 @@ class NodeRow(tk.Frame):
                           for c in self.body_frame.winfo_children())
         if has_visible:
             padx = getattr(self, "_body_padx", None)
+            pady = getattr(self, "_body_pady", None)
             self.body_frame.pack(fill=tk.X,
                                  padx=self.sizes["pad_lg"] if padx is None
                                  else padx,
-                                 pady=(0, 4))
+                                 pady=(2, 4) if pady is None else pady)
         else:
             self.body_frame.pack_forget()
 
@@ -1057,8 +1059,10 @@ class MainWindowTk:
         host = getattr(self, "_hotkeys", None)
         if host is None:
             return
-        bindings = [("toggle", self._cfg_get("hotkey_toggle",
-                                             self.DEFAULT_HOTKEY))]
+        bindings = []
+        if bool(self._cfg_get("hotkey_toggle_on", True)):
+            bindings.append(("toggle", self._cfg_get(
+                "hotkey_toggle", self.DEFAULT_HOTKEY)))
         for i, p in enumerate(self._soundpad_pads()):
             spec = str(p.get("hotkey") or "")
             if spec and bool(p.get("hotkey_on", True)):
@@ -1117,6 +1121,8 @@ class MainWindowTk:
             get_toggle=lambda: self._cfg_get("hotkey_toggle",
                                              self.DEFAULT_HOTKEY),
             set_toggle=self._set_toggle_hotkey,
+            get_toggle_enabled=lambda: self._cfg_get("hotkey_toggle_on", True),
+            set_toggle_enabled=self._set_toggle_hotkey_on,
             get_cue=lambda kind: self._cfg_get(
                 "cue_start" if kind == "start" else "cue_stop", "soft"),
             set_cue=self._set_cue,
@@ -1126,6 +1132,10 @@ class MainWindowTk:
 
     def _set_toggle_hotkey(self, spec):
         self._cfg_set("hotkey_toggle", spec or "")
+        self._refresh_hotkeys()
+
+    def _set_toggle_hotkey_on(self, on):
+        self._cfg_set("hotkey_toggle_on", bool(on))
         self._refresh_hotkeys()
 
     def _set_cue(self, kind, pid):
@@ -1155,16 +1165,13 @@ class MainWindowTk:
                       activebackground=theme.DARK,
                       activeforeground=theme.TEXT, bd=0,
                       font=self.fonts["body"])
-        dev.add_command(label="输入设备",
-                        command=lambda: self.add_spec(get_spec("audio_input")))
-        dev.add_command(label="网络输入设备",
-                        command=lambda: self.add_spec(get_spec("remote_mic")))
-        dev.add_command(label="回声消除输入",
-                        command=lambda: self.add_spec(get_spec("echo_cancel")))
-        dev.add_command(label="桌面输入",
-                        command=lambda: self.add_spec(get_spec("loopback")))
-        dev.add_command(label="输出设备",
-                        command=lambda: self.add_spec(get_spec("audio_output")))
+        # 名称单一来源 = 节点 spec.label（与行标题一致，避免两处漂移）
+        for nm in ("audio_input", "remote_mic", "loopback", "echo_cancel",
+                   "audio_output"):
+            sp = get_spec(nm)
+            if sp is not None:
+                dev.add_command(label=sp.label,
+                                command=lambda s=sp: self.add_spec(s))
         m.add_cascade(label="设备", menu=dev)
         # 媒体输入分类：设备外音源（相互独立的插件节点）
         media = tk.Menu(m, tearoff=0, bg=theme.BUTTON, fg=theme.TEXT,
@@ -1293,19 +1300,26 @@ class MainWindowTk:
             d = int(round(float(db)))
             return "0" if d == 0 else ("+%d" % d if d > 0 else str(d))
 
+        # 复选框缩进 = 标题行拖拽手柄的宽度（+同款间距），使其与标题的复选框
+        # 上下对齐（标题里复选框前面是手柄，这里是留白）
+        try:
+            indent = row.grip.winfo_reqwidth() + S["pad_sm"]
+        except Exception:
+            indent = S["pad_md"] * 2
+
         def pad_row(idx, info):
             # 顺序：开关（最前，快捷键=整个启用的总控）· 名称（点按即播放）·
             #       快捷键 · 音量（自适应占满剩余）· × 删除（行尾成列）
-            # 隔行换底（斑马纹）：亮行=窗底，暗行=明显更深一档的浅棕——
-            # 两行都不等于插件面板色，避免与面板混为一体看不出行界
-            row_bg = theme.ROW_ALT if (idx % 2) else theme.WINDOW
+            # 统一行项色（略暗于插件面板）；行间留 1px 缝隙露出面板色作分隔，
+            # 不再用斑马纹（两行同色，靠缝隙区隔）
+            row_bg = theme.ROW_ITEM
             r = tk.Frame(holder, bg=row_bg)
             r.pack(fill=tk.X, pady=1)
             hk_var = tk.BooleanVar(value=bool(info.get("hotkey_on", True)))
             DarkCheck(r, "", hk_var,
                       command=lambda i=idx, v=hk_var: _set_hk_on(i, v),
                       sizes=S, fonts=F).pack(side=tk.LEFT,
-                                             padx=(0, S["pad_sm"]))
+                                             padx=(indent, S["pad_sm"]))
             name = tk.Label(r, text=str(info.get("name") or "未命名"),
                             bg=row_bg, fg=theme.TEXT, anchor="w",
                             width=10, font=F.get("body"), cursor="hand2")
@@ -1607,14 +1621,15 @@ class MainWindowTk:
                     lambda e: _stop_tick() if e.widget is holder else None)
 
     def _attach_viz(self, row, name):
+        row._body_padx = 0        # 画布顶满卡片左右
+        row._body_pady = 0        # 且顶满卡片上下（就卡片而言的撑满）
         if name == "vu_meter":
             w = VUCanvas(row.body_frame, sizes=self.sizes, height=26)
-            w.pack(fill=tk.X, pady=self.sizes["pad_sm"])
+            w.pack(fill=tk.X, pady=0)
         elif name == "spectrum":
             # 紧凑高度（数据/段数不变，只减纵向占用）
             w = SpectrumCanvas(row.body_frame, sizes=self.sizes)
-            w.pack(fill=tk.BOTH, expand=True,
-                   pady=self.sizes["pad_sm"])
+            w.pack(fill=tk.BOTH, expand=True, pady=0)
         else:
             return
         # 位置抽头序号 = 本行之前【启用】的 viz 行数
@@ -1776,11 +1791,9 @@ class MainWindowTk:
         btn = FlatButton(head, "创建", sizes=S, command=lambda: _on_action())
         btn.pack(side=tk.RIGHT)
         tk.Label(card,
-                 text="输出选中 PureVox 虚拟麦克风：由 PureVox 构造 purevox_out "
-                      "sink 与 purevox_mic 两个出口（monitor 供多数软件，"
-                      "purevox_mic 供 OBS 等只列真源的软件）。创建/清理均幂等，"
-                      "创建后其它软件将其设为麦克风即可收到降噪声音。",
-                 bg=theme.PANEL, fg=theme.TEXT_DIM, font=F.get("small"),
+                 text="创建后，其它软件把「PureVox 虚拟麦克风」设为麦克风"
+                      "即可收到降噪声音。创建/清理均幂等。",
+                 bg=theme.PANEL, fg=theme.TEXT_DIM, font=F.get("body"),
                  justify="left", anchor="w",
                  wraplength=max(320, S["win_w"] - 80)).pack(
             fill=tk.X, padx=8, pady=(2, 6))
@@ -1856,37 +1869,30 @@ class MainWindowTk:
                              font=self.fonts.get("bold"))
         state_lbl.pack(side=tk.LEFT, padx=(6, 0))
 
-        # ── 双端点说明（恒显示）──
-        tips = (
-            "VB-CABLE 是 VB-Audio 的虚拟声卡，安装后提供一对端点，"
-            "采样率均设置为 48kHz：\n"
-            "① CABLE Input（输入端）—— 接收 PureVox 处理后的音频，"
-            "经驱动转发到输出端。请在 PureVox「输出设备」中选择它"
-            "（本软件的输出写入这里）。\n"
-            "② CABLE Output（输出端）—— 作为虚拟麦克风使用，可设置为系统默认麦克风，"
-            "供 OBS、直播、聊天、会议等软件选用。\n"
-            "数据流向：PureVox → CABLE Input →（驱动转发）→ CABLE Output → 其它软件。")
+        # ── 双端点说明（一行讲完，不大段铺陈）──
+        tips = ("CABLE Input ← PureVox 输出；CABLE Output 即虚拟麦克风，"
+                "设为系统默认麦克风供 OBS / 直播 / 会议使用。")
         tk.Label(card, text=tips, bg=theme.PANEL, fg=theme.TEXT_DIM,
-                 font=self.fonts.get("small"), justify="left", anchor="w",
+                 font=self.fonts.get("body"), justify="left", anchor="w",
                  wraplength=wrap).pack(fill=tk.X, padx=8, pady=(2, 4))
 
         # ── 驱动卡片 ──
         guide = tk.Label(card,
-                         text="打开上方「输出设备」下拉即可检测驱动有无。",
+                         text="未检测到驱动：下载安装后点「启动/停止」即可识别。",
                          bg=theme.PANEL, fg=theme.TEXT_FAINT,
-                         font=self.fonts.get("small"), justify="left",
+                         font=self.fonts.get("body"), justify="left",
                          anchor="w", wraplength=wrap)
 
         btns = tk.Frame(card, bg=theme.PANEL,
                         highlightbackground=theme.MID, highlightthickness=1)
         btns.pack(fill=tk.X, padx=8, pady=(0, 4))
         tk.Label(btns, text=" VB-CABLE 驱动 ", bg=theme.TRACK,
-                 fg=theme.TEXT_DIM, font=self.fonts.get("small")
+                 fg=theme.TEXT_DIM, font=self.fonts.get("body")
                  ).pack(side=tk.LEFT, padx=(4, 6), pady=4)
 
         def _label_btn(parent, text, on_click):
             b = tk.Label(parent, text=text, bg=parent.cget("bg"),
-                         fg=theme.TEXT, font=self.fonts.get("small"),
+                         fg=theme.TEXT, font=self.fonts.get("body"),
                          padx=8, pady=3, cursor="hand2")
             b.pack(side=tk.LEFT, padx=(0, 4))
             b.bind("<Button-1>", lambda e: on_click())
@@ -1912,12 +1918,8 @@ class MainWindowTk:
         def _toggle_check():
             self._cfg_set("vbcable_check_enabled", bool(cb_var.get()))
 
-        tk.Checkbutton(card, text="启动时检测虚拟麦克风（未安装才提醒）",
-                       variable=cb_var, command=_toggle_check,
-                       bg=theme.PANEL, fg=theme.TEXT_DIM,
-                       activebackground=theme.PANEL,
-                       highlightthickness=0,
-                       font=self.fonts.get("small")).pack(
+        DarkCheck(card, "启动时检测驱动", cb_var, command=_toggle_check,
+                  sizes=self.sizes, fonts=self.fonts).pack(
             anchor="w", padx=8, pady=(0, 6))
 
         # ── 状态套用：由 refresh_devices（启动/启停触发）用同一次
@@ -1988,7 +1990,8 @@ class MainWindowTk:
         self._persist()
 
     def _pack_row(self, row):
-        row.pack(fill=tk.X, pady=2)
+        # 每边 pad_md/2 ⇒ 相邻卡片间隙 = pad_md，与左右留白同粗
+        row.pack(fill=tk.X, pady=max(1, self.sizes["pad_md"] // 2))
 
     def _move_row_live(self, row, target):
         """拖动中实时换位：只重排显示，不持久化不重启（避免抖动）。"""

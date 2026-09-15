@@ -394,7 +394,7 @@ class AudioThread(threading.Thread):
                 rs, ratio = None, 1.0
             self._loopback_live.append({"capture": cap, "hist": hist,
                                         "rs": rs, "ratio": ratio,
-                                        "device": dev})
+                                        "device": dev, "primed": False})
             _module_log(f"[回环] 行装配: {dev} sr={cap.dev_sr}Hz")
 
     def _stop_loopback_rows(self) -> None:
@@ -841,6 +841,7 @@ class AudioThread(threading.Thread):
                     ts0, hop = e
                     hops.append(hop)
                     mts.append(ts0)
+        n_mic = len(hops)   # 本轮固定分母（混音归一化用，见末尾）
         for live in self._aec_live:
             idx = live["mic_index"]
             hop = hops[idx] if 0 <= idx < len(hops) else None
@@ -873,20 +874,34 @@ class AudioThread(threading.Thread):
                         seq = lb["rs"].process(list(got[1]), lb["ratio"])
                     else:
                         seq = got[1]
-                    lb["hist"].push_ts(got[0], seq)
+                    # 回环行只需连续流（不做跨时钟配对）：按时间戳入网格会因
+                    # 取整产生周期性时基抖动（轻微嘀嗒毛刺），故按连续流推入
+                    lb["hist"].push_contig(seq)
+            # 预充 3 个 hop 再开始消费：回环生产者与消费者都是 ~1 hop/10ms，
+            # 不预充则水位恒在 0 附近，任何包到达抖动都会让 pop 返回 None，
+            # 该 hop 便插入静音——听感即持续「卡卡卡」。预充把这层抖动吃掉。
+            if not lb["primed"]:
+                hist = lb["hist"]
+                eg, sg = hist.end_grid(), hist.start_grid()
+                if eg is None or sg is None or (eg - sg) < HOP_LENGTH * 3:
+                    continue
+                lb["primed"] = True
             hop_lb = lb["hist"].pop_hop(HOP_LENGTH)
             if hop_lb is not None:
                 hops.append(hop_lb)
         chunks = [h for h in hops if h is not None]
         if not chunks:
             return None
+        # 归一化分母取「本轮配好的输入路数」（mic 路 + 回环行数），不随
+        # 某路本 hop 是否有数据而变：否则回环行时有时无会让整体增益在
+        # 1 与 1/N 之间逐 hop 跳变，听感即「丝丝拉拉」的拉链噪声。
+        k = 1.0 / max(1, n_mic + len(self._loopback_live))
         if len(chunks) == 1:
-            return chunks[0]
+            return [v * k for v in chunks[0]]
         acc = [0.0] * len(chunks[0])
         for c in chunks:
             for i, v in enumerate(c):
                 acc[i] += v
-        k = 1.0 / len(chunks)
         return [v * k for v in acc]
 
     def _bridge_loop(self, network: bool) -> None:

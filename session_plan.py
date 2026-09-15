@@ -102,7 +102,7 @@ class SessionPlan:
                 elif t == "echo_cancel":
                     dev = str(params.get("device", "") or "").strip()
                     if not dev:
-                        warnings.append("「回声消除」未选麦克风设备，该行已跳过")
+                        warnings.append("「AEC 输入」未选麦克风设备，该行已跳过")
                         continue
                     far_gain = -20.0
                     far_kind = str(params.get("far_kind", "") or "").strip()
@@ -111,7 +111,7 @@ class SessionPlan:
                         # UI 恒写显式 far_kind；缺省按扬声器处理。
                         far_kind = "speaker"
                     if not far_dev:
-                        warnings.append("「回声消除」未选 far 参考设备，该行已跳过")
+                        warnings.append("「AEC 输入」未选 far 参考设备，该行已跳过")
                         continue
                     if dev not in inputs:
                         inputs.append(dev)
@@ -127,13 +127,13 @@ class SessionPlan:
                         if dev not in loopbacks:
                             loopbacks.append(dev)
                     else:
-                        warnings.append("「桌面输入」未选扬声器设备，该行已跳过")
+                        warnings.append("「播放输入」未选扬声器设备，该行已跳过")
                 else:
                     dev = str(params.get("device", "") or "").strip()
                     if dev:
                         if dev in aec_mics:
                             warnings.append(
-                                f"「音频输入」{dev} 已被回声消除行接管，该行已跳过")
+                                f"「录音输入」{dev} 已被 AEC 输入行接管，该行已跳过")
                         elif dev not in inputs:
                             inputs.append(dev)
                     else:

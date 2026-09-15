@@ -576,12 +576,16 @@ class HotkeyField(tk.Frame):
         self._capturing = False
         self._mods = set()
         self._bind_ids = []
+        # 1px 木色描边：白底在浅色斑马纹/面板上会「融进背景」看不出是个输入框
         self.value_label = tk.Label(self, text="", bg=theme.BASE,
                                     fg=theme.TEXT_DIM, cursor="hand2",
                                     takefocus=1, width=width, anchor="center",
                                     font=self.fonts.get("body"),
+                                    highlightbackground=theme.MID,
+                                    highlightcolor=theme.MID,
+                                    highlightthickness=1,
                                     padx=self.sizes["pad_md"],
-                                    pady=max(2, self.sizes["pad_sm"] // 2))
+                                    pady=max(1, self.sizes["pad_sm"] // 2))
         self.value_label.pack(side=tk.LEFT)
         self.value_label.bind("<Button-1>", self._begin)
         self.value_label.bind("<FocusOut>", lambda e: self._cancel())

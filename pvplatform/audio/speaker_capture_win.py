@@ -54,6 +54,7 @@ class SpeakerCaptureWin:
 
     AUDCLNT_SHAREMODE_SHARED = 0
     AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000
+    AUDCLNT_BUFFERFLAGS_SILENT = 0x2   # 数据未定义：必须按静音处理，不能读
     CLSCTX_ALL = 0x17
     COINIT_MULTITHREADED = 0x0
     # 枚举掩码：DEVICE_STATE_ACTIVE
@@ -494,40 +495,46 @@ class SpeakerCaptureWin:
                 if cc is not last_cc:
                     last_cc = cc
                     fn_GetBuffer, fn_ReleaseBuffer = _bind(cc)
-                p_data = ctypes.POINTER(ctypes.c_ubyte)()
-                num_frames = wintypes.DWORD()
-                flags = wintypes.DWORD()
-                dev_pos = ctypes.c_uint64()
-                qpc_pos = ctypes.c_uint64()
-                hr = fn_GetBuffer(cc, byref(p_data),
-                                  byref(num_frames), byref(flags),
-                                  byref(dev_pos), byref(qpc_pos))
-                if hr < 0 or num_frames.value == 0:
+                # 一次把客户端里排队的包全部取空：只取一个包 + 1ms 轮询会在
+                # 设备包率偏高/调度抖动时追不上，积压后产生不连续（爆音）
+                drained = False
+                while self._active:
+                    p_data = ctypes.POINTER(ctypes.c_ubyte)()
+                    num_frames = wintypes.DWORD()
+                    flags = wintypes.DWORD()
+                    dev_pos = ctypes.c_uint64()
+                    qpc_pos = ctypes.c_uint64()
+                    hr = fn_GetBuffer(cc, byref(p_data),
+                                      byref(num_frames), byref(flags),
+                                      byref(dev_pos), byref(qpc_pos))
+                    if hr < 0 or num_frames.value == 0:
+                        break
+                    drained = True
+                    frame_count = num_frames.value
+                    ch = self._dev_ch
+                    if flags.value & self.AUDCLNT_BUFFERFLAGS_SILENT:
+                        # 静音包：数据未定义，按零填充（读原始字节=噪声爆音）
+                        mono = [0.0] * frame_count
+                    else:
+                        n_floats = frame_count * ch
+                        raw = list(struct.unpack(
+                            f"{n_floats}f", bytes(p_data[:n_floats * 4])))
+                        if ch > 1:
+                            mono = [0.0] * frame_count
+                            for i in range(frame_count):
+                                s = 0.0
+                                for c in range(ch):
+                                    s += raw[i * ch + c]
+                                mono[i] = s / ch
+                        else:
+                            mono = raw
+                    fn_ReleaseBuffer(cc, num_frames)
+                    # 外部时钟（QPC 秒）：包内首帧的 QPC 位置；缺失退回墙钟
+                    ts0 = (qpc_pos.value / qpf_s) if qpc_pos.value \
+                        else time.perf_counter()
+                    self._buffer.write_ts(ts0, mono)
+                if not drained:
                     time.sleep(0.001)
-                    continue
-
-                frame_count = num_frames.value
-                ch = self._dev_ch
-                n_floats = frame_count * ch
-                raw = list(struct.unpack(f"{n_floats}f",
-                                         bytes(p_data[:n_floats * 4])))
-                fn_ReleaseBuffer(cc, num_frames)
-
-                if ch > 1:
-                    mono = [0.0] * frame_count
-                    for i in range(frame_count):
-                        s = 0.0
-                        for c in range(ch):
-                            s += raw[i * ch + c]
-                        mono[i] = s / ch
-                else:
-                    mono = raw
-                # 外部时钟（QPC 秒）：包内首帧的 QPC 位置；缺失则退回当前墙钟
-                if qpc_pos.value:
-                    ts0 = qpc_pos.value / qpf_s
-                else:
-                    ts0 = time.perf_counter()
-                self._buffer.write_ts(ts0, mono)
 
             except Exception:
                 time.sleep(0.005)
