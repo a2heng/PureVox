@@ -1430,46 +1430,121 @@ class MainWindowTk:
         hint.pack(fill=tk.X, padx=self.sizes["pad_lg"],
                   pady=self.sizes["pad_sm"])
 
+    def _server_port(self) -> int:
+        try:
+            if self.config:
+                return int(self.config.get("server_port", 59123) or 59123)
+        except Exception:
+            pass
+        return 59123
+
     def _attach_remote_mic(self, row):
-        """网络输入行内：推流地址（可编辑，默认本机 https://<lan-ip>:<port>）。
-        地址非空是启动前提（SessionPlan 校验）；实际服务器绑定 server_port。"""
+        """网络输入行内：网卡（IP）选择 + 推流页二维码 + 服务状态。
+
+        推流地址由所选网卡 IP + 服务器端口推导（写回 params.url：既是启动前提，
+        也是二维码内容）；状态轮询引擎的活跃客户端数。二维码渲染与网卡枚举
+        复用主线共享模块（qr_tk / pvplatform.netinfo），与 Lite Net 页同源。
+        """
+        from pvplatform import netinfo
         S, F = self.sizes, self.fonts
         params = row.cfg.setdefault("params", {})
+        port = self._server_port()
+        networks = netinfo.list_lan_ips()
+        ip = str(params.get("net_ip", "") or "")
+        if not any(i == ip for i, _n in networks):
+            ip = netinfo.best_lan_ip(networks) if networks else "127.0.0.1"
+        params["net_ip"] = ip
+        params["url"] = f"https://{ip}:{port}"
+        self._persist()
+
         holder = tk.Frame(row.body_frame, bg=theme.PANEL)
         holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
-        tk.Label(holder, text="推流地址", bg=theme.PANEL, fg=theme.TEXT_DIM,
-                 font=F.get("small")).pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
-        if not params.get("url"):
-            ip = ""
-            try:
-                from audio_processor import get_local_lan_ip
-                ip = get_local_lan_ip()
-            except Exception:
-                ip = ""
-            port = 59123
-            if self.config:
-                try:
-                    port = int(self.config.get("server_port", 59123) or 59123)
-                except Exception:
-                    pass
-            params["url"] = f"https://{ip or '127.0.0.1'}:{port}"
-        var = tk.StringVar(value=str(params.get("url", "")))
-        ent = tk.Entry(holder, textvariable=var, bg=theme.BASE, fg=theme.TEXT,
-                       insertbackground=theme.TEXT, relief=tk.FLAT,
-                       highlightbackground=theme.MID, highlightthickness=1,
-                       font=F.get("body"))
-        ent.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        def _commit(event=None):
-            params["url"] = var.get().strip()
-            self._persist()
-        ent.bind("<Return>", _commit)
-        ent.bind("<FocusOut>", _commit)
-        tk.Label(row.body_frame,
-                 text="手机/浏览器访问该地址推流（HTTPS，首次需信任自签证书）；"
-                      "地址可改，实际监听端口 = 设置中的服务器端口。",
-                 bg=theme.PANEL, fg=theme.TEXT_FAINT, font=F.get("small"),
-                 anchor="w", justify="left").pack(fill=tk.X, padx=S["pad_lg"])
+        # 右侧：二维码（手机/浏览器扫码直达推流页）
+        row._net_url = params["url"]
+        row._net_qr_lbl = tk.Label(holder, bg=theme.BASE, bd=0)
+        row._net_qr_lbl.pack(side=tk.RIGHT, padx=(S["pad_md"], 0))
+        self._refresh_net_qr(row)
+
+        # 左侧信息区：网络下拉 + 服务状态 + 说明（说明在二维码左侧，不占二维码下方）
+        info = tk.Frame(holder, bg=theme.PANEL)
+        info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        row1 = tk.Frame(info, bg=theme.PANEL)
+        row1.pack(fill=tk.X)
+        tk.Label(row1, text="网络", bg=theme.PANEL, fg=theme.TEXT_DIM,
+                 font=F.get("small")).pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
+        pairs = [(f"[{name}] {i}", i) for i, name in networks] \
+            or [("127.0.0.1", "127.0.0.1")]
+        var = tk.StringVar(value=ip)
+        DarkCombo(row1, pairs, var, on_change=lambda: self._on_net_ip(row, var),
+                  sizes=S, fonts=F).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        row._net_status_lbl = tk.Label(
+            info, text="服务未启动（启动后显示状态）", bg=theme.PANEL,
+            fg=theme.TEXT_FAINT, font=F.get("small"), anchor="w", justify="left")
+        row._net_status_lbl.pack(fill=tk.X, pady=(S["pad_sm"], 0))
+        hint = tk.Label(
+            info,
+            text="手机/浏览器扫码或访问该地址推流（HTTPS，首次需信任自签证书）；"
+                 "实际监听端口 = 设置中的服务器端口。",
+            bg=theme.PANEL, fg=theme.TEXT_FAINT, font=F.get("small"),
+            anchor="w", justify="left")
+        hint.pack(fill=tk.X, pady=(S["pad_sm"], 0))
+        info.bind("<Configure>",
+                  lambda e: hint.configure(wraplength=max(80, e.width - 4)))
+
+        self._start_net_status_poll()
+
+    def _on_net_ip(self, row, var):
+        """切换网卡：地址随之改写（二维码同步）+ 引擎切网（证书/mDNS）。"""
+        ip = str(var.get() or "")
+        params = row.cfg.setdefault("params", {})
+        params["net_ip"] = ip
+        params["url"] = f"https://{ip}:{self._server_port()}"
+        row._net_url = params["url"]
+        self._persist()
+        self._refresh_net_qr(row)
+        self.engine.apply_network(ip)
+
+    def _refresh_net_qr(self, row):
+        from qr_tk import make_qr_photo
+        lbl = getattr(row, "_net_qr_lbl", None)
+        if lbl is None:
+            return
+        target = max(112, int(self.sizes["combo_h"] * 4))
+        photo = make_qr_photo(lbl, getattr(row, "_net_url", ""), target_px=target)
+        if photo is None:
+            lbl.configure(image="", text="二维码\n不可用",
+                          fg=theme.TEXT_FAINT, font=self.fonts.get("small"))
+            return
+        lbl._qr_photo = photo
+        lbl.configure(image=photo, text="")
+
+    def _start_net_status_poll(self):
+        """网络输入行状态轮询（单轮定时器，全局仅一个）。"""
+        if getattr(self, "_net_poll_on", False):
+            return
+        self._net_poll_on = True
+
+        def _tick():
+            try:
+                st = self.engine.network_status()
+            except Exception:
+                st = None
+            running = bool(getattr(self.engine, "running", False))
+            for r in list(getattr(self, "rows", []) or []):
+                lbl = getattr(r, "_net_status_lbl", None)
+                if lbl is None:
+                    continue
+                if not running:
+                    lbl.configure(text="服务未启动（启动后显示状态）")
+                elif st is None:
+                    lbl.configure(text="服务器启动中…")
+                else:
+                    lbl.configure(
+                        text=f"端口 {st['port']} · 客户端 {st['clients']} 个")
+            self.root.after(1000, _tick)
+
+        self.root.after(1000, _tick)
 
     def _attach_music_player(self, row):
         """音乐播放器行内控制：选择曲目 + 播放/暂停 + 进度滑块（可拖 seek）。

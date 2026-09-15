@@ -727,33 +727,21 @@ class LiteUI:
         整数倍 NEAREST 放大保证像素对齐（无模糊变形），严格正方形（无裁切），
         且随缩放挡位（sizes 表）联动。
         渲染方式：qrcode.modules 矩阵 → PPM 内存图 → Tk PhotoImage，零 PIL 依赖。"""
-        try:
-            import qrcode
-            if not getattr(self, "_networks", None):
-                raise ValueError("no network")
-            ip = self._net_ip or self._networks[0][0]
-            qr = qrcode.QRCode(border=1)
-            qr.add_data(self._net_url(ip))
-            qr.make(fit=True)
-            natural = len(qr.modules)  # 含 border
-            # 目标边长：两行控件高 + 行距（row3 外距 + 行间距），至少 64px 保证可扫
-            target = max(64, int(self.sizes["ctl_h"] * 2
-                                 + self.sizes["pad_md"] * 2 + self.sizes["pad_sm"] * 2))
-            scale = max(2, int(round(target / natural)))
-            # modules → PPM P6（RGB 像素，Tk 8.6+ 原生支持）
-            matrix = qr.modules
-            w = h = natural * scale
-            header = f"P6\n{w} {h}\n255\n".encode()
-            black = b"\x00\x00\x00"
-            white = b"\xff\xff\xff"
-            pixels = b"".join(
-                black if matrix[ry // scale][rx // scale] else white
-                for ry in range(h) for rx in range(w)
-            )
-            self._qr_photo = tk.PhotoImage(data=header + pixels)
-            self.lbl_qr.configure(image=self._qr_photo, text="", width=w, height=h)
-        except Exception:
+        from qr_tk import make_qr_photo
+        if not getattr(self, "_networks", None):
             self.lbl_qr.configure(image="", text="二维码\n不可用")
+            return
+        ip = self._net_ip or self._networks[0][0]
+        # 目标边长：两行控件高 + 行距（row3 外距 + 行间距），至少 64px 保证可扫
+        target = max(64, int(self.sizes["ctl_h"] * 2
+                             + self.sizes["pad_md"] * 2 + self.sizes["pad_sm"] * 2))
+        photo = make_qr_photo(self.lbl_qr, self._net_url(ip), target_px=target)
+        if photo is None:
+            self.lbl_qr.configure(image="", text="二维码\n不可用")
+            return
+        self._qr_photo = photo
+        self.lbl_qr.configure(image=photo, text="",
+                              width=photo.width(), height=photo.height())
 
     def _ctl_pad_v(self):
         # 统一控件高：目标 ctl_h 与字体行高之差 = 按钮 pady / 输入框 ipady，保证同行等高

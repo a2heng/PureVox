@@ -92,7 +92,7 @@ def main():
     import audio
     import engine
     import playback
-    import netinfo
+    from pvplatform import netinfo
     from server.https_server import PureVoxServer
     from server.audio_bridge import RemoteAudioSource
     from pvengine.dsp.ring_buffer import RingBuffer as NetRing

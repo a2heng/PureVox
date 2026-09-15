@@ -26,7 +26,7 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 # --- Syntax check + smoke import ---
 & $PY -m compileall -q lite_net
 if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
-& $PY -c "import lite_net.config, lite_net.audio, lite_net.engine, lite_net.netinfo, lite_net.ui; print('import OK')"
+& $PY -c "import lite_net.config, lite_net.audio, lite_net.engine, lite_net.ui; import pvplatform.netinfo, qr_tk; print('import OK')"
 if ($LASTEXITCODE -ne 0) { throw "smoke import failed" }
 
 # --- Model file name from model_config (single source of truth, no hardcode) ---

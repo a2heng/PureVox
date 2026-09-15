@@ -74,6 +74,7 @@ class EngineController:
         self._chain_cfg = []    # 最近一次 start 的链文档（行级实时参数路由用）
         self._server = None     # 网络输入模式：PureVoxServer
         self._server_loop = None
+        self._net_ip = ""       # 网络输入节点所选网卡 IP（mDNS 广播 + 二维码）
 
     def start(self, chain_cfg) -> Optional[str]:
         if self.running:
@@ -401,17 +402,47 @@ class EngineController:
         loop = asyncio.new_event_loop()
         self._server = server
         self._server_loop = loop
-        threading.Thread(target=self._run_server_loop, args=(server, loop),
+        threading.Thread(target=self._run_server_loop,
+                         args=(server, loop, self._chain_net_ip()),
                          daemon=True).start()
         self.log.msg(f"[服务器] 已启动 (端口 {port})")
         return server
 
-    def _run_server_loop(self, server, loop):
+    def _chain_net_ip(self) -> str:
+        """网络输入节点所选的网卡 IP（写入节点 params.net_ip）。"""
+        for e in (self._chain_cfg or []):
+            if e.get("type") == "remote_mic":
+                return str(((e.get("params") or {}).get("net_ip")) or "")
+        return ""
+
+    def network_status(self):
+        """网络输入服务状态：{clients, port, ip}；未启动返回 None。"""
+        server = self._server
+        if server is None:
+            return None
+        try:
+            return {"clients": server.audio_source.active_clients,
+                    "port": server.port, "ip": self._net_ip}
+        except Exception:
+            return None
+
+    def apply_network(self, ip: str):
+        """切网：服务器在跑则重签证书热加载 + mDNS 换接口重注册；未跑则记待用。"""
+        self._net_ip = str(ip or "")
+        if self._server is not None:
+            try:
+                self._server.apply_network(self._net_ip)
+            except Exception as e:
+                self.log.warn(f"[服务器] 切网失败: {e}")
+
+    def _run_server_loop(self, server, loop, ip=""):
         """后台线程：运行 PureVoxServer 的 asyncio 事件循环。"""
         import asyncio
         asyncio.set_event_loop(loop)
         try:
             loop.run_until_complete(server.start())
+            if ip:
+                server.apply_network(ip)   # 按选定网卡注册 mDNS
             loop.run_forever()
         except Exception as e:
             self.log.err(f"[服务器] 事件循环异常: {e}")
