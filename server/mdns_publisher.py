@@ -16,7 +16,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import asyncio
-import logging
 import os
 import re
 import socket
@@ -25,7 +24,8 @@ from typing import Optional, List
 
 from zeroconf import Zeroconf, ServiceInfo
 
-logger = logging.getLogger(__name__)
+from logger import Logger
+logger = Logger()
 
 
 def get_all_ipv4s() -> List[str]:
@@ -89,9 +89,9 @@ class MdnsPublisher:
             self._zeroconf = Zeroconf(interfaces=[self._addr]) if self._addr else Zeroconf()
             await self._zeroconf.async_wait_for_start()
             await self._zeroconf.async_register_service(self._info)
-            logger.info(f"mDNS 已广播: {', '.join(self._all_ips)}:{self._port}")
+            logger.msg(f"mDNS 已广播: {', '.join(self._all_ips)}:{self._port}")
         except Exception as e:
-            logger.error(f"mDNS 广播失败: {e}")
+            logger.err(f"mDNS 广播失败: {e}")
             if self._zeroconf:
                 await self._zeroconf.async_close()
             self._zeroconf = None
@@ -112,7 +112,7 @@ class MdnsPublisher:
             elif self._info:
                 self._zeroconf.unregister_service(self._info)
         except Exception as e:
-            logger.warning(f"mDNS 注销异常: {e}")
+            logger.warn(f"mDNS 注销异常: {e}")
         try:
             close_fn = getattr(self._zeroconf, 'async_close', None) or self._zeroconf.close
             if asyncio.iscoroutinefunction(close_fn):
@@ -120,10 +120,10 @@ class MdnsPublisher:
             else:
                 close_fn()
         except asyncio.TimeoutError:
-            logger.warning("mDNS 停止超时，强制关闭")
+            logger.warn("mDNS 停止超时，强制关闭")
             self._zeroconf.close()
         except Exception as e:
-            logger.warning(f"mDNS 停止异常: {e}")
+            logger.warn(f"mDNS 停止异常: {e}")
         self._zeroconf = None
         self._info = None
 

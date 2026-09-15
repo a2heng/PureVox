@@ -159,7 +159,6 @@ class TseStage(Stage):
     """TSE 模式组件：波形 hop 直入模型（无参考时直通）。"""
 
     name = "tse"
-    active_modes = frozenset({3})
 
     def __init__(self, model_path: str):
         super().__init__()

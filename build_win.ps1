@@ -62,7 +62,8 @@ foreach ($vc in @("msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcrunti
     }
 }
 
-# (no doc copy step: the About dialog embeds the manuals and the changelog
-#  entirely in about_content.py; CHANGELOG.md / user-manual html are deleted)
+# (no doc copy step here: about_content.py holds the intro/license text, while
+#  the changelog and manuals are markdown files under about/ and are shipped via
+#  the --add-data="about;about" argument above.)
 
 Write-Host "==> Done: dist/PureVox"

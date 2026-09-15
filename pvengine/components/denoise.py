@@ -64,7 +64,6 @@ class DenoiseStage(Stage):
     """降噪模式组件：在 DENOISE/AEC/TSE 模式下生效（AEC/TSE 先降噪再处理）。"""
 
     name = "denoise"
-    active_modes = frozenset({1, 2, 3})
 
     def __init__(self, model_path: str):
         super().__init__()

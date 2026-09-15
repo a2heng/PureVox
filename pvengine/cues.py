@@ -45,13 +45,6 @@ PRESETS = (
 DEFAULT_PRESET = "soft"
 
 
-def preset_name(pid: str) -> str:
-    for key, label in PRESETS:
-        if key == pid:
-            return label
-    return PRESETS[0][1]
-
-
 def _n(ms: float) -> int:
     return max(1, int(SAMPLE_RATE * ms / 1000.0))
 

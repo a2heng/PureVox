@@ -15,7 +15,7 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""uitk 引擎控制器：链文档 → 会话计划 → 音频流启停（对照 ui_pyside6 主路径精简）。
+"""uitk 引擎控制器：链文档 → 会话计划 → 音频流启停。
 
 UI 只调 start(chain_cfg)/stop()，返回错误文案；不碰 Qt。
 """
@@ -101,7 +101,8 @@ class EngineController:
                 required.add("loopback_far")
             backend = select_backend(frozenset(required))
             if backend is None:
-                return "当前平台没有可用的音频传输后端"
+                return ("当前平台没有可用的音频传输后端（所需能力: "
+                        + "、".join(sorted(required)) + "）")
             log.msg(f"[后端] {backend.label} ({backend.name})")
             use_pw = backend.name == "pipewire"
 
@@ -156,7 +157,7 @@ class EngineController:
             if network:
                 server = self._ensure_network_server()
                 if server is None:
-                    return "网络服务器启动失败"
+                    return "网络服务器启动失败（服务端依赖缺失或加载失败，详见日志）"
                 network_source = server.audio_source
 
             pw_ports = ([], [])
@@ -256,7 +257,7 @@ class EngineController:
         finally:
             p.terminate()
         if failed:
-            return "以下设备不支持 48kHz，已阻止启动: " + "、".join(failed)
+            return "以下设备不支持 48kHz，已阻止启动：" + "、".join(failed)
         return None
 
     def set_live_param(self, index, key, value):

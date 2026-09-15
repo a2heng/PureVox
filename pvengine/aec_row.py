@@ -106,9 +106,6 @@ class AecRow:
         self._delay_samples = max(0, min(self.MAX_DELAY_SAMPLES,
                                          int(round(ms * SAMPLE_RATE / 1000.0))))
 
-    def get_delay_ms(self) -> float:
-        return self._delay_samples * 1000.0 / SAMPLE_RATE
-
     def push_far_ts(self, ts0: float, samples) -> None:
         """far 设备域新到样本入历史（ts0=首样本主时钟秒）。重采样到 48k。"""
         if not samples:

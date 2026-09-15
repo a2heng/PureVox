@@ -53,8 +53,8 @@ def main():
         from config_manager import ConfigManager
         ensure_dirs()
         config = ConfigManager(CONFIG_PATH)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[启动] 配置加载失败，使用默认配置: {e}")
 
     from uitk.main_window import MainWindowTk
     MainWindowTk(config=config).run()

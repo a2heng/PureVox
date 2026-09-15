@@ -18,7 +18,6 @@
 import asyncio
 import base64
 import json
-import logging
 import os
 import sys
 from typing import Optional, Set
@@ -28,8 +27,6 @@ from aiohttp import web
 
 from server.opus_codec import OpusDecoder
 from server.tls_manager import TlsManager
-
-logger = logging.getLogger(__name__)
 
 
 

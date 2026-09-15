@@ -72,7 +72,6 @@ EQ_Q61 = _matched_q(1 / 6)   # ≈8.651
 # 默认栅格 = 31 段（1/3 倍频程，硬件图示 EQ 通用规格）
 EQ_FREQS = EQ31_FREQS
 EQ_Q = EQ_Q31
-EQ_BANDS = len(EQ_FREQS)
 
 # 插件名 → (频点栅格, 匹配 Q)；UI 曲线编辑器据此共用同一份权威实现
 EQ_VARIANTS = {

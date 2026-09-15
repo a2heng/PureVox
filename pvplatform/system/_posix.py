@@ -20,7 +20,7 @@ POSIX（Linux / macOS）系统服务实现。
 
     - 单实例：fcntl.flock 锁文件（~/.purevox/purevox_<name>.lock）
     - 自启动：XDG autostart (~/.config/autostart/purevox.desktop)
-    - 提示音：终端 BEL 或 Qt QApplication.beep()
+    - 提示音：pw-play / paplay / aplay 播放提示音文件
     - 声音面板：pavucontrol / systemsettings
     - 提权：pkexec（可选）
     - 虚拟麦克风：PipeWire null-sink purevox_out，其内置 monitor 即虚拟麦克风
@@ -51,7 +51,6 @@ VIRTUAL_MIC_MIC = "purevox_mic"
 VIRTUAL_MIC_LABEL = "PureVox out"
 VIRTUAL_MIC_MIC_LABEL = "PureVox mic"
 
-LOCK_PATH = os.path.join(os.path.expanduser("~"), ".purevox", "purevox.lock")
 AUTOSTART_PATH = os.path.join(
     os.path.expanduser("~"), ".config", "autostart", "purevox.desktop")
 

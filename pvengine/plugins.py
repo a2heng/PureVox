@@ -74,10 +74,6 @@ CATALOG: list[type] = [
 
 PLUGIN_TYPES: dict[str, type] = {cls.NAME: cls for cls in CATALOG}
 
-# 特殊 UI 钩子：这些类型在行内渲染额外控件（由 ui 层判断类型实现）
-SPECIAL_ROWS = {"eq10", "eq31", "eq61", "tse", "soundpad",
-                "music_player", "desktop_audio"}
-
 # 媒体源节点：设备外输入（会话计划据此放行「无麦克风输入」的纯媒体会话）
 MEDIA_NODE_TYPES = frozenset({"soundpad", "music_player", "desktop_audio"})
 
@@ -94,14 +90,6 @@ UI_TIERS = {
     "soundpad": "inline",      # 行内：音效垫子按钮组（+添加 / 全部停止）
     "music_player": "inline",  # 行内：曲目选择与进度 seek
     "desktop_audio": "inline",  # 行内：loopback 捕获说明（音量滑杆）
-}
-
-# 展开对话框标题（ui 层据此路由到对应编辑器）
-EXPAND_TITLES = {
-    "eq10": "均衡器",
-    "eq31": "均衡器",
-    "eq61": "均衡器",
-    "tse": "参考音频",
 }
 
 # ── 系统节点显式注册（input/output/viz；fx 由插件类派生）──

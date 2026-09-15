@@ -48,7 +48,6 @@ from .engine import EngineController, enum_io_devices
 from .viz import VUCanvas, SpectrumCanvas
 
 KIND_LABELS = {"input": "输入", "output": "输出", "fx": "处理", "viz": "可视化"}
-KIND_ORDER = ["input", "fx", "viz", "output"]
 # 需要设备下拉的节点类型：input/output 选 device。
 # echo_cancel 的 mic 继承 audio_input 同一套机制（("device", "inputs")，
 # 同解析同回填）；far 参考源是第二下拉（_build_far_combo），不另起炉灶。
@@ -853,7 +852,7 @@ class MainWindowTk:
         detail = err.split("：", 1)[-1]
         dlg = DarkDialog(self.root, "48kHz 检测未通过", 400, 220,
                          sizes=self.sizes, fonts=self.fonts)
-        tk.Label(dlg.body, text="以下设备无法以 48kHz 打开，已阻止启动：",
+        tk.Label(dlg.body, text="以下设备不支持 48kHz，已阻止启动：",
                  bg=theme.WINDOW, fg=theme.TEXT,
                  font=self.fonts.get("bold"),
                  justify="left", anchor="w").pack(
@@ -1506,14 +1505,15 @@ class MainWindowTk:
         self.engine.apply_network(ip)
 
     def _refresh_net_qr(self, row):
-        from qr_tk import make_qr_photo
+        from qr_tk import make_qr_photo, qr_unavailable_reason
         lbl = getattr(row, "_net_qr_lbl", None)
         if lbl is None:
             return
         target = max(112, int(self.sizes["combo_h"] * 4))
         photo = make_qr_photo(lbl, getattr(row, "_net_url", ""), target_px=target)
         if photo is None:
-            lbl.configure(image="", text="二维码\n不可用",
+            lbl.configure(image="",
+                          text=f"二维码\n不可用（{qr_unavailable_reason()}）",
                           fg=theme.TEXT_FAINT, font=self.fonts.get("small"))
             return
         lbl._qr_photo = photo
@@ -1820,7 +1820,7 @@ class MainWindowTk:
                         fg = theme.ACCENT if age < 1.5 else theme.TEXT_DIM
                         gain_lbl.config(text=gain_str, fg=fg)
                     else:
-                        gain_lbl.config(text="no agc found", fg=theme.TEXT_DIM)
+                        gain_lbl.config(text="无 AGC 节点", fg=theme.TEXT_DIM)
         # ── AEC 行 VU 电平表更新（10fps，降 CPU）──
         aec_thread = self.engine.thread if self.engine.running else None
         if now >= getattr(self, "_aec_vu_next", 0.0):
@@ -2075,7 +2075,8 @@ class MainWindowTk:
         def _work():
             try:
                 devs = enum_io_devices()
-            except Exception:
+            except Exception as e:
+                self.engine.log.warn(f"[设备] 枚举失败: {e}")
                 return
             out_names = [t for t, _d in devs.get("outputs", [])]
             in_names = [t for t, _d in devs.get("inputs", [])]

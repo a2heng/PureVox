@@ -327,10 +327,4 @@ class ConfigManager:
         """
         self._config[key] = value
 
-    def get_all(self) -> Dict[str, Any]:
-        """获取全部配置的副本。
 
-        返回:
-            全部配置值的副本。
-        """
-        return self._config.copy()

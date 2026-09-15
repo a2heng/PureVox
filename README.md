@@ -13,17 +13,17 @@
 - 🎤 实时 AI 降噪（48kHz，模型按需加载）
 - 🗣️ TSE 目标说话人提取（录制参考语音后从背景中分离目标人声）
 - 🔊 AEC 回声消除
-- 🎛️ 61 段（1/6 倍频程）均衡器（EQ）
+- 🎛️ 均衡器（EQ）：10 段（1 倍频程）/ 31 段（1/3 倍频程）/ 61 段（1/6 倍频程）
 - 📊 AGC 自动增益控制 / VAD 静音检测
 - 📱 远程麦克风：手机浏览器 / Android APK 经局域网推流到 PC 处理
-- 🖥️ Windows（WASAPI 默认 / MME 备选）与 Linux（原生 PipeWire）双平台
+- 🖥️ Windows（WASAPI 默认 / MME 备选）与 Linux（pipewire-pulse 兼容层 + libpulse）双平台
 
 ## 环境要求
 
 | 平台 | 要求 |
 |---|---|
 | Windows | Windows 10/11，Python 3.12+ |
-| Linux | Python 3.12+，PipeWire（音频走 pipewire-pulse 兼容层，虚拟麦克风为 null-sink） |
+| Linux | Python 3.12+，PipeWire + pipewire-pulse + libpulse（libopus 可选） |
 
 > **⚠️ Windows 7 支持已终止**：自 Python 3.13 起不再支持 Win7；`v2026.08.14.1643` 是最后支持 Win7 的版本，需继续在 Win7 使用请下载 [此 tag 的 Windows 产物](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643) 并停用更新。
 
@@ -57,34 +57,33 @@ python run_tk.py
 ### Linux（AOSC / 其它发行版）
 
 ```bash
-# 系统级依赖（例：AOSC）
-sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
+# 系统级依赖（例：AOSC；Debian/Ubuntu: apt install pipewire pipewire-pulse libpulse0 libopus0）
+sudo oma install -y python3 pipewire
 
 # 内嵌 3.12 方式（推荐，见上）：
 ./bootstrap_python312.sh
 ./py312 run_tk.py
 
 # 或用系统 python3 直接运行：
-pip install --user -r requirements.txt
+pip install --user -r requirements-linux.txt
 python3 run_tk.py
 ```
 
-Linux 音频基于原生 PipeWire：格式协商 F32 单声道 48000Hz，重采样与声道转换由
- PipeWire 负责。虚拟麦克风是单声道 null-sink `purevox_out` 的 monitor，
-其它应用可选 **"PureVox 虚拟麦克风"** 作为输入设备。AEC 远端采集（回声参考）
-同样是原生 PipeWire（`stream.capture.sink` 监听扬声器输出）。
-Linux 输入/输出/设备枚举/AEC 全部走 pipewire-pulse 兼容层（自研 ctypes libpulse 绑定），
-无任何自编译二进制。
+Linux 音频走 pipewire-pulse 兼容层（自研 ctypes 绑定直调系统 libpulse），
+格式协商 F32 单声道 48000Hz，重采样与声道转换由 PipeWire 负责，无任何自编译二进制。
+虚拟麦克风 = 单声道 null-sink `purevox_out`（唯一写入口）+ 两个出口：
+monitor 源 **"PureVox 虚拟麦克风"** 与重映射真源 **"PureVox mic"**（供 OBS 等只列真源的软件）。
+AEC 远端采集（回声参考）与回环输入同样走该兼容层（监听扬声器 monitor 源）。
 
 ### Windows 远程麦克风附加组件
 
-远程麦克风功能需要 Opus 解码与 VB-CABLE 虚拟声卡，二者不内置：
+远程麦克风功能的 Opus 解码库已随仓库提供（`server/opus.dll`，预编译 libopus，BSD），
+只需自行安装 **VB-CABLE** 虚拟声卡：
 
-1. `opus.dll` —— 从 [DSharpPlus VoiceNext Natives](https://github.com/DSharpPlus/DSharpPlus/raw/master/docs/natives/vnext_natives_win32_x64.zip) 获取，解压重命名 `libopus.dll` → `opus.dll` 放入 `server/`（或系统 PATH）
-2. **VB-CABLE** —— 需自行下载并安装：
-   从 [vb-audio.com/Cable](https://vb-audio.com/Cable/) 下载 `VBCABLE_Setup_x64.exe`
-   （或直接下载[官方驱动包](https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip)），
-   双击运行安装程序，按提示完成即可。首次使用 PureVox 检测到未安装时会弹出指引（含[安装视频教程](https://www.bilibili.com/video/BV1i2bazGEKe/)）。
+- 从 [vb-audio.com/Cable](https://vb-audio.com/Cable/) 下载 `VBCABLE_Setup_x64.exe`
+  （或直接下载[官方驱动包](https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip)），
+  双击运行安装程序，按提示完成即可。检测到未安装时，PureVox 会在音频输出行内显示安装指引
+  （含[安装视频教程](https://www.bilibili.com/video/BV1i2bazGEKe/)）。
 
 ## 打包
 
@@ -146,7 +145,7 @@ cd android
 ```
 run_tk.py                 # 启动入口（单实例锁 + Tk 主窗口）
 uitk/                     # 桌面 UI（纯标准库 Tkinter）：节点面板、EQ 编辑器、关于页
-about_content.py          # 关于页文本（更新日志/使用手册，单一维护位置）
+about_content.py          # 关于页元数据/介绍/许可证文本（更新日志与手册在 about/*.md）
 audio_processor.py        # 核心音频线程（采集/播放/网络循环）+ TSE 参考录音工具
 pvengine/                 # 纯 Python 组件化音频引擎（numpy + scipy + onnxruntime）
 pvplatform/               # 平台抽象：audio/（设备枚举、SpeakerCapture）、system/（单实例/虚拟麦克风）
@@ -169,7 +168,7 @@ bootstrap_python312.sh / .ps1  # 内嵌 Python 3.12 引导（Linux 下载预编�
 | 桌面 GUI | Python 标准库 Tkinter（uitk，星露谷像素浅色主题） |
 | 音频处理 | 纯 Python 引擎 pvengine（numpy + scipy + onnxruntime） |
 | Linux 音频 | PipeWire（pipewire-pulse 兼容层，自研 ctypes 绑定直调系统 libpulse） |
-| Windows 音频 | WASAPI 全双工（默认）/ MME 备选 |
+| Windows 音频 | WASAPI（默认）/ MME 备选；独立输入/输出流 + 每输出 PlaybackSink |
 | 服务端 | Python aiohttp + zeroconf + cryptography |
 | 音频编码 | Opus（PC: opuslib，APK: NDK 编译，Web: WASM） |
 | Android | Kotlin + OkHttp + NsdManager + AudioRecord |
@@ -185,7 +184,7 @@ bootstrap_python312.sh / .ps1  # 内嵌 Python 3.12 引导（Linux 下载预编�
 - <https://github.com/a2heng/lightweight-denoise-48k>
 - <https://github.com/a2heng/lightweight-aec-48k>
 
-第三方组件（PySide6、ONNX Runtime、Opus 等）使用各自许可证，
+第三方组件（ONNX Runtime、Opus、NumPy 等）使用各自许可证，
 见 [LICENSE-THIRD-PARTY.txt](LICENSE-THIRD-PARTY.txt)。
 
 ## 联系方式

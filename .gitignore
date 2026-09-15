@@ -68,7 +68,9 @@ dist/
 _build_version.py
 .codegraph
 .reasonix
-.opencode
+# opencode 本地配置不入库；项目 skills 随仓库同步（供智能体按需加载）
+.opencode/*
+!.opencode/skills/
 
 # Training data / training scripts (not shipped)
 /merged_noisy_files.wav

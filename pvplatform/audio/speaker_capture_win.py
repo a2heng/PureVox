@@ -36,7 +36,7 @@ import ctypes
 import threading
 import time
 from ctypes import wintypes, POINTER, byref, cast, c_void_p
-from typing import List, Optional, Callable, Tuple
+from typing import Optional, Callable, Tuple
 
 from .common import TimedFifo, HOP_LENGTH, _module_log
 from .device_api import best_name_match

@@ -26,28 +26,18 @@
 - 每个组件实现 Stage 接口，按链路顺序消费/产出帧。
 """
 
-from dataclasses import dataclass, field
-import numpy as np
+from dataclasses import dataclass
 
 SAMPLE_RATE = 48000
 HOP_LENGTH = SAMPLE_RATE // 100   # 10ms @48kHz = 480 样本
 NFFT = 2 * HOP_LENGTH             # 960
 FREQ = NFFT // 2 + 1              # 481
 
-# ── 处理模式常量（组件 active_modes 用；历史数值保持不变）──
-MODE_PASSTHROUGH = 0
-MODE_DENOISE = 1
-MODE_AEC = 2
-MODE_TSE = 3
-
 
 @dataclass
 class FrameContext:
-    """一帧音频的处理上下文（同一帧在整条链路中共享同一 ctx）。"""
-    mode: int = MODE_PASSTHROUGH
-    # far-end 参考信号（AEC 用）：设备原始采样率的一维数组或 None；
-    # 由 AEC 组件自行负责重采样到 48kHz
-    far: np.ndarray | None = None
-    far_sample_rate: int = SAMPLE_RATE
-    # 组件可写入的旁路数据袋（如录制抽头、调试信息），避免污染接口
-    extras: dict = field(default_factory=dict)
+    """一帧音频的处理上下文（同一帧在整条链路中共享同一 ctx）。
+
+    当前无字段：保留该类型以固定 Stage.process(frame, ctx) 契约；
+    需要跨组件传递的旁路信息由调用方按需扩展。
+    """

@@ -2,7 +2,7 @@
 # Copyright (C) 2024-2026 a2heng <752848283@qq.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""uitk 包：纯 Tkinter UI（实验性，替代 PySide6 的探索分支）。
+"""uitk 包：纯标准库 Tkinter UI（桌面端唯一实现）。
 
 分层：
   theme.py       颜色令牌（墨黑主题 + 系统 accent），唯一取色处

@@ -111,7 +111,7 @@
             <TextView android:id="@+id/dbg_rtt" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="RTT --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
             <TextView android:id="@+id/dbg_total_lat" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="总延迟 --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
             <TextView android:id="@+id/dbg_server_sr" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="srv SR --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
-            <TextView android:id="@+id/dbg_backlog" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="backlog 0" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+            <TextView android:id="@+id/dbg_backlog" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="backlog --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
             <TextView android:id="@+id/dbg_encoded" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="encoded 0" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
         </LinearLayout>
     </LinearLayout>

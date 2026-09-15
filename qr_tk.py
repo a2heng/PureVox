@@ -49,3 +49,12 @@ def make_qr_photo(master, data, target_px=128):
         return tk.PhotoImage(master=master, data=header + pixels)
     except Exception:
         return None
+
+
+def qr_unavailable_reason() -> str:
+    """二维码不可用时的简短原因（可用时返回空串），供 UI 提示排查。"""
+    try:
+        import qrcode  # noqa: F401
+    except Exception:
+        return "缺 qrcode 库"
+    return "数据无效"

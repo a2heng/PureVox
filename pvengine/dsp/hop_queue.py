@@ -109,9 +109,6 @@ class GridHistory:
     def end_grid(self) -> Optional[int]:
         return None if self._buf is None else self._start + len(self._buf)
 
-    def has_window(self, start_grid: int, n: int) -> bool:
-        return self.window(start_grid, n) is not None
-
     def window(self, start_grid: int, n: int) -> Optional[list]:
         """取 [start_grid, start_grid+n) 连续样本；不足返回 None。"""
         n = int(n)

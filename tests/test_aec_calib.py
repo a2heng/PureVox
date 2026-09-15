@@ -23,7 +23,6 @@
 3. 无回声（纯噪声 mic）→ None；数据不足 → None。
 """
 
-import math
 import os
 import sys
 

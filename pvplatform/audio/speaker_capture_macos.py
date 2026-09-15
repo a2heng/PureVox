@@ -23,7 +23,7 @@ AudioCaptureEngine 或虚拟声卡驱动 BlackHole 等）。本模块保持接�
 契约一致，start() 恒返回 False，上层 AEC 自动降级（不阻塞主流程）。
 """
 
-from typing import List, Optional, Callable
+from typing import Optional, Callable
 
 from .common import RingBuffer, HOP_LENGTH, _module_log
 

@@ -25,7 +25,6 @@
 """
 
 from pvengine.context import (SAMPLE_RATE, HOP_LENGTH, NFFT, FREQ,
-                              MODE_PASSTHROUGH, MODE_DENOISE, MODE_AEC, MODE_TSE,
                               FrameContext)
 from pvengine.pipeline import Pipeline
 from pvengine.processor import AudioProcessor
@@ -43,5 +42,4 @@ __all__ = [
     "compute_spectrum", "spectrum_warmup",
     "SAMPLE_RATE", "HOP_LENGTH", "NFFT", "FREQ",
     "SPECTRUM_NUM_BANDS", "SPECTRUM_FFT",
-    "MODE_PASSTHROUGH", "MODE_DENOISE", "MODE_AEC", "MODE_TSE",
 ]

@@ -14,7 +14,7 @@ $srcPy = Join-Path $pyDir "tools\python.exe"
 $py = Join-Path $pyDir "python.exe"
 $pyVer = "3.12.11"   # Python 3.12 NuGet package
 
-# 1. Download and unpack full Python 3.13 (NuGet, no admin needed; the real root is
+# 1. Download and unpack full Python 3.12 (NuGet, no admin needed; the real root is
 #    tools\, flattened to pyDir\ after unpacking)
 if (-not (Test-Path $py)) {
     Write-Host "==> Downloading Python $pyVer (NuGet)..."

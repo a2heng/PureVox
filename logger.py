@@ -21,8 +21,8 @@
 格式：
     [2026-05-31 19:30:45.123] [MSG ] 消息内容
     [2026-05-31 19:30:45.124] [ERR ] 错误信息
-    [2026-05-31 19:30:45.125] [TSE ] TSE相关消息
-    [2026-05-31 19:30:45.126] [AGC ] AGC相关消息
+    [2026-05-31 19:30:45.125] [WARN] 警告信息
+    [2026-05-31 19:30:45.126] [ SYS] 系统相关消息
 
 方括号宽度：3-4个字母，右对齐
 时间戳：年-月-日 时:分:秒.毫秒，固定宽度
@@ -36,14 +36,7 @@ from typing import Callable, Optional
 TAG_MSG  = "MSG"
 TAG_ERR  = "ERR"
 TAG_WARN = "WARN"
-TAG_INFO = "INFO"
-TAG_TSE  = "TSE"
-TAG_AGC  = "AGC"
-TAG_EQ   = "EQ"
-TAG_DEV  = "DEV"
 TAG_SYS  = "SYS"
-TAG_GAIN = "GAIN"
-TAG_MODE = "MODE"
 
 
 class Logger:
@@ -64,9 +57,6 @@ class Logger:
             self._log_file = open(log_path, 'a', encoding='utf-8')
         except Exception:
             self._log_file = None
-
-    def set_callback(self, callback: Callable[[str], None]) -> None:
-        self._callback = callback
 
     def _format_timestamp(self) -> str:
         """格式化时间戳：年-月-日 时:分:秒.毫秒"""
@@ -113,78 +103,7 @@ class Logger:
         """警告消息"""
         self._log(TAG_WARN, message)
 
-    def info(self, message: str) -> None:
-        """信息消息"""
-        self._log(TAG_INFO, message)
-
-    def tse(self, message: str) -> None:
-        """TSE相关"""
-        self._log(TAG_TSE, message)
-
-    def agc(self, message: str) -> None:
-        """AGC相关"""
-        self._log(TAG_AGC, message)
-
-    def eq(self, message: str) -> None:
-        """EQ相关"""
-        self._log(TAG_EQ, message)
-
-    def dev(self, message: str) -> None:
-        """设备相关"""
-        self._log(TAG_DEV, message)
-
     def sys(self, message: str) -> None:
         """系统相关"""
         self._log(TAG_SYS, message)
 
-    def gain(self, message: str) -> None:
-        """增益相关"""
-        self._log(TAG_GAIN, message)
-
-    def mode(self, message: str) -> None:
-        """模式相关"""
-        self._log(TAG_MODE, message)
-
-
-# 全局日志实例
-_logger = Logger()
-
-
-def get_logger() -> Logger:
-    """获取全局日志实例"""
-    return _logger
-
-
-# 便捷函数
-def log_msg(message: str) -> None:
-    _logger.msg(message)
-
-def log_err(message: str) -> None:
-    _logger.err(message)
-
-def log_warn(message: str) -> None:
-    _logger.warn(message)
-
-def log_info(message: str) -> None:
-    _logger.info(message)
-
-def log_tse(message: str) -> None:
-    _logger.tse(message)
-
-def log_agc(message: str) -> None:
-    _logger.agc(message)
-
-def log_eq(message: str) -> None:
-    _logger.eq(message)
-
-def log_dev(message: str) -> None:
-    _logger.dev(message)
-
-def log_sys(message: str) -> None:
-    _logger.sys(message)
-
-def log_gain(message: str) -> None:
-    _logger.gain(message)
-
-def log_mode(message: str) -> None:
-    _logger.mode(message)

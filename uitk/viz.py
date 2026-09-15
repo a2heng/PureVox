@@ -245,15 +245,6 @@ class SpectrumCanvas(tk.Canvas):
                 self.create_rectangle(bx, y_of(in_db), bx + col_w,
                                       y_of(out_db), fill=SPEC_NOISE, width=0)
 
-    @staticmethod
-    def _hz_to_frac(hz):
-        """Hz → Mel 轴 0..1（20Hz~16kHz，与 Mel 段显示范围一致）。"""
-        def hz_to_mel(f):
-            return 2595.0 * math.log10(1.0 + f / 700.0)
-        lo, hi = hz_to_mel(20.0), hz_to_mel(16000.0)
-        return (hz_to_mel(max(20.0, min(16000.0, hz))) - lo) / (hi - lo)
-
-
 class LevelRing(tk.Canvas):
     """圆形运行指示灯：运行绿圈 / 停止灰圈。"""
 
@@ -262,10 +253,6 @@ class LevelRing(tk.Canvas):
                          highlightthickness=0, bd=0)
         self._on = False
         self._size = size
-        self._draw()
-
-    def set_on(self, on):
-        self._on = bool(on)
         self._draw()
 
     def _draw(self):

@@ -114,8 +114,8 @@ def add_firewall_rule_win(logger):
         rule.Profiles = 0x7FFFFFFF
         fw.Rules.Add(rule)
         logger.sys("防火墙规则: 已添加")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.err(f"防火墙规则添加失败（需管理员权限，可能影响手机推流）: {e}")
 
 
 def beep_win(freq_hz: int, duration_ms: int):

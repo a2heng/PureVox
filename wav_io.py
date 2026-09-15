@@ -84,47 +84,4 @@ def read_wav(path):
         return samples, sample_rate
 
 
-def write_wav(path, samples, sample_rate, bits=16):
-    """写入单声道 WAV 文件。
 
-    参数:
-        path: 输出文件路径。
-        samples: [-1.0, 1.0] 的浮点采样列表。
-        sample_rate: 采样率（Hz）。
-        bits: 16（int16 PCM）或 32（float32 IEEE）。
-    """
-    n = len(samples)
-    # Clamp to [-1, 1]
-    clamped = [max(-1.0, min(1.0, s)) for s in samples]
-
-    if bits == 16:
-        ints = [int(round(s * 32767.0)) for s in clamped]
-        # Clamp int16 range
-        ints = [max(-32768, min(32767, v)) for v in ints]
-        data_bytes = struct.pack(f'<{n}h', *ints)
-        byte_rate = sample_rate * 2
-        block_align = 2
-        fmt_tag = 1
-        bits_per_sample = 16
-    else:  # float32
-        data_bytes = struct.pack(f'<{n}f', *clamped)
-        byte_rate = sample_rate * 4
-        block_align = 4
-        fmt_tag = 3      # IEEE float
-        bits_per_sample = 32
-
-    data_size = len(data_bytes)
-    fmt_chunk_size = 16
-
-    with open(path, 'wb') as f:
-        # RIFF header
-        f.write(struct.pack('<4sI4s', b'RIFF', 36 + data_size, b'WAVE'))
-        # fmt  chunk
-        f.write(struct.pack('<4sIHHIIHH',
-            b'fmt ', fmt_chunk_size,
-            fmt_tag, 1,                # format=PCM, channels=1
-            sample_rate, byte_rate,
-            block_align, bits_per_sample))
-        # data chunk
-        f.write(struct.pack('<4sI', b'data', data_size))
-        f.write(data_bytes)

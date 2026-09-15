@@ -20,7 +20,7 @@
 实现一个音频组件只需要：
 1. 继承 Stage，实现 process(frame, ctx) -> frame；
 2. 可选覆写 reset()（会话重开）与 release()（释放模型等重资源）；
-3. 通过 active_modes 声明本组件在哪些处理模式下生效（空集合 = 恒生效）。
+3. enabled=False 时 Pipeline 会跳过该组件（无处理模式概念）。
 
 满足接口的组件可随意增删、替换、重排，Pipeline 不感知具体实现。
 """
@@ -35,16 +35,12 @@ class Stage(ABC):
     """音频处理组件基类。frame 为 float32 一维数组（hop 长度，10ms @48kHz = 480 样本）。"""
 
     name: str = "stage"
-    # 本组件生效的处理模式集合；None = 任何模式都生效
-    active_modes: frozenset | None = None
 
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
 
     def accepts(self, ctx: FrameContext) -> bool:
-        if not self.enabled:
-            return False
-        return self.active_modes is None or ctx.mode in self.active_modes
+        return self.enabled
 
     @abstractmethod
     def process(self, frame: np.ndarray, ctx: FrameContext) -> np.ndarray:

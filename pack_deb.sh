@@ -11,12 +11,15 @@
 #   /usr/share/applications/purevox.desktop
 #   /usr/share/icons/hicolor/256x256/apps/purevox.png
 #
-# Depends: pipewire（音频走 pipewire-pulse 兼容层，libpulse 经 ctypes 直调（_libpulse））；
+# Depends: pipewire + pipewire-pulse（音频走 pipewire-pulse 兼容层，libpulse 经
+#          ctypes 直调 _libpulse 客户端库）+ libpulse0 + libopus0。
 #          numpy/onnxruntime/scipy 等 Python 依赖已捆绑进内嵌 python312。
 # Python 依赖全部捆绑进 python312（与 AppImage 同一实现路径），不依赖系统
-# python 及发行版 python 包名，故 Depends 只留 PipeWire，不再写任何 Python 依赖。
-# 内嵌 python 由 GCC 15 编译（3.12.11），在新发行版（如 Debian 13）
-# 需补 libcrypt.so.2 软链指向系统 libcrypt.so.1（libxcrypt ABI 兼容）才能加载。
+# python 及发行版 python 包名，故 Depends 不写任何 Python 依赖；
+# 注意 `pipewire` 包本身既不依赖 `pipewire-pulse` 也不依赖 `libpulse0`，必须显式声明。
+# 内嵌 python 为 python-build-standalone 预编译包（版本见 tools/automation/versions.env），
+# 在新发行版（如 Debian 13）需补 libcrypt.so.2 软链指向系统 libcrypt.so.1
+# （libxcrypt ABI 兼容）才能加载。
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -111,7 +114,7 @@ Section: sound
 Priority: optional
 Architecture: $ARCH
 Maintainer: a2heng <752848283@qq.com>
-Depends: pipewire, libopus0
+Depends: pipewire, pipewire-pulse, libpulse0, libopus0
 Description: PureVox — Real-time AI microphone noise reduction
  Real-time AI audio denoising / target speech extraction / echo cancellation
  for the local microphone, with remote network streaming support.
@@ -122,9 +125,10 @@ Description: PureVox — Real-time AI microphone noise reduction
  完全隔离，不依赖发行版 python 包名，跨发行版可安装即用；界面为标准库
  Tkinter，无 Qt。
  .
- Linux 音频基于原生 PipeWire（libpipewire），格式协商 F32 单声道 48000Hz，
- 重采样与声道转换由 PipeWire 负责。虚拟麦克风为单声道 null-sink
- purevox_out 的 monitor，其它应用可选 "PureVox 虚拟麦克风" 作为输入设备。
+ Linux 音频基于 pipewire-pulse 兼容层（自研 ctypes 绑定直调系统 libpulse），
+ 格式协商 F32 单声道 48000Hz，重采样与声道转换由 PipeWire 负责。虚拟麦克风为
+ 单声道 null-sink purevox_out（并经 module-remap-source 提供真源 purevox_mic），
+ 其它应用可选 "PureVox 虚拟麦克风" 作为输入设备。
 EOF
 
 echo "==> 构建 $PKG_FILE"

@@ -17,8 +17,8 @@
 
 """Pipeline——Stage 链式执行器。
 
-按序调用各组件 process(frame, ctx)；组件用 active_modes 声明生效模式，
-不满足条件的组件直接旁路。reset()/release() 广播到全链。
+按序调用各组件 process(frame, ctx)；enabled=False 的组件直接旁路。
+reset()/release() 广播到全链。
 """
 
 import numpy as np

@@ -50,7 +50,13 @@ LIBS = [
      'url': 'https://onnxruntime.ai/', 'desc': 'AI 模型推理'},
     {'name': 'PyAudio', 'ver': '0.2.x', 'license': 'MIT',
      'url': 'https://people.csail.mit.edu/hubert/pyaudio/',
-     'desc': '设备枚举 / 虚拟声卡检测（Windows/macOS）'},
+     'desc': '设备枚举 / 虚拟声卡检测（Windows）'},
+    {'name': 'av', 'ver': '18.x', 'license': 'BSD-3',
+     'url': 'https://pyav.org/',
+     'desc': '音频文件解码（音效板/音乐播放器）'},
+    {'name': 'qrcode', 'ver': '8.x', 'license': 'BSD-3',
+     'url': 'https://github.com/lincolnloop/python-qrcode',
+     'desc': '网络输入连接二维码（qr_tk 纯 Tk 渲染）'},
     {'name': 'zeroconf', 'ver': '0.150.x', 'license': 'LGPL-2.1',
      'url': 'https://github.com/python-zeroconf/python-zeroconf',
      'desc': 'mDNS 服务发现'},
@@ -87,14 +93,14 @@ PureVox 是一款 AI 麦克风降噪工具，实时消除键盘声、鼠标声�
 - 回声消除（AEC）：消除扬声器外放的回声
 - 均衡器：10/31/61 段三种规格 EQ + 高切低切 + 预设，可视化拖拽
 - 远程麦克风：手机 App / 浏览器经局域网推流到电脑降噪
-- 虚拟声卡：Windows 用 VB-CABLE；Linux 用原生 PipeWire 虚拟麦克风
+- 虚拟声卡：Windows 用 VB-CABLE；Linux 用 pipewire-pulse 兼容层虚拟麦克风
 - 音效板：音效单次播放，每个可自定义全局快捷键与音量
 - 便捷功能：可变托盘图标、可自定义全局快捷键、启停提示音、开机自启、
   系统声音面板直达、VU 电平表
 
 ## 支持平台
 
-Windows（含 VB-CABLE 虚拟声卡）与 Linux（原生 PipeWire），
+Windows（含 VB-CABLE 虚拟声卡）与 Linux（pipewire-pulse 兼容层 + libpulse），
 详细操作见「Windows 使用」「Linux 使用」标签页。
 """
 

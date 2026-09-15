@@ -25,7 +25,6 @@ python tests/test_aec_rows.py
 3. far 手动延迟方向与参考音量缩放。
 """
 
-import math
 import os
 import sys
 
@@ -35,7 +34,7 @@ import numpy as np
 
 import pvengine.aec_row as aec_row_mod
 from pvengine.aec_row import AecRow
-from pvengine.dsp.hop_queue import GridHistory, grid_from_ts
+from pvengine.dsp.hop_queue import GridHistory
 
 HOP = 480
 SR = 48000

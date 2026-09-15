@@ -22,13 +22,11 @@ PureVox 音频处理核心模块。
 - 音频常量（采样率、帧大小、hop 长度）
 - 线程安全环形缓冲区
 - 实时音频流处理线程
-- 音频设备枚举与 WASAPI Core Audio 辅助工具
+- 音频设备枚举（Windows WASAPI/MME / Linux pipewire-pulse）
 """
 
 import io
-import math
 import os
-import socket
 import struct
 import threading
 import time
@@ -60,28 +58,11 @@ else:
     from pvplatform.audio.pa_backend import PaBridge as _PaBridge
 
 
-def get_local_lan_ip() -> str:
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-    except OSError:
-        return "127.0.0.1"
-    finally:
-        s.close()
-
-
 def set_module_log(func):
     global _module_log
     _module_log = func
     _set_common_log(func)
 
-
-def _rms_of(samples: List[float]) -> float:
-    """计算样本列表的 RMS。"""
-    if not samples:
-        return 0.0
-    return (sum(x * x for x in samples) / len(samples)) ** 0.5
 
 try:
     from pvengine import AudioProcessor, PlaybackSink, RingBuffer, Resampler
@@ -95,7 +76,6 @@ HOP_LENGTH = 480                # 10ms @48kHz（202609 模型契约：波形 hop
 
 
 TSE_SAMPLE_RATE = 48000        # TSE 模型采样率 (48kHz)
-TSE_HOP_LENGTH = 480           # 480 samples @ 48kHz = 10ms
 
 
 #  Speaker loopback capture — 平台抽象（WASAPI / PulseAudio）
@@ -103,87 +83,6 @@ TSE_HOP_LENGTH = 480           # 480 samples @ 48kHz = 10ms
 # ═══════════════════════════════════════════════════════════════
 
 SpeakerCapture = create_speaker_capture  # 工厂别名：按平台返回后端实例
-
-
-class RingBuffer:
-    """线程安全环形缓冲区，满时自动丢弃旧数据。"""
-
-    def __init__(self, capacity_samples: int) -> None:
-        self._capacity: int = capacity_samples
-        self._buffer: List[float] = [0.0] * capacity_samples
-        self._write_pos: int = 0
-        self._read_pos: int = 0
-        self._count: int = 0
-        self._lock: threading.Lock = threading.Lock()
-
-    def write(self, data: List[float]) -> None:
-        """线程安全地写入数据。"""
-        with self._lock:
-            data_len = len(data)
-            if data_len >= self._capacity:
-                start = data_len - self._capacity
-                self._buffer[:] = data[start:]
-                self._write_pos = 0
-                self._read_pos = 0
-                self._count = self._capacity
-                return
-
-            discard = max(0, self._count + data_len - self._capacity)
-            if discard > 0:
-                self._read_pos = (self._read_pos + discard) % self._capacity
-                self._count -= discard
-
-            first_part = min(data_len, self._capacity - self._write_pos)
-            self._buffer[self._write_pos:self._write_pos + first_part] = data[:first_part]
-
-            if first_part < data_len:
-                self._buffer[:data_len - first_part] = data[first_part:]
-
-            self._write_pos = (self._write_pos + data_len) % self._capacity
-            self._count = min(self._count + data_len, self._capacity)
-
-    def read(self, n_samples: int) -> Optional[List[float]]:
-        """线程安全地读取 n_samples 个采样。"""
-        with self._lock:
-            if self._count < n_samples:
-                return None
-
-            first_part = min(n_samples, self._capacity - self._read_pos)
-            result = self._buffer[self._read_pos:self._read_pos + first_part]
-
-            if first_part < n_samples:
-                result = result + self._buffer[:n_samples - first_part]
-
-            self._read_pos = (self._read_pos + n_samples) % self._capacity
-            self._count -= n_samples
-            return result
-
-    def available(self) -> int:
-        """线程安全地获取可用采样数。"""
-        with self._lock:
-            return self._count
-
-    def read_latest(self, n_samples: int) -> Optional[List[float]]:
-        """读取最新 n_samples 个采样，丢弃更旧数据；无数据时返回 None。"""
-        with self._lock:
-            if self._count == 0:
-                return None
-            # Skip to latest data if we have more than n_samples
-            skip = max(0, self._count - n_samples)
-            if skip > 0:
-                self._read_pos = (self._read_pos + skip) % self._capacity
-                self._count -= skip
-            # Read available samples (up to n_samples)
-            to_read = min(n_samples, self._count)
-            if to_read == 0:
-                return None
-            first_part = min(to_read, self._capacity - self._read_pos)
-            result = self._buffer[self._read_pos:self._read_pos + first_part]
-            if first_part < to_read:
-                result = result + self._buffer[:to_read - first_part]
-            self._read_pos = (self._read_pos + to_read) % self._capacity
-            self._count -= to_read
-            return result
 
 
 class AudioThread(threading.Thread):
@@ -272,10 +171,6 @@ class AudioThread(threading.Thread):
     def set_loopback_rows(self, devices) -> None:
         """设置回环输入行（SessionPlan.loopbacks 原样）。须在 run() 之前调用."""
         self._loopback_cfg = [d for d in (devices or []) if d]
-
-    def set_bypass(self, bypass: bool) -> None:
-        """直通模式：跳过引擎处理，纯重采样透传。"""
-        self._bypass = bypass
 
     def wait_ready(self, timeout: float = 3.0) -> bool:
         """等待音频流创建完成。返回 True 表示成功，False 表示失败/超时。"""
@@ -1086,10 +981,6 @@ class AudioThread(threading.Thread):
             return self.processor.is_recording_enabled()
         return False
 
-    def set_tse_reference_wav(self, wav_path: str) -> None:
-        """设置 TSE 参考音频（线程启动后动态重设时用）。"""
-        load_tse_reference(self.processor, wav_path)
-
     def is_tse_reference_loaded(self) -> bool:
         """检查 TSE 参考音频是否已加载"""
         if hasattr(self.processor, 'is_tse_reference_loaded'):
@@ -1098,7 +989,7 @@ class AudioThread(threading.Thread):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  TSE 参考音频工具（录音器 / WAV 转换 / WSOLA 时间压缩）
+#  TSE 参考音频工具（录音器 / WAV 转换）
 # ═══════════════════════════════════════════════════════════════
 
 TSE_SAMPLE_RATE = 48000           # TSE 模型要求 48kHz
@@ -1106,11 +997,6 @@ HOOK_SAMPLE_RATE = 48000
 HOOK_HOP_LENGTH = 480
 
 RECORD_DURATION = 10.0            # 参考录音总时长（秒）
-TARGET_REF_SECS = 2.0              # WSOLA 时间压缩目标时长（秒），不改变音调
-TARGET_REF_SAMPLES = int(TARGET_REF_SECS * TSE_SAMPLE_RATE)  # 96000
-
-WSOLA_WINDOW_MS = 30.0            # WSOLA 分析窗长度（毫秒）
-WSOLA_SYNTH_HOP_MS = 7.5           # WSOLA 合成步进（毫秒），越小越平滑
 
 CFG_REF_WAV_PATH = "tse_reference_wav_path"   # 参考音频 WAV 路径 config 键
 
@@ -1128,92 +1014,6 @@ def _samples_to_wav_bytes(audio: List[float], sr: int = TSE_SAMPLE_RATE) -> byte
     return buf.getvalue()
 
 
-def _wsola_time_stretch(audio: List[float], stretch_factor: float,
-                        sr: int = TSE_SAMPLE_RATE) -> List[float]:
-    """WSOLA 波形相似重叠相加时间压缩——保持音调不变。
-
-    以合成步进间隔在输出中放置窗口，输入中以分析步进跳跃，在跳跃点附近
-    搜索最相似波形以最小化重叠伪影。
-    """
-    if abs(stretch_factor - 1.0) < 1e-6 or stretch_factor <= 0:
-        return audio[:]
-
-    win_len = int(WSOLA_WINDOW_MS * sr / 1000.0)
-    synth_hop = int(WSOLA_SYNTH_HOP_MS * sr / 1000.0)
-    analysis_hop = int(round(synth_hop / stretch_factor))
-    overlap = win_len - synth_hop
-
-    window = [0.5 * (1.0 - math.cos(2.0 * math.pi * i / (win_len - 1)))
-              for i in range(win_len)]
-
-    out_len = int(len(audio) * stretch_factor)
-    if out_len <= 0:
-        return []
-    output = [0.0] * out_len
-    weight = [0.0] * out_len
-
-    in_pos = 0
-    out_pos = 0
-    prev_in_pos = 0
-
-    while in_pos + win_len <= len(audio) and out_pos + win_len <= out_len:
-        # 波形相似搜索（除第一帧外）
-        if out_pos > 0 and overlap > 0:
-            prev_tail_start = prev_in_pos + win_len - overlap
-            if prev_tail_start >= 0:
-                search_rad = win_len // 4
-                lo = max(0, in_pos - search_rad)
-                hi = min(len(audio) - win_len, in_pos + search_rad)
-                best_pos = in_pos
-                best_corr = -1e10
-                for p in range(lo, hi + 1, 4):
-                    corr = sum(audio[prev_tail_start + j] * audio[p + j]
-                               for j in range(overlap)
-                               if prev_tail_start + j < len(audio) and p + j < len(audio))
-                    if corr > best_corr:
-                        best_corr = corr
-                        best_pos = p
-                for p in range(max(lo, best_pos - 4), min(hi, best_pos + 4) + 1):
-                    corr = sum(audio[prev_tail_start + j] * audio[p + j]
-                               for j in range(overlap)
-                               if prev_tail_start + j < len(audio) and p + j < len(audio))
-                    if corr > best_corr:
-                        best_corr = corr
-                        best_pos = p
-                in_pos = best_pos
-
-        # 重叠加窗
-        for i in range(win_len):
-            output[out_pos + i] += audio[in_pos + i] * window[i]
-            weight[out_pos + i] += window[i]
-
-        prev_in_pos = in_pos
-        in_pos += analysis_hop
-        out_pos += synth_hop
-
-    # 归一化（去除加窗效应）
-    for i in range(out_len):
-        if weight[i] > 1e-10:
-            output[i] /= weight[i]
-    return output
-
-
-def _process_reference_audio(raw: List[float]) -> List[float]:
-    """10 秒录音 → WSOLA 时间压缩到 2 秒（保持音调，0 依赖）"""
-    if len(raw) == 0:
-        return raw
-    target_len = TARGET_REF_SAMPLES
-    stretch_factor = target_len / len(raw)  # e.g. 96000 / 480000 = 0.2
-    if abs(stretch_factor - 1.0) < 0.01:
-        return raw
-    stretched = _wsola_time_stretch(raw, stretch_factor)
-    if len(stretched) > target_len:
-        stretched = stretched[:target_len]
-    elif len(stretched) < target_len:
-        stretched.extend([0.0] * (target_len - len(stretched)))
-    return stretched
-
-
 class _Recorder:
     """参考音频录音器：处理流钩子喂入，10 秒后取回。"""
 
@@ -1224,10 +1024,6 @@ class _Recorder:
         self._lock = threading.Lock()
         self._active = False
         self._start_time = 0.0
-
-    @property
-    def start_time(self) -> float:
-        return self._start_time
 
     def feed(self, samples: List[float]):
         if not self._active:
@@ -1373,31 +1169,8 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
 #  音频设备枚举 & Core Audio 工具（原 audio_device.py；平台感知）
 # ═══════════════════════════════════════════════════════════════
 
-# 平台感知的设备 API（WASAPI=13 / PulseAudio=15 / ALSA=8 …）。
-# 同一数值在别的平台会被 device_api 自动回退到该平台默认 host API。
+# 平台感知的设备 API。数值在别的平台由 device_api 回退到该平台默认 host API。
 from pvplatform.audio import device_api as _device_api
-
-API_TYPE_WASAPI = _device_api.API_WASAPI
-API_TYPE_MME = _device_api.API_MME
-API_TYPE_NETWORK = _device_api.API_NETWORK
-API_TYPE_PULSE = _device_api.API_PULSE
-API_TYPE_ALSA = _device_api.API_ALSA
-API_TYPE_PIPEWIRE = _device_api.API_PIPEWIRE
-
-
-def get_api_name_by_type(api_type: int) -> str:
-    """API 类型 → 显示名。"""
-    return _device_api.get_api_name(api_type)
-
-
-def device_config_suffix(api_type: int) -> str:
-    """API 类型 → 设备配置键后缀（如 wasapi / mme / pulse）。"""
-    return _device_api.api_config_suffix(api_type)
-
-
-def get_platform_api_options() -> list:
-    """当前平台可选的 API 下拉选项 [(label, type), ...]。"""
-    return _device_api.get_api_options()
 
 
 def default_api_type() -> int:

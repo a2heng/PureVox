@@ -63,7 +63,7 @@ Linux / macOS 提供各自实现，上层 UI 无需平台分支。
         is_windows_power_event 相关常量与解析（仅 Windows 有意义）
 """
 
-from .. import IS_WINDOWS, IS_LINUX, IS_MACOS
+from .. import IS_WINDOWS
 
 
 def acquire_single_instance(lock_name: str) -> bool:

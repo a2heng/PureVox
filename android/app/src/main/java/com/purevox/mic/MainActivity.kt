@@ -436,7 +436,7 @@ class MainActivity : AppCompatActivity() {
         dbgCtxSr.text = "ctx SR 48000"
         dbgDevSr.text = "dev SR 48000"
         dbgServerSr.text = "srv SR --"
-        dbgBacklog.text = "backlog 0"
+        dbgBacklog.text = "backlog --"
     }
 
     private fun startForegroundService() {

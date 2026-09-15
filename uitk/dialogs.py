@@ -682,7 +682,9 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
                 pass
             raw = get_tse_recorder().wait_and_get()
             if not raw:
-                status_lbl.configure(text="录音失败（未捕获到音频）")
+                status_lbl.configure(
+                    text="录音失败：10 秒内未捕获到音频"
+                         "（请确认音频处理已启动且麦克风有输入）")
                 return
             try:
                 with open(WAV_PATH, "wb") as f:
@@ -697,7 +699,7 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
             ok = load_tse_reference(proc, WAV_PATH) if proc else False
             status_lbl.configure(
                 text="完成！参考已生效。" if ok
-                else "已保存，但加载失败——重启音频处理后生效。")
+                else "已保存，但加载失败（模型或参考音频不可用）——请查看日志。")
 
         tick()
 

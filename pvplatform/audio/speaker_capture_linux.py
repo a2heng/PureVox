@@ -22,7 +22,7 @@ Linux 平台扬声器 loopback 采集（AEC far-end 数据源）。
   - 在已有 PwBridge 上开出第 4 条 far 流（"PureVox-far"），以 PipeWire 的
     stream.capture.sink 语义 tap 目标 sink 的播出输出 —— 不依赖预先存在的
     ".monitor" 源节点，也不走 pyaudio 枚举。
-  - 采样率恒为 F32 单声道 48000Hz（与模型对齐），C++ 无需重采样。
+  - 采样率恒为 F32 单声道 48000Hz（与模型对齐），Python 侧无需重采样。
   - 目标 sink 缺省时使用 speaker_sink_name()（物理输出兜底），只有虚拟麦克风
     时 start() 返回 False，上层 AEC 静默降级。
 
@@ -31,7 +31,7 @@ Linux 平台扬声器 loopback 采集（AEC far-end 数据源）。
     dev_sr (int) / active (bool) / on_device_changed 回调
 """
 
-from typing import List, Optional, Callable
+from typing import Optional, Callable
 
 from .common import _module_log
 from .pwpipe_client import pw_available, PwBridge, speaker_sink_name

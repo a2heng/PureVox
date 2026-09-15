@@ -132,10 +132,6 @@ class SoundPadPlugin(Effect):
                 self._fading.append(v)
             self._voices.clear()
 
-    def pads_count(self) -> int:
-        with self._lock:
-            return len(self._pads)
-
     def on_struct_param(self, key, value):
         if key == "pads":
             self.set_pads(value)

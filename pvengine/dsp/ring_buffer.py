@@ -75,6 +75,31 @@ class RingBuffer:
             self._count -= got
             return out.tolist()
 
+    def read_latest(self, n: int):
+        """读取最新 n 个样本（丢弃更旧数据）；无数据时返回 None。
+
+        与 read() 的“返回可用部分”不同：这里只关心最新一段，供频谱等
+        只取当前窗口的消费者使用。
+        """
+        with self._lock:
+            if self._count == 0:
+                return None
+            skip = max(0, self._count - int(n))
+            if skip:
+                self._r = (self._r + skip) % self._cap
+                self._count -= skip
+            got = self._count
+            start = self._r
+            end = start + got
+            if end <= self._cap:
+                out = self._buf[start:end].copy()
+            else:
+                first = self._cap - start
+                out = np.concatenate([self._buf[start:], self._buf[:got - first]])
+            self._r = (self._r + got) % self._cap
+            self._count = 0
+            return out.tolist()
+
     def available(self) -> int:
         with self._lock:
             return self._count

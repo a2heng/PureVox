@@ -87,13 +87,14 @@ Release:        $REV
 Summary:        AI microphone noise reduction
 License:        GPL-3.0-or-later
 BuildArch:      $ARCH
-Requires:       pipewire, opus
+Requires:       pipewire, pipewire-pulseaudio, pulseaudio-libs, opus
 
 %description
 Real-time AI microphone noise reduction, echo cancellation and target
 speaker extraction. Installs under /opt/purevox with a bundled embedded
-Python 3.12 runtime (all Python dependencies included); only PipeWire
-and libopus come from the host system.
+Python 3.12 runtime (all Python dependencies included); only PipeWire /
+pipewire-pulse, the libpulse client library and libopus come from the
+host system.
 
 %install
 cp -a $ROOT/. %{buildroot}/

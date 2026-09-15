@@ -9,9 +9,11 @@ server
 tests
 audio_processor.py
 config_manager.py
+logger.py
 model_config.py
 session_plan.py
 about_content.py
+qr_tk.py
 run_tk.py
 wav_io.py
 user_paths.py

@@ -15,6 +15,9 @@ opuslib==3.0.1
 av==18.1.0
 miniaudio==1.71
 
+# ── 连接二维码 ──
+qrcode==8.2
+
 # ── 工具 ──
 importlib_metadata
 packaging

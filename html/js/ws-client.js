@@ -33,7 +33,7 @@ export class WsClient {
                 }
             };
             this._ws.onerror = () => {
-                reject(new Error('WebSocket 连接失败'));
+                reject(new Error(`WebSocket 连接失败（${this._url || ''}）`));
             };
             this._ws.onmessage = (e) => {
                 try {

@@ -262,7 +262,8 @@ class App {
             return true;
         } catch (e) {
             const msg = e.message || '';
-            if (msg.includes('cert') || msg.includes('SSL') || msg.includes('SECURITY')) {
+            const onHttps = location.protocol === 'https:';
+            if (onHttps || msg.includes('cert') || msg.includes('SSL') || msg.includes('SECURITY')) {
                 this._elDiscovery.innerHTML = `连接失败：SSL 证书问题<br>
                     <small>请先在浏览器中打开 <b>https://${ip}:${port}/</b> 并接受自签名证书，然后刷新本页</small>`;
             } else {

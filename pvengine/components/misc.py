@@ -15,12 +15,12 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""VAD / 压缩器 / 限幅 / 录制抽头 / 可视化抽头 组件。"""
+"""压缩器 / 限幅 / 录制抽头 / 可视化抽头 组件。"""
 
 import math
 import numpy as np
 
-from pvengine.context import FrameContext, MODE_TSE
+from pvengine.context import FrameContext
 from pvengine.dsp.core import clip_buffer
 from pvengine.stages.base import Stage
 
@@ -32,47 +32,6 @@ class ClipStage(Stage):
 
     def process(self, frame, ctx: FrameContext):
         return clip_buffer(frame)
-
-
-class VadStage(Stage):
-    """RMS 硬门：默认 -45 dBFS 门限，连续 20ms 开启、静默 250ms 后关闭，
-    关闭期间整帧清零（对齐原 C VadGate(-45, 20, 250, 48000, 480)）。"""
-
-    name = "vad"
-
-    def __init__(self, threshold_dbfs: float = -45.0, onset_ms: float = 20.0,
-                 hang_ms: float = 250.0, fs: float = 48000.0, hop: int = 480):
-        super().__init__()
-        self.threshold_linear = 10.0 ** (threshold_dbfs / 20.0)
-        self.onset_frames = max(1, int(onset_ms / 1000.0 * fs / hop))
-        self.hang_frames = max(1, int(hang_ms / 1000.0 * fs / hop))
-        self.active = False
-        self.voice_cnt = 0
-        self.silence_cnt = 0
-
-    def set_enabled(self, enabled: bool):
-        if enabled and not self.enabled:
-            self.reset()
-        self.enabled = enabled
-
-    def reset(self):
-        self.active = False
-        self.voice_cnt = 0
-        self.silence_cnt = 0
-
-    def process(self, frame, ctx: FrameContext):
-        rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64)))) if len(frame) else 0.0
-        if rms > self.threshold_linear:
-            self.voice_cnt += 1
-            self.silence_cnt = 0
-        else:
-            self.silence_cnt += 1
-            self.voice_cnt = 0
-        if not self.active and self.voice_cnt >= self.onset_frames:
-            self.active = True
-        elif self.active and self.silence_cnt >= self.hang_frames:
-            self.active = False
-        return frame if self.active else np.zeros_like(frame)
 
 
 class CompressorStage(Stage):
@@ -131,10 +90,9 @@ class CompressorStage(Stage):
 
 
 class RecorderTapStage(Stage):
-    """录制抽头：保存最新一帧到内部缓冲（TSE 模式不记录）。"""
+    """录制抽头：保存最新一帧到内部缓冲（未启用录音时不记录）。"""
 
     name = "recorder_tap"
-    active_modes = frozenset({0, 1, 2})
 
     def __init__(self):
         super().__init__()
@@ -158,9 +116,8 @@ class BufferTapStage(Stage):
         super().__init__()
         self._max = max_samples
         self._acc: list[float] = []
-        # 注意：恒生效（不受模式影响），由调用方决定是否排空；
+        # 恒生效，由调用方决定是否排空；
         # 有界上限从根上修复旧 C 版 viz 只增不减的内存隐患
-        self.active_modes = None
 
     def process(self, frame, ctx: FrameContext):
         self._acc.extend(frame.tolist())
@@ -180,7 +137,6 @@ class OutputTapStage(Stage):
     位置上的信号），由音频线程每帧处理后取走写入对应播放流。"""
 
     name = "output_tap"
-    active_modes = None   # 恒生效
 
     def __init__(self):
         super().__init__()

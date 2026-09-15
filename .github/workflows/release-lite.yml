@@ -105,20 +105,10 @@ jobs:
             zip -9 -q -r "${GITHUB_WORKSPACE}/${app}-Windows-x64-${GITHUB_REF_NAME#lite-v}.zip" "$app"
             unzip -l "${app}-Windows-x64-*.zip" | head -n 6
           done
-      - name: Build release notes (commit log since previous tag)
+      - name: Build release notes (tools/automation/release_notes.sh is canonical)
         run: |
-          # 自动化日志：上一个 tag 到当前 tag 的全部提交
-          prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
-          {
-            echo "Lite 纯 Python 版（无 gcc，Tk 像素风，onedir 解压即用）。PureVoxLite=降噪麦克风；PureVoxNetLite=网络推流播放。自动发布：${GITHUB_REF_NAME}"
-            echo ""
-            echo "**提交记录**"
-            if [ -n "$prev" ]; then
-              git log --pretty="format:- %h %s" "$prev..${GITHUB_REF_NAME}"
-            else
-              git log --pretty="format:- %h %s" -15
-            fi
-          } > notes.md
+          bash tools/automation/release_notes.sh "${GITHUB_REF_NAME}" notes.md \
+            "Lite 纯 Python 版（无 gcc，Tk 像素风，onedir 解压即用）。PureVoxLite=降噪麦克风；PureVoxNetLite=网络推流播放。自动发布：${GITHUB_REF_NAME}"
 
       - name: Create GitHub release for Lite
         env:

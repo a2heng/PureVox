@@ -32,4 +32,3 @@
 DENOISE_MODEL = "models/purevox_denoise_202609_ep0000.onnx"
 AEC_MODEL = "models/purevox_aec_202609_cpx_ep0375.onnx"
 TSE_MODEL = "models/purevox_tse_202609c_ep0201.onnx"
-TSE_REF_ENCODER = "models/purevox_tse_202609c_ref_encoder.onnx"

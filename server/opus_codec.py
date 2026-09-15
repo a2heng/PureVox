@@ -15,7 +15,6 @@
 # 
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-import logging
 import os
 import struct
 from typing import List, Optional
@@ -33,7 +32,8 @@ except Exception:
     # 缺库只降级 Opus 解码（网络推流不可用），主程序其余功能不受影响
     OPUS_AVAILABLE = False
 
-logger = logging.getLogger(__name__)
+from logger import Logger
+logger = Logger()
 
 
 class OpusDecoder:
@@ -54,7 +54,7 @@ class OpusDecoder:
             samples = struct.unpack(f'{len(pcm_bytes)//2}h', pcm_bytes)
             return [s / 32767.0 for s in samples]
         except Exception as e:
-            logger.debug(f"Opus 解码失败: {e}")
+            logger.warn(f"Opus 解码失败: {e}")
             return None
 
     @property

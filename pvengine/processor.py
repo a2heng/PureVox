@@ -31,9 +31,6 @@ from pvengine.plugins import create_plugin, DEFAULT_CHAIN
 from pvengine.components.misc import (BufferTapStage, ClipStage,
                                       OutputTapStage, RecorderTapStage)
 
-_VIZ_CAP = 1 << 16
-
-
 class _EffectAdapter:
     """插件 Effect → Stage 协议适配（Pipeline 只认 accepts/process/reset）。"""
 
@@ -181,14 +178,6 @@ class AudioProcessor:
         return [{"type": t, "enabled": en, "params": dict(p)}
                 for t, _s, p, en in self._entries]
 
-    def get_plugins(self) -> list:
-        out = []
-        for ptype, st in self._typed:
-            obj = getattr(st, "eff", st)
-            params = dict(getattr(obj, "params", {}) or {})
-            out.append({"type": ptype, "enabled": bool(st.enabled), "params": params})
-        return out
-
     def update_plugin_param(self, index: int, key: str, value):
         if 0 <= index < len(self._entries):
             t, st, p, _en = self._entries[index]
@@ -217,11 +206,6 @@ class AudioProcessor:
         sp = self._first_soundpad()
         if sp is not None:
             sp.stop(index)
-
-    def soundpad_stop_all(self):
-        sp = self._first_soundpad()
-        if sp is not None:
-            sp.stop_all()
 
     def music_status(self, index: int) -> dict:
         """音乐播放器状态（playing/pos秒/dur秒；非该节点返回默认）。"""
@@ -263,38 +247,12 @@ class AudioProcessor:
                 if eff is not None:
                     eff.enabled = bool(enabled)
 
-    def move_plugin(self, index: int, direction: int) -> bool:
-        j = index + direction
-        if not (0 <= index < len(self._entries) and 0 <= j < len(self._entries)):
-            return False
-        self._entries[index], self._entries[j] = self._entries[j], self._entries[index]
-        self.set_plugins(self._entries_cfg())
-        return True
-
-    def add_plugin(self, ptype: str, params: dict | None = None) -> bool:
-        cfg = self._entries_cfg() + [{"type": ptype, "enabled": True,
-                                      "params": params or {}}]
-        before = len(self.plugin_errors)
-        self.set_plugins(cfg)
-        return len(self.plugin_errors) == before
-
-    def remove_plugin(self, index: int):
-        cfg = self._entries_cfg()
-        if 0 <= index < len(cfg):
-            del cfg[index]
-        self.set_plugins(cfg)
-
     def _find(self, ptype: str):
         """返回当前链中该类型的活动实例（未启用也返回，供开关切换）。"""
         for t, st in self._typed:
             if t == ptype:
                 return getattr(st, "eff", st)
         return None
-
-    def tse_needs_reference(self) -> bool:
-        return any(t == "tse" and st.enabled and
-                   not getattr(getattr(st, "eff", st), "has_reference", True)
-                   for t, st in self._typed)
 
     # ── 主处理 ──
     def _run_chain(self, mic: np.ndarray) -> np.ndarray:

@@ -29,7 +29,9 @@ ALSA=8、JACK=12、Core Audio=5…），且同一数值在另一平台毫无意�
     get_api_name(api_type)       类型 → 显示名
 
 核心策略：配置存的 api_type 若在本机不存在（如 Windows 的 WASAPI=13
-在 Linux 上），自动回退到平台默认 host API（Linux: PulseAudio → ALSA）。
+在 Linux 上），自动回退到平台默认。Linux 的采集/输出实际走本模块之外的
+pipewire-pulse / libpulse（pwpipe_client），本模块的 host-API 分级仅用于
+Windows WASAPI/MME。
 """
 
 from .. import IS_WINDOWS, IS_LINUX, IS_MACOS
@@ -55,7 +57,7 @@ API_SNDIO = 17
 # 网络输入模式（非 PortAudio host API）
 API_NETWORK = 99
 
-# Linux 原生 PipeWire（非 PortAudio host API；ALSA=8 走原生 ALSA 备选）
+# Linux PipeWire（非 PortAudio host API；ALSA 备选接口已移除，仅保留配置键占位）
 API_PIPEWIRE = 98
 
 
@@ -164,9 +166,6 @@ PTYPE_TO_NAME = {
     API_PULSE: "PulseAudio",
     API_SNDIO: "Sndio",
 }
-
-# 显示名 → 类型编号
-NAME_TO_PTYPE = {v: k for k, v in PTYPE_TO_NAME.items()}
 
 # API 类型 → 设备配置键后缀（配置 key 按接口隔离，如 input_device_wasapi）。
 # Linux（pulse/alsa）与 Windows（wasapi/mme）设备名完全不一致，须分接口存。

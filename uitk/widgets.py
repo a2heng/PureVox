@@ -22,7 +22,6 @@
 """
 
 import tkinter as tk
-import tkinter.font as tkfont
 
 from . import theme
 from .metrics import make_sizes
