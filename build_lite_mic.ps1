@@ -18,15 +18,21 @@ elseif (Get-Command py -ErrorAction SilentlyContinue) { $PY = @("py", "-3") }
 else { throw "no python found" }
 & $PY --version
 
-# --- Deps (requirements-win.txt: Windows 全量依赖) ---
+# --- Deps (requirements-win.txt: Windows full deps) ---
 & $PY -m pip install -q -r requirements-win.txt
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # --- Syntax check + smoke import ---
 & $PY -m compileall -q lite_mic
 if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
-& $PY -c "import lite_mic.config, lite_mic.audio, lite_mic.engine, lite_mic.ui; print('import OK')"
+& $PY -c "import sys; sys.path.insert(0, 'lite_mic'); import lite_mic.config, lite_mic.audio, lite_mic.engine, lite_mic.ui; print('import OK')"
 if ($LASTEXITCODE -ne 0) { throw "smoke import failed" }
+
+# --- Model file name from model_config (single source of truth, no hardcode) ---
+$modelRel = (& $PY -c "import model_config; print(model_config.DENOISE_MODEL)").Trim()
+if ($LASTEXITCODE -ne 0 -or -not $modelRel) { throw "model_config read failed" }
+$modelWin = $modelRel.Replace('/', '\')
+if (-not (Test-Path $modelWin)) { throw "model missing: $modelWin" }
 
 # --- Icon: committed asset (dev/build share the same file) ---
 if (-not (Test-Path "assets\icons\lite_tray.ico")) { throw "assets\icons\lite_tray.ico missing" }
@@ -47,7 +53,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --exclude-module torchaudio `
     --exclude-module numba `
     --exclude-module pytest `
-    --add-data "models\purevox_denoise_202609_ep0000.onnx;models" `
+    --add-data "$modelWin;models" `
     --add-data "assets\fonts\*.ttf;assets/fonts" `
     --add-data "assets\icons\lite_tray.ico;assets\icons" `
     --add-data "assets\icons\lite_tray.png;assets\icons" `

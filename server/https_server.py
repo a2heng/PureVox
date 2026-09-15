@@ -26,7 +26,6 @@ from typing import Optional, Set
 import aiohttp
 from aiohttp import web
 
-from server.audio_bridge import RemoteAudioSource
 from server.opus_codec import OpusDecoder
 from server.tls_manager import TlsManager
 
@@ -35,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 class PureVoxServer:
-    def __init__(self, port: int = 8443, html_dir: str = ""):
+    def __init__(self, port: int = 8443, html_dir: str = "", audio_source=None):
         self._port = port
         if html_dir:
             self._html_dir = html_dir
@@ -60,7 +59,12 @@ class PureVoxServer:
             if not self._html_dir:
                 self._html_dir = os.path.abspath(candidates[0])  # 兜底用第一个
         self._tls = TlsManager()
-        self._audio_source = RemoteAudioSource()
+        if audio_source is not None:
+            self._audio_source = audio_source
+        else:
+            # 延迟导入：缺省数据桥依赖主线 audio_processor；精简调用方注入自带实现
+            from server.audio_bridge import RemoteAudioSource
+            self._audio_source = RemoteAudioSource()
         self._opus_decoder = OpusDecoder()
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
@@ -68,13 +72,16 @@ class PureVoxServer:
         self._active_ws: Set[web.WebSocketResponse] = set()
         self._log = print
         self._flush_last_seq: int = -1  # flush 时记录的 last_seq，用于丢弃路上旧包
+        self._loop = None               # 服务器事件循环（apply_network/restart 投递用）
+        self._ssl_ctx = None            # 运行中的 SSLContext（证书热加载用）
 
     def set_logger(self, log_func):
         self._log = log_func
         self._audio_source.set_logger(log_func)
 
     @property
-    def audio_source(self) -> RemoteAudioSource:
+    def audio_source(self):
+        """注入的音频数据桥（主线为 RemoteAudioSource；精简调用方可自带）。"""
         return self._audio_source
 
     @property
@@ -176,13 +183,17 @@ class PureVoxServer:
             self._log("[服务器] 已启动，跳过")
             return
         self._started = True
+        self._loop = asyncio.get_running_loop()
         self._tls.ensure_ca()
         from server.mdns_publisher import MdnsPublisher, get_all_ipv4s
         self._mdns = MdnsPublisher(self._port)
         all_ips = get_all_ipv4s()
         self._mdns._all_ips = all_ips
         local_ip = all_ips[0] if all_ips else "127.0.0.1"
-        self._tls.generate_server_cert(all_ips + ["127.0.0.1"])
+        want = all_ips + ["127.0.0.1"]
+        # 证书 SAN 未覆盖当前网卡（换网/首次）→ 重签
+        self._tls.generate_server_cert(
+            want, force=not self._tls.server_cert_covers(want))
 
         self._app = web.Application()
         self._setup_routes(self._app)
@@ -190,6 +201,7 @@ class PureVoxServer:
         await self._runner.setup()
 
         ssl_ctx = self._tls.get_ssl_context()
+        self._ssl_ctx = ssl_ctx
         site = web.TCPSite(self._runner, "0.0.0.0", self._port, ssl_context=ssl_ctx)
         try:
             await site.start()
@@ -222,3 +234,55 @@ class PureVoxServer:
                 self._log("[服务器] 清理超时，强制停止")
             self._runner = None
         self._log("[服务器] 已停止")
+
+    # ── 换网恢复（线程安全：可从任意线程投递到服务器事件循环）──
+
+    def apply_network(self, ip: Optional[str] = None):
+        """切网统一路径：证书 SAN 未覆盖当前网卡 IP 时重签并热加载 + mDNS 重注册。
+
+        ip 指定时只在该网卡广播 mDNS，None = 全部网卡。
+        """
+        loop = self._loop
+        if loop is None:
+            return
+
+        async def _run():
+            try:
+                from server.mdns_publisher import get_all_ipv4s
+                all_ips = get_all_ipv4s()
+                if not self._tls.server_cert_covers(all_ips):
+                    self._tls.ensure_ca()
+                    self._tls.generate_server_cert(
+                        all_ips + ["127.0.0.1"], force=True)
+                    if self._ssl_ctx is not None:
+                        self._tls.reload_ssl_context(self._ssl_ctx)
+                    self._log("[服务器] 证书已按当前网卡重签并热加载")
+            except Exception as e:
+                self._log(f"[服务器] 证书重签失败: {e}")
+            if self._mdns is not None:
+                try:
+                    await self._mdns.restart(ip)
+                    self._log(f"[服务器] mDNS 已重注册 ({ip or '全部网卡'})")
+                except Exception as e:
+                    self._log(f"[服务器] mDNS 重注册失败: {e}")
+
+        try:
+            asyncio.run_coroutine_threadsafe(_run(), loop)
+        except Exception as e:
+            self._log(f"[服务器] apply_network 投递失败: {e}")
+
+    def restart(self):
+        """重开监听（换网/异常恢复）：停后原端口重启，线程安全。"""
+        loop = self._loop
+        if loop is None:
+            return
+
+        async def _run():
+            await self.stop()
+            self._started = False
+            await self.start()
+
+        try:
+            asyncio.run_coroutine_threadsafe(_run(), loop)
+        except Exception as e:
+            self._log(f"[服务器] 重启投递失败: {e}")

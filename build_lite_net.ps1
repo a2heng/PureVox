@@ -1,5 +1,6 @@
 # PureVox Lite Net - local/CI build script (pure python, no gcc)
-# Same recipe as build_lite_mic.ps1; extra: websockets/av/cryptography/zeroconf/qrcode + html page.
+# Same recipe as build_lite_mic.ps1; extra: aiohttp/cryptography/zeroconf/opuslib
+# + mainline server/ (WSS/TLS/mDNS/Opus reused) + html page.
 # Usage: powershell -ExecutionPolicy Bypass -File build_lite_net.ps1
 $ErrorActionPreference = "Stop"
 
@@ -18,15 +19,21 @@ elseif (Get-Command py -ErrorAction SilentlyContinue) { $PY = @("py", "-3") }
 else { throw "no python found" }
 & $PY --version
 
-# --- Deps (requirements-win.txt: Windows 全量依赖) ---
+# --- Deps (requirements-win.txt: Windows full deps) ---
 & $PY -m pip install -q -r requirements-win.txt
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # --- Syntax check + smoke import ---
 & $PY -m compileall -q lite_net
 if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
-& $PY -c "import lite_net.config, lite_net.audio, lite_net.engine, lite_net.net, lite_net.ui; print('import OK')"
+& $PY -c "import lite_net.config, lite_net.audio, lite_net.engine, lite_net.netinfo, lite_net.ui; print('import OK')"
 if ($LASTEXITCODE -ne 0) { throw "smoke import failed" }
+
+# --- Model file name from model_config (single source of truth, no hardcode) ---
+$modelRel = (& $PY -c "import model_config; print(model_config.DENOISE_MODEL)").Trim()
+if ($LASTEXITCODE -ne 0 -or -not $modelRel) { throw "model_config read failed" }
+$modelWin = $modelRel.Replace('/', '\')
+if (-not (Test-Path $modelWin)) { throw "model missing: $modelWin" }
 
 # --- Icon: committed asset (dev/build share the same file) ---
 if (-not (Test-Path "assets\icons\lite_tray.ico")) { throw "assets\icons\lite_tray.ico missing" }
@@ -43,19 +50,23 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --icon assets\icons\lite_tray.ico `
     --collect-all onnxruntime `
     --collect-all numpy `
-    --collect-all av `
     --hidden-import=pyaudio `
-    --hidden-import=websockets `
+    --hidden-import=opuslib `
     --hidden-import=zeroconf `
+    --exclude-module audio_processor `
+    --exclude-module scipy `
+    --exclude-module av `
     --exclude-module torch `
     --exclude-module torchvision `
     --exclude-module torchaudio `
     --exclude-module numba `
     --exclude-module pytest `
-    --add-data "models\purevox_denoise_202609_ep0000.onnx;models" `
+    --add-data "$modelWin;models" `
     --add-data "assets\fonts\*.ttf;assets/fonts" `
     --add-data "assets\icons\lite_tray.ico;assets\icons" `
     --add-data "assets\icons\lite_tray.png;assets\icons" `
+    --add-data "server\*.py;server" `
+    --add-data "server\opus.dll;server" `
     --add-data "html;html" `
     --add-data "_build_version.py;." `
     lite_net/main.py

@@ -19,15 +19,22 @@ import threading
 import time
 from typing import List, Optional
 
-from audio_processor import RingBuffer
-
 
 class RemoteAudioSource:
-    """接收 WSS 客户端解码后的 PCM，送入音频处理管线。"""
+    """接收 WSS 客户端解码后的 PCM，送入音频处理管线。
 
-    def __init__(self, sample_rate: int = 48000, buffer_seconds: float = 0.5):
+    ring_cls：内部环形缓冲实现（须有 write/read/available；可选 read_latest）。
+    缺省时在函数内延迟导入主线 `audio_processor.RingBuffer`（避免 server 顶层
+    把整个音频栈拖进精简调用方）；精简调用方可注入自带的 ring 实现。
+    """
+
+    def __init__(self, sample_rate: int = 48000, buffer_seconds: float = 0.5,
+                 ring_cls=None):
+        if ring_cls is None:
+            from audio_processor import RingBuffer as ring_cls
+        self._ring_cls = ring_cls
         self._sample_rate = sample_rate
-        self._buffer = RingBuffer(int(sample_rate * buffer_seconds))
+        self._buffer = ring_cls(int(sample_rate * buffer_seconds))
         self._active_clients: int = 0
         self._lock = threading.Lock()
         self._log = print
@@ -48,7 +55,8 @@ class RemoteAudioSource:
         return self._buffer.read(n_samples)
 
     def read_latest(self, n_samples: int) -> Optional[List[float]]:
-        return self._buffer.read_latest(n_samples)
+        fn = getattr(self._buffer, "read_latest", None)
+        return fn(n_samples) if fn else None
 
     def available(self) -> int:
         return self._buffer.available()
@@ -68,7 +76,7 @@ class RemoteAudioSource:
 
     def flush(self):
         """清空缓冲 — 处理重启时丢弃过期音频。"""
-        self._buffer = RingBuffer(int(self._sample_rate * 2.0))
+        self._buffer = self._ring_cls(int(self._sample_rate * 2.0))
         self._discard_until = time.time() + 0.3  # 丢弃 300ms 内在途残留数据
         self.flush_event.set()  # 通知 network_loop 清空处理缓冲
 

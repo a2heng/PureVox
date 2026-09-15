@@ -80,37 +80,40 @@ def _die(msgbox_title, msg):
 def main():
     ensure_single_instance()
     import os
+    import asyncio
+    import threading
     sys.path.insert(0, os.path.dirname(__file__))
+    # 仓库根：复用主线 server/（WSS/TLS/mDNS/Opus）与 pvengine 的环形缓冲
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
     from config import load, save
+    from model_config import DENOISE_MODEL
     import audio
     import engine
-    import net as netmod
+    import playback
+    import netinfo
+    from server.https_server import PureVoxServer
+    from server.audio_bridge import RemoteAudioSource
+    from pvengine.dsp.ring_buffer import RingBuffer as NetRing
 
     cfg = load()
     outs = audio.list_output_devices()
 
-    # 默认输出回退
+    # 默认输出回退（按主线同一名字模糊匹配恢复保存的设备）
     def _out_map(lst):
-        return {n: i for n, i in lst}
+        return {item[0]: item[1] for item in lst}
     out_map = _out_map(outs)
     def resolve_out(name):
-        if not name:
-            vals = list(out_map.values())
-            return vals[0] if vals else -1
-        if name in out_map:
-            return out_map[name]
-        for k, v in out_map.items():
-            if k.endswith(name) or name.endswith(k):
-                return v
-        for k, v in out_map.items():
-            if name in k or k in name:
-                return v
+        matched = audio.best_name_match(name, list(out_map.keys()))
+        if matched is not None:
+            return out_map[matched]
         vals = list(out_map.values())
         return vals[0] if vals else -1
 
-    # 模型常驻（仓库根 models/；冻结态在 _MEIPASS/models/）
+    # 模型常驻（仓库根 models/；冻结态在 _MEIPASS/models/）——文件名取自 model_config
     def _find_model():
-        rel = os.path.join("models", "purevox_denoise_202609_ep0000.onnx")
+        rel = DENOISE_MODEL
         meipass = getattr(sys, "_MEIPASS", None)
         cands = []
         if meipass:
@@ -128,8 +131,8 @@ def main():
     except Exception as e:
         _die("模型加载失败", str(e))
 
-    # 网络解码环形缓冲 + 增益（闭包持有，UI/流共享）
-    ring = netmod.JitterRing()
+    # 跨时钟域播放缓冲 + 增益（闭包持有，网络写入/设备回调共享）
+    ring = playback.PlaybackBuffer()
     gains = {"pre": audio.db_to_linear(cfg.get("pre_gain_db", 0.0)),
              "post": audio.db_to_linear(cfg.get("post_gain_db", 0.0))}
 
@@ -166,29 +169,89 @@ def main():
     # 启动即运行
     start_stream()
 
-    # 网络服务状态回调（net 线程 → Tk 主线程）
+    # ── 网络：复用主线 PureVoxServer（WSS/HTTPS + Opus 解码 + TLS + mDNS）──
     from ui import LiteUI
     ui_holder = {}
+    import time as _time
+
+    # 网络输入源桥（主线实现）。注入 pvengine 线程安全环形缓冲，避免拉起
+    # audio_processor（→ pyaudio/pvplatform/pvengine 全栈）。
+    source = RemoteAudioSource(ring_cls=NetRing)
+    reader_stop = threading.Event()
+
+    def _network_reader():
+        """读取网络 PCM → 逐 hop 降噪 → 播放缓冲（对齐主线 _network_reader）。
+
+        flush / 突发硬顶 / 断流补零；速率差稳态由 PlaybackBuffer 伺服消化。
+        """
+        import numpy as _np
+        MAX_ACC = audio.HOP * 8            # 硬上限 ~80ms
+        TARGET_ACC = audio.HOP * 5         # 目标 ~50ms
+        STALL_TIMEOUT = 0.15
+        acc = []
+        last = _time.time()
+        while not reader_stop.is_set():
+            if source.flush_event.is_set():
+                source.flush_event.clear()
+                acc.clear()
+                ring.reset()
+            n = source.available()
+            if n > 0:
+                chunk = source.read(n)
+                if chunk:
+                    acc.extend(chunk)
+                    last = _time.time()
+            if len(acc) > MAX_ACC:
+                acc[:] = acc[-TARGET_ACC:]
+            if _time.time() - last > STALL_TIMEOUT and 0 < len(acc) < audio.HOP:
+                fade = min(64, len(acc))
+                for i in range(fade):
+                    acc[-fade + i] *= 1.0 - (i + 1) / (fade + 1)
+                acc.extend([0.0] * (audio.HOP - len(acc)))
+            if len(acc) < audio.HOP:
+                _time.sleep(0.002)
+                continue
+            hop = _np.asarray(acc[:audio.HOP], dtype=_np.float32)
+            del acc[:audio.HOP]
+            try:
+                out = process_fn(hop)
+                _np.clip(out, -1.0, 1.0, out=out)
+                ring.write(out)
+            except Exception:
+                pass
+
+    # 默认广播网卡：配置保存值 > 自动选择（首个非 TUN 物理口）
+    networks = netinfo.list_lan_ips()
+    sel = cfg.get("net_ip")
+    selected_ip = sel if sel in [i for i, _n in networks] else netinfo.best_lan_ip(networks)
+
+    port = int(cfg.get("port", 8765))
+    server = PureVoxServer(port=port, audio_source=source)
+    server_loop = asyncio.new_event_loop()
+
+    def _run_server_loop():
+        asyncio.set_event_loop(server_loop)
+        try:
+            server_loop.run_until_complete(server.start())
+            server.apply_network(selected_ip)   # 启动后按选中网卡重注册 mDNS
+            server_loop.run_forever()
+        except Exception as e:
+            print("server loop error:", e)
+
+    threading.Thread(target=_run_server_loop, daemon=True).start()
+    threading.Thread(target=_network_reader, daemon=True).start()
+
     def on_net_state(clients, note):
         ui = ui_holder.get("ui")
         if ui:
             ui.set_server_state(clients, note)
 
-    port = int(cfg.get("port", 8765))
-    server = netmod.NetServer(ring, port, process_fn=process_fn, on_state=on_net_state)
-    mdns = netmod.MdnsPublisher(port)
-    try:
-        server.start()
-    except Exception as e:
-        _die("网络服务启动失败", str(e))
-        return
-    # 默认广播网卡：配置保存值 > 自动选择（首个非 TUN 物理口）
-    networks = netmod.list_lan_ips()
-    sel = cfg.get("net_ip")
-    mdns.addr = sel if sel in [i for i, _n in networks] else netmod.best_lan_ip(networks)
-    mdns.start()
-    import threading as _th
-    import time as _time
+    def _state_poll():
+        while True:
+            _time.sleep(1.0)
+            on_net_state(source.active_clients, "")
+
+    threading.Thread(target=_state_poll, daemon=True).start()
 
     # 防火墙零逻辑：WSS 开始监听即触发系统「安全中心警报」，点允许即放行；
     # 「重启」按钮重开监听会再次触发，无需任何主动检查/安装代码
@@ -221,18 +284,10 @@ def main():
 
     def apply_network(ip):
         """切网统一路径（用户下拉切换与自动跟随共用）：
-        保存选择 → 证书 SAN 未覆盖当前网卡时重签并热加载 → mDNS 换接口重注册"""
+        保存选择 → 主线服务端按当前网卡重签证书并热加载 + mDNS 换接口重注册"""
         cfg["net_ip"] = ip
         save(cfg)
-        try:
-            if netmod.ensure_tls_cert():
-                server.reload_cert()
-        except Exception:
-            pass
-        try:
-            mdns.restart(ip)
-        except Exception:
-            pass
+        server.apply_network(ip)
 
     def on_network(ip):
         # 用户手动切换网卡：mDNS/证书跟随即可
@@ -262,7 +317,7 @@ def main():
 
     ui = LiteUI(cfg, outs, on_gain, on_output, on_autostart, on_close=_do_close, on_minimize=_do_close,
                 networks=networks, on_network=on_network)
-    ui.set_server_state(server.clients, "")
+    ui.set_server_state(source.active_clients, "")
     ui_holder["ui"] = ui
 
     # 网卡自动跟随：低频轮询本机 IPv4，网卡集合或选中 IP 变化时
@@ -274,7 +329,7 @@ def main():
             while True:
                 _time.sleep(5)
                 try:
-                    nets = netmod.list_lan_ips()
+                    nets = netinfo.list_lan_ips()
                 except Exception:
                     continue
                 ips = [i for i, _n in nets]
@@ -284,7 +339,7 @@ def main():
                 state["prev"] = cur
                 sel = cfg.get("net_ip")
                 # 选中 IP 仍有效则不动（启动时 mDNS 已按其注册），失效才自动改选
-                want = sel if sel in ips else netmod.best_lan_ip(nets)
+                want = sel if sel in ips else netinfo.best_lan_ip(nets)
                 if want and want != sel:
                     apply_network(want)
                 u = ui_holder.get("ui")
@@ -293,7 +348,7 @@ def main():
                         u.root.after(0, lambda nn=nets: u.set_networks(nn))
                     except Exception:
                         pass
-        _th.Thread(target=_watch, daemon=True).start()
+        threading.Thread(target=_watch, daemon=True).start()
 
     start_net_watch()
 
@@ -302,29 +357,25 @@ def main():
         def _run():
             err = ""
             try:
-                server.restart()
+                server.restart()      # 主线服务端：停后原端口重启（线程安全）
             except Exception as e:
                 err = str(e)
-            try:
-                mdns.restart(cfg.get("net_ip"))
-            except Exception:
-                pass
             u = ui_holder.get("ui")
             if u:
                 try:
-                    u.root.after(0, lambda: (u.set_networks(netmod.list_lan_ips()),
-                                             u.set_server_state(server.clients, err)))
+                    u.root.after(0, lambda: (u.set_networks(netinfo.list_lan_ips()),
+                                             u.set_server_state(source.active_clients, err)))
                 except Exception:
                     pass
-        _th.Thread(target=_run, daemon=True).start()
+        threading.Thread(target=_run, daemon=True).start()
 
     ui.on_restart = on_restart
 
     # 统一退出路径：托盘退出与无托盘关窗共用同一份清理逻辑
     def _shutdown():
+        reader_stop.set()
         try:
-            mdns.stop()
-            server.stop()
+            asyncio.run_coroutine_threadsafe(server.stop(), server_loop).result(3)
         except Exception:
             pass
         try:

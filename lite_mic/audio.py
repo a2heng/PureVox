@@ -5,9 +5,10 @@
 # 零复用：不 import audio_processor / pvplatform
 # 48kHz 强制检测 + 前后增益 + 纯 Python 引擎
 
-import math
 import threading
 import numpy as np
+
+from playback import PlaybackBuffer
 
 try:
     import pyaudio
@@ -22,110 +23,131 @@ CHANNELS = 1
 def db_to_linear(db):
     return 10.0 ** (db / 20.0)
 
-def _api_short(name):
-    n = (name or "").lower()
-    if "wasapi" in n:
-        return "WASAPI"
-    if "mme" in n or "wave" in n:
-        return "MME"
-    return None  # 其它 API 不展示
+def fix_device_name(name):
+    """修复 PortAudio 在中文 Windows 返回的乱码设备名。
 
-def _device_api(idx):
-    if pyaudio is None:
-        return "UNK"
-    pa = pyaudio.PyAudio()
+    PortAudio 返回 UTF-8 字节、PyAudio 按 GBK 误读时得到乱码；按 GBK 编回
+    再按 UTF-8 解即可还原（合法文本不受影响）。语义对齐主线 device_api。
+    """
+    if not name:
+        return name
     try:
-        info = pa.get_device_info_by_index(idx)
-        api_idx = info.get("hostApi", 0)
-        api_info = pa.get_host_api_info_by_index(api_idx)
-        v = _api_short(api_info.get("name", ""))
-        return v or "UNK"
-    except Exception:
-        return "UNK"
-    finally:
-        try:
-            pa.terminate()
-        except Exception:
-            pass
+        fixed = name.encode("gbk").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return name
+    if fixed == name or "\ufffd" in fixed:
+        return name
+    return fixed
 
-def check_api_match(in_idx, out_idx):
-    if in_idx < 0 or out_idx < 0:
-        return True, ""
-    a1 = _device_api(in_idx)
-    a2 = _device_api(out_idx)
-    if a1 != a2:
-        return False, f"组合非法：输入为 {a1}，输出为 {a2}，需同为 {a1} 或同为 {a2}（WASAPI/MME 不能混用）"
-    return True, ""
+
+def _normalize_name(name):
+    """设备名归一化（比较用）：转小写 + 丢弃单字符 token（去 (R) 等噪音）。"""
+    import re
+    if not name:
+        return ""
+    toks = [t for t in re.findall(r"\w+", name.lower()) if len(t) >= 2]
+    return " ".join(toks)
+
+
+def _name_similarity(a, b):
+    """两个设备名的相似度（0~1）：序列比 + token 重叠 + 前缀包含。"""
+    na, nb = _normalize_name(a), _normalize_name(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    import difflib
+    ratio = difflib.SequenceMatcher(None, na, nb).ratio()
+    ta, tb = set(na.split()), set(nb.split())
+    overlap = 2.0 * len(ta & tb) / (len(ta) + len(tb))
+    prefix = 0.9 if (na.startswith(nb) or nb.startswith(na)) else 0.0
+    return max(ratio, overlap * 0.85, prefix)
+
+
+def best_name_match(name, candidates):
+    """在候选设备名里选最佳匹配（归一化精确 → 前缀 → 相似度 ≥0.6，对齐主线）。
+
+    兼容旧 Lite 配置里带 "[WASAPI] " 前缀的显示名：先剥方括号前缀再比对。
+    """
+    if not name or not candidates:
+        return None
+    cands = [c for c in candidates if c]
+    if not cands:
+        return None
+    if name.startswith("["):
+        i = name.find("]")
+        if i > 0:
+            name = name[i + 1:].strip()
+    na = _normalize_name(name)
+    if not na:
+        return cands[0]
+    for c in cands:
+        if _normalize_name(c) == na:
+            return c
+    for c in cands:
+        if _normalize_name(c).startswith(na):
+            return c
+    best, best_s = None, 0.6
+    for c in cands:
+        s = _name_similarity(name, c)
+        if s > best_s:
+            best, best_s = c, s
+    return best
+
 
 def list_devices():
+    """列举 WASAPI 输入/输出设备（对齐主线：只枚举单一 host API）。
+
+    返回 [(纯设备名, PortAudio 索引, 属性行), ...]；设备名不含 API 前缀
+    （Lite 只有 WASAPI，无需区分），重名加 "#n" 便于下拉唯一键。
+    """
     if pyaudio is None:
         return [], []
     pa = pyaudio.PyAudio()
     ins, outs = [], []
-    for i in range(pa.get_device_count()):
-        try:
-            info = pa.get_device_info_by_index(i)
-        except Exception:
-            continue
-        name = info.get("name", "")
-        # 兼容 GBK：复用主程序 pvplatform/audio/device_api.fix_device_name
-        # PortAudio 返回 UTF-8，被 PyAudio 按 GBK 误读的乱码需按 GBK 编回再按 UTF-8 解
-        def _fix_garbled(s):
-            if not s:
-                return s
+    try:
+        for i in range(pa.get_device_count()):
             try:
-                fixed = s.encode("gbk").decode("utf-8")
-            except (UnicodeEncodeError, UnicodeDecodeError):
-                return s
-            if fixed == s or "\ufffd" in fixed:
-                return s
-            return fixed
-        name = _fix_garbled(name)
-        name = (name or "").strip()
-        if not name:
-            continue
-        # 过滤空白名，避免输入空行导致显示与索引错位
-        # 仅保留 WASAPI/MME
-        try:
-            api_idx = info.get("hostApi", 0)
-            api_info = pa.get_host_api_info_by_index(api_idx)
-            api_name = _api_short(api_info.get("name", ""))
-        except Exception:
-            api_name = None
-        if api_name not in ("WASAPI", "MME"):
-            continue
-        # 第二行属性：通道/默认采样率/延迟
-        ch = int(info.get("maxInputChannels", 0) or info.get("maxOutputChannels", 0) or 0)
-        sr = int(info.get("defaultSampleRate", 0) or 0)
-        try:
-            lat = float(info.get("defaultLowInputLatency", info.get("defaultLowOutputLatency", 0)) * 1000)
-            lat_s = f"{lat:.1f}ms"
-        except Exception:
-            lat_s = ""
-        props = f"{api_name} · {ch}ch · {sr}Hz" + (f" · {lat_s}" if lat_s else "")
-        disp = f"[{api_name}] {name}"
-        if info.get("maxInputChannels", 0) > 0:
-            ins.append((disp, i, props))
-        if info.get("maxOutputChannels", 0) > 0:
-            outs.append((disp, i, props))
-    pa.terminate()
+                info = pa.get_device_info_by_index(i)
+            except Exception:
+                continue
+            try:
+                api_info = pa.get_host_api_info_by_index(info.get("hostApi", 0))
+                api_name = (api_info.get("name", "") or "").lower()
+            except Exception:
+                api_name = ""
+            if "wasapi" not in api_name:
+                continue        # 只要 WASAPI
+            name = fix_device_name(info.get("name", "")).strip()
+            if not name:
+                continue
+            # 属性行：通道 / 默认采样率 / 延迟
+            ch = int(info.get("maxInputChannels", 0) or info.get("maxOutputChannels", 0) or 0)
+            sr = int(info.get("defaultSampleRate", 0) or 0)
+            try:
+                lat = float(info.get("defaultLowInputLatency",
+                                    info.get("defaultLowOutputLatency", 0)) * 1000)
+                lat_s = f"{lat:.1f}ms"
+            except Exception:
+                lat_s = ""
+            props = f"WASAPI · {ch}ch · {sr}Hz" + (f" · {lat_s}" if lat_s else "")
+            if info.get("maxInputChannels", 0) > 0:
+                ins.append((name, i, props))
+            if info.get("maxOutputChannels", 0) > 0:
+                outs.append((name, i, props))
+    finally:
+        pa.terminate()
+
     def dedup(lst):
-        seen = {}
-        out = []
-        for disp, idx, props in lst:
-            base = disp
-            cnt = seen.get(base, 0)
-            seen[base] = cnt + 1
-            if cnt == 0:
-                out.append((base, idx, props))
-            else:
-                out.append((f"{base} #{cnt+1}", idx, props))
+        seen, out = {}, []
+        for nm, idx, props in lst:
+            cnt = seen.get(nm, 0)
+            seen[nm] = cnt + 1
+            out.append((nm, idx, props) if cnt == 0
+                       else (f"{nm} #{cnt + 1}", idx, props))
         return out
-    ins, outs = dedup(ins), dedup(outs)
-    # WASAPI 在上，MME 在下
-    ins.sort(key=lambda x: (0 if x[0].startswith("[WASAPI]") else 1, x[0]))
-    outs.sort(key=lambda x: (0 if x[0].startswith("[WASAPI]") else 1, x[0]))
-    return ins, outs
+
+    return dedup(ins), dedup(outs)
 
 def try_open_48k(device_index, is_input):
     if pyaudio is None:
@@ -158,7 +180,56 @@ def try_open_48k(device_index, is_input):
         pa.terminate()
         return False, str(e)
 
+class _InputRing:
+    """输入回调 → 处理线程的单生产者/单消费者 FIFO（内部按 float32 字节存）。
+
+    容量 = 200ms；超限丢最旧（回调线程被处理线程拖慢时不让缓冲无限增长）。
+    """
+
+    def __init__(self, capacity=SAMPLE_RATE // 5):
+        self._buf = bytearray()
+        self._cap = int(capacity) * 4
+        self._cv = threading.Condition()
+
+    def write(self, samples):
+        # samples: np.float32 1-D
+        with self._cv:
+            self._buf += samples.tobytes()
+            over = len(self._buf) - self._cap
+            if over > 0:
+                del self._buf[:over]
+            self._cv.notify()
+
+    def read(self, n, stop):
+        """阻塞取 n 个样本；stop 置位且仍不足时返回 None。"""
+        need = int(n) * 4
+        with self._cv:
+            while len(self._buf) < need and not stop.is_set():
+                self._cv.wait(0.05)
+            if len(self._buf) < need:
+                return None
+            raw = bytes(self._buf[:need])
+            del self._buf[:need]
+        return np.frombuffer(raw, dtype=np.float32).copy()
+
+    def clear(self):
+        with self._cv:
+            self._buf.clear()
+
+    def wake(self):
+        with self._cv:
+            self._cv.notify_all()
+
+
 class LiteAudioStream:
+    """麦克风 → 降噪 → 输出（与主线同构的时钟模型）。
+
+    设备时钟是唯一主时钟：输入/输出拆成两条独立的 PortAudio 流，回调只搬运
+    （输入回前增益进环 / 输出从 PlaybackBuffer 按 frame_count 取帧），推理在
+    专用处理线程按 hop 推进（read → process → 写 sink）。ONNX 绝不在设备
+    回调里跑；帧长抖动与跨设备速率差由 PlaybackBuffer 消化。
+    """
+
     def __init__(self, in_idx, out_idx, engine, pre_db=0.0, post_db=0.0):
         self.in_idx = in_idx
         self.out_idx = out_idx
@@ -167,48 +238,54 @@ class LiteAudioStream:
         self.post_gain = db_to_linear(post_db)
         self._lock = threading.Lock()
         self._pa = None
-        self._stream = None
+        self._in_stream = None
+        self._out_stream = None
+        self._worker = None
+        self._stop = threading.Event()
         self._running = False
-        # ring for incomplete frames
-        self._in_buf = np.zeros(0, dtype=np.float32)
+        self._in_ring = _InputRing()
+        self._sink = PlaybackBuffer(hop=HOP)
 
     def set_gains(self, pre_db, post_db):
         with self._lock:
             self.pre_gain = db_to_linear(pre_db)
             self.post_gain = db_to_linear(post_db)
 
-    def _callback(self, in_data, frame_count, time_info, status):
-        # in_data: bytes float32
+    # ── 设备回调（只搬运，不做推理）──
+
+    def _input_callback(self, in_data, frame_count, time_info, status):
         try:
-            chunk = np.frombuffer(in_data, dtype=np.float32).astype(np.float32)
-            # mono: if stereo, take first channel? Pa gives interleaved if channels>1 but we request 1
-            # apply pre gain
             with self._lock:
                 pre = self.pre_gain
-                post = self.post_gain
-            chunk = chunk * pre
-            # accumulate to HOP
-            self._in_buf = np.concatenate([self._in_buf, chunk])
-            out_all = np.zeros(0, dtype=np.float32)
-            while self._in_buf.shape[0] >= HOP:
-                hop_in = self._in_buf[:HOP]
-                self._in_buf = self._in_buf[HOP:]
-                hop_out = self.engine.process(hop_in)
-                hop_out = hop_out * post
-                # clip
-                hop_out = np.clip(hop_out, -1.0, 1.0)
-                out_all = np.concatenate([out_all, hop_out])
-            # if not enough, output silence for requested frames
-            # out_all may be less than frame_count, pad with zeros
-            if out_all.shape[0] < frame_count:
-                pad = np.zeros(frame_count - out_all.shape[0], dtype=np.float32)
-                out_all = np.concatenate([out_all, pad])
-            else:
-                out_all = out_all[:frame_count]
-            return (out_all.tobytes(), pyaudio.paContinue)
+            chunk = np.frombuffer(in_data, dtype=np.float32)
+            self._in_ring.write(chunk * pre)
         except Exception:
-            # fail safe: output silence
-            return (np.zeros(frame_count, dtype=np.float32).tobytes(), pyaudio.paContinue)
+            pass
+        return (None, pyaudio.paContinue)
+
+    def _output_callback(self, in_data, frame_count, time_info, status):
+        try:
+            data = np.asarray(self._sink.pull(frame_count), dtype=np.float32)
+            return (data.tobytes(), pyaudio.paContinue)
+        except Exception:
+            return (np.zeros(frame_count, dtype=np.float32).tobytes(),
+                    pyaudio.paContinue)
+
+    # ── 处理线程（read hop → 引擎 → 后增益/限幅 → 写 sink）──
+
+    def _worker_loop(self):
+        while not self._stop.is_set():
+            hop_in = self._in_ring.read(HOP, self._stop)
+            if hop_in is None:
+                continue
+            try:
+                with self._lock:
+                    post = self.post_gain
+                out = self.engine.process(hop_in) * post
+                np.clip(out, -1.0, 1.0, out=out)
+                self._sink.write(out)
+            except Exception:
+                pass
 
     def start(self):
         if pyaudio is None:
@@ -222,33 +299,44 @@ class LiteAudioStream:
         ok, msg = try_open_48k(self.out_idx, False)
         if not ok:
             raise RuntimeError(f"输出设备不支持 48kHz: {msg}")
+        self.engine.reset()
+        self._stop.clear()
+        self._in_ring.clear()
+        self._sink.reset()
         self._pa = pyaudio.PyAudio()
-        self._stream = self._pa.open(
-            rate=SAMPLE_RATE,
-            channels=CHANNELS,
-            format=FORMAT,
-            input=True,
-            output=True,
-            input_device_index=self.in_idx,
-            output_device_index=self.out_idx,
-            frames_per_buffer=HOP,
-            stream_callback=self._callback,
-        )
-        self._stream.start_stream()
+        self._in_stream = self._pa.open(
+            rate=SAMPLE_RATE, channels=CHANNELS, format=FORMAT, input=True,
+            input_device_index=self.in_idx, frames_per_buffer=HOP,
+            stream_callback=self._input_callback)
+        self._out_stream = self._pa.open(
+            rate=SAMPLE_RATE, channels=CHANNELS, format=FORMAT, output=True,
+            output_device_index=self.out_idx, frames_per_buffer=HOP,
+            stream_callback=self._output_callback)
+        self._in_stream.start_stream()
+        self._out_stream.start_stream()
+        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self._worker.start()
         self._running = True
 
     def stop(self):
         self._running = False
-        try:
-            if self._stream:
-                self._stream.stop_stream()
-                self._stream.close()
-        except Exception:
-            pass
+        self._stop.set()
+        self._in_ring.wake()
+        for s in (self._in_stream, self._out_stream):
+            try:
+                if s:
+                    s.stop_stream()
+                    s.close()
+            except Exception:
+                pass
+        if self._worker is not None:
+            self._worker.join(timeout=1.0)
+            self._worker = None
         try:
             if self._pa:
                 self._pa.terminate()
         except Exception:
             pass
-        self._stream = None
+        self._in_stream = None
+        self._out_stream = None
         self._pa = None

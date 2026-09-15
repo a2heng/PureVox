@@ -70,12 +70,14 @@ class MdnsPublisher:
         self._port = port
         self._server_name = server_name
         self._all_ips: List[str] = []
+        self._addr: Optional[str] = None   # 指定广播网卡 IP；None = 全部网卡
 
     async def start(self):
         if self._zeroconf is not None:
             return
-        self._all_ips = get_all_ipv4s()
-        addresses = [socket.inet_aton(ip) for ip in self._all_ips]
+        ips = [self._addr] if self._addr else get_all_ipv4s()
+        self._all_ips = ips
+        addresses = [socket.inet_aton(ip) for ip in ips]
         self._info = ServiceInfo(
             "_purevox._tcp.local.",
             f"{self._server_name} Remote Mic._purevox._tcp.local.",
@@ -84,7 +86,7 @@ class MdnsPublisher:
             properties={"version": "1.0", "name": self._server_name},
         )
         try:
-            self._zeroconf = Zeroconf()
+            self._zeroconf = Zeroconf(interfaces=[self._addr]) if self._addr else Zeroconf()
             await self._zeroconf.async_wait_for_start()
             await self._zeroconf.async_register_service(self._info)
             logger.info(f"mDNS 已广播: {', '.join(self._all_ips)}:{self._port}")
@@ -94,6 +96,12 @@ class MdnsPublisher:
                 await self._zeroconf.async_close()
             self._zeroconf = None
             self._info = None
+
+    async def restart(self, addr: Optional[str] = None) -> None:
+        """换网后重注册：先停再起；addr 指定时只广播该网卡 IP，None = 全部网卡。"""
+        self._addr = addr or None
+        await self.stop()
+        await self.start()
 
     async def stop(self):
         if not self._zeroconf:

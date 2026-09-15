@@ -71,7 +71,12 @@ def main():
     # 独立配置
     import os as _os, sys as _sys
     _sys.path.insert(0, _os.path.dirname(__file__))
+    # 仓库根：复用主线 model_config 的模型文件名常量（不硬编码）
+    _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
     from config import load, save
+    from model_config import DENOISE_MODEL
     import audio
     import engine
 
@@ -84,9 +89,9 @@ def main():
     if not cfg.get("output_device") and outs:
         cfg["output_device"] = outs[0][0]
 
-    # 模型常驻（仓库根 models/；冻结态在 _MEIPASS/models/）
+    # 模型常驻（仓库根 models/；冻结态在 _MEIPASS/models/）——文件名取自 model_config
     def _find_model():
-        rel = os.path.join("models", "purevox_denoise_202609_ep0000.onnx")
+        rel = DENOISE_MODEL
         meipass = getattr(sys, "_MEIPASS", None)
         cands = []
         if meipass:
@@ -112,7 +117,7 @@ def main():
             print(e)
         sys.exit(1)
 
-    # 解析设备索引：兼容旧配置（无 [API] 前缀）按后缀匹配，支持 (disp,idx,props) 或 (disp,idx)
+    # 解析设备索引：按主线同一名字模糊匹配（best_name_match）恢复保存的设备
     def _to_map(lst):
         mp = {}
         for item in lst:
@@ -135,22 +140,14 @@ def main():
         return out
     in_map = _to_map(ins)
     out_map = _to_map(outs)
-    def resolve(name, mp, lst):
-        if not name:
-            vals = list(mp.values())
-            return vals[0] if vals else -1
-        if name in mp:
-            return mp[name]
-        for k, v in mp.items():
-            if k.endswith(name) or name.endswith(k):
-                return v
-        for k, v in mp.items():
-            if name in k or k in name:
-                return v
+    def resolve(name, mp):
+        matched = audio.best_name_match(name, list(mp.keys()))
+        if matched is not None:
+            return mp[matched]
         vals = list(mp.values())
         return vals[0] if vals else -1
-    in_idx = resolve(cfg.get("input_device", ""), in_map, ins)
-    out_idx = resolve(cfg.get("output_device", ""), out_map, outs)
+    in_idx = resolve(cfg.get("input_device", ""), in_map)
+    out_idx = resolve(cfg.get("output_device", ""), out_map)
     valid_in = set(_idx_list(ins))
     valid_out = set(_idx_list(outs))
     if in_idx not in valid_in and ins:
@@ -161,15 +158,6 @@ def main():
     stream = None
     def start_stream():
         nonlocal stream
-        # 同 API 校验：WASAPI/MME 混用即非法，仅提示不自动改输出
-        ok, msg = audio.check_api_match(in_idx, out_idx)
-        if not ok:
-            try:
-                import tkinter.messagebox as mb
-                mb.showerror("组合非法", msg + "\n请将输入与输出设为同一 API。")
-            except Exception:
-                print(msg)
-            return
         if stream:
             try:
                 stream.stop()
@@ -179,10 +167,7 @@ def main():
         try:
             stream.start()
         except Exception as e:
-            # 组合非法细化提示
             emsg = str(e)
-            if "Invalid" in emsg or "非法" in emsg or "Unanticipated" in emsg:
-                emsg = emsg + "\n提示：WASAPI 与 MME 不能混用，请将输入/输出设为同一 API。"
             try:
                 import tkinter.messagebox as mb
                 mb.showerror("音频启动失败", emsg)
@@ -216,21 +201,12 @@ def main():
         cfg["input_device"] = in_name
         cfg["output_device"] = out_name
         save(cfg)
-        # 精确或后缀匹配
-        if in_name in in_map:
-            in_idx = in_map[in_name]
-        else:
-            for k, v in in_map.items():
-                if k.endswith(in_name) or in_name.endswith(k):
-                    in_idx = v
-                    break
-        if out_name in out_map:
-            out_idx = out_map[out_name]
-        else:
-            for k, v in out_map.items():
-                if k.endswith(out_name) or out_name.endswith(k):
-                    out_idx = v
-                    break
+        m = audio.best_name_match(in_name, list(in_map.keys()))
+        if m is not None:
+            in_idx = in_map[m]
+        m = audio.best_name_match(out_name, list(out_map.keys()))
+        if m is not None:
+            out_idx = out_map[m]
         start_stream()
 
     def on_autostart(enable):

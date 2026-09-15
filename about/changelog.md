@@ -1,5 +1,29 @@
 # 更新日志
 
+## 2026-09-15 — Lite 对齐主线：播放时钟域 / 设备管理 / 网络复用
+
+- **Lite 音频链路对齐主线时钟模型**（PureVox Lite 与 PureVox Net Lite）：输入/输出
+  拆成独立流，ONNX 不再在设备回调里跑（改专用处理线程 read→process→写缓冲），
+  播放经跨时钟域缓冲（PI 伺服变速重采样、预热、欠载静音重同步、封顶丢最旧）。
+  此前全双工单流内联处理 + 帧长硬对齐（多出来截断丢样本、不够垫零）在设备帧长
+  抖动/跨设备速率差下产生咔哒与音调晃，现消除。
+- **Lite 设备管理对齐主线**：只枚举 WASAPI（去掉 MME 与「WASAPI/MME 不能混用」校验）；
+  设备名改纯名显示（去 `[WASAPI]` 前缀）；按主线同一套名字归一化/模糊匹配恢复保存的
+  设备（兼容旧配置里的 `[WASAPI] ` 前缀）。
+- **Lite Net 网络复用主线 `server/`**（不再自实现）：WSS/HTTPS、Opus 解码、TLS 证书、
+  mDNS 广播全部走主线实现，接口与主线完全一致（`/ws/audio` 支持 `flush`/`stop`、
+  `/api/status`、`/api/ca-cert`、css/js/wasm 静态目录）——同一套客户端（浏览器页 /
+  Android APK）对两端通用。切网自动跟随：证书 SAN 未覆盖当前网卡时重签并热加载，
+  mDNS 换接口重注册。
+  - 主线 `server/` 接口扩展（向后兼容）：`PureVoxServer(..., audio_source=None)`
+    （缺省仍用 `RemoteAudioSource`，改延迟导入）；新增 `apply_network(ip)` / `restart()`；
+    `RemoteAudioSource(..., ring_cls=None)` 可注入环形缓冲；
+    `TlsManager.server_cert_covers()` / `generate_server_cert(force=)` / `reload_ssl_context()`；
+    `MdnsPublisher.restart(addr)` 支持指定网卡。
+  - Lite Net 依赖变更：去掉 websockets / PyAV，纳入 aiohttp / opuslib（与主线同栈）。
+- **模型文件名不再硬编码**：Lite 与两个 Lite 打包脚本改由 `model_config.DENOISE_MODEL`
+  集中提供；删除失效的 `PureVoxNetLite.spec`（引用已删除的模型、无任何引用者）。
+
 ## 2026-09-15 — 节点更名 / 播放输入修复 / 快捷键弹窗精简
 
 - **节点更名**（菜单与行标题同源 = spec.label）：音频输入 → **录音输入**，

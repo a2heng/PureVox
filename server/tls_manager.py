@@ -69,10 +69,28 @@ class TlsManager:
             serialization.NoEncryption()))
         self._ca_cert_path.write_bytes(self._ca_cert.public_bytes(serialization.Encoding.PEM))
 
-    def generate_server_cert(self, ip_addresses: List[str]):
+    def server_cert_covers(self, ip_addresses: List[str]) -> bool:
+        """现有 server 证书的 SAN 是否已覆盖给定 IP（无证书/读失败返回 False）。"""
+        if not self._server_cert_path.exists():
+            return False
+        try:
+            cert = x509.load_pem_x509_certificate(self._server_cert_path.read_bytes())
+            san = cert.extensions.get_extension_for_class(
+                x509.SubjectAlternativeName).value
+            # 显式遍历（部分 cryptography 版本 get_values_for_type 对 IPv4 返回空）
+            have = {str(g.value) for g in san if isinstance(g, x509.IPAddress)}
+        except Exception:
+            return False
+        return {str(ip) for ip in ip_addresses}.issubset(have)
+
+    def reload_ssl_context(self, ctx: ssl.SSLContext) -> None:
+        """把最新证书链热加载进已有 SSLContext（不中断现有连接）。"""
+        ctx.load_cert_chain(str(self._server_cert_path), str(self._server_key_path))
+
+    def generate_server_cert(self, ip_addresses: List[str], force: bool = False):
         if self._ca_key is None or self._ca_cert is None:
             raise RuntimeError("Call ensure_ca() before generate_server_cert()")
-        if self._server_key_path.exists() and self._server_cert_path.exists():
+        if not force and self._server_key_path.exists() and self._server_cert_path.exists():
             return
         server_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         subject = x509.Name([
