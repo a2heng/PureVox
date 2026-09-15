@@ -279,6 +279,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4.0.1
+        with:
+          # Default packages include "tools", which Google removed from the SDK
+          # repo (sdkmanager now exits 1: "Failed to find package 'tools'").
+          # platform-34 / build-tools / NDK are installed by the next step.
+          packages: platform-tools
 
       # Retried + partial-NDK cleanup: a truncated NDK zip used to fail the
       # job outright (sdkmanager never repairs a corrupt partial tree).

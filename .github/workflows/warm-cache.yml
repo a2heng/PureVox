@@ -104,6 +104,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4.0.1
+        with:
+          # "tools" was removed from the SDK repo; platform-34 / build-tools /
+          # NDK are installed by the next step.
+          packages: platform-tools
 
       - name: Install SDK platform 34 + NDK r27
         run: bash tools/automation/install_android_sdk.sh
