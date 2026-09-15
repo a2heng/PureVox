@@ -1869,16 +1869,49 @@ class MainWindowTk:
                              font=self.fonts.get("bold"))
         state_lbl.pack(side=tk.LEFT, padx=(6, 0))
 
-        # ── 双端点说明（一行讲完，不大段铺陈）──
-        tips = ("CABLE Input ← PureVox 输出；CABLE Output 即虚拟麦克风，"
-                "设为系统默认麦克风供 OBS / 直播 / 会议使用。")
-        tk.Label(card, text=tips, bg=theme.PANEL, fg=theme.TEXT_DIM,
-                 font=self.fonts.get("body"), justify="left", anchor="w",
-                 wraplength=wrap).pack(fill=tk.X, padx=8, pady=(2, 4))
+        # ── 数据流向用图示（比文字描述直观）：PureVox→Input→Output→软件 ──
+        flow = tk.Canvas(card, bg=theme.PANEL, height=self.sizes["ctl_h"] + 12,
+                         highlightthickness=0)
+        flow.pack(fill=tk.X, padx=8, pady=(2, 4))
+
+        def _draw_flow(_e=None):
+            """完整链路（单向、左→右）：麦克风 → PureVox → CABLE In → Out → 软件。"""
+            flow.delete("all")
+            w = flow.winfo_width() or 320
+            h = int(flow.winfo_height() or 34)
+            f = self.fonts.get("small")
+            boxes = (("麦克风", theme.TRACK), ("PureVox", theme.ACCENT),
+                     ("CABLE In", theme.TRACK), ("CABLE Out", theme.TRACK),
+                     ("OBS/会议/语音等软件", theme.TRACK))
+            tw = [f.measure(t) if f else 40 for t, _ in boxes]
+            bh = max(16, h - 8)
+            cy = h // 2
+            # 先按宽松间距排；放不下就收紧间距（绝不压缩文字本身）
+            for pad, arrow in ((10, 14), (8, 11), (6, 9), (4, 7)):
+                if sum(t + pad for t in tw) + arrow * (len(boxes) - 1) <= w:
+                    break
+            x = 0
+            for i, ((text, bg), t) in enumerate(zip(boxes, tw)):
+                bw = t + pad
+                flow.create_rectangle(x, cy - bh // 2, x + bw, cy + bh // 2,
+                                      fill=bg, outline=theme.MID)
+                flow.create_text(x + bw // 2, cy, text=text, fill=theme.TEXT,
+                                 font=f)
+                x += bw
+                if i < len(boxes) - 1:
+                    x_end = x + arrow - 1
+                    flow.create_line(x + 1, cy, x_end - 4, cy,
+                                     fill=theme.MID, width=2)
+                    # 实心三角箭头：比线帽明显，方向一眼可辨（指向右）
+                    flow.create_polygon(x_end - 5, cy - 4, x_end, cy,
+                                        x_end - 5, cy + 4,
+                                        fill=theme.MID, outline="")
+                    x += arrow
+        flow.bind("<Configure>", _draw_flow)
 
         # ── 驱动卡片 ──
         guide = tk.Label(card,
-                         text="未检测到驱动：下载安装后点「启动/停止」即可识别。",
+                         text="未检测到驱动：点「驱动下载」安装后启动即可识别。",
                          bg=theme.PANEL, fg=theme.TEXT_FAINT,
                          font=self.fonts.get("body"), justify="left",
                          anchor="w", wraplength=wrap)
@@ -1891,10 +1924,11 @@ class MainWindowTk:
                  ).pack(side=tk.LEFT, padx=(4, 6), pady=4)
 
         def _label_btn(parent, text, on_click):
+            # 三个按钮等宽铺满剩余宽度（左右对齐），不留突兀的空白
             b = tk.Label(parent, text=text, bg=parent.cget("bg"),
                          fg=theme.TEXT, font=self.fonts.get("body"),
-                         padx=8, pady=3, cursor="hand2")
-            b.pack(side=tk.LEFT, padx=(0, 4))
+                         padx=6, pady=3, cursor="hand2")
+            b.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
             b.bind("<Button-1>", lambda e: on_click())
             b.bind("<Enter>", lambda e: b.configure(fg=theme.ACCENT))
             b.bind("<Leave>", lambda e: b.configure(fg=theme.TEXT))
@@ -1907,9 +1941,9 @@ class MainWindowTk:
                 from pvplatform.system import open_virtual_cable_panel
                 open_virtual_cable_panel(Logger())
 
-        _label_btn(btns, "打开控制面板", _open_panel)
-        _label_btn(btns, "下载官方驱动包", lambda: webbrowser_open(download_url))
-        _label_btn(btns, "安装视频教程", lambda: webbrowser_open(tutorial_url))
+        _label_btn(btns, "控制面板", _open_panel)
+        _label_btn(btns, "驱动下载", lambda: webbrowser_open(download_url))
+        _label_btn(btns, "视频教程", lambda: webbrowser_open(tutorial_url))
 
         # ── 启动检测开关（写回配置；启动流程据此决定是否提醒）──
         cb_var = tk.BooleanVar(
