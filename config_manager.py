@@ -119,10 +119,15 @@ class ConfigDefaults:
     # 服务器
     server_enabled: bool = False
     server_port: int = 59123
-    # 启动 / 快捷键
+    # 启动 / 快捷键 / 提示音
     auto_start: bool = False
     registry_auto_start: bool = False
-    hotkey_enabled: bool = True
+    # 启停全局热键（规范串，空串=不监听；见 uitk.hotkeys）
+    hotkey_toggle: str = "Alt+."
+    # 启停提示音：总开关 + 启动/停止各自预设 id（见 pvengine.cues）
+    cue_enabled: bool = True
+    cue_start: str = "soft"
+    cue_stop: str = "soft"
     # VB-CABLE 检测（Windows 虚拟声卡）：False 表示用户勾选了"不再提示"
     vbcable_check_enabled: bool = True
 
@@ -194,7 +199,10 @@ class ConfigDefaults:
             "server_port": instance.server_port,
             "auto_start": instance.auto_start,
             "registry_auto_start": instance.registry_auto_start,
-            "hotkey_enabled": instance.hotkey_enabled,
+            "hotkey_toggle": instance.hotkey_toggle,
+            "cue_enabled": instance.cue_enabled,
+            "cue_start": instance.cue_start,
+            "cue_stop": instance.cue_stop,
             "vbcable_check_enabled": instance.vbcable_check_enabled,
             "plugin_chain": instance.plugin_chain,
         }
@@ -272,7 +280,8 @@ class ConfigManager:
         "monitor_device_sndio", "aec_far_sink_sndio",
         "tse_reference_wav_path",
         "server_enabled", "server_port",
-        "auto_start", "registry_auto_start", "hotkey_enabled",
+        "auto_start", "registry_auto_start",
+        "hotkey_toggle", "cue_enabled", "cue_start", "cue_stop",
         "vbcable_check_enabled",
         "plugin_chain",
     ]

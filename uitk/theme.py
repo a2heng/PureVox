@@ -29,6 +29,7 @@ BUTTON      = "#FFB74D"   # 南瓜橙主按钮
 DARK        = "#FFE0B2"   # 悬停底
 MID         = "#8D6E63"   # 木纹边框/分隔线
 TRACK       = "#E6C79A"   # 滑杆槽（介于面板与边框之间）
+ROW_ALT     = "#E8CE9A"   # 列表斑马纹暗行（明显深于面板，不与插件面板混为一体）
 VIZ_BG      = "#FFFDF3"   # 可视化画布底色（统一暖白，随主题令牌，勿写死）
 SPEC_BG     = "#4E342E"   # 频谱底（深暖棕，衬托三色柱；比窗底略反差）
 SPEC_SLOT   = "#6D4C41"   # 频谱空槽（略亮于底色，静音段也不空洞）
@@ -58,4 +59,6 @@ def hover(bg: str) -> str:
         START_BG: START_HOVER,
         STOP_BG: STOP_HOVER,
         BUTTON: DARK,
+        MID: TITLE_BG,          # 木棕按钮：悬停加深
+        TITLE_BG: "#5D4037",
     }.get(bg, DARK)

@@ -132,13 +132,11 @@ class NodeRow(tk.Frame):
                                   fg=theme.TEXT, anchor="w",
                                   font=fonts.get("body"))
         self.title_lbl.pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
-        rm = tk.Label(head, text=self.CLOSE_GLYPH, bg=theme.PANEL,
-                      fg=theme.TEXT_DIM, font=fonts.get("bold"),
-                      cursor="hand2")
-        if on_remove:
-            rm.bind("<Button-1>", lambda e: on_remove())
-            rm.bind("<Enter>", lambda e: rm.configure(fg=theme.STOP_BG))
-            rm.bind("<Leave>", lambda e: rm.configure(fg=theme.TEXT_DIM))
+        # × 正方形红色方框按钮（边长锁死 ctl_h，各节点右缘成列对齐）
+        from .widgets import SquareButton
+        rm = SquareButton(head, self.CLOSE_GLYPH, command=on_remove,
+                          bg=theme.STOP_BG, fg=theme.ACCENT_TEXT,
+                          font=fonts.get("bold"), sizes=sizes)
         rm.pack(side=tk.RIGHT)   # × 永远最后（最右）
         self.rm_lbl = rm
         # 中间操作区：设备下拉 / 单参数滑杆都放这里，吃掉全部剩余宽度
@@ -157,11 +155,17 @@ class NodeRow(tk.Frame):
         self.ensure_body()
 
     def ensure_body(self):
-        """参数区有「可见（已 pack）」内容才显示，避免隐藏卡片留下空占位。"""
+        """参数区有「可见（已 pack）」内容才显示，避免隐藏卡片留下空占位。
+
+        横向内边距可按行覆盖（`_body_padx`）：音效板要求整行顶满节点左右边缘。
+        """
         has_visible = any(c.winfo_manager()
                           for c in self.body_frame.winfo_children())
         if has_visible:
-            self.body_frame.pack(fill=tk.X, padx=self.sizes["pad_lg"],
+            padx = getattr(self, "_body_padx", None)
+            self.body_frame.pack(fill=tk.X,
+                                 padx=self.sizes["pad_lg"] if padx is None
+                                 else padx,
                                  pady=(0, 4))
         else:
             self.body_frame.pack_forget()
@@ -600,7 +604,6 @@ class MainWindowTk:
         self._viz_widgets: list = []
         self.root.after(33, self._viz_tick)
         tkvar = tk.BooleanVar
-        self._hotkey_var = tkvar(value=bool(self._cfg_get("hotkey_enabled", True)))
         self._autorun_var = tkvar(value=bool(self._cfg_get("auto_start", False)))
         boot = False
         try:
@@ -609,15 +612,10 @@ class MainWindowTk:
         except Exception:
             pass
         self._boot_var = tkvar(value=bool(boot))
+        self._running_ui = False
         self._setup_tray()
         self._setup_hotkey()
-        # 音效板全局热键宿主（事件驱动，Ctrl+Alt+1..9）
-        try:
-            from uitk.hotkeys import PadHotkeys
-            self._pad_hotkeys = PadHotkeys(self._on_pad_hotkey)
-            self._refresh_pad_hotkeys()
-        except Exception:
-            self._pad_hotkeys = None
+        self._refresh_hotkeys()
         # 全部控件上色完成后一次性显示——消除启动白闪；屏幕居中
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
@@ -638,12 +636,15 @@ class MainWindowTk:
         self._tray_actions = deque()
         res = getattr(sys, "_MEIPASS", None) or os.path.dirname(
             os.path.dirname(os.path.abspath(__file__)))
-        ico = os.path.join(res, "assets", "icons", "audio_icon.ico")
+        ic = os.path.join(res, "assets", "icons")
         self.tray = create_tray(
-            ico,
+            os.path.join(ic, "tray_running.ico"),
+            os.path.join(ic, "tray_stopped.ico"),
             on_toggle=lambda: self._tray_actions.append("toggle"),
-            on_quit=lambda: self._tray_actions.append("quit"))
+            on_quit=lambda: self._tray_actions.append("quit"),
+            on_start_stop=lambda: self._tray_actions.append("start_stop"))
         if self.tray:
+            self.tray.set_state(False)
             self._poll_tray()
 
     def _poll_tray(self):
@@ -654,6 +655,8 @@ class MainWindowTk:
                 break
             if act == "toggle":
                 self.toggle_window()
+            elif act == "start_stop":
+                self._on_start()
             elif act == "quit":
                 self.quit_app()
                 return
@@ -695,7 +698,13 @@ class MainWindowTk:
         self._save_music_positions()
         self._persist()
         try:
-            host = getattr(self, "_pad_hotkeys", None)
+            if getattr(self, "_hk_after", None) is not None:
+                self.root.after_cancel(self._hk_after)
+                self._hk_after = None
+        except Exception:
+            pass
+        try:
+            host = getattr(self, "_hotkeys", None)
             if host is not None:
                 host.stop()
         except Exception:
@@ -735,7 +744,7 @@ class MainWindowTk:
             if spec is None:
                 continue
             self._make_row(dict(item), spec)
-        self._refresh_pad_hotkeys()
+        self._refresh_hotkeys()
 
     def to_config(self):
         return [dict(r.cfg) for r in self.rows]
@@ -772,12 +781,33 @@ class MainWindowTk:
         show_message(self.root, title, message,
                      sizes=self.sizes, fonts=self.fonts)
 
+    def _ask_open_file(self, title, filetypes):
+        """原生文件选择框。主窗是 override-redirect 且常驻置顶，原生对话框
+        会被压在主窗后面（表现为「点了没反应」）——先取消置顶、显式指定父窗，
+        关闭后再恢复置顶。返回选中路径或 ""。"""
+        from tkinter import filedialog
+        was_top = False
+        try:
+            was_top = bool(self.root.attributes("-topmost"))
+            self.root.attributes("-topmost", False)
+        except Exception:
+            pass
+        try:
+            return filedialog.askopenfilename(
+                title=title, filetypes=filetypes, parent=self.root)
+        finally:
+            try:
+                self.root.attributes("-topmost", was_top)
+                self.root.lift()
+            except Exception:
+                pass
+
     def _apply_chain_change(self):
         """结构变更（增删/排序/开关）→ 持久化；运行中则热重建音频链。"""
         was_running = self.engine.running
         self._save_music_positions()
         self._persist()
-        self._refresh_pad_hotkeys()
+        self._refresh_hotkeys()
         if not was_running:
             return
         self.engine.stop()
@@ -843,6 +873,43 @@ class MainWindowTk:
         text = "停止音频处理" if running else "启动音频处理"
         self.btn_start.set_bg(bg)
         self.btn_start.configure(text=text)
+        # 托盘图标随运行态变色（蓝=运行中，红=已停止）
+        tray = getattr(self, "tray", None)
+        if tray:
+            try:
+                tray.set_state(bool(running))
+            except Exception:
+                pass
+        prev = getattr(self, "_running_ui", False)
+        self._running_ui = bool(running)
+        if bool(running) != prev:
+            self._play_cue("start" if running else "stop")
+
+    def _play_cue(self, kind):
+        """启停提示音：走系统默认输出设备（与音频处理输出无关）。
+
+        停止提示音延后一拍再播：此时引擎刚释放输出设备，立刻播可能被设备
+        重配/驱动拒播吞掉（表现为「偶尔听不到」）；播放本身在 uitk.cues 的
+        后台线程完成，不阻塞 UI。
+        """
+        if not bool(self._cfg_get("cue_enabled", True)):
+            return
+        key = "cue_start" if kind == "start" else "cue_stop"
+        pid = self._cfg_get(key, "soft")
+        if not pid:
+            return
+        delay = 120 if kind == "stop" else 0
+        try:
+            self.root.after(delay, lambda: self._play_cue_now(pid, kind))
+        except Exception:
+            self._play_cue_now(pid, kind)
+
+    def _play_cue_now(self, pid, kind):
+        try:
+            from .cues import play
+            play(pid, kind)
+        except Exception:
+            pass
 
     # ── 设置菜单 ──
     def _cfg_get(self, key, default):
@@ -860,13 +927,9 @@ class MainWindowTk:
         m.add_command(label="系统声音", command=self._open_sound_panel)
         if not sys.platform.startswith("win"):
             m.add_command(label="虚拟声卡", command=self._open_virtual_mic)
+        m.add_command(label="快捷键与提示音", command=self._open_hotkey_settings)
         m.add_command(label="关于", command=self._show_about)
         m.add_separator()
-        m.add_checkbutton(label="快捷键 (右Alt+>)",
-                          onvalue=True, offvalue=False,
-                          variable=self._hotkey_var,
-                          command=lambda: self._cfg_set(
-                              "hotkey_enabled", bool(self._hotkey_var.get())))
         m.add_checkbutton(label="启动时自动运行",
                           onvalue=True, offvalue=False,
                           variable=self._autorun_var,
@@ -935,54 +998,142 @@ class MainWindowTk:
         open_tse_dialog(self.root, self.engine, self.config,
                         sizes=self.sizes, fonts=self.fonts)
 
-    # ── 全局热键（右 Alt + >）：独立消息窗线程 → 动作队列 ──
-    def _on_pad_hotkey(self, index: int):
-        """全局热键线程回调 → 主线程投递播放（避免跨线程操作 Tk/引擎）。"""
-        try:
-            self.root.after(0, lambda: self.engine.soundpad_play(index))
-        except Exception:
-            pass
+    # ── 全局热键：恒定 action 表（启停 / 各音效），可录制、可置空 ──
+    DEFAULT_HOTKEY = "Alt+."
 
-    def _refresh_pad_hotkeys(self):
-        """按首个音效板行的垫子勾选态重注册全局热键（Ctrl+Alt+1..9）。"""
-        host = getattr(self, "_pad_hotkeys", None)
-        if host is None:
-            return
+    def _setup_hotkey(self):
+        from collections import deque
+        self._hk_actions = deque()   # 热键线程 → 主线程动作队列
+        try:
+            from .hotkeys import GlobalHotkeys
+            self._hotkeys = GlobalHotkeys(self._on_hotkey)
+        except Exception:
+            self._hotkeys = None
+        self._hk_after = self.root.after(60, self._poll_hotkeys)
+
+    def _soundpad_row(self):
         for r in self.rows:
             if getattr(r, "spec", None) is not None \
                     and r.spec.name == "soundpad":
-                pads = (r.cfg.get("params") or {}).get("pads") or []
-                host.set_bindings([bool(p.get("hotkey")) for p in pads])
-                return
-        host.set_bindings([])
+                return r
+        return None
 
-    def _setup_hotkey(self):
-        if not sys.platform.startswith("win"):
+    def _soundpad_pads(self):
+        row = self._soundpad_row()
+        if row is None:
+            return []
+        return list((row.cfg.get("params") or {}).get("pads") or [])
+
+    def _discard_library_file(self, path):
+        """移除音效后丢弃其库内 WAV。
+
+        两道护栏：① 仅删 ~/.purevox/soundpad/ 内的文件（外部路径永不碰）；
+        ② 仍被任意音效板节点的某个音效引用时保留（同一文件可被多次添加，
+        导入按内容 hash 命名故路径相同）。"""
+        p = str(path or "")
+        if not p:
             return
-        import threading
-
-        def work():
-            import ctypes
-            from ctypes import wintypes
-            user32 = ctypes.windll.user32
-            MOD_ALT, MOD_NOREPEAT = 0x0001, 0x4000
-            VK_PERIOD = 0xBE
-            WM_HOTKEY = 0x0312
-            hk_id = 9998
-            if not user32.RegisterHotKey(None, hk_id, MOD_ALT | MOD_NOREPEAT,
-                                         VK_PERIOD):
+        try:
+            from user_paths import SOUNDPAD_DIR
+            root = os.path.abspath(SOUNDPAD_DIR)
+            target = os.path.abspath(p)
+            if os.path.commonpath([root, target]) != root:
                 return
-            # GetMessage 循环（热键消息投递到线程消息队列，无需窗口）
-            msg = wintypes.MSG()
-            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-                if msg.message == WM_HOTKEY and msg.wParam == hk_id:
-                    # 勾选开关生效：关闭快捷键时不触发（对齐 legacy）
-                    if self._cfg_get("hotkey_enabled", True):
-                        self._tray_actions.append("toggle")
-                user32.TranslateMessage(ctypes.byref(msg))
-                user32.DispatchMessageW(ctypes.byref(msg))
+        except Exception:
+            return
+        for r in self.rows:
+            if getattr(r, "spec", None) is None or r.spec.name != "soundpad":
+                continue
+            for info in ((r.cfg.get("params") or {}).get("pads") or []):
+                if str(info.get("path") or "") == p:
+                    return
+        try:
+            os.remove(target)
+        except OSError:
+            pass
 
-        threading.Thread(target=work, daemon=True).start()
+    def _refresh_hotkeys(self):
+        """重注册全部全局热键：启停一个 + 各音效（空串=不监听）。"""
+        host = getattr(self, "_hotkeys", None)
+        if host is None:
+            return
+        bindings = [("toggle", self._cfg_get("hotkey_toggle",
+                                             self.DEFAULT_HOTKEY))]
+        for i, p in enumerate(self._soundpad_pads()):
+            spec = str(p.get("hotkey") or "")
+            if spec and bool(p.get("hotkey_on", True)):
+                bindings.append(("pad:%d" % i, spec))
+        host.set_bindings(bindings)
+        self._warn_hotkey_conflict(list(host.last_failed))
+
+    def _warn_hotkey_conflict(self, specs):
+        """热键被系统/他程序占用时提示一次（同一组不重复弹）。"""
+        specs = [s for s in specs if s]
+        if not specs or specs == getattr(self, "_hotkey_warned", None):
+            return
+        self._hotkey_warned = specs
+        msg = ("以下快捷键已被系统或其他程序占用，未能生效：\n"
+               + "、".join(specs)
+               + "\n\n请在「设置 → 快捷键与提示音」中换一组。")
+        try:
+            self.root.after(0, lambda: self._dialog(
+                "showwarning", "PureVox", msg))
+        except Exception:
+            pass
+
+    def _on_hotkey(self, action):
+        """热键线程回调：只入队，绝不碰 Tk。
+
+        跨线程 root.after() 不保证被调度（实测静默丢失），统一走
+        「线程安全队列 + 主线程轮询」这条既有通路（与托盘动作一致）。
+        """
+        try:
+            self._hk_actions.append(action)
+        except Exception:
+            pass
+
+    def _poll_hotkeys(self):
+        while getattr(self, "_hk_actions", None):
+            try:
+                action = self._hk_actions.popleft()
+            except IndexError:
+                break
+            self._dispatch_hotkey(action)
+        self._hk_after = self.root.after(60, self._poll_hotkeys)
+
+    def _dispatch_hotkey(self, action):
+        if action == "toggle":
+            self._on_start()
+        elif str(action).startswith("pad:"):
+            try:
+                self.engine.soundpad_play(int(str(action)[4:]))
+            except Exception:
+                pass
+
+    def _open_hotkey_settings(self):
+        from .dialogs import open_hotkey_dialog
+        open_hotkey_dialog(
+            self.root,
+            get_toggle=lambda: self._cfg_get("hotkey_toggle",
+                                             self.DEFAULT_HOTKEY),
+            set_toggle=self._set_toggle_hotkey,
+            get_cue=lambda kind: self._cfg_get(
+                "cue_start" if kind == "start" else "cue_stop", "soft"),
+            set_cue=self._set_cue,
+            get_cue_enabled=lambda: self._cfg_get("cue_enabled", True),
+            set_cue_enabled=self._set_cue_enabled,
+            sizes=self.sizes, fonts=self.fonts)
+
+    def _set_toggle_hotkey(self, spec):
+        self._cfg_set("hotkey_toggle", spec or "")
+        self._refresh_hotkeys()
+
+    def _set_cue(self, kind, pid):
+        self._cfg_set("cue_start" if kind == "start" else "cue_stop",
+                      pid or "")
+
+    def _set_cue_enabled(self, on):
+        self._cfg_set("cue_enabled", bool(on))
 
     def _toggle_boot(self):
         val = bool(self._boot_var.get())
@@ -1020,7 +1171,7 @@ class MainWindowTk:
                         activebackground=theme.DARK,
                         activeforeground=theme.TEXT, bd=0,
                         font=self.fonts["body"])
-        media.add_command(label="音效板（垫子）",
+        media.add_command(label="音效板",
                           command=lambda: self.add_spec(get_spec("soundpad")))
         media.add_command(label="音乐播放器",
                           command=lambda: self.add_spec(get_spec("music_player")))
@@ -1076,26 +1227,19 @@ class MainWindowTk:
         # _viz_tick 跳过喂数——否则未勾选启动只剩标题）
         if spec.kind == "viz":
             self._attach_viz(row, spec.name)
-        # eq 行（三种规格）：展开区提供曲线编辑入口
+        # eq 行（三种规格）：标题后提供曲线编辑按钮
         if spec.name in ("eq10", "eq31", "eq61"):
-            eb = tk.Label(row.body_frame,
-                          text="打开均衡器编辑…", bg=theme.PANEL,
-                          fg=theme.ACCENT, cursor="hand2",
-                          font=self.fonts.get("body"))
-            eb.pack(anchor="w", padx=self.sizes["pad_lg"],
-                    pady=self.sizes["pad_sm"])
-            eb.bind("<Button-1>", lambda e, r=row: self._open_eq_editor(r))
-        # tse 行：展开区提供参考录音入口
+            FlatButton(row.mid, "均衡器编辑",
+                       command=lambda r=row: self._open_eq_editor(r),
+                       font=self.fonts.get("body"), sizes=self.sizes,
+                       pad=self.sizes["pad_sm"]).pack(side=tk.LEFT)
+        # tse 行：标题后提供参考录音按钮
         if spec.name == "tse":
-            tb = tk.Label(row.body_frame,
-                          text="参考音频录制…", bg=theme.PANEL,
-                          fg=theme.ACCENT, cursor="hand2",
-                          font=self.fonts.get("body"))
-            tb.pack(anchor="w", padx=self.sizes["pad_lg"],
-                    pady=self.sizes["pad_sm"])
-            tb.bind("<Button-1>",
-                    lambda e: self._open_tse_dialog())
-        # 音效板行：垫子按钮组（播放/停止/热键勾选/移除 + 添加音效）
+            FlatButton(row.mid, "参考录音",
+                       command=self._open_tse_dialog,
+                       font=self.fonts.get("body"), sizes=self.sizes,
+                       pad=self.sizes["pad_sm"]).pack(side=tk.LEFT)
+        # 音效板行：音效条目（播放/停止/音量/移除）+ 添加音效
         if spec.name == "soundpad":
             self._attach_soundpad(row)
         # 音乐播放器行：曲目选择 + 播放控制
@@ -1120,104 +1264,144 @@ class MainWindowTk:
         self.rows.append(row)
 
     def _attach_soundpad(self, row):
-        """音效板行内垫子区：播放/停止/热键勾选/移除 + 添加音效。"""
+        """音效板行内：每个音效一行 = 播放/停止 + 名称 + 快捷键 + 音量 + 移除。
+
+        快捷键在该音效后面直接录制（Delete 清除，空 = 不监听）；音量也是每个
+        音效一个（±10dB，文件本身已够响），拖动即时生效。
+        """
+        from .widgets import (HSlider, HotkeyField, FlatButton, DarkCheck,
+                              SquareButton)
         S, F = self.sizes, self.fonts
+        row._body_padx = 0          # 音效行左右顶满节点边缘，不留白
         holder = tk.Frame(row.body_frame, bg=theme.PANEL)
-        holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
+        holder.pack(fill=tk.X, padx=0, pady=(0, S["pad_sm"]))
 
         def pads():
-            return list((row.cfg.setdefault("params", {}).get("pads") or []))
+            # 返回「活」列表（非副本）：增删直接生效，commit 读到的即改后的
+            p = row.cfg.setdefault("params", {})
+            lst = p.get("pads")
+            if not isinstance(lst, list):
+                lst = []
+                p["pads"] = lst
+            return lst
 
         def commit():
             self._on_param(row, "pads", pads())
-            self._refresh_pad_hotkeys()
+            self._refresh_hotkeys()
+
+        def db_text(db):
+            d = int(round(float(db)))
+            return "0" if d == 0 else ("+%d" % d if d > 0 else str(d))
 
         def pad_row(idx, info):
-            r = tk.Frame(holder, bg=theme.PANEL)
+            # 顺序：开关（最前，快捷键=整个启用的总控）· 名称（点按即播放）·
+            #       快捷键 · 音量（自适应占满剩余）· × 删除（行尾成列）
+            # 隔行换底（斑马纹）：亮行=窗底，暗行=明显更深一档的浅棕——
+            # 两行都不等于插件面板色，避免与面板混为一体看不出行界
+            row_bg = theme.ROW_ALT if (idx % 2) else theme.WINDOW
+            r = tk.Frame(holder, bg=row_bg)
             r.pack(fill=tk.X, pady=1)
-            play = tk.Label(r, text="▶", bg=theme.PANEL, fg=theme.ACCENT,
-                            cursor="hand2", font=F.get("bold"))
-            play.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
-            play.bind("<Button-1>",
-                      lambda e, i=idx: self.engine.soundpad_play(i))
-            stop = tk.Label(r, text="■", bg=theme.PANEL, fg=theme.TEXT_DIM,
-                            cursor="hand2", font=F.get("bold"))
-            stop.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
-            stop.bind("<Button-1>",
-                      lambda e, i=idx: self.engine.soundpad_stop(i))
+            hk_var = tk.BooleanVar(value=bool(info.get("hotkey_on", True)))
+            DarkCheck(r, "", hk_var,
+                      command=lambda i=idx, v=hk_var: _set_hk_on(i, v),
+                      sizes=S, fonts=F).pack(side=tk.LEFT,
+                                             padx=(0, S["pad_sm"]))
             name = tk.Label(r, text=str(info.get("name") or "未命名"),
-                            bg=theme.PANEL, fg=theme.TEXT, anchor="w",
-                            font=F.get("body"))
-            name.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            hk_var = tk.BooleanVar(value=bool(info.get("hotkey")))
-            hk = DarkCheck(r, f"Ctrl+Alt+{idx + 1}", hk_var,
-                           command=lambda: _toggle_hk(idx, hk_var),
-                           sizes=S, fonts=F)
-            hk.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
-            rm = tk.Label(r, text="×", bg=theme.PANEL, fg=theme.TEXT_DIM,
-                          cursor="hand2", font=F.get("bold"))
-            rm.pack(side=tk.LEFT)
-            rm.bind("<Button-1>", lambda e, i=idx: _remove(i))
+                            bg=row_bg, fg=theme.TEXT, anchor="w",
+                            width=10, font=F.get("body"), cursor="hand2")
+            name.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
+            name.bind("<Button-1>",
+                      lambda e, i=idx: self.engine.soundpad_play(i))
+            # 快捷键：点方框即录制，Delete 清除（空 = 不监听）
+            HotkeyField(r, spec=str(info.get("hotkey") or ""),
+                        command=lambda spec, i=idx: _set_hk(i, spec),
+                        sizes=S, fonts=F, width=9,
+                        show_clear=False).pack(
+                side=tk.LEFT, padx=(0, S["pad_sm"]))
+            SquareButton(r, "×", command=lambda i=idx: _remove(i),
+                         bg=theme.TITLE_BG, fg=theme.TITLE_FG,
+                         font=F.get("bold"), sizes=S).pack(
+                side=tk.RIGHT, padx=(S["pad_sm"], 0))
+            cur = info.get("volume_db", 0.0)
+            vlab = tk.Label(r, text=db_text(cur), bg=row_bg,
+                            fg=theme.TEXT_DIM, width=3, anchor="e",
+                            font=F.get("small"))
+            vlab.pack(side=tk.RIGHT, padx=(2, S["pad_sm"]))
+            ref = {}
+            sl = HSlider(r, -10.0, 10.0, cur, 1.0,
+                         command=lambda: _set_vol(idx, ref["sl"], vlab),
+                         sizes=S, width_px=48)
+            ref["sl"] = sl
+            sl.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        def _toggle_hk(idx, var):
+        def _set_hk(idx, spec):
             ps = pads()
             if 0 <= idx < len(ps):
-                ps[idx]["hotkey"] = bool(var.get())
-                commit()
+                ps[idx]["hotkey"] = str(spec or "")
+                self._persist()
+                self._refresh_hotkeys()
+
+        def _set_hk_on(idx, var):
+            ps = pads()
+            if 0 <= idx < len(ps):
+                ps[idx]["hotkey_on"] = bool(var.get())
+                self._persist()
+                self._refresh_hotkeys()
+
+        def _set_vol(idx, sl, vlab):
+            ps = pads()
+            if not (0 <= idx < len(ps)):
+                return
+            db = round(float(sl.value), 0)
+            ps[idx]["volume_db"] = float(db)
+            vlab.configure(text=db_text(db))
+            self._on_param(row, "pads", ps)
 
         def _remove(idx):
             ps = pads()
-            if 0 <= idx < len(ps):
-                self.engine.soundpad_stop(idx)
-                ps.pop(idx)
-                commit()
-                render()
+            if not (0 <= idx < len(ps)):
+                return
+            self.engine.soundpad_stop(idx)
+            gone = ps.pop(idx)
+            commit()
+            render()
+            # 移除即丢弃库内 WAV（仅当已无其他音效引用同一文件）
+            self._discard_library_file(gone.get("path"))
 
         def _add():
-            from tkinter import filedialog
-            path = filedialog.askopenfilename(
-                title="添加音效",
-                filetypes=[("音频/容器", "*.wav *.mp3 *.flac *.ogg *.m4a "
-                                  "*.mp4 *.aac *.opus *.wma *.mov "
-                                  "*.webm *.mkv"),
-                           ("全部文件", "*.*")])
+            path = self._ask_open_file(
+                "添加音效",
+                [("音频/容器", "*.wav *.mp3 *.flac *.ogg *.m4a *.mp4 "
+                              "*.aac *.opus *.wma *.mov *.webm *.mkv"),
+                 ("全部文件", "*.*")])
             if not path:
                 return
-            # 格式归一：垫名仍取所选文件，路径自动改为转码后的文件名
+            # 入库：一律归一为 48k/mono WAV 存入 ~/.purevox/soundpad/，
+            # 名称取原文件名，配置只引用库内路径（不依赖外部原始文件）
+            name = os.path.splitext(os.path.basename(path))[0]
             try:
-                from pvengine.components.audio_decode import ensure_playable
-                real = ensure_playable(path)
+                from user_paths import SOUNDPAD_DIR
+                from pvengine.components.audio_decode import import_media
+                real = import_media(path, SOUNDPAD_DIR, stem=name)
             except Exception as e:
                 self._dialog("showwarning", "PureVox", f"该文件无法解码：\n{e}")
                 return
-            ps = pads()
-            ps.append({"name": os.path.splitext(os.path.basename(path))[0],
-                       "path": real, "hotkey": False})
+            # 每个音效一整套：名称 / 库内路径 / 快捷键开关 / 快捷键 / 音量
+            pads().append({"name": name, "path": real, "hotkey_on": True,
+                           "hotkey": "", "volume_db": 0.0})
             commit()
             render()
+
+        # 「添加音效」放在标题之后（行头 mid 区，紧贴标题）
+        FlatButton(row.mid, "添加音效", command=_add,
+                   font=F.get("body"), sizes=S,
+                   pad=S["pad_sm"]).pack(side=tk.LEFT)
 
         def render():
             for w in holder.winfo_children():
                 w.destroy()
             for i, info in enumerate(pads()):
                 pad_row(i, info)
-            bar = tk.Frame(holder, bg=theme.PANEL)
-            bar.pack(fill=tk.X, pady=(2, 0))
-            add = tk.Label(bar, text="＋ 添加音效", bg=theme.PANEL,
-                           fg=theme.ACCENT, cursor="hand2",
-                           font=F.get("body"))
-            add.pack(side=tk.LEFT)
-            add.bind("<Button-1>", lambda e: _add())
-            stopall = tk.Label(bar, text="全部停止", bg=theme.PANEL,
-                               fg=theme.TEXT_DIM, cursor="hand2",
-                               font=F.get("body"))
-            stopall.pack(side=tk.LEFT, padx=(S["pad_md"], 0))
-            stopall.bind("<Button-1>",
-                         lambda e: self.engine.soundpad_stop_all())
-            hint = tk.Label(bar, text="热键 = Ctrl+Alt+序号，勾选即生效",
-                            bg=theme.PANEL, fg=theme.TEXT_DIM,
-                            font=F.get("small"))
-            hint.pack(side=tk.RIGHT)
 
         render()
 
@@ -1274,9 +1458,10 @@ class MainWindowTk:
                  anchor="w", justify="left").pack(fill=tk.X, padx=S["pad_lg"])
 
     def _attach_music_player(self, row):
-        """音乐播放器行内控制：选曲目 + 进度滑块（可拖 seek）；
-        播放开关 = 行启用复选框（硬启停，无暂停/开始按钮），
-        播放位置经事件（拖动/停止/退出）触发持久化。"""
+        """音乐播放器行内控制：选择曲目 + 播放/暂停 + 进度滑块（可拖 seek）。
+
+        播放位置持久化：拖动/暂停/停止/退出即写 `resume_sec`，播放中每 5 秒
+        兜底写入一次，重启后从该位置续播。"""
         S, F = self.sizes, self.fonts
         holder = tk.Frame(row.body_frame, bg=theme.PANEL)
         holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
@@ -1303,23 +1488,30 @@ class MainWindowTk:
                 float(pos_sec), 1)
             self._persist()
 
+        def _play():
+            if str((row.cfg.get("params") or {}).get("path", "")):
+                self.engine.music_play(_idx())
+
+        def _pause():
+            self.engine.music_pause(_idx())
+            _save_resume(self.engine.music_status(_idx()).get("pos", 0.0))
+
         def _pick():
-            from tkinter import filedialog
-            path = filedialog.askopenfilename(
-                title="选择音乐/媒体文件",
-                filetypes=[("音频/容器", "*.mp3 *.flac *.ogg *.wav *.m4a "
-                                  "*.mp4 *.aac *.opus *.wma *.mov "
-                                  "*.webm *.mkv"),
-                           ("全部文件", "*.*")])
+            path = self._ask_open_file(
+                "选择音乐/媒体文件",
+                [("音频/容器", "*.mp3 *.flac *.ogg *.wav *.m4a *.mp4 "
+                              "*.aac *.opus *.wma *.mov *.webm *.mkv"),
+                 ("全部文件", "*.*")])
             if not path:
                 return
-            # 格式归一：miniaudio 不支持的容器/编码一次性转码，
-            # 路径自动改为转码后的文件名（<原名>.purevox.wav）
-            name_lbl.configure(text="转码中…")
+            # 入库：一律归一为 48k/mono WAV 存入 ~/.purevox/music/，
+            # 配置只引用库内路径（不依赖外部原始文件）
+            name_lbl.configure(text="导入中…")
             holder.update_idletasks()
             try:
-                from pvengine.components.audio_decode import ensure_playable
-                path = ensure_playable(path)
+                from user_paths import MUSIC_DIR
+                from pvengine.components.audio_decode import import_media
+                path = import_media(path, MUSIC_DIR)
             except Exception as e:
                 refresh_name()
                 self._dialog("showwarning", "PureVox", f"该文件无法解码：\n{e}")
@@ -1329,11 +1521,16 @@ class MainWindowTk:
             state["dur"] = 0.0
             refresh_name()
 
-        pick_btn = tk.Label(bar, text="选择曲目", bg=theme.PANEL,
-                            fg=theme.ACCENT, cursor="hand2",
-                            font=F.get("body"))
-        pick_btn.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
-        pick_btn.bind("<Button-1>", lambda e: _pick())
+        from .widgets import FlatButton
+        FlatButton(bar, "选择曲目", command=_pick, font=F.get("body"),
+                   sizes=S, pad=S["pad_sm"]).pack(side=tk.LEFT,
+                                                 padx=(0, S["pad_sm"]))
+        FlatButton(bar, "播放", command=_play, font=F.get("body"),
+                   sizes=S, pad=S["pad_sm"]).pack(side=tk.LEFT,
+                                                 padx=(0, S["pad_sm"]))
+        FlatButton(bar, "暂停", command=_pause, font=F.get("body"),
+                   sizes=S, pad=S["pad_sm"]).pack(side=tk.LEFT,
+                                                 padx=(0, S["pad_sm"]))
         time_lbl = tk.Label(bar, text="00:00 / 00:00", bg=theme.PANEL,
                             fg=theme.TEXT_DIM, font=F.get("small"))
         time_lbl.pack(side=tk.RIGHT)
@@ -1384,7 +1581,12 @@ class MainWindowTk:
             if s is not None and not state["dragging"] and dur > 0:
                 s.set_value(pos, silent=True)
             time_lbl.configure(text=f"{_fmt(pos)} / {_fmt(dur)}")
-            # 播放→停止（复选框关/引擎停）的状态沿：触发进度持久化
+            # 播放中每 5 秒兜底落盘一次进度（崩溃/强退也不丢太多）
+            now = time.time()
+            if playing and now - float(state.get("saved_at") or 0.0) >= 5.0:
+                state["saved_at"] = now
+                _save_resume(pos)
+            # 播放→停止（复选框关/暂停/引擎停）的状态沿：触发进度持久化
             if state["was_playing"] and not playing:
                 _save_resume(pos)
             state["was_playing"] = playing

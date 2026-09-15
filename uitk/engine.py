@@ -314,13 +314,6 @@ class EngineController:
             except Exception:
                 pass
 
-    def soundpad_stop_all(self):
-        if self.processor and self.running:
-            try:
-                self.processor.soundpad_stop_all()
-            except Exception:
-                pass
-
     def music_status(self, index: int) -> dict:
         """音乐播放器状态（未运行返回默认零值）。"""
         if self.processor and self.running:
@@ -328,7 +321,21 @@ class EngineController:
                 return self.processor.music_status(index)
             except Exception:
                 pass
-        return {"playing": False, "pos": 0.0, "dur": 0.0}
+        return {"playing": False, "paused": False, "pos": 0.0, "dur": 0.0}
+
+    def music_play(self, index: int):
+        if self.processor and self.running:
+            try:
+                self.processor.music_control(index, "play")
+            except Exception:
+                pass
+
+    def music_pause(self, index: int):
+        if self.processor and self.running:
+            try:
+                self.processor.music_control(index, "pause")
+            except Exception:
+                pass
 
     def calibrate_aec_delay(self, mic_dev: str, far_dev: str,
                             far_kind: str = "speaker") -> Optional[float]:

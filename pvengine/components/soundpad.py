@@ -21,11 +21,18 @@ process(frame) 在自身链位置把当前播放中的音效帧与信号相加�
 - 挂链尾（默认追加位置）= 后级直通：音效不经降噪/变声，随全部输出扇出；
 - 用户可拖到降噪之前参与处理（位置语义与可视化/输出抽头一致）。
 
-音源仅支持 WAV（wave 标准库解码：8/16/24/32bit 整数与浮点，多声道下混，
-非 48kHz 线性重采样到 48k）；懒加载：首次 play 才读文件，垫子列表变更
-即清理失效缓存。控制面（UI/热键线程）与音频面（处理线程）经锁分离。
+音源为库内 48k/mono WAV（添加时经 audio_decode.import_media 归一入库，
+见 ~/.purevox/soundpad/），整段解码进内存（音效都是短音效，起播零延迟）；
+懒加载：首次 play 才读文件，音效列表变更即清理失效缓存。控制面（UI/热键
+线程）与音频面（处理线程）经锁分离。
 
-起播/结束/手动停止/垫子移除/复选框关断一律 hop 内线性淡变（1→0），
+重播语义：再次按下同一音效 = 旧声部淡出、新声部从**开头**起播（连按即
+重新触发，不叠加多条并行声部）。
+
+音量是**每个音效一个**的 `volume_db`（±10dB，文件本身已够响）：起播时取其
+音量，滑杆拖动经 set_pads 同步更新正在播的声部（实时生效）。
+
+起播/结束/手动停止/音效移除/复选框关断一律 hop 内线性淡变（1→0），
 杜绝硬切咔哒；结束段（剩余 ≤1 hop）天然淡出收尾。
 """
 
@@ -56,9 +63,10 @@ class _Voice:
 class SoundPadPlugin(Effect):
     NAME = "soundpad"
     LABEL = "音效板"
-    # 复选框关断不旁路：正在播的垫子自行淡出（衔接无缝）
+    # 复选框关断不旁路：正在播的音效自行淡出（衔接无缝）
     FADE_THROUGH = True
-    PARAMS = {"volume_db": ("音量 dB", -30.0, 6.0, 0.0, 1.0)}
+    # 音量是「每个音效一个」（音效 dict 里的 volume_db，±10dB），非节点级滑杆
+    PARAMS = {}
 
     def __init__(self, params=None, stage_cache=None):
         self._lock = threading.Lock()
@@ -66,10 +74,17 @@ class SoundPadPlugin(Effect):
         self._fading = []   # 结束/被打断的 voice（淡出后丢弃）
         self._cache = {}    # path -> np.ndarray | None
         self._pads = []
-        self._volume = 1.0
         self.enabled = True
         super().__init__(params)
         self.set_pads((params or {}).get("pads") or [])
+
+    @staticmethod
+    def _pad_gain(pad) -> float:
+        try:
+            db = float(pad.get("volume_db", 0.0))
+        except (TypeError, ValueError):
+            db = 0.0
+        return float(10.0 ** (max(-10.0, min(10.0, db)) / 20.0))
 
     # ── 控制面（UI / 热键线程调用）──
     def set_pads(self, pads):
@@ -77,6 +92,10 @@ class SoundPadPlugin(Effect):
             self._pads = [dict(p) for p in (pads or [])]
             keep = {p.get("path") for p in self._pads}
             self._cache = {k: v for k, v in self._cache.items() if k in keep}
+            # 正在播的音效跟随各自音量实时更新（拖动滑杆即时生效）
+            for i, v in self._voices.items():
+                if i < len(self._pads):
+                    v.vol = self._pad_gain(self._pads[i])
             for i in [i for i in self._voices if i >= len(self._pads)]:
                 v = self._voices.pop(i)
                 v.ending = True
@@ -96,7 +115,8 @@ class SoundPadPlugin(Effect):
             if old is not None:
                 old.ending = True
                 self._fading.append(old)
-            self._voices[index] = _Voice(data, self._volume)
+            self._voices[index] = _Voice(
+                data, self._pad_gain(self._pads[index]))
 
     def stop(self, index):
         with self._lock:
@@ -119,9 +139,6 @@ class SoundPadPlugin(Effect):
     def on_struct_param(self, key, value):
         if key == "pads":
             self.set_pads(value)
-
-    def on_params_changed(self):
-        self._volume = 10.0 ** (self.params["volume_db"] / 20.0)
 
     # ── 音频面（处理线程）──
     def process(self, frame, ctx):

@@ -80,7 +80,7 @@ def make_sizes(zoom):
         "pad_md": r(6),
         "pad_lg": r(10),
         # 窗口基准（已含倍率）
-        "win_w": r(420),
+        "win_w": r(400),
         "win_h": r(700),
     }
 

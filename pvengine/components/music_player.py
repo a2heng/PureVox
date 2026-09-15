@@ -89,7 +89,7 @@ class MusicPlayerPlugin(Effect):
     LABEL = "音乐播放器"
     # 复选框关断走管线旁路：硬停（无淡出），勾回原地续播
     FADE_THROUGH = False
-    PARAMS = {"volume_db": ("音量 dB", -30.0, 6.0, 0.0, 1.0)}
+    PARAMS = {"volume_db": ("音量 dB", -10.0, 10.0, 0.0, 1.0)}
 
     def __init__(self, params=None, stage_cache=None):
         self._lock = threading.Lock()
@@ -103,6 +103,7 @@ class MusicPlayerPlugin(Effect):
         self._path = ""
         self._seek_req = None  # 秒
         self._volume = 1.0
+        self._paused = False   # 暂停：保留位置与缓冲，恢复即续播
         self._thread = None
         self.enabled = True
         super().__init__(params)
@@ -167,9 +168,23 @@ class MusicPlayerPlugin(Effect):
             if self._path:
                 self._ensure_thread()
 
+    def play(self):
+        """继续播放（保留位置与环形缓冲；解码线程按需续跑）。"""
+        with self._lock:
+            self._paused = False
+            if self._path:
+                self._ensure_thread()
+
+    def pause(self):
+        """暂停：位置冻结、本 hop 直通；恢复即从原位置续播。"""
+        with self._lock:
+            self._paused = True
+
     def status(self):
         with self._lock:
-            return {"playing": self.enabled and bool(self._path),
+            return {"playing": (self.enabled and bool(self._path)
+                                and not self._paused),
+                    "paused": bool(self._paused),
                     "pos": self._pos / _TARGET_SR,
                     "dur": self._duration}
 
@@ -272,8 +287,8 @@ class MusicPlayerPlugin(Effect):
 
     # ── 音频面 ──
     def process(self, frame, ctx):
-        if not self.enabled or not self._path:
-            return frame              # 停止：硬旁路（零开销直通）
+        if not self.enabled or not self._path or self._paused:
+            return frame              # 停止/暂停：硬旁路（零开销直通）
         out = frame.astype(np.float32, copy=True)
         n = len(out)
         buf = np.zeros(n, dtype=np.float32)

@@ -17,28 +17,33 @@
 
 """音频文件格式工具——媒体类插件（音效板/音乐播放器）共用。
 
-运行时解码唯一实现：miniaudio（wav/mp3/flac/ogg-vorbis；自包含 C，
-跨平台 wheel），直接输出 float32 单声道 48kHz。
+**入库唯一实现** `import_media`：任何来源文件一律归一为 48kHz 单声道
+16bit WAV，存入调用方给定的库目录（~/.purevox/soundpad 或 /music）。
+- 首选 miniaudio 解码（wav/mp3/flac/ogg-vorbis；自包含 C，跨平台 wheel）；
+- miniaudio 不支持的容器/编码（m4a/mp4/aac/wma/opus…）用 PyAV 兜底解码；
+- 文件名 `<原名>-<sha1 前 8 位>.wav`：重复导入同一文件幂等复用、不同内容
+  同名不互相覆盖。
 
-选文件时刻经 ensure_playable 归一：miniaudio 不支持的容器/编码
-（m4a/mp4/aac/wma/opus…）用 PyAV 一次性转码为 <原名>.purevox.wav
-（48kHz 单声道 16bit WAV），调用方自动改用转码后的路径——
-运行时永远只走 miniaudio，无静默回退。
+**运行时解码唯一实现**：miniaudio——音效板整段 `decode_to_mono_48k` 进内存，
+音乐播放器 `miniaudio.stream_file` 流式。用户库里存的已是 48k/mono WAV，
+运行时不再需要任何转码/回退。
 
 本模块零状态、零相互依赖，仅函数。
 """
 
+import hashlib
 import os
 import wave
 
 import numpy as np
 
 _TARGET_SR = 48000
-_TRANSCODE_TAG = ".purevox.wav"
+_INVALID = set('<>:"/\\|?*')
+_MAX_STEM = 60
 
 
 def decode_to_mono_48k(path):
-    """miniaudio 解码整文件；不支持/失败返回 None。
+    """miniaudio 解码整文件 → float32 单声道 48k；不支持/失败返回 None。
 
     经内存解码（decode）：decode_file 的 char* 路径在 Windows 上按 ANSI
     fopen，中文/非 ASCII 文件名必挂；先自读字节则全平台一致。
@@ -58,55 +63,83 @@ def decode_to_mono_48k(path):
     return np.ascontiguousarray(x, dtype=np.float32)
 
 
-def _probe_ok(path) -> bool:
-    """miniaudio 能否直接解码（只读文件头，零成本）。"""
-    try:
-        import miniaudio
-        miniaudio.get_file_info(path)
-        return True
-    except Exception:
-        return False
+def import_media(path, dest_dir, stem=None) -> str:
+    """把任意音频文件归一为 48k/mono/16bit WAV 存入 dest_dir，返回库内路径。
 
-
-def _transcode_wav48k(path) -> str:
-    """PyAV 解码首个音频流 → 48kHz 单声道 16bit WAV（同名 + .purevox.wav）。
-
-    转完临时文件再原子改名；目标已存在且不旧于源文件时直接复用。
+    已存在同一内容（同 hash）直接复用；解码失败抛 RuntimeError。
     """
-    import av
-    root, _ext = os.path.splitext(path)
-    out = root + _TRANSCODE_TAG
-    if (os.path.exists(out)
-            and os.path.getmtime(out) >= os.path.getmtime(path)):
+    os.makedirs(dest_dir, exist_ok=True)
+    base = _safe_stem(
+        stem if stem is not None
+        else os.path.splitext(os.path.basename(path))[0])
+    out = os.path.join(dest_dir, f"{base}-{_digest(path)}.wav")
+    if os.path.exists(out):
         return out
+    samples = decode_to_mono_48k(path)
+    if samples is None:
+        samples = _decode_pyav(path)
+    if samples is None or not len(samples):
+        raise RuntimeError("无法解码该音频文件")
     tmp = out + ".part"
+    try:
+        _write_wav_s16(tmp, samples)
+        os.replace(tmp, out)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return out
+
+
+def _decode_pyav(path):
+    """PyAV 兜底解码首个音频流 → float32 单声道 48k；失败返回 None。"""
+    try:
+        import av
+    except Exception:
+        return None
+    chunks = []
     try:
         with av.open(path) as c:
             streams = [s for s in c.streams if s.type == "audio"]
             if not streams:
-                raise RuntimeError("文件中没有音频流")
+                return None
             res = av.AudioResampler(format="s16", layout="mono",
                                     rate=_TARGET_SR)
-            with wave.open(tmp, "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(_TARGET_SR)
-                for frame in c.decode(streams[0]):
-                    for o in (res.resample(frame) or []):
-                        w.writeframes(
-                            o.to_ndarray().reshape(-1).tobytes())
-        os.replace(tmp, out)
+            for frame in c.decode(streams[0]):
+                for o in (res.resample(frame) or []):
+                    chunks.append(o.to_ndarray().reshape(-1))
     except Exception:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
-    return out
+        return None
+    if not chunks:
+        return None
+    return np.concatenate(chunks).astype(np.float32) / np.float32(32768.0)
 
 
-def ensure_playable(path) -> str:
-    """选文件时刻的格式归一：可解码 → 原路径；否则转码并返回新路径。"""
-    if _probe_ok(path):
-        return path
-    return _transcode_wav48k(path)
+def _write_wav_s16(path, samples):
+    pcm = np.clip(np.asarray(samples, dtype=np.float32) * 32767.0,
+                  -32768.0, 32767.0).astype("<i2")
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(_TARGET_SR)
+        w.writeframes(pcm.tobytes())
+
+
+def _safe_stem(name) -> str:
+    s = "".join(("_" if ch in _INVALID or ord(ch) < 32 else ch)
+                for ch in str(name)).strip().rstrip(".")
+    s = s[:_MAX_STEM].strip()
+    return s or "audio"
+
+
+def _digest(path) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(1 << 16)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()[:8]

@@ -514,6 +514,170 @@ class DarkCombo(tk.Frame):
         self._popup = None
 
 
+class SquareButton(tk.Frame):
+    """正方形方框按钮（图标字形专用）：固定 px 边长 + 居中字形。
+
+    FlatButton 由文字度量决定尺寸（窄字形× + ctl_h 行距 → 又窄又高，不成方形），
+    本控件锁死边长（默认 ctl_h），方框背景 + 悬停变亮，用于删除「×」等图标钮。
+    """
+
+    def __init__(self, parent, glyph, command=None, bg=theme.BUTTON,
+                 fg=theme.TEXT, size=None, font=None, sizes=None):
+        self.sizes = sizes if sizes is not None else make_sizes(100)
+        self._bg = bg
+        side = int(size or self.sizes["ctl_h"])
+        # 外框底色必须就是按钮底色：若用宿主底色，静止时只见居中小字形，
+        # 悬停重绘才显出整块方框（「一开始很小、划过才正常」的根因）
+        super().__init__(parent, bg=bg, width=side, height=side)
+        self.pack_propagate(False)
+        self.grid_propagate(False)
+        self.command = command
+        self.lbl = tk.Label(self, text=glyph, bg=bg, fg=fg, font=font,
+                            cursor="hand2")
+        self.lbl.place(relx=0.5, rely=0.5, anchor="center")
+        for w in (self, self.lbl):
+            w.bind("<Button-1>", self._click)
+            w.bind("<Enter>", lambda e: self._paint(theme.hover(self._bg)))
+            w.bind("<Leave>", lambda e: self._paint(self._bg))
+
+    def _paint(self, bg):
+        self.configure(bg=bg)
+        self.lbl.configure(bg=bg)
+
+    def _click(self, _e):
+        if self.command:
+            try:
+                self.command()
+            except Exception:
+                pass
+
+
+class HotkeyField(tk.Frame):
+    """可录制全局热键的字段：点值标签进入录制，按下组合键即捕获。
+
+    - 空串 = 不监听（显示「未设置」）；
+    - 录制中 Esc 取消、Delete/Backspace 清除；
+    - 纯字母/数字必须带至少一个修饰键（F1–F24 可单键）；
+    - `command(spec)` 在捕获成功后回调（spec 已规范化为 "" 或 "Ctrl+Alt+1"）。
+    """
+
+    def __init__(self, parent, spec="", command=None, sizes=None, fonts=None,
+                 width=14, show_clear=True):
+        from .hotkeys import normalize_spec, keysym_to_spec, MODIFIER_KEYSYMS
+        self._keysyms = MODIFIER_KEYSYMS
+        self._to_spec = keysym_to_spec
+        self._normalize = normalize_spec
+        self.sizes = sizes if sizes is not None else make_sizes(100)
+        self.fonts = fonts if fonts is not None else {}
+        bg = parent.cget("bg") if isinstance(parent, tk.Widget) else theme.WINDOW
+        super().__init__(parent, bg=bg)
+        self.command = command
+        self._spec = normalize_spec(spec)
+        self._capturing = False
+        self._mods = set()
+        self._bind_ids = []
+        self.value_label = tk.Label(self, text="", bg=theme.BASE,
+                                    fg=theme.TEXT_DIM, cursor="hand2",
+                                    takefocus=1, width=width, anchor="center",
+                                    font=self.fonts.get("body"),
+                                    padx=self.sizes["pad_md"],
+                                    pady=max(2, self.sizes["pad_sm"] // 2))
+        self.value_label.pack(side=tk.LEFT)
+        self.value_label.bind("<Button-1>", self._begin)
+        self.value_label.bind("<FocusOut>", lambda e: self._cancel())
+        # 清除钮可按需省略（有前置开关控制启停时不必再清空录制内容）
+        self.clear_label = None
+        if show_clear:
+            self.clear_label = tk.Label(self, text="✕", bg=bg,
+                                        fg=theme.TEXT_FAINT, cursor="hand2",
+                                        takefocus=0,
+                                        font=self.fonts.get("body"),
+                                        padx=self.sizes["pad_sm"])
+            self.clear_label.pack(side=tk.LEFT)
+            self.clear_label.bind("<Button-1>", lambda e: self._set(""))
+        self._render()
+
+    def get(self) -> str:
+        return self._spec
+
+    def set(self, spec):
+        self._set(spec, notify=False)
+
+    def _set(self, spec, notify=True):
+        self._cancel()
+        self._spec = self._normalize(spec)
+        self._render()
+        if notify and self.command:
+            try:
+                self.command(self._spec)
+            except Exception:
+                pass
+
+    def _render(self, hint=None):
+        if self._capturing:
+            self.value_label.configure(text=hint or "按下组合键…",
+                                       fg=theme.ACCENT, bg=theme.DARK)
+        else:
+            self.value_label.configure(
+                text=self._spec or "未设置",
+                fg=theme.TEXT if self._spec else theme.TEXT_FAINT,
+                bg=theme.BASE)
+
+    def _begin(self, _e=None):
+        if self._capturing:
+            return
+        self._capturing = True
+        self._mods = set()
+        self._render("按下组合键…")
+        self.value_label.focus_set()
+        self._bind_ids = [
+            self.value_label.bind("<KeyPress>", self._on_press, add="+"),
+            self.value_label.bind("<KeyRelease>", self._on_release, add="+"),
+        ]
+
+    def _cancel(self):
+        if not self._capturing:
+            return
+        self._capturing = False
+        self._mods = set()
+        for seq, fid in zip(("<KeyPress>", "<KeyRelease>"), self._bind_ids):
+            if fid:
+                try:
+                    self.value_label.unbind(seq, fid)
+                except Exception:
+                    pass
+        self._bind_ids = []
+        self._render()
+
+    def _on_press(self, e):
+        ks = e.keysym
+        if ks in ("Escape",):
+            self._cancel()
+            return "break"
+        if ks in ("Delete", "BackSpace"):
+            self._set("")
+            return "break"
+        mod = self._keysyms.get(ks.lower())
+        if mod:
+            self._mods.add(mod)
+            order = [m for m in ("Ctrl", "Alt", "Shift", "Win")
+                     if m in self._mods]
+            self._render("+".join(order) + "+…")
+            return "break"
+        spec = self._to_spec(ks, self._mods)
+        if not spec:
+            self._render("需带 Ctrl/Alt/Shift（或 F1–F24）")
+            return "break"
+        self._set(spec)
+        return "break"
+
+    def _on_release(self, e):
+        mod = self._keysyms.get(str(e.keysym).lower())
+        if mod:
+            self._mods.discard(mod)
+        return None
+
+
 class ScrollFrame(tk.Frame):
     """深色滚动容器：Canvas + 自绘右滚动条。"""
 

@@ -17,7 +17,9 @@
 
 """uitk 托盘图标（仅 Windows）：ctypes Shell_NotifyIcon，零新依赖。
 
-独立消息窗口线程；左键切换主窗显隐，右键菜单（打开/退出）。
+独立消息窗口线程；左键切换主窗显隐，右键菜单（打开 / 启停音频处理 / 退出）。
+**图标随运行态可变**：停止=红色 P，运行=蓝色 P，`set_state(running)` 经
+NIM_MODIFY 原地换图并同步提示气泡文案。
 非 Windows / 图标添加失败时 create_tray() 返回 None。
 
 健壮性三条原则（无看门狗、无定时器、无延迟重试）：
@@ -32,26 +34,37 @@
 import threading
 
 WM_APP_TRAY = 0x8000 + 100
+WM_APP_TRAY_STATE = 0x8000 + 101
 WM_COMMAND = 0x0111
 WM_LBUTTONUP = 0x0202
 WM_RBUTTONUP = 0x0205
 WM_CLOSE = 0x0010
 CMD_OPEN = 2001
 CMD_QUIT = 2002
+CMD_STARTSTOP = 2003
+
+NIM_ADD = 0x00
+NIM_MODIFY = 0x01
+NIM_DELETE = 0x02
+NIF_MESSAGE = 0x1
+NIF_ICON = 0x2
+NIF_TIP = 0x4
 
 
 class TrayIcon:
-    def __init__(self, ico_path: str, tip: str,
-                 on_toggle=None, on_quit=None):
+    def __init__(self, running_ico: str, stopped_ico: str, on_toggle=None,
+                 on_quit=None, on_start_stop=None):
         import ctypes
-        import threading
         self._ctypes = ctypes
         self.on_toggle = on_toggle
         self.on_quit = on_quit
-        self._hicon = self._load_icon(ico_path)
-        self._tip = tip[:127]
+        self.on_start_stop = on_start_stop
+        self._hicons = {
+            "running": self._load_icon(running_ico),
+            "stopped": self._load_icon(stopped_ico),
+        }
+        self._running = False
         self._nid = None
-        # alive = 最近一次 NIM_ADD 的真实结果；创建结果在构造返回前同步可得
         self.alive = False
         self._ready = threading.Event()
         t = threading.Thread(target=self._run, daemon=True)
@@ -66,6 +79,21 @@ class TrayIcon:
         IMAGE_ICON, LR_LOADFROMFILE = 1, 0x10
         return user32.LoadImageW(
             None, path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE)
+
+    def _tip(self) -> str:
+        return "PureVox — 运行中" if self._running else "PureVox — 已停止"
+
+    def set_state(self, running: bool) -> None:
+        """切换托盘图标/提示（蓝=运行中，红=已停止）；任意线程可调。"""
+        self._running = bool(running)
+        import ctypes
+        nid = self._nid
+        if nid is not None:
+            try:
+                ctypes.windll.user32.PostMessageW(
+                    nid.hWnd, WM_APP_TRAY_STATE, 0, 0)
+            except Exception:
+                pass
 
     def _run(self):
         import ctypes
@@ -139,6 +167,15 @@ class TrayIcon:
         WM_CONTEXTMENU = 0x007B
         NIN_SELECT = 0x0400
 
+        def apply_state():
+            # 原地换图 + 更新气泡（NIM_MODIFY）
+            nid.hIcon = self._hicons[
+                "running" if self._running else "stopped"]
+            nid.szTip = self._tip()
+            nid.uFlags = NIF_ICON | NIF_TIP
+            return bool(shell32.Shell_NotifyIconW(
+                NIM_MODIFY, ctypes.byref(nid)))
+
         def wnd_proc(hwnd, msg, wp, lp):
             if msg == WM_APP_TRAY:
                 ev = lp & 0xFFFF
@@ -147,14 +184,24 @@ class TrayIcon:
                 elif ev in (WM_RBUTTONUP, WM_CONTEXTMENU):
                     self._popup_menu(hwnd)
                 return 0
+            if msg == WM_APP_TRAY_STATE:
+                apply_state()
+                return 0
             if msg == wm_taskbar:
                 # explorer 重启广播：立刻重加图标（事件驱动自愈，无轮询）
-                self.alive = bool(shell32.Shell_NotifyIconW(0x00, ctypes.byref(nid)))
+                nid.hIcon = self._hicons[
+                    "running" if self._running else "stopped"]
+                nid.szTip = self._tip()
+                nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+                self.alive = bool(shell32.Shell_NotifyIconW(
+                    NIM_ADD, ctypes.byref(nid)))
                 return 0
             if msg == WM_COMMAND:
                 cmd = wp & 0xFFFF
                 if cmd == CMD_OPEN and self.on_toggle:
                     self.on_toggle()
+                elif cmd == CMD_STARTSTOP and self.on_start_stop:
+                    self.on_start_stop()
                 elif cmd == CMD_QUIT:
                     if self.on_quit:
                         self.on_quit()
@@ -179,14 +226,16 @@ class TrayIcon:
         nid.cbSize = ctypes.sizeof(nid)
         nid.hWnd = hwnd
         nid.uID = 1
-        nid.uFlags = 0x1 | 0x2 | 0x4   # MESSAGE | ICON | TIP
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
         nid.uCallbackMessage = WM_APP_TRAY
-        nid.hIcon = self._hicon
-        nid.szTip = self._tip
+        nid.hIcon = self._hicons[
+            "running" if self._running else "stopped"]
+        nid.szTip = self._tip()
         self._nid = nid
         # 创建即校验：结果直接写回 self.alive，构造函数经 Event 同步读取；
         # 不重试不等待——失败即向上层如实报告（上层据此走无托盘路径）
-        self.alive = bool(shell32.Shell_NotifyIconW(0x00, ctypes.byref(nid)))  # NIM_ADD
+        self.alive = bool(shell32.Shell_NotifyIconW(
+            NIM_ADD, ctypes.byref(nid)))
         # 设置完成：真相已定，放行构造函数；本线程转入消息循环长期驻留
         self._ready.set()
         msg = wintypes.MSG()
@@ -196,22 +245,27 @@ class TrayIcon:
 
     def remove(self):
         """删除托盘图标（退出时调用；线程安全由 Shell 决定，尽力而为）。"""
+        import ctypes
         self.alive = False
         try:
             if self._nid is not None:
                 ctypes.windll.shell32.Shell_NotifyIconW(
-                    0x02, self._nid)   # NIM_DELETE
+                    NIM_DELETE, self._nid)
         except Exception:
             pass
 
     def _popup_menu(self, hwnd):
         import ctypes
+        from ctypes import wintypes
         user32 = ctypes.windll.user32
         menu = user32.CreatePopupMenu()
         MF_STRING = 0x0
         user32.AppendMenuW(menu, MF_STRING, CMD_OPEN, "打开 PureVox")
+        label = "停止音频处理" if self._running else "启动音频处理"
+        user32.AppendMenuW(menu, MF_STRING, CMD_STARTSTOP, label)
+        user32.AppendMenuW(menu, 0x800, 0, None)          # MF_SEPARATOR
         user32.AppendMenuW(menu, MF_STRING, CMD_QUIT, "退出")
-        pt = ctypes.wintypes.POINT()
+        pt = wintypes.POINT()
         ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
         user32.SetForegroundWindow(hwnd)
         TPM_RIGHTBUTTON = 0x2
@@ -220,7 +274,8 @@ class TrayIcon:
         user32.DestroyMenu(menu)
 
 
-def create_tray(ico_path: str, on_toggle=None, on_quit=None):
+def create_tray(running_ico: str, stopped_ico: str, on_toggle=None,
+                on_quit=None, on_start_stop=None):
     """平台入口：非 Windows / 图标缺失 / NIM_ADD 失败均返回 None。
     返回非 None 即图标已在任务栏真实存在（alive=True）；
     之后存活态经 TaskbarCreated 事件自愈，调用方关闭策略读 .alive。"""
@@ -228,10 +283,11 @@ def create_tray(ico_path: str, on_toggle=None, on_quit=None):
     import sys
     if not sys.platform.startswith("win"):
         return None
-    if not os.path.exists(ico_path):
+    if not (os.path.exists(running_ico) and os.path.exists(stopped_ico)):
         return None
     try:
-        obj = TrayIcon(ico_path, "PureVox", on_toggle=on_toggle, on_quit=on_quit)
+        obj = TrayIcon(running_ico, stopped_ico, on_toggle=on_toggle,
+                       on_quit=on_quit, on_start_stop=on_start_stop)
     except Exception:
         return None
     return obj if obj.alive else None

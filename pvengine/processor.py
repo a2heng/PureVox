@@ -231,7 +231,17 @@ class AudioProcessor:
                 obj = getattr(st, "eff", st)
                 if hasattr(obj, "status"):
                     return obj.status()
-        return {"playing": False, "pos": 0.0, "dur": 0.0}
+        return {"playing": False, "paused": False, "pos": 0.0, "dur": 0.0}
+
+    def music_control(self, index: int, action: str):
+        """音乐播放器 播放/暂停（action = "play"/"pause"）。"""
+        if 0 <= index < len(self._entries):
+            t, st, _p, _en = self._entries[index]
+            if t == "music_player" and st is not None:
+                obj = getattr(st, "eff", st)
+                fn = getattr(obj, action, None)
+                if callable(fn):
+                    fn()
 
     def media_read(self, n: int) -> list:
         """纯媒体会话的帧源：静音帧过全链（媒体节点在链位置注入）。

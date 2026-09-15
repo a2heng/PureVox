@@ -91,7 +91,7 @@ UI_TIERS = {
     "eq31": "expand",          # 展开：EQ 曲线编辑器（31 段）
     "eq61": "expand",          # 展开：EQ 曲线编辑器（61 段）
     "tse": "expand",           # 展开：参考音频录制对话框
-    "soundpad": "inline",      # 行内：音效垫子按钮组（+添加/热键勾选）
+    "soundpad": "inline",      # 行内：音效垫子按钮组（+添加 / 全部停止）
     "music_player": "inline",  # 行内：曲目选择与进度 seek
     "desktop_audio": "inline",  # 行内：loopback 捕获说明（音量滑杆）
 }

@@ -26,6 +26,9 @@ USER_DIR = os.path.join(os.path.expanduser("~"), ".purevox")
 CONFIG_PATH = os.path.join(USER_DIR, "config.json")
 LOG_DIR = os.path.join(USER_DIR, "logs")
 WAV_PATH = os.path.join(USER_DIR, "tse_reference.wav")
+# 媒体库：导入时归一为 48k/mono WAV 各自入库（音效板 / 音乐播放器分开）
+SOUNDPAD_DIR = os.path.join(USER_DIR, "soundpad")
+MUSIC_DIR = os.path.join(USER_DIR, "music")
 
 
 def ensure_dirs():
