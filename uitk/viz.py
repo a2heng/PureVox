@@ -60,12 +60,12 @@ SPEC_EMA = 0.3
 # 三色柱（类 VU）：按高度分三区，每段最多 3 个矩形（省计算，非逐像素）
 SPEC_Z1_DB, SPEC_Z2_DB = -45.0, -30.0
 SPEC_Z1 = "#4CAF50"             # 低段 绿
-SPEC_Z2 = "#FFD54F"             # 中段 黄
-SPEC_Z3 = "#EF5350"             # 高段 红
+SPEC_Z2 = "#FFB300"             # 中段 黄（深黄，贴近绿的明度）
+SPEC_Z3 = "#E53935"             # 高段 红（深红，同上）
 SPEC_NOISE = "#B0BEC5"          # 输入高于输出：蓝灰 = 噪声残留
 
 
-VU_LIT_GREEN, VU_LIT_YELLOW, VU_LIT_RED = "#4CAF50", "#FFD54F", "#EF5350"
+VU_LIT_GREEN, VU_LIT_YELLOW, VU_LIT_RED = "#4CAF50", "#FFB300", "#E53935"
 
 
 def db_from_peak(peak: float) -> float:
@@ -119,8 +119,8 @@ class VUCanvas(tk.Canvas):
         if r < G1_R:
             return "#4CAF50"
         if r < G2_R:
-            return "#FFD54F"
-        return "#EF5350"
+            return "#FFB300"
+        return "#E53935"
 
     def redraw(self, force=False):
         w = max(self.winfo_width(), 40)
@@ -207,8 +207,8 @@ class SpectrumCanvas(tk.Canvas):
         w = max(self.winfo_width(), 120)
         h = max(self.winfo_height(), 40)
         self.delete("all")
-        T, Bm = 2, 2
-        gw, gh = w, h - T - Bm          # 铺满全宽、几乎全高：纯频谱无网格
+        T, Bm = 0, 0                    # 顶/底不留边：避免上缘露出一条底色带
+        gw, gh = w, h - T - Bm          # 铺满全宽全高：纯频谱无网格
         if gw < 20 or gh < 10:
             return
 
