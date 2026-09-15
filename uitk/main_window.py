@@ -1869,7 +1869,7 @@ class MainWindowTk:
                              font=self.fonts.get("bold"))
         state_lbl.pack(side=tk.LEFT, padx=(6, 0))
 
-        # ── 数据流向用图示（比文字描述直观）：PureVox→Input→Output→软件 ──
+        # 数据流向用图示（比文字描述直观）：麦克风→PureVox→Input→Output→软件
         flow = tk.Canvas(card, bg=theme.PANEL, height=self.sizes["ctl_h"] + 12,
                          highlightthickness=0)
         flow.pack(fill=tk.X, padx=8, pady=(2, 4))
@@ -1890,9 +1890,15 @@ class MainWindowTk:
             for pad, arrow in ((10, 14), (8, 11), (6, 9), (4, 7)):
                 if sum(t + pad for t in tw) + arrow * (len(boxes) - 1) <= w:
                     break
+            # 剩余宽度均摊到各框，使图示左右边缘与下方线框左右对齐
+            used = sum(t + pad for t in tw) + arrow * (len(boxes) - 1)
+            # 末框右边线留 1px：贴画布最右会被裁掉（看似没有右边线）
+            slack = max(0, w - 1 - used)
+            extra = slack // len(boxes)
+            widths = [t + pad + extra for t in tw]
+            widths[-1] += slack - extra * len(boxes)
             x = 0
-            for i, ((text, bg), t) in enumerate(zip(boxes, tw)):
-                bw = t + pad
+            for i, ((text, bg), bw) in enumerate(zip(boxes, widths)):
                 flow.create_rectangle(x, cy - bh // 2, x + bw, cy + bh // 2,
                                       fill=bg, outline=theme.MID)
                 flow.create_text(x + bw // 2, cy, text=text, fill=theme.TEXT,
@@ -1916,19 +1922,20 @@ class MainWindowTk:
                          font=self.fonts.get("body"), justify="left",
                          anchor="w", wraplength=wrap)
 
+        # 只有「标签 + 三个按钮」这一行带外框；框宽与上方流程图一致（同 padx）
         btns = tk.Frame(card, bg=theme.PANEL,
                         highlightbackground=theme.MID, highlightthickness=1)
         btns.pack(fill=tk.X, padx=8, pady=(0, 4))
         tk.Label(btns, text=" VB-CABLE 驱动 ", bg=theme.TRACK,
                  fg=theme.TEXT_DIM, font=self.fonts.get("body")
-                 ).pack(side=tk.LEFT, padx=(4, 6), pady=4)
+                 ).pack(side=tk.LEFT, padx=(0, 2), pady=4)
 
         def _label_btn(parent, text, on_click):
-            # 三个按钮等宽铺满剩余宽度（左右对齐），不留突兀的空白
-            b = tk.Label(parent, text=text, bg=parent.cget("bg"),
+            # 三个按钮等宽铺满整行（左右对齐）；不各自描边，统一由整块外框
+            b = tk.Label(parent, text=text, bg=theme.PANEL,
                          fg=theme.TEXT, font=self.fonts.get("body"),
                          padx=6, pady=3, cursor="hand2")
-            b.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+            b.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=0)
             b.bind("<Button-1>", lambda e: on_click())
             b.bind("<Enter>", lambda e: b.configure(fg=theme.ACCENT))
             b.bind("<Leave>", lambda e: b.configure(fg=theme.TEXT))
@@ -1952,7 +1959,8 @@ class MainWindowTk:
         def _toggle_check():
             self._cfg_set("vbcable_check_enabled", bool(cb_var.get()))
 
-        DarkCheck(card, "启动时检测驱动", cb_var, command=_toggle_check,
+        DarkCheck(card, "启动时检测 VB-CABLE 驱动安装（取消勾选不再弹框）",
+                  cb_var, command=_toggle_check,
                   sizes=self.sizes, fonts=self.fonts).pack(
             anchor="w", padx=8, pady=(0, 6))
 
