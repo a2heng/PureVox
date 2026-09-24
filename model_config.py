@@ -28,7 +28,17 @@
 
 # ── ONNX 模型（相对应用根目录，仓库与打包产物同布局：models/）──
 # 版本对应训练侧 epoch-end 试听 wav (PureVoxModel/7_output/*/results_wav)：
-#   denoise ep0000；aec cpx ep0375；tse 09c ep0201
-DENOISE_MODEL = "models/purevox_denoise_202609_ep0000.onnx"
+#   aec cpx ep0375；tse 09c ep0201
 AEC_MODEL = "models/purevox_aec_202609_cpx_ep0375.onnx"
 TSE_MODEL = "models/purevox_tse_202609c_ep0201.onnx"
+
+# ── 降噪模型注册表（UI 下拉可选；key = 训练侧 202609m/s）──
+#   m = 0.62M 主模型（训练 b ep231，推荐）；s = 0.31M 轻量（训练 a ep109，更快）
+#   值 = (相对路径, 下拉显示名)；引擎按 cache_in 形状自适应，两者可热切换。
+DENOISE_MODELS = {
+    "202609m": ("models/purevox_denoise_202609m_ep0231.onnx", "202609m（0.62M 主模型）"),
+    "202609s": ("models/purevox_denoise_202609s_ep0109.onnx", "202609s（0.31M 轻量）"),
+}
+DENOISE_MODEL_DEFAULT = "202609m"
+# 单模型路径（lite_mic/lite_net 及无选择时用；= 默认项）
+DENOISE_MODEL = DENOISE_MODELS[DENOISE_MODEL_DEFAULT][0]

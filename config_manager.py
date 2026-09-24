@@ -52,7 +52,7 @@ class ConfigDefaults:
     # 插件链（右侧面板，全部处理以插件形式存在）：[{"type","enabled","params"}, ...]
     plugin_chain: List[dict] = field(default_factory=lambda: [
         {"type": "audio_input", "enabled": True, "params": {"device": ""}},
-        {"type": "denoiser", "enabled": True, "params": {}},
+        {"type": "denoiser_m", "enabled": True, "params": {}},
         {"type": "audio_output", "enabled": True, "params": {"device": ""}},
         {"type": "vu_meter", "enabled": True, "params": {}},
         {"type": "spectrum", "enabled": True, "params": {}},

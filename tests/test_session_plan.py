@@ -30,7 +30,7 @@ from session_plan import SessionPlan
 def test_valid_chain():
     plan = SessionPlan.from_chain([
         {"type": "audio_input", "enabled": True, "params": {"device": "Mic"}},
-        {"type": "denoiser", "enabled": True, "params": {}},
+        {"type": "denoiser_m", "enabled": True, "params": {}},
         {"type": "audio_output", "enabled": True, "params": {"device": "Spk"}},
         {"type": "vu_meter", "enabled": True, "params": {}},
     ])
@@ -39,7 +39,7 @@ def test_valid_chain():
     assert plan.outputs == ("Spk",)
     assert plan.remote_url is None
     assert plan.viz == frozenset({"vu_meter"})
-    assert plan.fx_chain == ({"type": "denoiser", "enabled": True, "params": {}},)
+    assert plan.fx_chain == ({"type": "denoiser_m", "enabled": True, "params": {}},)
     print("  合法链 → ok、字段抽取正确  OK")
 
 
@@ -64,7 +64,7 @@ def test_no_output_blocked():
 def test_empty_device_skipped_with_warning():
     plan = SessionPlan.from_chain([
         {"type": "audio_input", "enabled": True, "params": {"device": ""}},
-        {"type": "denoiser", "enabled": True, "params": {}},
+        {"type": "denoiser_m", "enabled": True, "params": {}},
         {"type": "audio_output", "enabled": True, "params": {"device": ""}},
     ])
     assert not plan.ok()
@@ -76,7 +76,7 @@ def test_empty_device_skipped_with_warning():
 def test_disabled_nodes_skipped():
     plan = SessionPlan.from_chain([
         {"type": "audio_input", "enabled": False, "params": {"device": "Mic"}},
-        {"type": "denoiser", "enabled": False, "params": {}},
+        {"type": "denoiser_m", "enabled": False, "params": {}},
         {"type": "audio_output", "enabled": True, "params": {"device": "Spk"}},
     ])
     assert not plan.ok()          # 输入行被禁用 = 无输入 → 阻断
