@@ -210,16 +210,19 @@ class NodeRow(tk.Frame):
             cb()
 
     def _build_denoise_hint(self):
-        """AI 降噪节点（中号/小号）下方的使用建议（小字）。"""
+        """AI 降噪节点（中号/小号）下方的使用建议（小字，多行）。"""
         if self.spec.name not in ("denoiser_m", "denoiser_s"):
             return
         hint = tk.Label(
             self.body_frame,
-            text="使用建议：先把前增益加到足够大，小声音才不会被模型误清；"
-                 "若增益后声音过大，再在后方接一段负增益即可。",
+            text="使用建议\n"
+                 "· 先提高前增益，使小音量语音清晰可辨，避免降噪时被当作噪声一并抑制\n"
+                 "· 若增益后音量偏大，可在降噪后串联一段负增益还原",
             bg=theme.PANEL, fg=theme.TEXT_DIM,
             font=self.fonts.get("small"), anchor="w", justify="left")
         hint.pack(fill=tk.X, padx=self.sizes["pad_lg"], pady=self.sizes["pad_sm"])
+        hint.bind("<Configure>",
+                  lambda e: hint.configure(wraplength=max(120, e.width - 4)))
 
     # ── echo_cancel far 参考源第二下拉（扬声器/麦克风分组二选一）──
 
