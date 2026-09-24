@@ -215,9 +215,8 @@ class NodeRow(tk.Frame):
             return
         hint = tk.Label(
             self.body_frame,
-            text="使用建议\n"
-                 "· 先提高前增益，使小音量语音清晰可辨，避免降噪时被当作噪声一并抑制\n"
-                 "· 若增益后音量偏大，可在降噪后串联一段负增益还原",
+            text="模型输入音量在 VU 电平表黄色区效果最佳；\n"
+                 "输入音量过小会被当做噪音过滤。",
             bg=theme.PANEL, fg=theme.TEXT_DIM,
             font=self.fonts.get("small"), anchor="w", justify="left")
         hint.pack(fill=tk.X, padx=self.sizes["pad_lg"], pady=self.sizes["pad_sm"])
