@@ -18,8 +18,11 @@
 """Windows 麦克风专用采集（AEC far 选麦克风时的数据源）。
 
 与扬声器 loopback（SpeakerCaptureWin）对偶：PortAudio 输入流直采
-指定麦克风，mono 48kHz，回调写环形缓冲（200ms）。AEC 行自建自停，
-不进主混音，样本直达行内 AecRow（far 严格配对）。
+指定麦克风。输入自适应（与主输入同一机制）：按设备原生采样率/声道
+打开，回调内下混单声道后经 pvengine.Resampler 转 48k；对外恒 48k
+单声道，dev_sr 恒报 48000（AecRow 无需二次重采样）。回调写环形缓冲
+（200ms）。AEC 行自建自停，不进主混音，样本直达行内 AecRow（far
+严格配对）。
 
 接口契约（与 SpeakerCapture 一致）：
     start() -> bool / stop() / read(n) / available() / flush()
@@ -31,7 +34,7 @@ import threading
 import time
 from typing import Optional, Tuple
 
-from .common import LinearClock, TimedFifo, HOP_LENGTH, _module_log
+from .common import LinearClock, TimedFifo, _module_log
 
 _SAMPLE_RATE = 48000
 _RING_CAP = _SAMPLE_RATE // 5    # 200ms（吸收调度抖动）
@@ -52,7 +55,11 @@ class MicCaptureWin:
         self._clock = LinearClock()
         self._active = False
         self._lock = threading.Lock()
-        self._dev_sr = _SAMPLE_RATE
+        self._dev_sr = _SAMPLE_RATE   # 对外恒 48k（内部重采样已消化速率差）
+        self._native_sr = _SAMPLE_RATE
+        self._native_ch = 1
+        self._ratio = 1.0
+        self._rs = None               # 需重采样时持有 Resampler，否则直通
 
     @property
     def active(self) -> bool:
@@ -64,16 +71,36 @@ class MicCaptureWin:
 
     def start(self) -> bool:
         import pyaudio
+        from pvplatform.audio.pa_backend import native_hop_len
         with self._lock:
             if self._active:
                 return True
             try:
                 self._p = pyaudio.PyAudio()
+                native_sr, native_ch = _SAMPLE_RATE, 1
+                try:
+                    info = self._p.get_device_info_by_index(
+                        self._device_id)
+                    native_sr = int(round(float(
+                        info.get('defaultSampleRate') or _SAMPLE_RATE)))
+                    native_ch = max(1, int(
+                        info.get('maxInputChannels') or 1))
+                except Exception:
+                    pass
+                self._native_sr, self._native_ch = native_sr, native_ch
+                self._ratio = _SAMPLE_RATE / float(native_sr) \
+                    if native_sr != _SAMPLE_RATE else 1.0
+                self._rs = None
+                if self._ratio != 1.0:
+                    from pvengine.dsp.resampler import Resampler
+                    self._rs = Resampler()
+                    self._rs.process(
+                        [0.0] * native_hop_len(native_sr), self._ratio)
                 self._stream = self._p.open(
-                    format=pyaudio.paFloat32, channels=1,
-                    rate=_SAMPLE_RATE, input=True,
+                    format=pyaudio.paFloat32, channels=native_ch,
+                    rate=native_sr, input=True,
                     input_device_index=self._device_id,
-                    frames_per_buffer=HOP_LENGTH,
+                    frames_per_buffer=native_hop_len(native_sr),
                     stream_callback=self._callback)
                 self._stream.start_stream()
             except Exception as e:
@@ -81,8 +108,12 @@ class MicCaptureWin:
                 self.stop()
                 return False
             self._active = True
-            _module_log(f"[AEC] 麦克风 far 采集: 设备 #{self._device_id} "
-                        f"({_SAMPLE_RATE}Hz, 单声道)")
+            if self._rs is not None:
+                _module_log(f"[AEC] 麦克风 far 采集: 设备 #{self._device_id} "
+                            f"({native_ch}ch {native_sr}Hz → 48kHz 自适应重采样)")
+            else:
+                _module_log(f"[AEC] 麦克风 far 采集: 设备 #{self._device_id} "
+                            f"({_SAMPLE_RATE}Hz, 单声道)")
             return True
 
     def stop(self) -> None:
@@ -110,7 +141,14 @@ class MicCaptureWin:
         if not self._active:
             return (None, pyaudio.paComplete)
         try:
-            data = list(struct.unpack(f"{frame_count}f", in_data))
+            from pvplatform.audio.pa_backend import downmix_mono
+            ch = max(1, int(self._native_ch))
+            raw = struct.unpack(f"{frame_count * ch}f", in_data)
+            data = downmix_mono(raw, ch)
+            if self._rs is not None:
+                data = self._rs.process(data, self._ratio)
+                if not data:
+                    return (None, pyaudio.paContinue)
             adc = time_info.get('input_buffer_adc_time')
             now = time.perf_counter()
             if adc is not None:

@@ -90,8 +90,12 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 
 ## 工程约定
 
-1. **所有设备强制 48kHz** — 启动前逐设备检测，失败弹框阻止，不做重采样或半双工回退。
-   - **Windows 下 WASAPI 严格、MME 宽松是刻意的，勿"修"**（2026-08-13 实测）：
+1. **输入自适应、输出强制 48kHz（Windows；Linux 由 PipeWire 统一转 48k）** —
+   本地输入（主输入 / AEC far=mic / 回环）按设备原生采样率/声道打开，
+   下混单声道后经 pvengine.Resampler 转 48k，启动不拦截；输出端启动前逐设备
+   检测，失败弹框阻止，不做重采样或半双工回退。
+   - **Windows 下 WASAPI 严格、MME 宽松是刻意的，勿"修"**（2026-08-13 实测，
+     2026-09-24 起仅针对输出端）：
      WASAPI 共享模式锁死设备 MixFormat，MixFormat=44.1k 的设备请求 48k 即
      `paInvalidSampleRate (-9997)` 弹框阻止——这是对的，硬上会在建流时失败；
      MME 是 WDM 旧接口，驱动内部自动重采样，44.1k 硬件也能以 48k 打开并正常出声

@@ -85,6 +85,9 @@ class NodeSpec:
 以下不变量对所有平台成立，违反即为缺陷：
 
 1. **格式**：内部唯一格式 F32 单声道 48kHz；重采样/声道转换只发生在 L0。
+   Windows 本地输入（主输入/AEC far=mic）按设备原生采样率/声道打开，
+   回调内下混单声道后经 pvengine.Resampler 转 48k（与 AEC far=扬声器的
+   MixFormat 自适应同机制）；输出端仍强制 48k（WASAPI 严格/MME 宽松）。
 2. **10ms hop**：所有数据面按 10ms hop 前进——`hop = SAMPLE_RATE // 100`
    （48kHz → 480 样本，NFFT = 2×hop = 960），**按时间派生而非固定样本数**。
    引擎 Stage 进出帧、平台回调块、桥接 FIFO 分块、重采样输出、网络 Opus 帧
@@ -141,7 +144,8 @@ class SessionPlan:
 - 产生 `warnings`（不阻断）：未知 type 被忽略；空 device 的 input/output 行被跳过；
   AEC 行缺 far 整行跳过；同设备普通输入行被 AEC 行接管时跳过。
 - `echo_cancel` / `loopback` 是 input 种节点：mic/device 与 audio_input 继承
-  同一设备机制（同解析、同列表、同 48k 门禁），增删启停走重启（端点绑定）。
+  同一设备机制（同解析、同列表；输入端任意采样率自适应，输出端同 48k 门禁），
+  增删启停走重启（端点绑定）。
 
 L4 在点击启动时调用 `from_chain`；`ok()` 为假则展示 problems 并中止，
 为真则把字段分发给 L2（AudioThread/PwBridge）与 L1（set_plugins）。
@@ -204,7 +208,7 @@ class BackendSpec:
 | 场景 | 行为 |
 |---|---|
 | 计划校验失败（无输入/输出等） | UI 弹出/记录 problems，不建流 |
-| 主输入或主输出建流失败 | 整体启动失败，报错（48k 检测前置拦截常见原因） |
+| 主输入或主输出建流失败 | 整体启动失败，报错（输出端 48k 检测前置拦截常见原因；输入端自适应，不拦截） |
 | 额外输出建流失败 | 跳过该路，日志告警，主流程继续 |
 | fx 插件实例化失败 | 该节点不入管线，记入 plugin_errors，其余继续 |
 | 传输流死亡（设备拔出/断连） | 统一循环 ~2s 健康探测 → 退出线程，走会话重启路径 |

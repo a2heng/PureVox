@@ -18,7 +18,8 @@
 """Windows PortAudio 传输后端（哑传输，与 PwBridge 同形契约）。
 
 拓扑（与 Linux 桥同一模型，取代旧的"全双工单流内联处理 + 三套回调"）：
-- 输入：单路 input-only 回调流（mono 48k）→ 环形缓冲（200ms）；
+- 输入：单路 input-only 回调流（原生采样率/声道打开 → 下混单声道 →
+  pvengine.Resampler 转 48k）→ 环形缓冲（200ms，对外恒 48k）；
 - 输出：每个设备一条 output-only 回调流，回调（设备时钟）→ `out_pull[i](n)`
   拉帧（PlaybackSink，跨时钟域变速消化）→ 上混声道 → 设备。
 
@@ -39,6 +40,33 @@ HOP_LENGTH = SAMPLE_RATE // 100       # 10ms @48kHz = 480
 _RING_CAP = SAMPLE_RATE // 5          # 输入环 200ms（吸收调度抖动）
 
 
+def native_hop_len(dev_sr: int) -> int:
+    """设备原生 10ms hop 帧数（按时间派生：round(sr/100），守 10ms 网格）。
+
+    Windows 输入自适应用：流按设备原生采样率打开，回调块取原生 hop，
+    再经 pvengine.Resampler 转 48k。纯函数，无硬件依赖，可单测。
+    """
+    return max(1, int(round(max(1, int(dev_sr or SAMPLE_RATE)) / 100.0)))
+
+
+def downmix_mono(interleaved, ch: int):
+    """交织多声道块 → 单声道等权平均（纯搬运，无滤波）。
+
+    ch<=1 时原样转列表返回；纯函数，可单测。
+    """
+    if int(ch) <= 1:
+        return [float(s) for s in interleaved]
+    n = len(interleaved) // int(ch)
+    out = [0.0] * n
+    for i in range(n):
+        s = 0.0
+        base = i * int(ch)
+        for c in range(int(ch)):
+            s += interleaved[base + c]
+        out[i] = s / int(ch)
+    return out
+
+
 class PaBridge:
     """PortAudio（WASAPI/MME）后端：1 路输入采集 + N 路输出播放。
 
@@ -52,6 +80,15 @@ class PaBridge:
         self._in_stream = None
         self._in_ring = TimedFifo(SAMPLE_RATE, _RING_CAP)
         self._in_clock = LinearClock()
+        # ── 输入自适应（Windows 本地输入任意采样率/声道 → 48k 单声道）──
+        # 流按设备原生采样率/声道打开（WASAPI 共享模式只接受 MixFormat 附近
+        # 参数，硬开 48k 在 44.1k 设备上报 -9997）；回调内下混单声道后经
+        # pvengine.Resampler 转 48k 再入环。对外（read_each/read）恒为 48k。
+        self._in_sr = SAMPLE_RATE      # 设备原生采样率（open 时按设备信息填写）
+        self._in_ch = 1                # 设备原生声道数
+        self._in_ratio = 1.0           # 48000 / _in_sr
+        self._in_rs = None             # Resampler（需重采样时持有，否则 None=直通）
+        self._in_name = ""             # 输入设备名（诊断/UI 状态行用）
         self._out_streams: List = []
         self._out_pull: List[Callable] = []
         self._error: str = ""
@@ -105,13 +142,38 @@ class PaBridge:
 
     def _open_input(self, dev: int) -> None:
         import pyaudio
+        dev_sr, dev_ch, dev_name = SAMPLE_RATE, 1, f"#{dev}"
+        try:
+            info = self._p.get_device_info_by_index(dev)
+            dev_sr = int(round(float(info.get('defaultSampleRate')
+                                     or SAMPLE_RATE)))
+            dev_ch = max(1, int(info.get('maxInputChannels') or 1))
+            dev_name = str(info.get('name') or dev_name)
+        except Exception:
+            pass
+        self._in_sr, self._in_ch = dev_sr, dev_ch
+        self._in_name = dev_name
+        self._in_ratio = SAMPLE_RATE / float(dev_sr) \
+            if dev_sr != SAMPLE_RATE else 1.0
+        self._in_rs = None
+        if self._in_ratio != 1.0:
+            from pvengine.dsp.resampler import Resampler
+            self._in_rs = Resampler()
+            # 预热：让插值历史就绪，避免首块毛刺（与回环行同做法）
+            self._in_rs.process([0.0] * native_hop_len(dev_sr),
+                                self._in_ratio)
+        hop = native_hop_len(dev_sr)
         self._in_stream = self._p.open(
-            format=pyaudio.paFloat32, channels=1,
-            rate=SAMPLE_RATE, input=True,
+            format=pyaudio.paFloat32, channels=dev_ch,
+            rate=dev_sr, input=True,
             input_device_index=dev,
-            frames_per_buffer=HOP_LENGTH,
+            frames_per_buffer=hop,
             stream_callback=self._input_callback)
-        _module_log(f"[PaBridge] 输入设备 #{dev} (mono 48kHz)")
+        if self._in_rs is not None:
+            _module_log(f"[PaBridge] 输入设备 #{dev} "
+                        f"({dev_ch}ch {dev_sr}Hz → 48kHz 自适应重采样)")
+        else:
+            _module_log(f"[PaBridge] 输入设备 #{dev} (mono 48kHz)")
 
     def _open_output(self, idx: int, dev: Optional[int]) -> None:
         import pyaudio
@@ -177,6 +239,16 @@ class PaBridge:
     def sample_rate(self) -> int:
         return SAMPLE_RATE if self.active() else 0
 
+    def input_info(self) -> dict:
+        """输入端实际状态（UI 状态行用）：原生采样率/声道 + 是否重采样。
+
+        未建流时返回直通默认值，不抛异常。
+        """
+        return {"name": self._in_name, "dev_sr": self._in_sr,
+                "dev_ch": self._in_ch, "ratio": self._in_ratio,
+                "adaptive": self._in_rs is not None,
+                "active": self._in_stream is not None}
+
     def output_count(self) -> int:
         return len(self._out_streams)
 
@@ -206,7 +278,13 @@ class PaBridge:
         if self._stopped:
             return (None, pyaudio_paComplete())
         try:
-            samples = list(struct.unpack(f'{frame_count}f', in_data))
+            ch = max(1, int(self._in_ch))
+            raw = struct.unpack(f'{frame_count * ch}f', in_data)
+            mono = downmix_mono(raw, ch)
+            if self._in_rs is not None:
+                mono = self._in_rs.process(mono, self._in_ratio)
+                if not mono:
+                    return (None, pyaudio_paContinue())
             adc = time_info.get('input_buffer_adc_time')
             now = __import__('time').perf_counter()
             if adc is not None:
@@ -214,7 +292,7 @@ class PaBridge:
                 ts0 = self._in_clock.map(adc)
             else:
                 ts0 = now
-            self._in_ring.write_ts(ts0, samples)
+            self._in_ring.write_ts(ts0, mono)
         except Exception as e:
             _module_log(f"[PaBridge] 输入回调异常: {e}")
         return (None, pyaudio_paContinue())

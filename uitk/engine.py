@@ -220,7 +220,12 @@ class EngineController:
             return str(e)
 
     def _check_48k(self, chain_cfg, plan, use_pw) -> Optional[str]:
-        """Windows PortAudio：逐设备 48k 打开检测（WASAPI 严格/MME 宽松为既定行为）。"""
+        """Windows PortAudio 输出端 48k 打开检测（WASAPI 严格/MME 宽松为既定行为）。
+
+        输入端自适应（PaBridge/MicCaptureWin 按设备原生采样率打开 + 下混 +
+        pvengine.Resampler 转 48k），不再门禁；AEC far=mic 同输入机制，
+        far=扬声器走 loopback 按既定行为免检。
+        """
         if use_pw:
             return None
         try:
@@ -232,25 +237,15 @@ class EngineController:
         failed = []
         p = pyaudio.PyAudio()
         try:
-            checks = [(True, n) for n in plan.inputs] + \
-                     [(False, n) for n in plan.outputs]
-            # AEC far 选麦克风时是独立采集流，同样逐设备 48k 门禁；
-            # far 选扬声器走 loopback，按既定行为免检。
-            checks += [(True, n) for n in plan.aec_far_mics
-                       if n not in plan.inputs]
-            for is_in, name in checks:
-                dev = get_device_id(name, is_in, api_type=api_type)
+            for name in plan.outputs:
+                dev = get_device_id(name, False, api_type=api_type)
                 if dev is None:
                     continue
                 try:
-                    if is_in:
-                        s = p.open(format=pyaudio.paFloat32, channels=1,
-                                   rate=48000, input=True,
-                                   input_device_index=dev, frames_per_buffer=HOP_LENGTH)
-                    else:
-                        s = p.open(format=pyaudio.paFloat32, channels=1,
-                                   rate=48000, output=True,
-                                   output_device_index=dev, frames_per_buffer=HOP_LENGTH)
+                    s = p.open(format=pyaudio.paFloat32, channels=1,
+                               rate=48000, output=True,
+                               output_device_index=dev,
+                               frames_per_buffer=HOP_LENGTH)
                     s.close()
                 except Exception as e:
                     failed.append(f"{name or '系统默认'} ({e})")
@@ -415,6 +410,26 @@ class EngineController:
             if e.get("type") == "remote_mic":
                 return str(((e.get("params") or {}).get("net_ip")) or "")
         return ""
+
+    def input_info(self) -> dict:
+        """输入端实际采样率状态（主窗状态行用），未运行返回 {}。"""
+        t = getattr(self, "thread", None)
+        if t is not None and hasattr(t, "get_input_info"):
+            try:
+                return t.get_input_info() or {}
+            except Exception:
+                pass
+        return {}
+
+    def aec_info(self) -> list:
+        """各 AEC 行 far 端实际状态（主窗状态行用），未运行返回 []。"""
+        t = getattr(self, "thread", None)
+        if t is not None and hasattr(t, "get_aec_info"):
+            try:
+                return t.get_aec_info() or []
+            except Exception:
+                pass
+        return []
 
     def network_status(self):
         """网络输入服务状态：{clients, port, ip}；未启动返回 None。"""

@@ -40,7 +40,7 @@ class SessionPlan:
     aec_rows: Tuple[dict, ...] = ()      # 启用的 AEC 行（有序）：
                                          # {mic, far_gain_db, far_kind, far_device}；
                                          # mic 与 audio_input 走同一设备机制，
-                                         # 同列表、同去重、同 48k 门禁
+                                         # 同列表、同去重（输入端自适应，不门禁）
     aec_far_mics: Tuple[str, ...] = ()   # AEC far 选麦克风时的专用采集设备
                                          # （独立采集直达 AEC，不进混音）
     loopbacks: Tuple[str, ...] = ()      # 启用的回环输入（扬声器设备，有序）：

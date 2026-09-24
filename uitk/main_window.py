@@ -607,6 +607,16 @@ class MainWindowTk:
                                    pad=S["pad_md"])
         self.btn_gear.pack(side=tk.LEFT, padx=(S["pad_sm"], 0))
 
+        # ── 输入采样率状态行：输入/far 端实际采样率 → 48k 自适应说明 ──
+        self.lbl_sr = tk.Label(self.root, text="输入：未启动",
+                               bg=theme.WINDOW, fg=theme.TEXT_FAINT,
+                               font=self.fonts["small"], anchor="w",
+                               justify="left")
+        self.lbl_sr.pack(fill=tk.X, padx=S["pad_md"], pady=(0, S["pad_sm"]))
+        self.lbl_sr.bind("<Configure>",
+                         lambda e: self.lbl_sr.configure(
+                             wraplength=max(120, e.width - 4)))
+
         # ── 节点面板（滚动）──
         self.panel = ScrollFrame(self.root, sizes=self.sizes, fonts=self.fonts)
         self.panel.pack(fill=tk.BOTH, expand=True,
@@ -790,6 +800,42 @@ class MainWindowTk:
         except Exception:
             pass
 
+    def _refresh_sr_label(self):
+        """刷新输入采样率状态行：输入/far 端实际采样率 → 48k 自适应说明。
+
+        未运行显示「输入：未启动」；网络输入模式显示推流来源。
+        """
+        if not self.engine.running:
+            self.lbl_sr.configure(text="输入：未启动")
+            return
+        parts = []
+        info = self.engine.input_info()
+        if info.get("active"):
+            sr, ch = int(info.get("dev_sr") or 48000), \
+                int(info.get("dev_ch") or 1)
+            if info.get("adaptive"):
+                parts.append(f"输入：{ch}ch {sr}Hz → 48kHz（自适应重采样）")
+            else:
+                parts.append("输入：48kHz（直通）")
+        else:
+            try:
+                net = self.engine.network_status()
+            except Exception:
+                net = None
+            parts.append("输入：网络推流" if net else "输入：无设备输入")
+        for a in self.engine.aec_info():
+            kind = "扬声器" if a.get("far_kind") == "speaker" else "麦克风"
+            fsr = int(a.get("far_sr") or 0)
+            if fsr and fsr != 48000:
+                parts.append(f"AEC far（{kind}）：{fsr}Hz → 48kHz（自适应）")
+            else:
+                parts.append(f"AEC far（{kind}）：48kHz（直通）")
+        self.lbl_sr.configure(text=" ｜ ".join(parts))
+        try:
+            self.engine.log.msg("[状态] " + " ｜ ".join(parts))
+        except Exception:
+            pass
+
     def _dialog(self, kind, title, message):
         """提示框：走自定义深色弹窗。主窗是 override-redirect，原生
         messagebox（受 WM 管理）会被排到主窗下面而看不见，故不用原生。"""
@@ -833,6 +879,7 @@ class MainWindowTk:
             self._set_running_ui(False)
         else:
             self._set_running_ui(True)
+        self._refresh_sr_label()
 
     def _hot_toggle(self, row, on):
         """fx 行勾选热更：持久化 + 运行中处理器原地启停（不重启音频流）。"""
@@ -848,6 +895,7 @@ class MainWindowTk:
             except Exception:
                 pass
             self._set_running_ui(False)
+            self._refresh_sr_label()
             self.refresh_devices()      # 停止（无论成败）都刷新设备
             return
         err = self.engine.start(self.to_config())
@@ -858,11 +906,13 @@ class MainWindowTk:
             else:
                 self._dialog("showwarning", "PureVox", err)
             self._set_running_ui(False)
+            self._refresh_sr_label()
             return
         self._set_running_ui(True)
+        self._refresh_sr_label()
 
     def _warn_48k(self, err):
-        """48k 检测失败弹窗：逐设备列出原因（WASAPI 严格语义）。"""
+        """48k 检测失败弹窗：逐设备列出原因（输出端 WASAPI 严格语义；输入自适应，不拦截）。"""
         from .dialogs import DarkDialog
         detail = err.split("：", 1)[-1]
         dlg = DarkDialog(self.root, "48kHz 检测未通过", 400, 220,
@@ -877,8 +927,9 @@ class MainWindowTk:
                  wraplength=360, padx=10, pady=8).pack(
             fill=tk.X, padx=14)
         tk.Label(dlg.body,
-                 text="Windows 下 WASAPI 共享模式锁死设备混音格式，"
-                      "44.1kHz 设备请改用 MME 接口或在系统声音面板固定 48kHz。",
+                 text="Windows 下 WASAPI 共享模式锁死输出混音格式，"
+                      "44.1kHz 输出设备请改用 MME 接口或在系统声音面板固定 48kHz。"
+                      "输入设备任意采样率自动适配，不受此限。",
                  bg=theme.WINDOW, fg=theme.TEXT_FAINT,
                  font=self.fonts.get("small"), justify="left",
                  wraplength=360, anchor="w").pack(

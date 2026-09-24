@@ -316,6 +316,38 @@ class AudioThread(threading.Thread):
         """返回各 AEC 行的最新 mic/far/out 峰值（UI 线程调用）。"""
         return dict(self._aec_vu)
 
+    def get_aec_info(self) -> list:
+        """各 AEC 行 far 端实际状态（UI 状态行用）：[{mic, far_kind,
+        far_device, far_sr}]。未运行返回 []，不抛异常。"""
+        out = []
+        try:
+            for live in self._aec_live:
+                cap = live.get("capture")
+                try:
+                    sr = int(cap.dev_sr) if cap is not None else 0
+                except Exception:
+                    sr = 0
+                out.append({"mic": live.get("mic", ""),
+                            "far_kind": live.get("far_kind", ""),
+                            "far_device": live.get("far_device", ""),
+                            "far_sr": sr})
+        except Exception:
+            pass
+        return out
+
+    def get_input_info(self) -> dict:
+        """输入端实际采样率状态（UI 状态行用）：原生采样率/声道 + 是否重采样。
+
+        桥未就绪（Linux/网络模式无 input_info 时）返回 {}，不抛异常。
+        """
+        try:
+            if self._bridge is not None \
+                    and hasattr(self._bridge, "input_info"):
+                return dict(self._bridge.input_info())
+        except Exception:
+            pass
+        return {}
+
     def set_aec_delay_ms(self, mic: str, ms: float) -> bool:
         """运行时设置某 AEC 行 far 延迟（毫秒）。"""
         for live in self._aec_live:
@@ -336,6 +368,11 @@ class AudioThread(threading.Thread):
         对齐，远/近端残余错位由模型内部消化，不再额外加减）。
 
         失败返回 None（UI 保留原值）。
+
+        输入自适应：mic 按设备原生采样率/声道录制（下混单声道后一次性
+        重采样到 48k 再互相关），44.1k 麦克风也可直接校准；far 端
+        far=扬声器走 loopback 原生 MixFormat（行内重采样）、far=麦克风
+        走自适应 MicCaptureWin（对外恒 48k）。
         """
         if pyaudio is None or IS_LINUX:
             _module_log("[AEC] 校准当前仅支持 Windows 本地 WASAPI")
@@ -369,19 +406,37 @@ class AudioThread(threading.Thread):
 
         probe = _make_probe(SAMPLE_RATE)   # 单发上扫 chirp（无重复假峰）
         probe_sec = len(probe) / float(SAMPLE_RATE)
-        rec_samples = int(SAMPLE_RATE * (probe_sec + 1.8))   # 前后各留余量
+
+        pa = pyaudio.PyAudio()
+        # ── mic 原生采样率/声道（与主输入同一自适应机制）──
+        from pvplatform.audio.pa_backend import downmix_mono as _downmix, \
+            native_hop_len as _native_hop
+        mic_sr, mic_ch = SAMPLE_RATE, 1
+        try:
+            _minfo = pa.get_device_info_by_index(mic_id)
+            mic_sr = int(round(float(
+                _minfo.get('defaultSampleRate') or SAMPLE_RATE)))
+            mic_ch = max(1, int(_minfo.get('maxInputChannels') or 1))
+        except Exception:
+            pass
+        mic_ratio = SAMPLE_RATE / float(mic_sr) \
+            if mic_sr != SAMPLE_RATE else 1.0
+        if mic_ratio != 1.0:
+            _module_log(f"[AEC] 校准 mic 自适应: {mic_ch}ch {mic_sr}Hz → "
+                        f"48kHz 重采样")
+        rec_samples = int(mic_sr * (probe_sec + 1.8))   # 设备域，前后各留余量
         mic_np = np.zeros(rec_samples, dtype=np.float32)
         mic_pos = [0]
 
         def _mic_cb(in_data, frame_count, time_info, status):
-            n = min(frame_count, rec_samples - mic_pos[0])
+            mono = _downmix(np.frombuffer(in_data, dtype=np.float32),
+                            mic_ch)
+            n = min(len(mono), rec_samples - mic_pos[0])
             if n > 0:
-                mic_np[mic_pos[0]:mic_pos[0] + n] = \
-                    np.frombuffer(in_data, dtype=np.float32)[:n]
+                mic_np[mic_pos[0]:mic_pos[0] + n] = mono[:n]
                 mic_pos[0] += n
             return (in_data, pyaudio.paContinue)
 
-        pa = pyaudio.PyAudio()
         mic_stream = None
         out_stream = None
         far_cap = None
@@ -399,9 +454,10 @@ class AudioThread(threading.Thread):
 
             # ── 3. 开输出/输入流（mic 先不启动）──
             mic_stream = pa.open(
-                format=pyaudio.paFloat32, channels=1, rate=SAMPLE_RATE,
+                format=pyaudio.paFloat32, channels=mic_ch, rate=mic_sr,
                 input=True, input_device_index=mic_id,
-                frames_per_buffer=512, stream_callback=_mic_cb)
+                frames_per_buffer=_native_hop(mic_sr),
+                stream_callback=_mic_cb)
             if out_idx is not None:
                 try:
                     out_stream = pa.open(
@@ -477,8 +533,14 @@ class AudioThread(threading.Thread):
                 except Exception:
                     pass
 
-        # ── 5. far↔mic 互相关求相对延迟 ──
+        # ── 5. far↔mic 互相关求相对延迟（统一 48k 域）──
         mic_arr = np.asarray(mic_np[:mic_pos[0]], dtype=np.float32)
+        if mic_ratio != 1.0:
+            from pvengine import Resampler as _Resampler
+            _mrs = _Resampler()
+            _mrs.process([0.0] * _native_hop(mic_sr), mic_ratio)  # 预热
+            mic48 = _mrs.process(mic_arr.tolist(), mic_ratio, True)  # 冲刷尾部
+            mic_arr = np.asarray(mic48, dtype=np.float32)
         far_arr = np.asarray(far_list, dtype=np.float32)
         if len(mic_arr) < SAMPLE_RATE * 0.2 or len(far_arr) < SAMPLE_RATE * 0.1:
             _module_log("[AEC] 校准失败：录音数据不足 "
@@ -492,6 +554,7 @@ class AudioThread(threading.Thread):
             far48 = rs.process(list(far_arr), ratio)
             far_arr = np.asarray(far48, dtype=np.float32)
         _module_log(f"[AEC] 校准录音: mic={len(mic_arr)} far={len(far_arr)} "
+                    f"mic_sr={mic_sr}Hz "
                     f"far_sr={far_cap.dev_sr if far_cap else '?'}Hz")
 
         res = _estimate_delay(far_arr.tolist(), mic_arr.tolist(),
