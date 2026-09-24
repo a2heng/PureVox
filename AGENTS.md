@@ -90,18 +90,14 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 
 ## 工程约定
 
-1. **输入自适应、输出强制 48kHz（Windows；Linux 由 PipeWire 统一转 48k）** —
-   本地输入（主输入 / AEC far=mic / 回环）按设备原生采样率/声道打开，
-   下混单声道后经 pvengine.Resampler 转 48k，启动不拦截；输出端启动前逐设备
-   检测，失败弹框阻止，不做重采样或半双工回退。
-   - **Windows 下 WASAPI 严格、MME 宽松是刻意的，勿"修"**（2026-08-13 实测，
-     2026-09-24 起仅针对输出端）：
-     WASAPI 共享模式锁死设备 MixFormat，MixFormat=44.1k 的设备请求 48k 即
-     `paInvalidSampleRate (-9997)` 弹框阻止——这是对的，硬上会在建流时失败；
-     MME 是 WDM 旧接口，驱动内部自动重采样，44.1k 硬件也能以 48k 打开并正常出声
-     （PureVox 侧始终处理 48k，转换由 MME 驱动完成，合规），所以 gate 对 MME
-     天然放行不弹框。两者行为差异不是 bug，不要给 MME 加严格 48k 限制。
-     判定依据：设备 `defaultSampleRate=44100` 时 WASAPI 弹框、MME 正常。
+1. **输入输出全自适应（Windows；Linux 由 PipeWire 统一转 48k）** —
+   本地输入按设备原生采样率/声道打开，下混单声道后经 pvengine.Resampler
+   转 48k；输出按设备原生采样率打开，回调经 OutputRateAdapter 把 48k 帧
+   重采样到设备域（逐回调精确帧数）。启动不做任何采样率门禁，不弹框。
+   - **旧的 WASAPI 严格 / MME 宽松差异已无意义**（2026-08-13 实测，
+     2026-09-24 起输入输出全自适应）：WASAPI 共享模式锁死设备 MixFormat，
+     44.1k 设备不再硬开 48k（曾报 `paInvalidSampleRate (-9997)`），一律按
+     原生参数打开 + 重采样，无失败可言，故门禁与相关弹框已整体删除。
 2. **10ms hop 规约（全局统一时间粒度）** — 所有数据面一律按 10ms hop 前进：
    `hop = SAMPLE_RATE // 100`（48kHz → 480 样本；NFFT = 2×hop = 960），**按时间派生
    而非固定样本数**，未来多采样率/重采样时规约不变。202609 模型三件套契约与此一致

@@ -15,15 +15,16 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Windows 本地输入自适应冒烟（无硬件可跑）：
-python tests/test_input_resample.py
+"""自适应采样率冒烟（无硬件可跑）：
+python tests/test_adaptive_rate.py
 
 验证：
 - native_hop_len：原生采样率 → 10ms hop 帧数（按时间派生）；
 - downmix_mono：交织多声道 → 单声道等权平均；
 - Resampler 流式 44100→48000：一秒 440Hz 正弦按 441 块喂入，
   总产出 ≈48000 样本、有限值、RMS 基本保持；
-- PaBridge.input_info：未建流默认直通状态，不抛异常。
+- PaBridge.input_info：未建流默认直通状态，不抛异常；
+- OutputRateAdapter：48k→44100 逐回调精确帧数、RMS 保持、断流垫零。
 """
 
 import math
@@ -101,6 +102,41 @@ def test_oneshot_resample_with_flush():
     print(f"  一次性重采样冲刷：{len(out)} 样本（期望~{expect}）  OK")
 
 
+def test_output_adapter_exact_count():
+    """输出适配器：48k 正弦源 → 逐回调精确 441 样本，累计≈期望值、RMS 保持。"""
+    from pvplatform.audio.pa_backend import OutputRateAdapter
+    ratio = 44100.0 / 48000.0
+    src = [math.sin(2.0 * math.pi * 440.0 * i / 48000.0)
+           for i in range(480 * 110)]
+    pos = [0]
+
+    def _pull(n):
+        chunk = src[pos[0]:pos[0] + n]
+        pos[0] += len(chunk)
+        return chunk
+
+    ad = OutputRateAdapter(_pull, ratio)
+    out = []
+    for _ in range(100):   # 100 x 441 = 1s @44100Hz
+        got = ad.get(441)
+        assert len(got) == 441, f"回调帧长 {len(got)} != 441"
+        out.extend(got)
+    assert len(out) == 44100
+    assert all(math.isfinite(v) for v in out)
+    rms = (sum(v * v for v in out) / len(out)) ** 0.5
+    assert abs(rms - 2 ** -0.5) < 0.05, f"RMS {rms:.4f} 失真过大"
+    print(f"  OutputRateAdapter 48000→44100：{len(out)} 样本 RMS={rms:.4f}  OK")
+
+
+def test_output_adapter_passthrough_short():
+    """输出适配器：sink 断流垫零，不抛异常、长度恒定。"""
+    from pvplatform.audio.pa_backend import OutputRateAdapter
+    ad = OutputRateAdapter(lambda n: [], 44100.0 / 48000.0)
+    for _ in range(5):
+        assert len(ad.get(441)) == 441
+    print("  OutputRateAdapter 断流垫零  OK")
+
+
 if __name__ == "__main__":
     print("输入自适应冒烟:")
     test_native_hop_len()
@@ -108,4 +144,6 @@ if __name__ == "__main__":
     test_resample_44100_to_48000()
     test_pabridge_input_info_default()
     test_oneshot_resample_with_flush()
+    test_output_adapter_exact_count()
+    test_output_adapter_passthrough_short()
     print("全部通过")

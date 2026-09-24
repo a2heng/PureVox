@@ -348,6 +348,16 @@ class AudioThread(threading.Thread):
             pass
         return {}
 
+    def get_output_info(self) -> list:
+        """各输出端实际状态（UI 状态行用），桥未就绪返回 []，不抛异常。"""
+        try:
+            if self._bridge is not None \
+                    and hasattr(self._bridge, "output_info"):
+                return [dict(s) for s in self._bridge.output_info()]
+        except Exception:
+            pass
+        return []
+
     def set_aec_delay_ms(self, mic: str, ms: float) -> bool:
         """运行时设置某 AEC 行 far 延迟（毫秒）。"""
         for live in self._aec_live:
@@ -453,6 +463,9 @@ class AudioThread(threading.Thread):
                 return None
 
             # ── 3. 开输出/输入流（mic 先不启动）──
+            # 播放端自适应：按目标端点原生采样率打开，probe 一次性重采样
+            # 到设备域再写。所选端点打不开即硬失败（回退默认输出会让 chirp
+            # 播错端点、far loopback 录不到，保证失败而非测出假值）。
             mic_stream = pa.open(
                 format=pyaudio.paFloat32, channels=mic_ch, rate=mic_sr,
                 input=True, input_device_index=mic_id,
@@ -460,18 +473,48 @@ class AudioThread(threading.Thread):
                 stream_callback=_mic_cb)
             if out_idx is not None:
                 try:
+                    _oinfo = pa.get_device_info_by_index(out_idx)
+                    out_sr = int(round(float(
+                        _oinfo.get('defaultSampleRate') or SAMPLE_RATE)))
+                except Exception:
+                    out_sr = SAMPLE_RATE
+                try:
                     out_stream = pa.open(
                         format=pyaudio.paFloat32, channels=1,
-                        rate=SAMPLE_RATE, output=True,
+                        rate=out_sr, output=True,
                         output_device_index=out_idx,
-                        frames_per_buffer=1024)
+                        frames_per_buffer=_native_hop(out_sr))
                 except Exception as e:
-                    _module_log(f"[AEC] 校准输出流打开失败，改用默认输出: {e}")
-                    out_stream = None
-            if out_stream is None:
-                out_stream = pa.open(
-                    format=pyaudio.paFloat32, channels=1, rate=SAMPLE_RATE,
-                    output=True, frames_per_buffer=1024)
+                    _module_log(f"[AEC] 校准失败：所选扬声器输出流打不开 "
+                                f"({far_dev!r}: {e})")
+                    return None
+            else:
+                try:
+                    _dinfo = pa.get_default_output_device_info()
+                    out_sr = int(round(float(
+                        _dinfo.get('defaultSampleRate') or SAMPLE_RATE)))
+                except Exception:
+                    out_sr = SAMPLE_RATE
+                try:
+                    out_stream = pa.open(
+                        format=pyaudio.paFloat32, channels=1,
+                        rate=out_sr, output=True,
+                        frames_per_buffer=_native_hop(out_sr))
+                except Exception as e:
+                    _module_log(f"[AEC] 校准失败：默认输出流打不开 ({e})")
+                    return None
+            if out_sr != SAMPLE_RATE:
+                from pvengine import Resampler as _Resampler
+                _prs = _Resampler()
+                _prs.process([0.0] * HOP_LENGTH,
+                             out_sr / float(SAMPLE_RATE))
+                probe_out = np.asarray(_prs.process(
+                    list(probe), out_sr / float(SAMPLE_RATE), True),
+                    dtype=np.float32)
+                _module_log(f"[AEC] 校准播放自适应: 48kHz → {out_sr}Hz "
+                            f"({len(probe_out)} 样本)")
+            else:
+                probe_out = probe
 
             # ── 4. 同步起点：flush far 环 → 立刻启动 mic 录音 → pump far ──
             _time.sleep(0.3)                 # far 采集先稳定运行
@@ -499,8 +542,8 @@ class AudioThread(threading.Thread):
             _time.sleep(0.2)                 # 起点静音预卷
             out_stream.start_stream()
             step = 1024
-            for i in range(0, len(probe), step):
-                out_stream.write(probe[i:i + step].tobytes())
+            for i in range(0, len(probe_out), step):
+                out_stream.write(probe_out[i:i + step].tobytes())
             # 等回声尾巴进 mic + pump 收完
             deadline = _time.time() + probe_sec + 1.6
             while mic_pos[0] < rec_samples and _time.time() < deadline:

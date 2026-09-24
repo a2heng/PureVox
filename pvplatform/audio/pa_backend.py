@@ -20,14 +20,17 @@
 拓扑（与 Linux 桥同一模型，取代旧的"全双工单流内联处理 + 三套回调"）：
 - 输入：单路 input-only 回调流（原生采样率/声道打开 → 下混单声道 →
   pvengine.Resampler 转 48k）→ 环形缓冲（200ms，对外恒 48k）；
-- 输出：每个设备一条 output-only 回调流，回调（设备时钟）→ `out_pull[i](n)`
-  拉帧（PlaybackSink，跨时钟域变速消化）→ 上混声道 → 设备。
+- 输出：每个设备一条 output-only 回调流（原生采样率打开；回调经
+  OutputRateAdapter 把 48k sink 帧重采样到设备域，需逐回调精确帧数），
+  回调（设备时钟）→ `out_pull[i](n)` 拉帧（PlaybackSink，跨时钟域变速消化）
+  → 上混声道 → 设备。
 
 本后端零缓冲策略、零时钟逻辑——正确性全部在 pvengine.PlaybackSink，
 "一个功能只有一条规范实现路径"。输入与输出分属独立流，主输出与额外
 输出地位对等（各自 sink 各自时钟域）。
 """
 
+import math
 import struct
 import threading
 from typing import Callable, List, Optional
@@ -67,6 +70,42 @@ def downmix_mono(interleaved, ch: int):
     return out
 
 
+class OutputRateAdapter:
+    """48k 引擎帧 → 设备原生采样率（输出回调用，需逐回调精确帧数）。
+
+    PortAudio 输出回调必须返回恰好 frame_count 个设备域样本，而流式
+    Resampler 逐块产出有 ±1 抖动：此处按需从 48k sink 拉帧、重采样后
+    经小 FIFO 凑整，多余留给下次回调。ratio = 设备采样率 / 48000。
+    纯逻辑（pull 可注入桩），可单测。
+    """
+
+    def __init__(self, pull_48k, ratio: float):
+        from pvengine.dsp.resampler import Resampler
+        self._pull = pull_48k
+        self._ratio = float(ratio)
+        self._rs = Resampler()
+        self._rs.process([0.0] * HOP_LENGTH, self._ratio)  # 预热
+        self._buf: list = []
+
+    def get(self, need: int):
+        """取 need 个设备域样本（恒定长度；sink 不足时垫零，不抛异常）。"""
+        need = max(0, int(need))
+        while len(self._buf) < need:
+            take48 = max(HOP_LENGTH,
+                         int(math.ceil((need - len(self._buf))
+                                        / self._ratio)))
+            try:
+                chunk = self._pull(take48) or []
+            except Exception:
+                chunk = []
+            if len(chunk) < take48:
+                chunk = list(chunk) + [0.0] * (take48 - len(chunk))
+            self._buf.extend(self._rs.process(chunk, self._ratio))
+        out = self._buf[:need]
+        del self._buf[:need]
+        return out
+
+
 class PaBridge:
     """PortAudio（WASAPI/MME）后端：1 路输入采集 + N 路输出播放。
 
@@ -91,6 +130,9 @@ class PaBridge:
         self._in_name = ""             # 输入设备名（诊断/UI 状态行用）
         self._out_streams: List = []
         self._out_pull: List[Callable] = []
+        self._out_adapters: list = []   # 与输出流下标对齐：需重采样时持有
+                                        # OutputRateAdapter，否则 None=直通
+        self._out_specs: list = []      # [{dev, ch, dev_sr, adaptive}]（状态行用）
         self._error: str = ""
         self._lock = threading.Lock()
         self._stopped = False
@@ -177,21 +219,41 @@ class PaBridge:
 
     def _open_output(self, idx: int, dev: Optional[int]) -> None:
         import pyaudio
-        ch = 2
+        ch, dev_sr = 2, SAMPLE_RATE
         if dev is not None:
             try:
                 info = self._p.get_device_info_by_index(dev)
                 ch = max(1, int(info.get('maxOutputChannels', 2)))
+                dev_sr = int(round(float(info.get('defaultSampleRate')
+                                           or SAMPLE_RATE)))
             except Exception:
-                ch = 2
+                ch, dev_sr = 2, SAMPLE_RATE
+        ratio = dev_sr / float(SAMPLE_RATE) \
+            if dev_sr != SAMPLE_RATE else 1.0
+        hop = native_hop_len(dev_sr)
+        pull = self._out_pull[idx] if idx < len(self._out_pull) else None
+        adapter = OutputRateAdapter(pull, ratio) \
+            if (ratio != 1.0 and pull is not None) else None
+        # adapters 与 out_streams 下标对齐（close 时同步清空）
+        while len(self._out_adapters) <= idx:
+            self._out_adapters.append(None)
+        self._out_adapters[idx] = adapter
         s = self._p.open(
             format=pyaudio.paFloat32, channels=ch,
-            rate=SAMPLE_RATE, output=True,
+            rate=dev_sr, output=True,
             output_device_index=dev,
-            frames_per_buffer=HOP_LENGTH,
+            frames_per_buffer=hop,
             stream_callback=self._make_output_callback(idx, ch))
         self._out_streams.append(s)
-        _module_log(f"[PaBridge] 输出设备 #{dev if dev is not None else '(系统默认)'} ({ch}ch)")
+        self._out_specs.append({"dev": dev, "ch": ch, "dev_sr": dev_sr,
+                                "adaptive": adapter is not None})
+        if adapter is not None:
+            _module_log(f"[PaBridge] 输出设备 "
+                        f"#{dev if dev is not None else '(系统默认)'} "
+                        f"({ch}ch 48kHz → {dev_sr}Hz 自适应重采样)")
+        else:
+            _module_log(f"[PaBridge] 输出设备 "
+                        f"#{dev if dev is not None else '(系统默认)'} ({ch}ch)")
 
     def close(self) -> None:
         self._stopped = True
@@ -203,6 +265,8 @@ class PaBridge:
             self._in_stream = None
             self._out_streams = []
             self._out_pull = []
+            self._out_adapters = []
+            self._out_specs = []
         for s in streams:
             try:
                 s.stop_stream()
@@ -251,6 +315,16 @@ class PaBridge:
 
     def output_count(self) -> int:
         return len(self._out_streams)
+
+    def output_info(self) -> list:
+        """各输出端实际状态（UI 状态行用）：[{dev, ch, dev_sr, adaptive}]。
+
+        未建流返回 []，不抛异常。
+        """
+        try:
+            return [dict(s) for s in self._out_specs]
+        except Exception:
+            return []
 
     # ── 数据面 ──
 
@@ -304,10 +378,17 @@ class PaBridge:
             if self._stopped:
                 return (None, pyaudio_paComplete())
             try:
-                mono = pull(frame_count) if pull is not None else None
-                if mono is None or len(mono) < frame_count:
-                    mono = list(mono or []) + \
-                        [0.0] * (frame_count - len(mono or []))
+                adapter = self._out_adapters[idx] \
+                    if idx < len(self._out_adapters) else None
+                if adapter is not None:
+                    mono = adapter.get(frame_count)
+                else:
+                    mono = pull(frame_count) if pull is not None else None
+                    if mono is None or len(mono) < frame_count:
+                        mono = list(mono or []) + \
+                            [0.0] * (frame_count - len(mono or []))
+                    else:
+                        mono = list(mono[:frame_count])
                 if ch > 1:
                     out = [0.0] * (frame_count * ch)
                     pos = 0

@@ -36,7 +36,7 @@ TEST_FILES = [
     "test_aec_rows.py",         # 行级 AEC：HopQueue 严格配对/AecRow（桩会话，无硬件）
     "test_aec_calib.py",        # AEC far 延迟校准：探测音+延迟估计（合成，无硬件）
     "test_transport.py",        # 传输层导入与优雅降级
-    "test_input_resample.py",   # Windows 输入自适应：hop/下混/重采样（合成，无硬件）
+    "test_adaptive_rate.py",    # 自适应采样率：hop/下混/输入输出重采样（合成，无硬件）
     "test_devices.py",          # 设备面：枚举/虚拟麦克风/配置键
 ]
 

@@ -106,9 +106,8 @@ class EngineController:
             log.msg(f"[后端] {backend.label} ({backend.name})")
             use_pw = backend.name == "pipewire"
 
-            err = self._check_48k(chain_cfg, plan, use_pw) if not use_pw else None
-            if err:
-                return err
+            # 输入/输出全自适应（Windows 原生采样率打开 + 重采样；
+            # Linux 由 PipeWire 统一转 48k），启动不做 48k 门禁。
 
             from audio_processor import create_audio_processor, \
                 start_audio_stream, HOP_LENGTH, get_device_id, default_api_type
@@ -218,42 +217,6 @@ class EngineController:
             log.err(f"启动失败: {e}\n{traceback.format_exc()}")
             self.stop()
             return str(e)
-
-    def _check_48k(self, chain_cfg, plan, use_pw) -> Optional[str]:
-        """Windows PortAudio 输出端 48k 打开检测（WASAPI 严格/MME 宽松为既定行为）。
-
-        输入端自适应（PaBridge/MicCaptureWin 按设备原生采样率打开 + 下混 +
-        pvengine.Resampler 转 48k），不再门禁；AEC far=mic 同输入机制，
-        far=扬声器走 loopback 按既定行为免检。
-        """
-        if use_pw:
-            return None
-        try:
-            import pyaudio
-        except ImportError:
-            return None
-        from audio_processor import get_device_id, default_api_type, HOP_LENGTH
-        api_type = default_api_type()
-        failed = []
-        p = pyaudio.PyAudio()
-        try:
-            for name in plan.outputs:
-                dev = get_device_id(name, False, api_type=api_type)
-                if dev is None:
-                    continue
-                try:
-                    s = p.open(format=pyaudio.paFloat32, channels=1,
-                               rate=48000, output=True,
-                               output_device_index=dev,
-                               frames_per_buffer=HOP_LENGTH)
-                    s.close()
-                except Exception as e:
-                    failed.append(f"{name or '系统默认'} ({e})")
-        finally:
-            p.terminate()
-        if failed:
-            return "以下设备不支持 48kHz，已阻止启动：" + "、".join(failed)
-        return None
 
     def set_live_param(self, index, key, value):
         """滑杆实时生效：直接更新运行中处理器的插件参数（不重建链）。
@@ -427,6 +390,16 @@ class EngineController:
         if t is not None and hasattr(t, "get_aec_info"):
             try:
                 return t.get_aec_info() or []
+            except Exception:
+                pass
+        return []
+
+    def output_info(self) -> list:
+        """各输出端实际采样率状态（主窗状态行用），未运行返回 []。"""
+        t = getattr(self, "thread", None)
+        if t is not None and hasattr(t, "get_output_info"):
+            try:
+                return t.get_output_info() or []
             except Exception:
                 pass
         return []

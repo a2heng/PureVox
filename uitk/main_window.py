@@ -801,7 +801,7 @@ class MainWindowTk:
             pass
 
     def _refresh_sr_label(self):
-        """刷新输入采样率状态行：输入/far 端实际采样率 → 48k 自适应说明。
+        """刷新输入/输出采样率状态行：各端实际采样率 → 48k 自适应说明。
 
         未运行显示「输入：未启动」；网络输入模式显示推流来源。
         """
@@ -823,6 +823,13 @@ class MainWindowTk:
             except Exception:
                 net = None
             parts.append("输入：网络推流" if net else "输入：无设备输入")
+        for o in self.engine.output_info():
+            osr, och = int(o.get("dev_sr") or 48000), \
+                int(o.get("ch") or 2)
+            if o.get("adaptive"):
+                parts.append(f"输出：{och}ch 48kHz → {osr}Hz（自适应重采样）")
+            else:
+                parts.append("输出：48kHz（直通）")
         for a in self.engine.aec_info():
             kind = "扬声器" if a.get("far_kind") == "speaker" else "麦克风"
             fsr = int(a.get("far_sr") or 0)
@@ -830,7 +837,7 @@ class MainWindowTk:
                 parts.append(f"AEC far（{kind}）：{fsr}Hz → 48kHz（自适应）")
             else:
                 parts.append(f"AEC far（{kind}）：48kHz（直通）")
-        self.lbl_sr.configure(text=" ｜ ".join(parts))
+        self.lbl_sr.configure(text="\n".join(parts))
         try:
             self.engine.log.msg("[状态] " + " ｜ ".join(parts))
         except Exception:
@@ -901,39 +908,12 @@ class MainWindowTk:
         err = self.engine.start(self.to_config())
         self.refresh_devices()          # 启动尝试后必刷新：空设备时插上设备点启动即可见
         if err:
-            if "48kHz" in err:
-                self._warn_48k(err)
-            else:
-                self._dialog("showwarning", "PureVox", err)
+            self._dialog("showwarning", "PureVox", err)
             self._set_running_ui(False)
             self._refresh_sr_label()
             return
         self._set_running_ui(True)
         self._refresh_sr_label()
-
-    def _warn_48k(self, err):
-        """48k 检测失败弹窗：逐设备列出原因（输出端 WASAPI 严格语义；输入自适应，不拦截）。"""
-        from .dialogs import DarkDialog
-        detail = err.split("：", 1)[-1]
-        dlg = DarkDialog(self.root, "48kHz 检测未通过", 400, 220,
-                         sizes=self.sizes, fonts=self.fonts)
-        tk.Label(dlg.body, text="以下设备不支持 48kHz，已阻止启动：",
-                 bg=theme.WINDOW, fg=theme.TEXT,
-                 font=self.fonts.get("bold"),
-                 justify="left", anchor="w").pack(
-            fill=tk.X, padx=14, pady=(10, 4))
-        tk.Label(dlg.body, text=detail, bg=theme.PANEL, fg=theme.TEXT_DIM,
-                 font=self.fonts.get("body"), justify="left", anchor="nw",
-                 wraplength=360, padx=10, pady=8).pack(
-            fill=tk.X, padx=14)
-        tk.Label(dlg.body,
-                 text="Windows 下 WASAPI 共享模式锁死输出混音格式，"
-                      "44.1kHz 输出设备请改用 MME 接口或在系统声音面板固定 48kHz。"
-                      "输入设备任意采样率自动适配，不受此限。",
-                 bg=theme.WINDOW, fg=theme.TEXT_FAINT,
-                 font=self.fonts.get("small"), justify="left",
-                 wraplength=360, anchor="w").pack(
-            fill=tk.X, padx=14, pady=6)
 
     def _set_running_ui(self, running):
         bg = theme.STOP_BG if running else theme.START_BG
