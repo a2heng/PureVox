@@ -32,13 +32,19 @@
 AEC_MODEL = "models/purevox_aec_202609_cpx_ep0375.onnx"
 TSE_MODEL = "models/purevox_tse_202609c_ep0201.onnx"
 
-# ── 降噪模型注册表（UI 下拉可选；key = 训练侧 202609m/s）──
-#   m = 0.62M 主模型（训练 b ep231，推荐）；s = 0.31M 轻量（训练 a ep109，更快）
-#   值 = (相对路径, 下拉显示名)；引擎按 cache_in 形状自适应，两者可热切换。
+# ── 降噪模型注册表（UI 下拉可选；key = 训练侧 202609a/b/c）──
+#   a = 小号 0.28M / b = 中号 0.57M（默认）/ c = 大号 1.66M
+#   值 = (相对路径, 下拉显示名)；引擎按 cache_in 形状自适应，三者可热切换。
+#
+#   ⚠️ **占位模型（placeholder）**：三份 ONNX 都取自训练中期的 epoch
+#      （a ep0278 / b ep0046 / c ep0012），目的只是先把小/中/大三档的代码链路
+#      接进应用、验证接口与热切换。**模型权重随后续训练会滚动替换，但接口契约
+#      不变**（hop = SAMPLE_RATE//100、enh_hop 滞后 1 hop、扁平 cache 形状自适应）。
 DENOISE_MODELS = {
-    "202609m": ("models/purevox_denoise_202609m_ep0231.onnx", "202609m（0.62M 主模型）"),
-    "202609s": ("models/purevox_denoise_202609s_ep0109.onnx", "202609s（0.31M 轻量）"),
+    "202609b": ("models/purevox_denoise_202609b_ep0046.onnx", "202609b（中号 0.57M · 默认）"),
+    "202609a": ("models/purevox_denoise_202609a_ep0278.onnx", "202609a（小号 0.28M · 更快）"),
+    "202609c": ("models/purevox_denoise_202609c_ep0012.onnx", "202609c（大号 1.66M · 最强）"),
 }
-DENOISE_MODEL_DEFAULT = "202609m"
+DENOISE_MODEL_DEFAULT = "202609b"
 # 单模型路径（lite_mic/lite_net 及无选择时用；= 默认项）
 DENOISE_MODEL = DENOISE_MODELS[DENOISE_MODEL_DEFAULT][0]

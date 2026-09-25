@@ -236,7 +236,7 @@ class _AiPluginBase(Effect):
 
 
 class DenoiserMediumPlugin(_AiPluginBase):
-    """AI 智能降噪 · 中号（202609m，0.62M 主模型）。引擎经 cache 共享，重建链不重复加载。"""
+    """AI 智能降噪 · 中号（202609b，0.57M 主模型）。引擎经 cache 共享，重建链不重复加载。"""
 
     NAME = "denoiser_m"
     LABEL = "AI 降噪 · 中号"
@@ -244,11 +244,19 @@ class DenoiserMediumPlugin(_AiPluginBase):
 
 
 class DenoiserSmallPlugin(_AiPluginBase):
-    """AI 智能降噪 · 小号（202609s，0.31M 轻量，更快）。"""
+    """AI 智能降噪 · 小号（202609a，0.28M 轻量，更快）。"""
 
     NAME = "denoiser_s"
     LABEL = "AI 降噪 · 小号"
     _KIND = "denoise_s"
+
+
+class DenoiserLargePlugin(_AiPluginBase):
+    """AI 智能降噪 · 大号（202609c，1.66M 最强）。"""
+
+    NAME = "denoiser_l"
+    LABEL = "AI 降噪 · 大号"
+    _KIND = "denoise_l"
 
 
 class TsePlugin(_AiPluginBase):
@@ -294,11 +302,12 @@ def _model_file(name):
 def _make_stage(kind):
     """按类型构建并缓存完整 AI Stage——TseStage 自带共享 STFT。
     AEC 不在此：行级 AEC 走 pvengine/aec_row.py（AecRow，一行一状态，
-    会话多行共享），不进 fx 链。降噪分中号(denoise_m)/小号(denoise_s)。"""
+    会话多行共享），不进 fx 链。降噪分中号(denoise_m)/小号(denoise_s)/大号(denoise_l)。"""
     import model_config as _mc
-    if kind in ("denoise_m", "denoise_s"):
+    if kind in ("denoise_m", "denoise_s", "denoise_l"):
         from pvengine.components.denoise import DenoiseStage
-        key = "202609m" if kind == "denoise_m" else "202609s"
+        key = {"denoise_m": "202609b", "denoise_s": "202609a",
+               "denoise_l": "202609c"}[kind]
         return DenoiseStage(_model_file(_mc.DENOISE_MODELS[key][0]))
     if kind == "tse":
         from pvengine.components.tse import TseStage

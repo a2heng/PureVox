@@ -37,7 +37,7 @@ from pvengine.components.core_plugins import (
     GainPlugin, GatePlugin,
     Eq10Plugin, Eq31Plugin, Eq61Plugin,
     CompressorPlugin,
-    DenoiserMediumPlugin, DenoiserSmallPlugin,
+    DenoiserMediumPlugin, DenoiserSmallPlugin, DenoiserLargePlugin,
     TsePlugin,
 )
 from pvengine.components.agc import AgcPlugin
@@ -61,6 +61,7 @@ CATALOG: list[type] = [
     GainPlugin,
     DenoiserMediumPlugin,
     DenoiserSmallPlugin,
+    DenoiserLargePlugin,
     TsePlugin,
     GatePlugin,
     AgcPlugin,
@@ -85,6 +86,7 @@ MEDIA_NODE_TYPES = frozenset({"soundpad", "music_player", "desktop_audio"})
 UI_TIERS = {
     "denoiser_m": "toggle",
     "denoiser_s": "toggle",
+    "denoiser_l": "toggle",
     "eq10": "expand",          # 展开：EQ 曲线编辑器（10 段）
     "eq31": "expand",          # 展开：EQ 曲线编辑器（31 段）
     "eq61": "expand",          # 展开：EQ 曲线编辑器（61 段）
