@@ -210,8 +210,8 @@ class NodeRow(tk.Frame):
             cb()
 
     def _build_denoise_hint(self):
-        """AI 降噪节点（中号/小号/大号）下方的使用建议（小字，多行）。"""
-        if self.spec.name not in ("denoiser_m", "denoiser_s", "denoiser_l"):
+        """AI 降噪节点（小号/中号/大号/旧版 v6）下方的使用建议（小字，多行）。"""
+        if self.spec.name not in ("denoiser_s", "denoiser_m", "denoiser_l", "denoiser_v6"):
             return
         hint = tk.Label(
             self.body_frame,

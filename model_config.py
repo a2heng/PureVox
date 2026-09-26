@@ -32,18 +32,26 @@
 AEC_MODEL = "models/purevox_aec_202609_cpx_ep0375.onnx"
 TSE_MODEL = "models/purevox_tse_202609c_ep0201.onnx"
 
-# ── 降噪模型注册表（UI 下拉可选；key = 训练侧 202609a/b/c）──
-#   a = 小号 0.28M / b = 中号 0.57M（默认）/ c = 大号 1.66M
-#   值 = (相对路径, 下拉显示名)；引擎按 cache_in 形状自适应，三者可热切换。
+# ── 降噪模型注册表（UI 下拉可选；key = 训练侧 202609a/b/c + 旧版 202606）──
+#   目录顺序 = 小号 → 中号 → 大号 → 旧版 v6（与插件目录 plugins.CATALOG 一致）
+#   a = 小号 0.28M / b = 中号 0.57M（默认）/ c = 大号 1.66M / 202606 = 旧版 v6 0.52M
+#   值 = (相对路径, 下拉显示名)；引擎按 cache_in 形状自适应，四者可热切换。
 #
-#   ⚠️ **占位模型（placeholder）**：三份 ONNX 都取自训练中期的 epoch
+#   ⚠️ **占位模型（placeholder）**：202609 三份 ONNX 都取自训练中期的 epoch
 #      （a ep0278 / b ep0046 / c ep0012），目的只是先把小/中/大三档的代码链路
 #      接进应用、验证接口与热切换。**模型权重随后续训练会滚动替换，但接口契约
 #      不变**（hop = SAMPLE_RATE//100、enh_hop 滞后 1 hop、扁平 cache 形状自适应）。
+#
+#   202606 = 旧版 v6（v6_erb_skip_proj，0.52M）：由 lightweight-denoise-48k 的
+#      checkpoint_epoch_14.tar 重新导出成 PureVox 契约——傅里叶内化在图内
+#      （常量 DFT 矩阵，无 DFT/RDFT 算子）、2 进 2 出、单个扁平 cache 15176，
+#      引擎零 DSP。与 202609 的唯一语义差别：分析/合成窗用普通 Hann + 常量
+#      ola 包络（v6 训练时如此），而非 202609 的 sqrt-Hann。
 DENOISE_MODELS = {
-    "202609b": ("models/purevox_denoise_202609b_ep0046.onnx", "202609b（中号 0.57M · 默认）"),
     "202609a": ("models/purevox_denoise_202609a_ep0278.onnx", "202609a（小号 0.28M · 更快）"),
+    "202609b": ("models/purevox_denoise_202609b_ep0046.onnx", "202609b（中号 0.57M · 默认）"),
     "202609c": ("models/purevox_denoise_202609c_ep0012.onnx", "202609c（大号 1.66M · 最强）"),
+    "202606": ("models/purevox_denoise_202606_ep0014_op17.onnx", "202606（旧版 v6 · 0.52M）"),
 }
 DENOISE_MODEL_DEFAULT = "202609b"
 # 单模型路径（lite_mic/lite_net 及无选择时用；= 默认项）

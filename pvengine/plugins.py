@@ -37,7 +37,7 @@ from pvengine.components.core_plugins import (
     GainPlugin, GatePlugin,
     Eq10Plugin, Eq31Plugin, Eq61Plugin,
     CompressorPlugin,
-    DenoiserMediumPlugin, DenoiserSmallPlugin, DenoiserLargePlugin,
+    DenoiserSmallPlugin, DenoiserMediumPlugin, DenoiserLargePlugin, DenoiserV6Plugin,
     TsePlugin,
 )
 from pvengine.components.agc import AgcPlugin
@@ -56,12 +56,13 @@ class NodeSpec:
     params: dict = field(default_factory=dict)  # 滑杆模式 {key: (label,lo,hi,default,step)}
 
 
-# ── 插件目录（信号流惯例顺序）──
+# ── 插件目录（信号流惯例顺序；AI 降噪按 小号 → 中号 → 大号 → 旧版 v6）──
 CATALOG: list[type] = [
     GainPlugin,
-    DenoiserMediumPlugin,
     DenoiserSmallPlugin,
+    DenoiserMediumPlugin,
     DenoiserLargePlugin,
+    DenoiserV6Plugin,
     TsePlugin,
     GatePlugin,
     AgcPlugin,
@@ -84,9 +85,10 @@ MEDIA_NODE_TYPES = frozenset({"soundpad", "music_player", "desktop_audio"})
 # inline  = 行内参数滑杆（默认，按 PARAMS 自动生成）
 # expand  = 行内控制 + 「展开」按钮弹出独立 UI 对话框
 UI_TIERS = {
-    "denoiser_m": "toggle",
     "denoiser_s": "toggle",
+    "denoiser_m": "toggle",
     "denoiser_l": "toggle",
+    "denoiser_v6": "toggle",
     "eq10": "expand",          # 展开：EQ 曲线编辑器（10 段）
     "eq31": "expand",          # 展开：EQ 曲线编辑器（31 段）
     "eq61": "expand",          # 展开：EQ 曲线编辑器（61 段）

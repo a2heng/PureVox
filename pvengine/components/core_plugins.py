@@ -235,14 +235,6 @@ class _AiPluginBase(Effect):
         self.stage.reset()
 
 
-class DenoiserMediumPlugin(_AiPluginBase):
-    """AI 智能降噪 · 中号（202609b，0.57M 主模型）。引擎经 cache 共享，重建链不重复加载。"""
-
-    NAME = "denoiser_m"
-    LABEL = "AI 降噪 · 中号"
-    _KIND = "denoise_m"
-
-
 class DenoiserSmallPlugin(_AiPluginBase):
     """AI 智能降噪 · 小号（202609a，0.28M 轻量，更快）。"""
 
@@ -251,12 +243,32 @@ class DenoiserSmallPlugin(_AiPluginBase):
     _KIND = "denoise_s"
 
 
+class DenoiserMediumPlugin(_AiPluginBase):
+    """AI 智能降噪 · 中号（202609b，0.57M 主模型）。引擎经 cache 共享，重建链不重复加载。"""
+
+    NAME = "denoiser_m"
+    LABEL = "AI 降噪 · 中号"
+    _KIND = "denoise_m"
+
+
 class DenoiserLargePlugin(_AiPluginBase):
     """AI 智能降噪 · 大号（202609c，1.66M 最强）。"""
 
     NAME = "denoiser_l"
     LABEL = "AI 降噪 · 大号"
     _KIND = "denoise_l"
+
+
+class DenoiserV6Plugin(_AiPluginBase):
+    """AI 智能降噪 · 旧版 v6（202606，0.52M，ERB + 6 层对称 U-Net + DPGRNN）。
+
+    202609 三代之前的模型，保留用于对比与回退。契约与 202609 一致（波形 hop
+    进出、傅里叶内化在图内、enh_hop 滞后 1 hop、扁平 cache），引擎零改动复用。
+    """
+
+    NAME = "denoiser_v6"
+    LABEL = "AI 降噪 · 旧版 v6"
+    _KIND = "denoise_v6"
 
 
 class TsePlugin(_AiPluginBase):
@@ -302,12 +314,13 @@ def _model_file(name):
 def _make_stage(kind):
     """按类型构建并缓存完整 AI Stage——TseStage 自带共享 STFT。
     AEC 不在此：行级 AEC 走 pvengine/aec_row.py（AecRow，一行一状态，
-    会话多行共享），不进 fx 链。降噪分中号(denoise_m)/小号(denoise_s)/大号(denoise_l)。"""
+    会话多行共享），不进 fx 链。降噪分小号(denoise_s)/中号(denoise_m)/
+    大号(denoise_l)/旧版 v6(denoise_v6)。"""
     import model_config as _mc
-    if kind in ("denoise_m", "denoise_s", "denoise_l"):
+    if kind in ("denoise_s", "denoise_m", "denoise_l", "denoise_v6"):
         from pvengine.components.denoise import DenoiseStage
-        key = {"denoise_m": "202609b", "denoise_s": "202609a",
-               "denoise_l": "202609c"}[kind]
+        key = {"denoise_s": "202609a", "denoise_m": "202609b",
+               "denoise_l": "202609c", "denoise_v6": "202606"}[kind]
         return DenoiseStage(_model_file(_mc.DENOISE_MODELS[key][0]))
     if kind == "tse":
         from pvengine.components.tse import TseStage
