@@ -153,6 +153,7 @@ config_manager.py         # JSON 配置（强配置，按接口隔离设备键�
 model_config.py           # ONNX 模型文件名常量
 server/                   # 远程麦克风 HTTPS/WSS 服务端（aiohttp + Opus + mDNS + TLS）
 html/                     # 浏览器推流前端（AudioWorklet + Opus WASM）
+purevox-web/              # Lite 两档的浏览器版（ONNX Runtime Web；页面瘦、重资源按 URL 缓存）
 android/                  # Android 客户端（Kotlin + OkHttp + Opus JNI）
 pack_deb.sh               # Linux deb 打包
 pack_rpm.sh               # Linux rpm 打包（Fedora/RHEL）

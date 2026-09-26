@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+  SPDX-License-Identifier: GPL-3.0-or-later
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  The built-in AI models are NOT covered by the GPL; they are the
+  property of a2heng and may only be used with PureVox under
+  authorization.  See MODEL-LICENSE.md for details.
+
+  单 HTML 模板（purevox-web）：{{FLAVOR}} 版
+  由 purevox-web/build/build_web.py 注入 CSS / JS 与重资源 URL 后产出到
+  purevox-web/dist/。本文件是模板，不是可直接运行的页面。
+
+  页面本体只含应用代码（重资源 ORT 运行时 / 降噪模型按 URL 加载，
+  两个页面共用同一份，URL 稳定 → 可长期缓存）。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>{{TITLE}}</title>
+<style>
+{{CSS}}
+</style>
+</head>
+<body>
+<div id="app">
+
+    <!-- ── 顶栏 ── -->
+    <div id="topbar">
+        <div id="title-block">
+            <span id="title-main">◆ PureVox Web</span>
+            <span id="title-sub">{{SUBTITLE}}</span>
+        </div>
+        <div id="top-status">
+            <button id="theme-toggle">◐</button>
+            <span id="state-pill" class="pill idle">就绪</span>
+        </div>
+    </div>
+
+    <!-- ── 状态行（Lite 同文案口径）── -->
+    <div id="status-line"><span id="status-text">{{IDLE_STATUS}}</span></div>
+
+<!--FLAVOR:net-->
+    <!-- ── 角色切换（浏览器不能监听端口，网络输入走 WebRTC；两端同页可测）── -->
+    <div id="tabs">
+        <button id="tab-rx" class="tab active">接收端 · 降噪播放</button>
+        <button id="tab-tx" class="tab">发送端 · 麦克风直传</button>
+    </div>
+    <div id="path-note">
+        程序从 <span id="origin-note">本站</span> 加载；<b>音频只在局域网内直传</b>
+        （WebRTC host candidate，不经任何服务器、不出局域网）。两端需同一网段。
+    </div>
+
+    <div id="pane-rx" class="pane">
+        <div class="steps">
+            <div class="step">
+                <div class="step-l">1 · 生成邀请码并发给对方</div>
+                <button id="rx-make" class="mini">生成邀请码</button>
+                <textarea id="rx-invite" readonly spellcheck="false"
+                          placeholder="点击「生成邀请码」后此处出现连接码"></textarea>
+                <button id="rx-copy" class="mini">复制邀请码</button>
+            </div>
+            <div class="step">
+                <div class="step-l">2 · 粘贴对方的应答码</div>
+                <textarea id="rx-answer" spellcheck="false"
+                          placeholder="把对方发回的应答码粘到这里"></textarea>
+                <button id="rx-accept" class="mini">连接</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="pane-tx" class="pane" style="display:none">
+        <div class="steps">
+            <div class="step">
+                <div class="step-l">1 · 粘贴对方发来的邀请码</div>
+                <textarea id="tx-invite" spellcheck="false"
+                          placeholder="把对方发来的邀请码粘到这里"></textarea>
+                <div class="row" id="in-row">
+                    <span class="row-l">麦克风</span>
+                    <select id="in-select"></select>
+                    <button id="in-unlock" class="mini" style="display:none"
+                            title="授予麦克风权限">授权</button>
+                </div>
+                <button id="tx-make" class="mini">生成应答码并开声</button>
+            </div>
+            <div class="step">
+                <div class="step-l">2 · 复制应答码发回给对方</div>
+                <textarea id="tx-answer" readonly spellcheck="false"
+                          placeholder="生成后此处出现应答码"></textarea>
+                <button id="tx-copy" class="mini">复制应答码</button>
+            </div>
+        </div>
+    </div>
+<!--/FLAVOR:net-->
+
+<!--FLAVOR:mic-->
+    <div class="row" id="in-row">
+        <span class="row-l">输入</span>
+        <select id="in-select"></select>
+        <button id="in-unlock" class="mini" style="display:none"
+                title="授予麦克风权限">授权</button>
+    </div>
+<!--/FLAVOR:mic-->
+
+    <!-- 输出与增益：Mic 版常驻；Net 版只在接收端出现（发送端不输出、也不做降噪，
+         前/后增益对它没有意义，露出来只会让人以为该在这端调） -->
+    <div id="rx-controls" class="ctrl-group">
+        <div class="row" id="out-row">
+            <span class="row-l">输出</span>
+            <select id="out-select"></select>
+            <button id="out-unlock" class="mini" style="display:none"
+                    title="浏览器没有独立的扬声器权限：扬声器列表与麦克风共用一次设备授权">解锁</button>
+        </div>
+        <div class="row">
+            <span class="row-l">前增益</span>
+            <button id="gain-pre-dec" class="step-btn">−</button>
+            <span id="gain-pre" class="step-val">0</span>
+            <button id="gain-pre-inc" class="step-btn">+</button>
+            <span class="unit">dB</span>
+        </div>
+        <div class="row">
+            <span class="row-l">后增益</span>
+            <button id="gain-post-dec" class="step-btn">−</button>
+            <span id="gain-post" class="step-val">0</span>
+            <button id="gain-post-inc" class="step-btn">+</button>
+            <span class="unit">dB</span>
+        </div>
+    </div>
+
+    <!-- ── 主按钮 ── -->
+    <button id="btn-run" class="strip-btn">
+        <span class="strip-icon">▶</span>
+        <span class="strip-text" id="strip-text">{{RUN_TEXT}}</span>
+    </button>
+
+    <!-- ── 电平表 ── -->
+    <div id="vu-meter">
+        <div class="vu-track">
+            <div class="vu-zone" style="left:0%;width:66.67%;background:var(--vu-bg1);"></div>
+            <div class="vu-zone" style="left:66.67%;width:18.33%;background:var(--vu-bg2);"></div>
+            <div class="vu-zone" style="left:85%;width:15%;background:var(--vu-bg3);"></div>
+        </div>
+        <div class="vu-fill-seg" id="vu-fill1" style="left:0%;width:0%;background:var(--vu-fill1);"></div>
+        <div class="vu-fill-seg" id="vu-fill2" style="left:66.67%;width:0%;background:var(--vu-fill2);"></div>
+        <div class="vu-fill-seg" id="vu-fill3" style="left:85%;width:0%;background:var(--vu-fill3);"></div>
+        <div id="vu-peak"></div>
+    </div>
+
+    <!-- ── 调试信息 ── -->
+    <div id="debug-section">
+        <div id="debug-title">▸ 调试信息</div>
+        <div id="debug-grid">
+            <span class="dg-item"><span class="dg-l">模型</span> <span class="dg-r" id="dbg-model">--</span></span>
+            <span class="dg-item"><span class="dg-l">hop</span> <span class="dg-r" id="dbg-hop">--</span></span>
+            <span class="dg-item"><span class="dg-l">ctx SR</span> <span class="dg-r" id="dbg-ctx-sr">--</span></span>
+            <span class="dg-item"><span class="dg-l">音频</span> <span class="dg-r" id="dbg-actx">--</span></span>
+            <span class="dg-item"><span class="dg-l">重采样</span> <span class="dg-r" id="dbg-ratio">--</span></span>
+            <span class="dg-item"><span class="dg-l">推理</span> <span class="dg-r" id="dbg-infer">--</span></span>
+            <span class="dg-item"><span class="dg-l">水位</span> <span class="dg-r" id="dbg-wm">--</span></span>
+            <span class="dg-item"><span class="dg-l">欠载</span> <span class="dg-r" id="dbg-under">--</span></span>
+            <span class="dg-item"><span class="dg-l">丢样</span> <span class="dg-r" id="dbg-drop">--</span></span>
+            <span class="dg-item"><span class="dg-l">端到端</span> <span class="dg-r" id="dbg-lat">--</span></span>
+<!--FLAVOR:mic-->
+            <span class="dg-item"><span class="dg-l">设备 SR</span> <span class="dg-r" id="dbg-dev">--</span></span>
+<!--/FLAVOR:mic-->
+<!--FLAVOR:net-->
+            <span class="dg-item dg-rx"><span class="dg-l">RTT</span> <span class="dg-r" id="dbg-rtt">--</span></span>
+            <span class="dg-item dg-rx"><span class="dg-l">丢包/抖动</span> <span class="dg-r" id="dbg-loss">--</span></span>
+            <span class="dg-item dg-tx" style="display:none"><span class="dg-l">连接</span> <span class="dg-r" id="dbg-signaling">--</span></span>
+            <span class="dg-item dg-tx" style="display:none"><span class="dg-l">已发送</span> <span class="dg-r" id="dbg-sent">--</span></span>
+            <span class="dg-item dg-tx" style="display:none"><span class="dg-l">麦克风</span> <span class="dg-r" id="dbg-mic">--</span></span>
+<!--/FLAVOR:net-->
+        </div>
+    </div>
+
+    <!-- ── 日志 ── -->
+    <div id="log-section">
+        <div id="log-title">▾ 日志</div>
+        <div id="log-content"></div>
+    </div>
+
+</div>
+
+<script type="module">
+{{ASSETS}}
+{{JS}}
+</script>
+</body>
+</html>

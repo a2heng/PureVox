@@ -163,6 +163,7 @@ config_manager.py         # JSON config (strong config, per-API device keys)
 model_config.py           # ONNX model filename constants
 server/                   # remote-mic HTTPS/WSS server (aiohttp + Opus + mDNS + TLS)
 html/                     # browser streaming front-end (AudioWorklet + Opus WASM)
+purevox-web/              # browser build of both Lite tiers (ONNX Runtime Web; slim pages, shared cached assets)
 android/                  # Android client (Kotlin + OkHttp + Opus JNI)
 pack_deb.sh               # Linux deb packaging
 pack_rpm.sh               # Linux rpm packaging (Fedora/RHEL)

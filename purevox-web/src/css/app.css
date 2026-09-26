@@ -1,0 +1,336 @@
+/* PureVox — AI 麦克风降噪工具
+ * Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * 复古极简风格（自动/亮/暗三态），与 html/ 推流客户端同一套配色变量；
+ * 控件排布对齐 Lite 桌面端：输入/输出/前增益/后增益 + 启停。
+ */
+
+/* ── 亮色主题变量（默认）── */
+:root {
+    --bg: #f5f0e8;
+    --bg-card: #e8e0d0;
+    --bg-input: #ddd5c5;
+    --border: #c0b8a8;
+    --text: #3a3530;
+    --text-dim: #8a8580;
+    --text-dimmer: #aaa5a0;
+    --vu-fill1: #44bb66;
+    --vu-fill2: #cccc44;
+    --vu-fill3: #cc5544;
+    --vu-bg1: #c8e8d0;
+    --vu-bg2: #e8e8c8;
+    --vu-bg3: #e8d0d0;
+    --vu-peak-color: #3a3530;
+    --vu-bg: #ddd5c5;
+    --log-bg: #ede8e0;
+    --scrollbar: #c0b8a8;
+    --btn-bg: #ddd5c5;
+    --btn-border: #c0b8a8;
+    --btn-text: #666260;
+    --btn-active-border: #44bb66;
+    --btn-active-text: #338855;
+    --topbar-border: #d0c8b8;
+    --good: #338855;
+    --bad: #b04030;
+    --busy: #9a7b20;
+}
+
+/* ── 深色主题 ── */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #0d0d0d;
+        --bg-card: #1a1a1a;
+        --bg-input: #222;
+        --border: #333;
+        --text: #c0c0c0;
+        --text-dim: #888;
+        --text-dimmer: #555;
+        --vu-fill1: #33cc66;
+        --vu-fill2: #cccc44;
+        --vu-fill3: #cc4433;
+        --vu-bg1: #1a4a2a;
+        --vu-bg2: #4a4a20;
+        --vu-bg3: #4a2020;
+        --vu-peak-color: #c0c0c0;
+        --vu-bg: #1e1e1e;
+        --log-bg: #0a0a0a;
+        --scrollbar: #333;
+        --btn-bg: #1a1a1a;
+        --btn-border: #444;
+        --btn-text: #999;
+        --btn-active-border: #55cc66;
+        --btn-active-text: #55cc66;
+        --topbar-border: #2a2a2a;
+        --good: #55cc66;
+        --bad: #dd6655;
+        --busy: #cccc44;
+    }
+}
+
+/* ── 手动强制主题 ── */
+:root.theme-light {
+    --bg: #f5f0e8; --bg-card: #e8e0d0; --bg-input: #ddd5c5;
+    --border: #c0b8a8; --text: #3a3530; --text-dim: #8a8580;
+    --text-dimmer: #aaa5a0;
+    --vu-fill1: #44bb66; --vu-fill2: #cccc44; --vu-fill3: #cc5544;
+    --vu-bg1: #c8e8d0; --vu-bg2: #e8e8c8; --vu-bg3: #e8d0d0;
+    --vu-peak-color: #3a3530; --vu-bg: #ddd5c5;
+    --log-bg: #ede8e0; --scrollbar: #c0b8a8;
+    --btn-bg: #ddd5c5; --btn-border: #c0b8a8; --btn-text: #666260;
+    --btn-active-border: #44bb66; --btn-active-text: #338855;
+    --topbar-border: #d0c8b8;
+    --good: #338855; --bad: #b04030; --busy: #9a7b20;
+}
+:root.theme-dark {
+    --bg: #0d0d0d; --bg-card: #1a1a1a; --bg-input: #222;
+    --border: #333; --text: #c0c0c0; --text-dim: #888; --text-dimmer: #555;
+    --vu-fill1: #33cc66; --vu-fill2: #cccc44; --vu-fill3: #cc4433;
+    --vu-bg1: #1a4a2a; --vu-bg2: #4a4a20; --vu-bg3: #4a2020;
+    --vu-peak-color: #c0c0c0; --vu-bg: #1e1e1e;
+    --log-bg: #0a0a0a; --scrollbar: #333;
+    --btn-bg: #1a1a1a; --btn-border: #444; --btn-text: #999;
+    --btn-active-border: #55cc66; --btn-active-text: #55cc66;
+    --topbar-border: #2a2a2a;
+    --good: #55cc66; --bad: #dd6655; --busy: #cccc44;
+}
+
+/* ── 基础 ── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: 'Courier New', 'Noto Sans SC', monospace;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    transition: background 0.3s, color 0.3s;
+}
+#app {
+    width: 100%;
+    max-width: 460px;
+    padding: 12px 16px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* ── 顶栏 ── */
+#topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--topbar-border);
+}
+#title-block { display: flex; flex-direction: column; gap: 1px; }
+#title-main { font-size: 1.05rem; font-weight: bold; letter-spacing: 1px; }
+#title-sub { font-size: 0.65rem; color: var(--text-dimmer); }
+#top-status { display: flex; align-items: center; gap: 6px; }
+#theme-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+}
+#theme-toggle:hover { background: var(--bg-card); }
+
+.pill {
+    font-size: 0.65rem;
+    padding: 2px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+.pill.good { color: var(--good); border-color: var(--good); }
+.pill.bad { color: var(--bad); border-color: var(--bad); }
+.pill.busy { color: var(--busy); border-color: var(--busy); }
+
+#status-line { font-size: 0.65rem; color: var(--text-dimmer); }
+
+/* ── 控件行（输入/输出/增益，对齐 Lite 桌面端）── */
+.ctrl-group { display: flex; flex-direction: column; gap: 8px; }
+.row { display: flex; align-items: center; gap: 6px; }
+.row-l { font-size: 0.7rem; color: var(--text-dim); width: 42px; flex: none; }
+.row select {
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0 8px;
+    font-family: inherit;
+    font-size: 0.7rem;
+    border-radius: 4px;
+}
+.step-btn {
+    width: 28px;
+    height: 28px;
+    background: var(--btn-bg);
+    border: 1px solid var(--btn-border);
+    color: var(--btn-text);
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: bold;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.step-btn:hover { filter: brightness(1.1); }
+.step-val {
+    min-width: 34px;
+    text-align: center;
+    font-size: 0.8rem;
+    font-weight: bold;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 4px 0;
+}
+.unit { font-size: 0.65rem; color: var(--text-dimmer); }
+
+/* ── 主按钮 ── */
+.strip-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    height: 42px;
+    background: var(--btn-bg);
+    border: 1px solid var(--btn-border);
+    border-radius: 6px;
+    color: var(--btn-text);
+    font-family: inherit;
+    font-size: 0.8rem;
+    letter-spacing: 2px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.strip-btn:hover { filter: brightness(1.1); }
+.strip-btn.active { border-color: var(--btn-active-border); color: var(--btn-active-text); }
+.strip-icon { font-size: 0.7rem; }
+
+.mini {
+    height: 28px;
+    padding: 0 12px;
+    background: var(--btn-bg);
+    border: 1px solid var(--btn-border);
+    color: var(--btn-text);
+    font-family: inherit;
+    font-size: 0.68rem;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.mini:hover { filter: brightness(1.1); }
+.hangup { width: 100%; }
+
+/* ── 角色标签（Net 版）── */
+#tabs { display: flex; gap: 6px; }
+.tab {
+    flex: 1;
+    height: 30px;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 0.68rem;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.tab.active { background: var(--bg-card); color: var(--text); border-color: var(--text-dim); }
+
+/* ── 路径说明（Net 版：程序从哪加载 ≠ 音频往哪走）── */
+#path-note {
+    font-size: 0.62rem;
+    line-height: 1.55;
+    color: var(--text-dim);
+    border-left: 2px solid var(--border);
+    padding-left: 8px;
+}
+#path-note b { color: var(--text); }
+#origin-note { color: var(--text); word-break: break-all; }
+
+/* ── 连接码交换（Net 版）── */
+.steps { display: flex; flex-direction: column; gap: 8px; }
+.step {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    background: var(--bg-card);
+}
+.step-l { font-size: 0.68rem; color: var(--text-dim); }
+.step textarea {
+    width: 100%;
+    height: 54px;
+    resize: vertical;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'Courier New', monospace;
+    font-size: 0.6rem;
+    line-height: 1.35;
+    padding: 6px;
+    border-radius: 4px;
+    word-break: break-all;
+}
+
+/* ── 电平表 ── */
+#vu-meter {
+    position: relative;
+    width: 100%;
+    height: 16px;
+    border-radius: 2px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--vu-bg);
+}
+.vu-track, .vu-zone, .vu-fill-seg { position: absolute; top: 0; height: 100%; }
+.vu-fill-seg { z-index: 1; }
+#vu-peak {
+    position: absolute;
+    top: 0;
+    width: 3px;
+    height: 100%;
+    pointer-events: none;
+    display: none;
+    z-index: 2;
+    background: var(--vu-peak-color);
+    border-radius: 1px;
+}
+
+/* ── 调试信息 ── */
+#debug-section { border-top: 1px solid var(--border); padding-top: 8px; }
+#debug-title { font-size: 0.65rem; color: var(--text-dimmer); margin-bottom: 6px; letter-spacing: 1px; }
+#debug-grid { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.dg-item { font-size: 0.6rem; display: inline-flex; gap: 3px; white-space: nowrap; }
+.dg-l { color: var(--text-dimmer); }
+.dg-r { color: var(--text); font-weight: bold; }
+
+/* ── 日志 ── */
+#log-section { border-top: 1px solid var(--border); padding-top: 8px; }
+#log-title { font-size: 0.65rem; color: var(--text-dimmer); margin-bottom: 4px; letter-spacing: 1px; cursor: pointer; }
+#log-content {
+    background: var(--log-bg);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 6px 8px;
+    height: 132px;
+    overflow-y: auto;
+    font-size: 0.6rem;
+    line-height: 1.5;
+    color: var(--text-dim);
+}
+#log-content .log-line { white-space: pre-wrap; word-break: break-all; }
+#log-section.collapsed #log-content { display: none; }
+#log-content::-webkit-scrollbar { width: 3px; }
+#log-content::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 1px; }

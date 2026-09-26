@@ -59,6 +59,38 @@ rpm（pack_rpm.sh）与 AppImage 是同一实现路径，同样捆绑内嵌 pyth
 `/usr/share/applications/purevox.desktop` + hicolor 图标。Depends 只留 pipewire。
 Linux 输入/输出/设备枚举/AEC 全走 pipewire-pulse（libpulse 绑定桥）；opuslib 缺失时 `pip install --user`。
 
+### Web 瘦页面（Lite 两档的浏览器版，面向 GitHub Pages）
+
+```bash
+python purevox-web/build/build_web.py            # 打包（默认 202609b 中号）
+python purevox-web/build/build_web.py --model a  # 换档：a 小号 / b 中号 / c 大号
+python purevox-web/build/build_web.py --base-url https://cdn.example.com/pv/assets   # 重资源走 CDN
+python purevox-web/build/build_web.py --list-models
+python purevox-web/serve.py --open               # 本地 HTTPS 伺服（默认 59124）
+```
+
+- 产物 `purevox-web/dist/`：`index.html`、`mic.html`（= lite_mic）、`net.html`
+  （= lite_net）、`assets/ort/*`（ONNX Runtime Web 运行时）、`assets/models/*.onnx`
+  （降噪模型）、`build.json`（清单：版本/字节数/sha256）。第三方运行时另存
+  `purevox-web/vendor/`（按 `purevox-web/build/ort.lock.json` 下载并校验 sha512）。
+  **产物与 vendor 都不入版本库**（见 .gitignore），入库的只有 `src/` `workers/`
+  `build/` `serve.py`。
+- **瘦身口径**：页面本体只含应用代码（mic 76KB / net 88KB）；ORT 运行时与模型
+  按 URL 加载，**两个页面共用同一份**（谁先加载谁填缓存）。URL 稳定、不带版本
+  查询串——内容指纹在 `build.json` 里而不塞 URL，这样重资源能被浏览器/CDN 长期
+  缓存（URL 不变即不失效）。别再把 20MB 级资源 base64 内联：凭空多 33% 体积，
+  且每次改页面都要重传。
+- ⚠️ **必须走安全上下文**：浏览器只在安全上下文（HTTPS 或 localhost）里给麦克风
+  权限、才允许 WebRTC，所以 `file://` 双击打不开。用 `serve.py` 起 HTTPS
+  （重资源发 `max-age=31536000, immutable`，页面发 `no-cache`），或部署到
+  GitHub Pages。证书复用桌面端那份 PureVox Local CA（`~/.purevox/ca/`），
+  全产品只需信任一次；首次访问在证书警告里点「继续前往」。
+- Net 版网络输入走 **WebRTC**（浏览器不能监听端口）：收发两端在同一页面切换，
+  手工交换连接码（deflate+base64），无 STUN/TURN、无服务端，只走 host candidate。
+  **两条路径分清**：程序资源（页面/ORT/模型）从 Pages 或 CDN 加载（可走外网），
+  音频只在局域网内直传、不出局域网。发送端只有麦克风输入（不输出不降噪），
+  接收端才是扬声器输出 + 前后增益。
+
 ### Android
 
 ```powershell
