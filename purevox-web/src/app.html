@@ -156,29 +156,22 @@
     <!-- ── 调试信息 ── -->
     <div id="debug-section">
         <div id="debug-title">▸ 调试信息</div>
-        <div id="debug-grid">
-            <span class="dg-item"><span class="dg-l">模型</span> <span class="dg-r" id="dbg-model">--</span></span>
-            <span class="dg-item"><span class="dg-l">hop</span> <span class="dg-r" id="dbg-hop">--</span></span>
-            <span class="dg-item"><span class="dg-l">ctx SR</span> <span class="dg-r" id="dbg-ctx-sr">--</span></span>
-            <span class="dg-item"><span class="dg-l">音频</span> <span class="dg-r" id="dbg-actx">--</span></span>
-            <span class="dg-item"><span class="dg-l">重采样</span> <span class="dg-r" id="dbg-ratio">--</span></span>
-            <span class="dg-item"><span class="dg-l">推理</span> <span class="dg-r" id="dbg-infer">--</span></span>
-            <span class="dg-item"><span class="dg-l">水位</span> <span class="dg-r" id="dbg-wm">--</span></span>
-            <span class="dg-item"><span class="dg-l">欠载</span> <span class="dg-r" id="dbg-under">--</span></span>
-            <span class="dg-item"><span class="dg-l">丢样</span> <span class="dg-r" id="dbg-drop">--</span></span>
-            <span class="dg-item"><span class="dg-l">端到端</span> <span class="dg-r" id="dbg-lat">--</span></span>
+        <table id="debug-grid">
+            <tr><td class="dg-l">模型</td><td class="dg-r" id="dbg-model">--</td><td class="dg-l">hop</td><td class="dg-r" id="dbg-hop">--</td></tr>
+            <tr><td class="dg-l">ctx SR</td><td class="dg-r" id="dbg-ctx-sr">--</td><td class="dg-l">音频</td><td class="dg-r" id="dbg-actx">--</td></tr>
+            <tr><td class="dg-l">重采样</td><td class="dg-r" id="dbg-ratio">--</td><td class="dg-l">推理</td><td class="dg-r" id="dbg-infer">--</td></tr>
+            <tr><td class="dg-l">水位</td><td class="dg-r" id="dbg-wm">--</td><td class="dg-l">欠载</td><td class="dg-r" id="dbg-under">--</td></tr>
+            <tr><td class="dg-l">丢样</td><td class="dg-r" id="dbg-drop">--</td><td class="dg-l">端到端</td><td class="dg-r" id="dbg-lat">--</td></tr>
 <!--FLAVOR:mic-->
-            <span class="dg-item"><span class="dg-l">设备 SR</span> <span class="dg-r" id="dbg-dev">--</span></span>
+            <tr><td class="dg-l">设备 SR</td><td class="dg-r" id="dbg-dev">--</td><td class="dg-l"></td><td class="dg-r"></td></tr>
 <!--/FLAVOR:mic-->
 <!--FLAVOR:out-->
-            <span class="dg-item"><span class="dg-l">订阅</span> <span class="dg-r" id="dbg-ws">--</span></span>
-            <span class="dg-item"><span class="dg-l">已收</span> <span class="dg-r" id="dbg-rx">--</span></span>
+            <tr><td class="dg-l">订阅</td><td class="dg-r" id="dbg-ws">--</td><td class="dg-l">已收</td><td class="dg-r" id="dbg-rx">--</td></tr>
 <!--/FLAVOR:out-->
 <!--FLAVOR:in-->
-            <span class="dg-item"><span class="dg-l">推送</span> <span class="dg-r" id="dbg-ws">--</span></span>
-            <span class="dg-item"><span class="dg-l">已发</span> <span class="dg-r" id="dbg-sent">--</span></span>
+            <tr><td class="dg-l">推送</td><td class="dg-r" id="dbg-ws">--</td><td class="dg-l">已发</td><td class="dg-r" id="dbg-sent">--</td></tr>
 <!--/FLAVOR:in-->
-        </div>
+        </table>
     </div>
 
     <!-- ── 日志 ── -->

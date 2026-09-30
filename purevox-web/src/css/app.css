@@ -353,13 +353,13 @@ body {
     border-radius: 1px;
 }
 
-/* ── 调试信息 ── */
+/* ── 调试信息：固定行数表格（一行一项，列宽固定，数值再宽也不重排）── */
 #debug-section { border-top: 1px solid var(--border); padding-top: 8px; }
 #debug-title { font-size: 0.65rem; color: var(--text-dimmer); margin-bottom: 6px; letter-spacing: 1px; }
-#debug-grid { display: flex; flex-wrap: wrap; gap: 2px 8px; }
-.dg-item { font-size: 0.6rem; display: inline-flex; gap: 3px; white-space: nowrap; }
-.dg-l { color: var(--text-dimmer); }
-.dg-r { color: var(--text); font-weight: bold; }
+#debug-grid { border-collapse: collapse; table-layout: fixed; width: 100%; }
+#debug-grid td { padding: 2px 4px 2px 0; font-size: 0.65rem; vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
+.dg-l { color: var(--text-dimmer); white-space: nowrap; width: 3.5em; }
+.dg-r { color: var(--text); font-weight: bold; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* ── 日志 ── */
 #log-section { border-top: 1px solid var(--border); padding-top: 8px; }
