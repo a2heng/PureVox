@@ -53,6 +53,8 @@ def main():
         from config_manager import ConfigManager
         ensure_dirs()
         config = ConfigManager(CONFIG_PATH)
+        from i18n import set_language
+        set_language(str(config.get("language") or "zh"))
     except Exception as e:
         print(f"[启动] 配置加载失败，使用默认配置: {e}")
 

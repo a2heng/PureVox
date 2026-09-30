@@ -122,6 +122,8 @@ class ConfigDefaults:
     # 启动 / 快捷键 / 提示音
     auto_start: bool = False
     registry_auto_start: bool = False
+    # 界面语言（见 i18n.LANGUAGES；默认中文）
+    language: str = "zh"
     # 启停全局热键（开关 + 规范串，空串=不监听；见 uitk.hotkeys）
     hotkey_toggle_on: bool = True
     hotkey_toggle: str = "Alt+."
@@ -200,6 +202,7 @@ class ConfigDefaults:
             "server_port": instance.server_port,
             "auto_start": instance.auto_start,
             "registry_auto_start": instance.registry_auto_start,
+            "language": instance.language,
             "hotkey_toggle_on": instance.hotkey_toggle_on,
             "hotkey_toggle": instance.hotkey_toggle,
             "cue_enabled": instance.cue_enabled,
@@ -283,6 +286,7 @@ class ConfigManager:
         "tse_reference_wav_path",
         "server_enabled", "server_port",
         "auto_start", "registry_auto_start",
+        "language",
         "hotkey_toggle_on", "hotkey_toggle", "cue_enabled", "cue_start", "cue_stop",
         "vbcable_check_enabled",
         "plugin_chain",

@@ -17,6 +17,7 @@
 - 📊 AGC 自动增益控制 / VAD 静音检测
 - 📱 远程麦克风：手机浏览器 / Android APK 经局域网推流到 PC 处理
 - 🖥️ Windows（WASAPI 默认 / MME 备选）与 Linux（pipewire-pulse 兼容层 + libpulse）双平台
+- 🌐 界面中/英双语，设置菜单实时切换
 
 ## 环境要求
 

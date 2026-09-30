@@ -29,6 +29,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 #: 执行顺序 = 依赖从轻到重（纯函数 → 合成 → 传输/设备降级）
 TEST_FILES = [
+    "test_i18n.py",             # i18n 字符串表（纯函数）
     "test_session_plan.py",     # L3 会话计划（纯函数）
     "test_playback_sink.py",    # 播放正确性（合成时钟，无硬件）
     "test_agc.py",              # AGC 弹道/门限（合成 DSP，无硬件）

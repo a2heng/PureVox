@@ -23,6 +23,8 @@ UI 只调 start(chain_cfg)/stop()，返回错误文案；不碰 Qt。
 import sys
 from typing import Optional
 
+from i18n import T
+
 
 def enum_io_devices():
     """枚举输入/输出设备 → {"inputs": [(显示,值)], "outputs": [(显示,值)],
@@ -101,8 +103,8 @@ class EngineController:
                 required.add("loopback_far")
             backend = select_backend(frozenset(required))
             if backend is None:
-                return ("当前平台没有可用的音频传输后端（所需能力: "
-                        + "、".join(sorted(required)) + "）")
+                return T("当前平台没有可用的音频传输后端（所需能力: {caps}）") \
+                    .format(caps="、".join(sorted(required)))
             log.msg(f"[后端] {backend.label} ({backend.name})")
             use_pw = backend.name == "pipewire"
 
@@ -133,7 +135,7 @@ class EngineController:
                     lambda n: proc.media_read(n), list(plan.outputs),
                     make_sink=lambda: PlaybackSink(hop=HOP_LENGTH))
                 if not self._media.start():
-                    err = self._media.error or "媒体输出设备打开失败"
+                    err = self._media.error or T("媒体输出设备打开失败")
                     self._media = None
                     return err
                 self.running = True
@@ -141,14 +143,16 @@ class EngineController:
                 return None
 
             if plan.remote_url is not None and plan.aec_rows:
-                return "网络输入模式不支持回声消除行（AEC 需要本地麦克风）"
+                return T("网络输入模式不支持回声消除行（AEC 需要本地麦克风）")
             if not use_pw and plan.aec_rows:
                 # Windows 单输入后端：AEC 行的 mic 须是主输入（同一设备）
                 main_in = plan.inputs[0] if plan.inputs else ""
                 bad = [r["mic"] for r in plan.aec_rows if r["mic"] != main_in]
                 if bad:
-                    return "Windows 单输入后端：回声消除的麦克风须与音频输入为同一设备，" \
-                        f"请改选 {main_in or '主输入设备'}（{ '、'.join(bad)} 不符）"
+                    return T("Windows 单输入后端：回声消除的麦克风须与音频输入为同一设备，"
+                             "请改选 {main_in}（{bad} 不符）").format(
+                        main_in=main_in or T("主输入设备"),
+                        bad="、".join(bad))
 
             # 网络输入：启动 WSS 服务器，把 RemoteAudioSource 作为输入源；
             # 本地输入为空，输出走同一套 sinks（Linux PwBridge / Windows PaBridge）
@@ -156,7 +160,7 @@ class EngineController:
             if network:
                 server = self._ensure_network_server()
                 if server is None:
-                    return "网络服务器启动失败（服务端依赖缺失或加载失败，详见日志）"
+                    return T("网络服务器启动失败（服务端依赖缺失或加载失败，详见日志）")
                 network_source = server.audio_source
 
             pw_ports = ([], [])
@@ -189,9 +193,10 @@ class EngineController:
                 aec_rows=list(plan.aec_rows), aec_inputs=list(plan.inputs),
                 loopbacks=list(plan.loopbacks))
             if self.thread and not self.thread.wait_ready(timeout=3.0):
-                err = getattr(self.thread, "_start_error", None) or "音频流创建超时"
+                err = getattr(self.thread, "_start_error", None) \
+                    or T("音频流创建超时")
                 self.stop()
-                return f"音频流创建失败: {err}"
+                return T("音频流创建失败: {err}").format(err=err)
 
             if plan.aec_rows:
                 log.msg(f"[AEC] 行级回声消除 x{len(plan.aec_rows)} "

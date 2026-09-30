@@ -18,6 +18,7 @@ echo cancellation, for both the local microphone and remote network streaming.
 - 📊 AGC automatic gain control / VAD voice activity detection
 - 📱 Remote microphone: phone browser / Android APK streams over LAN to the PC for processing
 - 🖥️ Windows (WASAPI default / MME fallback) and Linux (pipewire-pulse compatibility layer + libpulse)
+- 🌐 Chinese/English UI, switch live from the Settings menu
 
 ## Requirements
 

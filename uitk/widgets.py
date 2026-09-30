@@ -25,6 +25,7 @@ import tkinter as tk
 
 from . import theme
 from .metrics import make_sizes
+from i18n import T
 
 
 class FlatButton(tk.Label):
@@ -618,11 +619,13 @@ class HotkeyField(tk.Frame):
 
     def _render(self, hint=None):
         if self._capturing:
-            self.value_label.configure(text=hint or "按下组合键…",
+            self.value_label.configure(text=hint or T("按下组合键…"),
                                        fg=theme.ACCENT, bg=theme.DARK)
         else:
+            # 空闲态的「未设置」在语言切换时不主动刷新（字段无重建路径），
+            # 下一次交互（录制/清除/设值）即按新语言渲染
             self.value_label.configure(
-                text=self._spec or "未设置",
+                text=self._spec or T("未设置"),
                 fg=theme.TEXT if self._spec else theme.TEXT_FAINT,
                 bg=theme.BASE)
 
@@ -631,7 +634,7 @@ class HotkeyField(tk.Frame):
             return
         self._capturing = True
         self._mods = set()
-        self._render("按下组合键…")
+        self._render(T("按下组合键…"))
         self.value_label.focus_set()
         self._bind_ids = [
             self.value_label.bind("<KeyPress>", self._on_press, add="+"),
@@ -669,7 +672,7 @@ class HotkeyField(tk.Frame):
             return "break"
         spec = self._to_spec(ks, self._mods)
         if not spec:
-            self._render("需带 Ctrl/Alt/Shift（或 F1–F24）")
+            self._render(T("需带 Ctrl/Alt/Shift（或 F1–F24）"))
             return "break"
         self._set(spec)
         return "break"

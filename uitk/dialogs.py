@@ -26,6 +26,7 @@ import math
 
 from . import theme
 from .metrics import make_sizes
+from i18n import T
 
 
 class DarkDialog(tk.Toplevel):
@@ -130,7 +131,7 @@ def show_message(parent, title, message, sizes=None, fonts=None):
         fill=tk.BOTH, expand=True, padx=16, pady=(14, 4))
     bar = tk.Frame(dlg.body, bg=theme.WINDOW)
     bar.pack(fill=tk.X, pady=(0, 12))
-    FlatButton(bar, "确定", sizes=sizes, command=dlg.destroy).pack(
+    FlatButton(bar, T("确定"), sizes=sizes, command=dlg.destroy).pack(
         side=tk.RIGHT, padx=16)
     dlg.bind("<Return>", lambda e: dlg.destroy())
     return dlg
@@ -228,9 +229,9 @@ def show_about_dialog(parent, sizes=None, fonts=None):
     """关于：整页标签 —— 关于 / Windows 使用 / Linux 使用 / 更新日志 / 许可证。"""
     import about_content as about
     app_name = about.APP_NAME
-    build = about.BUILD_DATE or "开发版"
+    build = about.BUILD_DATE or T("开发版")
     intro = about._INTRO_TEXT.replace("{BUILD_DATE}", str(build))
-    dlg = DarkDialog(parent, "关于 %s" % app_name, 680, 620,
+    dlg = DarkDialog(parent, T("关于 {app}").format(app=app_name), 680, 620,
                      sizes=sizes, fonts=fonts)
     dlg.minsize(480, 380)
     # 允许拉伸：body/canvas/Text 全部 fill+expand，文本框跟随窗口
@@ -240,11 +241,11 @@ def show_about_dialog(parent, sizes=None, fonts=None):
     holder = tk.Frame(dlg.body, bg=theme.BASE)
     holder.pack(fill=tk.BOTH, expand=True)
     pages = [
-        ("关于", intro),
-        ("Windows 使用", about.load_doc("windows")),
-        ("Linux 使用", about.load_doc("linux")),
-        ("更新日志", about.load_doc("changelog")),
-        ("许可证", about._LICENSE_TEXT),
+        (T("关于"), intro),
+        (T("Windows 使用"), about.load_doc("windows")),
+        (T("Linux 使用"), about.load_doc("linux")),
+        (T("更新日志"), about.load_doc("changelog")),
+        (T("许可证"), about._LICENSE_TEXT),
     ]
     cur = [None]
 
@@ -497,7 +498,7 @@ def open_eq_editor(parent, freqs, q, get_gains, set_gains, sizes=None,
                    fonts=None, get_filters=None, set_filters=None):
     """均衡器编辑器：真实频点直接拖拽（栅格随插件规格 10/31/61 段）；
     高切/低切复选框 + 截止频率。"""
-    dlg = DarkDialog(parent, "均衡器", 560, 430, sizes=sizes, fonts=fonts)
+    dlg = DarkDialog(parent, T("均衡器"), 560, 430, sizes=sizes, fonts=fonts)
     cur = list(get_gains())
     if len(cur) != len(freqs):
         cur = [0.0] * len(freqs)
@@ -540,15 +541,16 @@ def open_eq_editor(parent, freqs, q, get_gains, set_gains, sizes=None,
                  troughcolor=theme.TRACK, highlightthickness=0,
                  bd=0, font=(fonts or {}).get("small")).pack(side=tk.LEFT)
 
-    _cut_block(hp_var, hp_hz_var, 20, 1000, "低切")
-    _cut_block(lp_var, lp_hz_var, 1000, 20000, "高切")
+    _cut_block(hp_var, hp_hz_var, 20, 1000, T("低切"))
+    _cut_block(lp_var, lp_hz_var, 1000, 20000, T("高切"))
 
     # ── 预设行（按本规格栅格展开；栅格没有的频点自动跳过）──
     prow = tk.Frame(dlg.body, bg=theme.WINDOW)
     prow.pack(fill=tk.X, padx=10, pady=(0, 8))
     for name, sparse in _PRESETS_SPARSE.items():
         vals = _expand_preset(sparse, freqs)
-        b = tk.Label(prow, text=name, bg=theme.BUTTON, fg=theme.TEXT,
+        # 预设名只在渲染时翻译（T(name)），持久化的键仍是中文原名
+        b = tk.Label(prow, text=T(name), bg=theme.BUTTON, fg=theme.TEXT,
                      font=(fonts or {}).get("small"), padx=8, pady=2,
                      cursor="hand2")
         b.pack(side=tk.LEFT, padx=2)
@@ -577,7 +579,7 @@ def open_hotkey_dialog(parent, get_toggle, set_toggle, get_toggle_enabled,
 
     S = sizes or make_sizes(100)
     F = fonts or {}
-    dlg = DarkDialog(parent, "快捷键与提示音", 420, 190, sizes=S, fonts=F)
+    dlg = DarkDialog(parent, T("快捷键与提示音"), 420, 190, sizes=S, fonts=F)
     body = dlg.body
 
     def row(pady=(0, 0)):
@@ -588,7 +590,7 @@ def open_hotkey_dialog(parent, get_toggle, set_toggle, get_toggle_enabled,
     # ── 第一行：启停快捷键（复选框 = 总开关；录制框无清除×）──
     r = row(pady=(18, 0))
     tg_var = tk.BooleanVar(value=bool(get_toggle_enabled()))
-    DarkCheck(r, "启停快捷键", tg_var,
+    DarkCheck(r, T("启停快捷键"), tg_var,
               command=lambda: set_toggle_enabled(bool(tg_var.get())),
               sizes=S, fonts=F).pack(side=tk.LEFT)
     HotkeyField(r, spec=get_toggle(), command=set_toggle,
@@ -603,10 +605,10 @@ def open_hotkey_dialog(parent, get_toggle, set_toggle, get_toggle_enabled,
 
     on_var = tk.BooleanVar(value=bool(get_cue_enabled()))
     r = row(pady=(18, 0))
-    DarkCheck(r, "启停提示音", on_var,
+    DarkCheck(r, T("启停提示音"), on_var,
               command=lambda: set_cue_enabled(bool(on_var.get())),
               sizes=S, fonts=F).pack(side=tk.LEFT)
-    for kind, text in (("start", "启动提示音"), ("stop", "停止提示音")):
+    for kind, text in (("start", T("启动提示音")), ("stop", T("停止提示音"))):
         FlatButton(r, text, command=lambda k=kind: audition(k),
                    font=F.get("body"), sizes=S, pad=S["pad_sm"]).pack(
             side=tk.LEFT, padx=(S["pad_md"], 0))
@@ -628,7 +630,7 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
                                  CFG_REF_WAV_PATH)
     from user_paths import WAV_PATH
 
-    dlg = DarkDialog(parent, "目标说话人 TSE · 参考音频", 380, 200,
+    dlg = DarkDialog(parent, T("目标说话人 TSE · 参考音频"), 380, 200,
                      sizes=sizes, fonts=fonts)
     info = tk.Label(dlg.body, text="", bg=theme.WINDOW, fg=theme.TEXT_DIM,
                     font=(fonts or {}).get("body"), justify="left",
@@ -642,18 +644,18 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
     if wav and os.path.exists(wav):
         kb = os.path.getsize(wav) / 1024
         mt = _t.strftime("%Y-%m-%d %H:%M", _t.localtime(os.path.getmtime(wav)))
-        info.configure(text=f"已有参考：{os.path.basename(wav)}\n"
-                            f"{kb:.0f} KB · {mt}")
+        info.configure(text=T("已有参考：{name}\n{kb} KB · {mt}").format(
+            name=os.path.basename(wav), kb=f"{kb:.0f}", mt=mt))
     else:
-        info.configure(text="尚无参考音频——TSE 插件将直通。\n"
-                            "启动音频处理后点「开始录音」，对麦克风说 10 秒话。")
+        info.configure(text=T("尚无参考音频——TSE 插件将直通。\n"
+                              "启动音频处理后点「开始录音」，对麦克风说 10 秒话。"))
 
     recording = [False]
 
     def do_record():
         th = engine.thread
         if th is None or not engine.running:
-            show_message(parent, "PureVox", "请先启动音频处理，再录制参考。",
+            show_message(parent, "PureVox", T("请先启动音频处理，再录制参考。"),
                          sizes=sizes, fonts=fonts)
             return
         rec = get_tse_recorder()
@@ -668,7 +670,8 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
                 return
             if deadline[0] > 0:
                 status_lbl.configure(
-                    text=f"录音中… {deadline[0]:.0f}s（请持续说话）")
+                    text=T("录音中… {sec}s（请持续说话）").format(
+                        sec=f"{deadline[0]:.0f}"))
                 deadline[0] -= 1
                 dlg.after(1000, tick)
                 return
@@ -683,14 +686,14 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
             raw = get_tse_recorder().wait_and_get()
             if not raw:
                 status_lbl.configure(
-                    text="录音失败：10 秒内未捕获到音频"
-                         "（请确认音频处理已启动且麦克风有输入）")
+                    text=T("录音失败：10 秒内未捕获到音频"
+                           "（请确认音频处理已启动且麦克风有输入）"))
                 return
             try:
                 with open(WAV_PATH, "wb") as f:
                     f.write(_samples_to_wav_bytes(raw))
             except Exception as e:
-                status_lbl.configure(text=f"保存失败: {e}")
+                status_lbl.configure(text=T("保存失败: {err}").format(err=e))
                 return
             if config:
                 config.set(CFG_REF_WAV_PATH, WAV_PATH)
@@ -698,14 +701,14 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
             proc = engine.processor
             ok = load_tse_reference(proc, WAV_PATH) if proc else False
             status_lbl.configure(
-                text="完成！参考已生效。" if ok
-                else "已保存，但加载失败（模型或参考音频不可用）——请查看日志。")
+                text=T("完成！参考已生效。") if ok
+                else T("已保存，但加载失败（模型或参考音频不可用）——请查看日志。"))
 
         tick()
 
     btn_row = tk.Frame(dlg.body, bg=theme.WINDOW)
     btn_row.pack(fill=tk.X, padx=14, pady=8)
-    rec_btn = tk.Label(btn_row, text="● 开始录音 (10s)", bg=theme.STOP_BG,
+    rec_btn = tk.Label(btn_row, text=T("● 开始录音 (10s)"), bg=theme.STOP_BG,
                        fg=theme.ACCENT_TEXT, font=(fonts or {}).get("bold"),
                        padx=12, pady=sizes["pad_sm"] if sizes else 4,
                        cursor="hand2")

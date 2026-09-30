@@ -33,6 +33,8 @@ NIM_MODIFY 原地换图并同步提示气泡文案。
 
 import threading
 
+from i18n import T
+
 WM_APP_TRAY = 0x8000 + 100
 WM_APP_TRAY_STATE = 0x8000 + 101
 WM_COMMAND = 0x0111
@@ -81,7 +83,7 @@ class TrayIcon:
             None, path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE)
 
     def _tip(self) -> str:
-        return "PureVox — 运行中" if self._running else "PureVox — 已停止"
+        return T("PureVox — 运行中") if self._running else T("PureVox — 已停止")
 
     def set_state(self, running: bool) -> None:
         """切换托盘图标/提示（蓝=运行中，红=已停止）；任意线程可调。"""
@@ -260,11 +262,11 @@ class TrayIcon:
         user32 = ctypes.windll.user32
         menu = user32.CreatePopupMenu()
         MF_STRING = 0x0
-        user32.AppendMenuW(menu, MF_STRING, CMD_OPEN, "打开 PureVox")
-        label = "停止音频处理" if self._running else "启动音频处理"
+        user32.AppendMenuW(menu, MF_STRING, CMD_OPEN, T("打开 PureVox"))
+        label = T("停止音频处理") if self._running else T("启动音频处理")
         user32.AppendMenuW(menu, MF_STRING, CMD_STARTSTOP, label)
         user32.AppendMenuW(menu, 0x800, 0, None)          # MF_SEPARATOR
-        user32.AppendMenuW(menu, MF_STRING, CMD_QUIT, "退出")
+        user32.AppendMenuW(menu, MF_STRING, CMD_QUIT, T("退出"))
         pt = wintypes.POINT()
         ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
         user32.SetForegroundWindow(hwnd)

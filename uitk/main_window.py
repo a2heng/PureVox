@@ -40,6 +40,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 
 from logger import Logger
+from i18n import T
 from . import theme
 from .metrics import make_sizes, detect_zoom_for_screen, \
     fix_tk_scaling, pick_font_family
@@ -128,7 +129,7 @@ class NodeRow(tk.Frame):
         self.check = DarkCheck(head, "", self.on_var, command=self._toggled,
                                sizes=sizes, fonts=fonts)
         self.check.pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
-        self.title_lbl = tk.Label(head, text=f"{spec.label}", bg=theme.PANEL,
+        self.title_lbl = tk.Label(head, text=T(spec.label), bg=theme.PANEL,
                                   fg=theme.TEXT, anchor="w",
                                   font=fonts.get("body"))
         self.title_lbl.pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
@@ -189,7 +190,7 @@ class NodeRow(tk.Frame):
         var = tk.StringVar(value=cur)
         self.dev_var = var
         self.dev_combo = DarkCombo(
-            self.mid, [(cur, cur)] if cur else [("（默认）", "")], var,
+            self.mid, [(cur, cur)] if cur else [(T("（默认）"), "")], var,
             on_change=lambda: self._on_dev_changed(holder, key),
             sizes=self.sizes, fonts=self.fonts)
         # 下拉铺满标题与「×」之间的可用宽度：长设备名不被截短，
@@ -199,7 +200,7 @@ class NodeRow(tk.Frame):
 
     def _on_dev_changed(self, holder, key):
         val = self.dev_var.get()
-        if val in ("（默认）",):
+        if val == T("（默认）"):
             val = ""
         self.cfg.setdefault("params", {})[key] = val
         sync = getattr(self, "_linux_vm_apply", None)
@@ -215,8 +216,8 @@ class NodeRow(tk.Frame):
             return
         hint = tk.Label(
             self.body_frame,
-            text="模型输入音量在 VU 电平表黄色区效果最佳；\n"
-                 "输入音量过小会被当做噪音过滤。",
+            text=T("模型输入音量在 VU 电平表黄色区效果最佳；\n"
+                   "输入音量过小会被当做噪音过滤。"),
             bg=theme.PANEL, fg=theme.TEXT_DIM,
             font=self.fonts.get("small"), anchor="w", justify="left")
         hint.pack(fill=tk.X, padx=self.sizes["pad_lg"], pady=self.sizes["pad_sm"])
@@ -226,7 +227,7 @@ class NodeRow(tk.Frame):
     # ── echo_cancel far 参考源第二下拉（扬声器/麦克风分组二选一）──
 
     def _far_label(self, kind, name):
-        return ("扬声器 | " if kind == "speaker" else "麦克风 | ") + name
+        return (T("扬声器 | ") if kind == "speaker" else T("麦克风 | ")) + name
 
     def _build_far_combo(self):
         """旧行头版 far 下拉已废弃：echo_cancel 行的 far 在下方参数区
@@ -258,7 +259,7 @@ class NodeRow(tk.Frame):
         self.far_var = fvar
         self._far_items = {}
         self.far_combo = DarkCombo(
-            self._ec_line("扬声器"), [""], fvar,
+            self._ec_line(T("扬声器")), [""], fvar,
             on_change=self._on_far_changed,
             sizes=self.sizes, fonts=self.fonts)
         self.far_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -267,16 +268,16 @@ class NodeRow(tk.Frame):
             "device", "") or ""))
         self.dev_var = var
         self.dev_combo = DarkCombo(
-            self._ec_line("麦克风"),
+            self._ec_line(T("麦克风")),
             [(var.get(), var.get())] if var.get() else [],
             var, on_change=lambda: self._on_dev_changed({}, "device"),
             sizes=self.sizes, fonts=self.fonts)
         self.dev_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
         # ── Far 延迟：滑块 + 值(ms) + 校准 ──
         from .widgets import HSlider, FlatButton
-        delay_line = self._ec_line("Far 延迟")
+        delay_line = self._ec_line(T("Far 延迟"))
         self._aec_delay_var = tk.DoubleVar(value=0.0)
-        auto_btn = FlatButton(delay_line, "校准", sizes=self.sizes,
+        auto_btn = FlatButton(delay_line, T("校准"), sizes=self.sizes,
                               command=self._on_aec_auto_calibrate)
         auto_btn.pack(side=tk.RIGHT, padx=(0, 4))
         self._aec_auto_btn = auto_btn
@@ -386,7 +387,7 @@ class NodeRow(tk.Frame):
         key, direction = dspec
         params = self.cfg.setdefault("params", {})
         defaults = devices.get("defaults", {})
-        pairs = list(devices.get(direction, [])) or [("（默认）", "")]
+        pairs = list(devices.get(direction, [])) or [(T("（默认）"), "")]
         self.dev_combo.set_values(pairs)
         vals = [v for _d, v in pairs]
         cur = str(params.get(key, "") or "")
@@ -424,7 +425,7 @@ class NodeRow(tk.Frame):
             ref = {}
             ps = ParamSlider(
                 self.mid if inline_ok else self.body_frame,
-                label, lo, hi,
+                T(label), lo, hi,
                 default if cur is None else cur, step,
                 self.sizes, self.fonts,
                 on_commit=lambda k=key: (
@@ -528,7 +529,8 @@ class MainWindowTk:
             _ver = str(BUILD_DATE).strip()
         except Exception:
             _ver = ""
-        self.root.title("PureVox" + ((" " + _ver) if _ver else "（开发版）"))
+        self._ver = _ver
+        self._update_title()
         self.root.configure(bg=theme.WINDOW)
         self.root.geometry(f"{S['win_w']}x{S['win_h']}")
 
@@ -585,30 +587,30 @@ class MainWindowTk:
         # ── 工具条：启动 → 退出 → 添加 → 设置 ──
         bar = tk.Frame(self.root, bg=theme.WINDOW)
         bar.pack(fill=tk.X, padx=S["pad_md"], pady=S["pad_md"])
-        self.btn_start = FlatButton(bar, "启动音频处理",
+        self.btn_start = FlatButton(bar, T("启动音频处理"),
                                     command=self._on_start,
                                     bg=theme.START_BG, fg=theme.ACCENT_TEXT,
                                     font=self.fonts["body"], sizes=self.sizes)
         self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        self.btn_quit = FlatButton(bar, "退出", command=self.quit_app,
+        self.btn_quit = FlatButton(bar, T("退出"), command=self.quit_app,
                                    bg=theme.STOP_BG,
                                    font=self.fonts["body"],
                                    sizes=self.sizes, pad=S["pad_md"])
         self.btn_quit.pack(side=tk.LEFT, padx=(S["pad_sm"], 0))
 
-        self.btn_add = FlatButton(bar, "添加 ▾", command=self._add_menu,
+        self.btn_add = FlatButton(bar, T("添加 ▾"), command=self._add_menu,
                                   font=self.fonts["body"], sizes=self.sizes,
                                   pad=S["pad_md"])
         self.btn_add.pack(side=tk.LEFT, padx=(S["pad_sm"], 0))
 
-        self.btn_gear = FlatButton(bar, "设置 ▾", command=self._gear_menu,
+        self.btn_gear = FlatButton(bar, T("设置 ▾"), command=self._gear_menu,
                                    font=self.fonts["body"], sizes=self.sizes,
                                    pad=S["pad_md"])
         self.btn_gear.pack(side=tk.LEFT, padx=(S["pad_sm"], 0))
 
         # ── 输入采样率状态行：输入/far 端实际采样率 → 48k 自适应说明 ──
-        self.lbl_sr = tk.Label(self.root, text="输入：未启动",
+        self.lbl_sr = tk.Label(self.root, text=T("输入：未启动"),
                                bg=theme.WINDOW, fg=theme.TEXT_FAINT,
                                font=self.fonts["small"], anchor="w",
                                justify="left")
@@ -653,6 +655,22 @@ class MainWindowTk:
             self._shown = False
         else:
             self.root.deiconify()
+
+    def _update_title(self):
+        """窗口标题（语言切换时同步「开发版」后缀文案）。"""
+        self.root.title("PureVox" + ((" " + self._ver) if self._ver
+                                     else T("（开发版）")))
+
+    def _retranslate(self):
+        """语言切换后即时重译（不动音频线程）：固定控件 +
+        节点行整体经既有 load_chain 路径重建。"""
+        self._update_title()
+        self.btn_quit.configure(text=T("退出"))
+        self.btn_add.configure(text=T("添加 ▾"))
+        self.btn_gear.configure(text=T("设置 ▾"))
+        self._set_running_ui(bool(self.engine.running))
+        self._refresh_sr_label()
+        self.load_chain(self.to_config())
 
     # ── 托盘（动作经队列转投主线程）──
     def _setup_tray(self):
@@ -806,7 +824,7 @@ class MainWindowTk:
         未运行显示「输入：未启动」；网络输入模式显示推流来源。
         """
         if not self.engine.running:
-            self.lbl_sr.configure(text="输入：未启动")
+            self.lbl_sr.configure(text=T("输入：未启动"))
             return
         parts = []
         info = self.engine.input_info()
@@ -814,29 +832,33 @@ class MainWindowTk:
             sr, ch = int(info.get("dev_sr") or 48000), \
                 int(info.get("dev_ch") or 1)
             if info.get("adaptive"):
-                parts.append(f"输入：{ch}ch {sr}Hz → 48kHz（自适应重采样）")
+                parts.append(T("输入：{ch}ch {sr}Hz → 48kHz（自适应重采样）")
+                             .format(ch=ch, sr=sr))
             else:
-                parts.append("输入：48kHz（直通）")
+                parts.append(T("输入：48kHz（直通）"))
         else:
             try:
                 net = self.engine.network_status()
             except Exception:
                 net = None
-            parts.append("输入：网络推流" if net else "输入：无设备输入")
+            parts.append(T("输入：网络推流") if net else T("输入：无设备输入"))
         for o in self.engine.output_info():
             osr, och = int(o.get("dev_sr") or 48000), \
                 int(o.get("ch") or 2)
             if o.get("adaptive"):
-                parts.append(f"输出：{och}ch 48kHz → {osr}Hz（自适应重采样）")
+                parts.append(T("输出：{ch}ch 48kHz → {sr}Hz（自适应重采样）")
+                             .format(ch=och, sr=osr))
             else:
-                parts.append("输出：48kHz（直通）")
+                parts.append(T("输出：48kHz（直通）"))
         for a in self.engine.aec_info():
-            kind = "扬声器" if a.get("far_kind") == "speaker" else "麦克风"
+            kind = T("扬声器") if a.get("far_kind") == "speaker" else T("麦克风")
             fsr = int(a.get("far_sr") or 0)
             if fsr and fsr != 48000:
-                parts.append(f"AEC far（{kind}）：{fsr}Hz → 48kHz（自适应）")
+                parts.append(T("AEC far（{kind}）：{sr}Hz → 48kHz（自适应）")
+                             .format(kind=kind, sr=fsr))
             else:
-                parts.append(f"AEC far（{kind}）：48kHz（直通）")
+                parts.append(T("AEC far（{kind}）：48kHz（直通）")
+                             .format(kind=kind))
         self.lbl_sr.configure(text="\n".join(parts))
         try:
             self.engine.log.msg("[状态] " + " ｜ ".join(parts))
@@ -882,7 +904,8 @@ class MainWindowTk:
         self.engine.stop()
         err = self.engine.start(self.to_config())
         if err:
-            self._dialog("showwarning", "PureVox", f"链已更新，但重启失败：\n{err}")
+            self._dialog("showwarning", "PureVox",
+                         T("链已更新，但重启失败：\n{err}").format(err=err))
             self._set_running_ui(False)
         else:
             self._set_running_ui(True)
@@ -917,7 +940,7 @@ class MainWindowTk:
 
     def _set_running_ui(self, running):
         bg = theme.STOP_BG if running else theme.START_BG
-        text = "停止音频处理" if running else "启动音频处理"
+        text = T("停止音频处理") if running else T("启动音频处理")
         self.btn_start.set_bg(bg)
         self.btn_start.configure(text=text)
         # 托盘图标随运行态变色（蓝=运行中，红=已停止）
@@ -971,23 +994,46 @@ class MainWindowTk:
         m = tk.Menu(self.root, tearoff=0, bg=theme.BUTTON, fg=theme.TEXT,
                     activebackground=theme.DARK, activeforeground=theme.TEXT,
                     bd=0, font=self.fonts["body"])
-        m.add_command(label="系统声音", command=self._open_sound_panel)
+        m.add_command(label=T("系统声音"), command=self._open_sound_panel)
         if not sys.platform.startswith("win"):
-            m.add_command(label="虚拟声卡", command=self._open_virtual_mic)
-        m.add_command(label="快捷键与提示音", command=self._open_hotkey_settings)
-        m.add_command(label="关于", command=self._show_about)
+            m.add_command(label=T("虚拟声卡"), command=self._open_virtual_mic)
+        m.add_command(label=T("快捷键与提示音"),
+                      command=self._open_hotkey_settings)
+        m.add_command(label=T("关于"), command=self._show_about)
         m.add_separator()
-        m.add_checkbutton(label="启动时自动运行",
+        m.add_checkbutton(label=T("启动时自动运行"),
                           onvalue=True, offvalue=False,
                           variable=self._autorun_var,
                           command=lambda: self._cfg_set(
                               "auto_start", bool(self._autorun_var.get())))
-        m.add_checkbutton(label="开机自启",
+        m.add_checkbutton(label=T("开机自启"),
                           onvalue=True, offvalue=False,
                           variable=self._boot_var,
                           command=self._toggle_boot)
+        # 语言 / Language（级联标签本身双语，不入翻译表）
+        from i18n import LANGUAGES, get_language
+        self._lang_var = tk.StringVar(value=get_language())
+        lang = tk.Menu(m, tearoff=0, bg=theme.BUTTON, fg=theme.TEXT,
+                       activebackground=theme.DARK,
+                       activeforeground=theme.TEXT, bd=0,
+                       font=self.fonts["body"])
+        for code, name in LANGUAGES.items():
+            lang.add_radiobutton(label=name, value=code,
+                                 variable=self._lang_var,
+                                 command=lambda c=code:
+                                 self._on_language_changed(c))
+        m.add_cascade(label="语言 / Language", menu=lang)
         m.tk_popup(self.btn_gear.winfo_rootx(),
                    self.btn_gear.winfo_rooty() + self.btn_gear.winfo_height())
+
+    def _on_language_changed(self, code):
+        """切换语言：持久化 + 即时重译（菜单按需构建，下次打开即新语言）。"""
+        from i18n import set_language, get_language
+        if code == get_language():
+            return
+        set_language(code)
+        self._cfg_set("language", code)
+        self._retranslate()
 
     def _open_sound_panel(self):
         try:
@@ -1004,10 +1050,11 @@ class MainWindowTk:
                 remove_virtual_mic(Logger())
             else:
                 ensure_virtual_mic(Logger())
-            self._dialog("showinfo", "虚拟声卡",
-                         "已创建，请重启音频处理生效。" if not ready else "已清理。")
+            self._dialog("showinfo", T("虚拟声卡"),
+                         T("已创建，请重启音频处理生效。") if not ready
+                         else T("已清理。"))
         except Exception as e:
-            self._dialog("showwarning", "虚拟声卡", str(e))
+            self._dialog("showwarning", T("虚拟声卡"), str(e))
 
     def _show_about(self):
         from .dialogs import show_about_dialog
@@ -1121,9 +1168,9 @@ class MainWindowTk:
         if not specs or specs == getattr(self, "_hotkey_warned", None):
             return
         self._hotkey_warned = specs
-        msg = ("以下快捷键已被系统或其他程序占用，未能生效：\n"
-               + "、".join(specs)
-               + "\n\n请在「设置 → 快捷键与提示音」中换一组。")
+        msg = T("以下快捷键已被系统或其他程序占用，未能生效：\n"
+                "{keys}\n\n请在「设置 → 快捷键与提示音」中换一组。").format(
+            keys="、".join(specs))
         try:
             self.root.after(0, lambda: self._dialog(
                 "showwarning", "PureVox", msg))
@@ -1215,27 +1262,27 @@ class MainWindowTk:
                    "audio_output"):
             sp = get_spec(nm)
             if sp is not None:
-                dev.add_command(label=sp.label,
+                dev.add_command(label=T(sp.label),
                                 command=lambda s=sp: self.add_spec(s))
-        m.add_cascade(label="设备", menu=dev)
+        m.add_cascade(label=T("设备"), menu=dev)
         # 媒体输入分类：设备外音源（相互独立的插件节点）
         media = tk.Menu(m, tearoff=0, bg=theme.BUTTON, fg=theme.TEXT,
                         activebackground=theme.DARK,
                         activeforeground=theme.TEXT, bd=0,
                         font=self.fonts["body"])
-        media.add_command(label="音效板",
+        media.add_command(label=T("音效板"),
                           command=lambda: self.add_spec(get_spec("soundpad")))
-        media.add_command(label="音乐播放器",
+        media.add_command(label=T("音乐播放器"),
                           command=lambda: self.add_spec(get_spec("music_player")))
-        media.add_command(label="桌面声音输入",
+        media.add_command(label=T("桌面声音输入"),
                           command=lambda: self.add_spec(get_spec("desktop_audio")))
-        m.add_cascade(label="媒体输入", menu=media)
+        m.add_cascade(label=T("媒体输入"), menu=media)
         # 处理 / 可视化（媒体输入已独立分类，不在处理清单重复出现）
         for kind in ("fx", "viz"):
             specs = [s for s in all_specs()
                      if s.name not in ("soundpad", "music_player",
                                        "desktop_audio")]
-            m.add_cascade(label=KIND_LABELS[kind],
+            m.add_cascade(label=T(KIND_LABELS[kind]),
                           menu=self._kind_menu(m, kind, specs))
         m.tk_popup(self.btn_add.winfo_rootx(),
                    self.btn_add.winfo_rooty() + self.btn_add.winfo_height())
@@ -1246,7 +1293,7 @@ class MainWindowTk:
                     bd=0, font=self.fonts["body"])
         for sp in specs:
             if sp.kind == kind:
-                m.add_command(label=sp.label,
+                m.add_command(label=T(sp.label),
                               command=lambda s=sp: self.add_spec(s))
         return m
 
@@ -1281,13 +1328,13 @@ class MainWindowTk:
             self._attach_viz(row, spec.name)
         # eq 行（三种规格）：标题后提供曲线编辑按钮
         if spec.name in ("eq10", "eq31", "eq61"):
-            FlatButton(row.mid, "均衡器编辑",
+            FlatButton(row.mid, T("均衡器编辑"),
                        command=lambda r=row: self._open_eq_editor(r),
                        font=self.fonts.get("body"), sizes=self.sizes,
                        pad=self.sizes["pad_sm"]).pack(side=tk.LEFT)
         # tse 行：标题后提供参考录音按钮
         if spec.name == "tse":
-            FlatButton(row.mid, "参考录音",
+            FlatButton(row.mid, T("参考录音"),
                        command=self._open_tse_dialog,
                        font=self.fonts.get("body"), sizes=self.sizes,
                        pad=self.sizes["pad_sm"]).pack(side=tk.LEFT)
@@ -1365,7 +1412,7 @@ class MainWindowTk:
                       command=lambda i=idx, v=hk_var: _set_hk_on(i, v),
                       sizes=S, fonts=F).pack(side=tk.LEFT,
                                              padx=(indent, S["pad_sm"]))
-            name = tk.Label(r, text=str(info.get("name") or "未命名"),
+            name = tk.Label(r, text=str(info.get("name") or T("未命名")),
                             bg=row_bg, fg=theme.TEXT, anchor="w",
                             width=10, font=F.get("body"), cursor="hand2")
             name.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
@@ -1429,10 +1476,10 @@ class MainWindowTk:
 
         def _add():
             path = self._ask_open_file(
-                "添加音效",
-                [("音频/容器", "*.wav *.mp3 *.flac *.ogg *.m4a *.mp4 "
-                              "*.aac *.opus *.wma *.mov *.webm *.mkv"),
-                 ("全部文件", "*.*")])
+                T("添加音效"),
+                [(T("音频/容器"), "*.wav *.mp3 *.flac *.ogg *.m4a *.mp4 "
+                                 "*.aac *.opus *.wma *.mov *.webm *.mkv"),
+                 (T("全部文件"), "*.*")])
             if not path:
                 return
             # 入库：一律归一为 48k/mono WAV 存入 ~/.purevox/soundpad/，
@@ -1443,7 +1490,8 @@ class MainWindowTk:
                 from pvengine.components.audio_decode import import_media
                 real = import_media(path, SOUNDPAD_DIR, stem=name)
             except Exception as e:
-                self._dialog("showwarning", "PureVox", f"该文件无法解码：\n{e}")
+                self._dialog("showwarning", "PureVox",
+                             T("该文件无法解码：\n{err}").format(err=e))
                 return
             # 每个音效一整套：名称 / 库内路径 / 快捷键开关 / 快捷键 / 音量
             pads().append({"name": name, "path": real, "hotkey_on": True,
@@ -1452,7 +1500,7 @@ class MainWindowTk:
             render()
 
         # 「添加音效」放在标题之后（行头 mid 区，紧贴标题）
-        FlatButton(row.mid, "添加音效", command=_add,
+        FlatButton(row.mid, T("添加音效"), command=_add,
                    font=F.get("body"), sizes=S,
                    pad=S["pad_sm"]).pack(side=tk.LEFT)
 
@@ -1467,8 +1515,8 @@ class MainWindowTk:
     def _attach_desktop_audio(self, row):
         """桌面声音输入行内说明（音量滑杆自动生成；捕获随引擎启停）。"""
         hint = tk.Label(row.body_frame,
-                        text="捕获默认输出设备的系统混音（loopback），"
-                             "音量滑杆实时生效；随引擎启停自动开关。",
+                        text=T("捕获默认输出设备的系统混音（loopback），"
+                               "音量滑杆实时生效；随引擎启停自动开关。"),
                         bg=theme.PANEL, fg=theme.TEXT_DIM,
                         font=self.fonts.get("small"), anchor="w",
                         justify="left")
@@ -1516,7 +1564,7 @@ class MainWindowTk:
         info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         row1 = tk.Frame(info, bg=theme.PANEL)
         row1.pack(fill=tk.X)
-        tk.Label(row1, text="网络", bg=theme.PANEL, fg=theme.TEXT_DIM,
+        tk.Label(row1, text=T("网络"), bg=theme.PANEL, fg=theme.TEXT_DIM,
                  font=F.get("small")).pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
         pairs = [(f"[{name}] {i}", i) for i, name in networks] \
             or [("127.0.0.1", "127.0.0.1")]
@@ -1524,13 +1572,13 @@ class MainWindowTk:
         DarkCombo(row1, pairs, var, on_change=lambda: self._on_net_ip(row, var),
                   sizes=S, fonts=F).pack(side=tk.LEFT, fill=tk.X, expand=True)
         row._net_status_lbl = tk.Label(
-            info, text="服务未启动（启动后显示状态）", bg=theme.PANEL,
+            info, text=T("服务未启动（启动后显示状态）"), bg=theme.PANEL,
             fg=theme.TEXT_FAINT, font=F.get("small"), anchor="w", justify="left")
         row._net_status_lbl.pack(fill=tk.X, pady=(S["pad_sm"], 0))
         hint = tk.Label(
             info,
-            text="手机/浏览器扫码或访问该地址推流（HTTPS，首次需信任自签证书）；"
-                 "实际监听端口 = 设置中的服务器端口。",
+            text=T("手机/浏览器扫码或访问该地址推流（HTTPS，首次需信任自签证书）；"
+                   "实际监听端口 = 设置中的服务器端口。"),
             bg=theme.PANEL, fg=theme.TEXT_FAINT, font=F.get("small"),
             anchor="w", justify="left")
         hint.pack(fill=tk.X, pady=(S["pad_sm"], 0))
@@ -1559,7 +1607,8 @@ class MainWindowTk:
         photo = make_qr_photo(lbl, getattr(row, "_net_url", ""), target_px=target)
         if photo is None:
             lbl.configure(image="",
-                          text=f"二维码\n不可用（{qr_unavailable_reason()}）",
+                          text=T("二维码\n不可用（{reason}）").format(
+                              reason=qr_unavailable_reason()),
                           fg=theme.TEXT_FAINT, font=self.fonts.get("small"))
             return
         lbl._qr_photo = photo
@@ -1582,12 +1631,13 @@ class MainWindowTk:
                 if lbl is None:
                     continue
                 if not running:
-                    lbl.configure(text="服务未启动（启动后显示状态）")
+                    lbl.configure(text=T("服务未启动（启动后显示状态）"))
                 elif st is None:
-                    lbl.configure(text="服务器启动中…")
+                    lbl.configure(text=T("服务器启动中…"))
                 else:
                     lbl.configure(
-                        text=f"端口 {st['port']} · 客户端 {st['clients']} 个")
+                        text=T("端口 {port} · 客户端 {clients} 个").format(
+                            port=st['port'], clients=st['clients']))
             self.root.after(1000, _tick)
 
         self.root.after(1000, _tick)
@@ -1602,7 +1652,7 @@ class MainWindowTk:
         holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
         state = {"dragging": False, "dur": 0.0, "after": None,
                  "was_playing": False}
-        name_lbl = tk.Label(holder, text="（未选择曲目）", bg=theme.PANEL,
+        name_lbl = tk.Label(holder, text=T("（未选择曲目）"), bg=theme.PANEL,
                             fg=theme.TEXT, anchor="w", font=F.get("body"))
         name_lbl.pack(fill=tk.X, pady=(0, 2))
         bar = tk.Frame(holder, bg=theme.PANEL)
@@ -1633,15 +1683,15 @@ class MainWindowTk:
 
         def _pick():
             path = self._ask_open_file(
-                "选择音乐/媒体文件",
-                [("音频/容器", "*.mp3 *.flac *.ogg *.wav *.m4a *.mp4 "
-                              "*.aac *.opus *.wma *.mov *.webm *.mkv"),
-                 ("全部文件", "*.*")])
+                T("选择音乐/媒体文件"),
+                [(T("音频/容器"), "*.mp3 *.flac *.ogg *.wav *.m4a *.mp4 "
+                                 "*.aac *.opus *.wma *.mov *.webm *.mkv"),
+                 (T("全部文件"), "*.*")])
             if not path:
                 return
             # 入库：一律归一为 48k/mono WAV 存入 ~/.purevox/music/，
             # 配置只引用库内路径（不依赖外部原始文件）
-            name_lbl.configure(text="导入中…")
+            name_lbl.configure(text=T("导入中…"))
             holder.update_idletasks()
             try:
                 from user_paths import MUSIC_DIR
@@ -1649,7 +1699,8 @@ class MainWindowTk:
                 path = import_media(path, MUSIC_DIR)
             except Exception as e:
                 refresh_name()
-                self._dialog("showwarning", "PureVox", f"该文件无法解码：\n{e}")
+                self._dialog("showwarning", "PureVox",
+                             T("该文件无法解码：\n{err}").format(err=e))
                 return
             _set("path", path)
             _set("resume_sec", 0.0)
@@ -1657,13 +1708,13 @@ class MainWindowTk:
             refresh_name()
 
         from .widgets import FlatButton
-        FlatButton(bar, "选择曲目", command=_pick, font=F.get("body"),
+        FlatButton(bar, T("选择曲目"), command=_pick, font=F.get("body"),
                    sizes=S, pad=S["pad_sm"]).pack(side=tk.LEFT,
                                                  padx=(0, S["pad_sm"]))
-        FlatButton(bar, "播放", command=_play, font=F.get("body"),
+        FlatButton(bar, T("播放"), command=_play, font=F.get("body"),
                    sizes=S, pad=S["pad_sm"]).pack(side=tk.LEFT,
                                                  padx=(0, S["pad_sm"]))
-        FlatButton(bar, "暂停", command=_pause, font=F.get("body"),
+        FlatButton(bar, T("暂停"), command=_pause, font=F.get("body"),
                    sizes=S, pad=S["pad_sm"]).pack(side=tk.LEFT,
                                                  padx=(0, S["pad_sm"]))
         time_lbl = tk.Label(bar, text="00:00 / 00:00", bg=theme.PANEL,
@@ -1697,7 +1748,7 @@ class MainWindowTk:
         def refresh_name():
             path = str((row.cfg.get("params") or {}).get("path", ""))
             name_lbl.configure(
-                text=(os.path.basename(path) if path else "（未选择曲目）"))
+                text=(os.path.basename(path) if path else T("（未选择曲目）")))
 
         def _tick():
             try:
@@ -1782,8 +1833,8 @@ class MainWindowTk:
         （返回 None）时保留原值并提示，不把用户手调值清 0。
         """
         if self.engine.running:
-            self._dialog("showinfo", "校准",
-                         "请先关闭音频处理（并保持环境安静），再点击自动校准。")
+            self._dialog("showinfo", T("校准"),
+                         T("请先关闭音频处理（并保持环境安静），再点击自动校准。"))
             return
         mic = str((row.cfg.get("params") or {}).get("device", ""))
         far_dev = str((row.cfg.get("params") or {}).get("far_device", ""))
@@ -1792,7 +1843,7 @@ class MainWindowTk:
             return
         btn = getattr(row, "_aec_auto_btn", None)
         if btn:
-            btn.config(state=tk.DISABLED, text="校准中…")
+            btn.config(state=tk.DISABLED, text=T("校准中…"))
         def _run():
             try:
                 delay_ms = self.engine.calibrate_aec_delay(mic, far_dev, far_kind)
@@ -1801,15 +1852,16 @@ class MainWindowTk:
             def _update():
                 if delay_ms is None:
                     self._dialog("showwarning",
-                                 "校准", "延迟校准失败，已保留原值。\n"
-                                 "请保持环境安静并确认麦克风能听到扬声器测试音后重试。")
+                                 T("校准"),
+                                 T("延迟校准失败，已保留原值。\n"
+                                   "请保持环境安静并确认麦克风能听到扬声器测试音后重试。"))
                 elif hasattr(row, "_aec_delay_slider") and row._aec_delay_slider:
                     row._aec_delay_slider.set_value(delay_ms)
                     row._aec_delay_lbl.config(text=f"{delay_ms:.0f}ms")
                     row.cfg.setdefault("params", {})["far_delay_ms"] = delay_ms
                     self._persist()
                 if btn:
-                    btn.config(state=tk.NORMAL, text="校准")
+                    btn.config(state=tk.NORMAL, text=T("校准"))
             self.root.after(0, _update)
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1857,7 +1909,8 @@ class MainWindowTk:
                         pk = info.get("peak", 0)
                         pk_db = max(20.0 * math.log10(max(pk, 1e-10)), -90.0)
                         gain_db = agc.get_agc_gain_db()
-                        gain_str = f"{gain_db:+.1f} dB  峰值 {pk_db:.1f} dB"
+                        gain_str = f"{gain_db:+.1f} dB  " + T(
+                            "峰值 {pk} dB").format(pk=f"{pk_db:.1f}")
                         prev = getattr(r, "_agc_last_val", None)
                         if prev is not None and gain_str != prev:
                             r._agc_last_change = now
@@ -1866,7 +1919,7 @@ class MainWindowTk:
                         fg = theme.ACCENT if age < 1.5 else theme.TEXT_DIM
                         gain_lbl.config(text=gain_str, fg=fg)
                     else:
-                        gain_lbl.config(text="无 AGC 节点", fg=theme.TEXT_DIM)
+                        gain_lbl.config(text=T("无 AGC 节点"), fg=theme.TEXT_DIM)
         # ── AEC 行 VU 电平表更新（10fps，降 CPU）──
         aec_thread = self.engine.thread if self.engine.running else None
         if now >= getattr(self, "_aec_vu_next", 0.0):
@@ -1909,11 +1962,11 @@ class MainWindowTk:
         state_lbl = tk.Label(head, text="", bg=theme.PANEL, fg=theme.TEXT_DIM,
                              font=F.get("bold"))
         state_lbl.pack(side=tk.LEFT, padx=(6, 0))
-        btn = FlatButton(head, "创建", sizes=S, command=lambda: _on_action())
+        btn = FlatButton(head, T("创建"), sizes=S, command=lambda: _on_action())
         btn.pack(side=tk.RIGHT)
         tk.Label(card,
-                 text="创建后，其它软件把「PureVox 虚拟麦克风」设为麦克风"
-                      "即可收到降噪声音。创建/清理均幂等。",
+                 text=T("创建后，其它软件把「PureVox 虚拟麦克风」设为麦克风"
+                        "即可收到降噪声音。创建/清理均幂等。"),
                  bg=theme.PANEL, fg=theme.TEXT_DIM, font=F.get("body"),
                  justify="left", anchor="w",
                  wraplength=max(320, S["win_w"] - 80)).pack(
@@ -1931,9 +1984,9 @@ class MainWindowTk:
             dot.delete("all")
             dot.create_oval(1, 1, 11, 11,
                             fill=(green if ready else red), outline="")
-            state_lbl.configure(text=("已创建" if ready else "未创建"),
+            state_lbl.configure(text=(T("已创建") if ready else T("未创建")),
                                 fg=(green if ready else red))
-            btn.configure(text=("清理" if ready else "创建"))
+            btn.configure(text=(T("清理") if ready else T("创建")))
 
         def _on_action():
             try:
@@ -1985,7 +2038,8 @@ class MainWindowTk:
                         highlightthickness=0)
         dot.pack(side=tk.LEFT)
         dot.create_oval(1, 1, 11, 11, fill=gray, outline="")
-        state_lbl = tk.Label(head, text="待检测 —— 启动或停止音频处理时自动检测",
+        state_lbl = tk.Label(head,
+                             text=T("待检测 —— 启动或停止音频处理时自动检测"),
                              bg=theme.PANEL, fg=theme.TEXT_DIM,
                              font=self.fonts.get("bold"))
         state_lbl.pack(side=tk.LEFT, padx=(6, 0))
@@ -2001,9 +2055,9 @@ class MainWindowTk:
             w = flow.winfo_width() or 320
             h = int(flow.winfo_height() or 34)
             f = self.fonts.get("small")
-            boxes = (("麦克风", theme.TRACK), ("PureVox", theme.ACCENT),
+            boxes = ((T("麦克风"), theme.TRACK), ("PureVox", theme.ACCENT),
                      ("CABLE In", theme.TRACK), ("CABLE Out", theme.TRACK),
-                     ("OBS/会议/语音等软件", theme.TRACK))
+                     (T("OBS/会议/语音等软件"), theme.TRACK))
             tw = [f.measure(t) if f else 40 for t, _ in boxes]
             bh = max(16, h - 8)
             cy = h // 2
@@ -2038,7 +2092,7 @@ class MainWindowTk:
 
         # ── 驱动卡片 ──
         guide = tk.Label(card,
-                         text="未检测到驱动：点「驱动下载」安装后启动即可识别。",
+                         text=T("未检测到驱动：点「驱动下载」安装后启动即可识别。"),
                          bg=theme.PANEL, fg=theme.TEXT_FAINT,
                          font=self.fonts.get("body"), justify="left",
                          anchor="w", wraplength=wrap)
@@ -2047,7 +2101,7 @@ class MainWindowTk:
         btns = tk.Frame(card, bg=theme.PANEL,
                         highlightbackground=theme.MID, highlightthickness=1)
         btns.pack(fill=tk.X, padx=8, pady=(0, 4))
-        tk.Label(btns, text=" VB-CABLE 驱动 ", bg=theme.TRACK,
+        tk.Label(btns, text=T(" VB-CABLE 驱动 "), bg=theme.TRACK,
                  fg=theme.TEXT_DIM, font=self.fonts.get("body")
                  ).pack(side=tk.LEFT, padx=(0, 2), pady=4)
 
@@ -2069,9 +2123,9 @@ class MainWindowTk:
                 from pvplatform.system import open_virtual_cable_panel
                 open_virtual_cable_panel(Logger())
 
-        _label_btn(btns, "控制面板", _open_panel)
-        _label_btn(btns, "驱动下载", lambda: webbrowser_open(download_url))
-        _label_btn(btns, "视频教程", lambda: webbrowser_open(tutorial_url))
+        _label_btn(btns, T("控制面板"), _open_panel)
+        _label_btn(btns, T("驱动下载"), lambda: webbrowser_open(download_url))
+        _label_btn(btns, T("视频教程"), lambda: webbrowser_open(tutorial_url))
 
         # ── 启动检测开关（写回配置；启动流程据此决定是否提醒）──
         cb_var = tk.BooleanVar(
@@ -2080,7 +2134,7 @@ class MainWindowTk:
         def _toggle_check():
             self._cfg_set("vbcable_check_enabled", bool(cb_var.get()))
 
-        DarkCheck(card, "启动时检测 VB-CABLE 驱动安装（取消勾选不再弹框）",
+        DarkCheck(card, T("启动时检测 VB-CABLE 驱动安装（取消勾选不再弹框）"),
                   cb_var, command=_toggle_check,
                   sizes=self.sizes, fonts=self.fonts).pack(
             anchor="w", padx=8, pady=(0, 6))
@@ -2097,14 +2151,14 @@ class MainWindowTk:
             dot.delete("all")
             dot.create_oval(1, 1, 11, 11,
                             fill=(green if now else red), outline="")
-            state_lbl.configure(text="已安装" if now else "未安装",
+            state_lbl.configure(text=T("已安装") if now else T("未安装"),
                                 fg=green if now else red)
             if now:
                 guide.pack_forget()
             else:
                 guide.configure(text=(
-                    "未检测到 VB-CABLE 驱动：请先下载官方驱动包并安装，"
-                    "装好后点击「启动/停止音频处理」即可识别。"))
+                    T("未检测到 VB-CABLE 驱动：请先下载官方驱动包并安装，"
+                      "装好后点击「启动/停止音频处理」即可识别。")))
                 guide.pack(fill=tk.X, padx=8, pady=(0, 2))
 
         row.vb_apply = _apply

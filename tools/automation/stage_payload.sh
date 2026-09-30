@@ -16,7 +16,7 @@ DATE="$2"
 
 mkdir -p "$ROOT"
 for f in \
-    audio_processor.py config_manager.py about_content.py logger.py \
+    audio_processor.py config_manager.py about_content.py i18n.py logger.py \
     model_config.py qr_tk.py run_tk.py user_paths.py wav_io.py session_plan.py; do
     cp "$f" "$ROOT/"
 done
