@@ -272,50 +272,48 @@ def show_about_dialog(parent, sizes=None, fonts=None):
     show(0)
 
 
-# ── EQ 编辑器：真实频点 Canvas（引擎单一来源，10/31/61 段共用）+ 高切/低切 ──
-from pvengine.components.eq import EQ_FREQS as _EQ_FREQS, EQ_Q as _EQ_Q
+# ── EQ 编辑器：人声频点 Canvas（单一人声栅格，引擎单一来源）+ 高切/低切 ──
+from pvengine.components.eq import EQ_FREQS as _EQ_FREQS, EQ_QS as _EQ_QS
+from pvengine.components.eq import EQ_VIEW_LO as _VIEW_LO
+from pvengine.components.eq import EQ_VIEW_HI as _VIEW_HI
+from pvengine.components.eq import EQ_GAIN_LIMIT as _GAIN_LIMIT
 from pvengine.components.eq import response_at as _eq_response_at
+from pvengine.components.eq import _norm_qs as _eq_norm_qs
 
 HP_DEFAULT_HZ = 80.0     # 低切（高通）默认截止
-LP_DEFAULT_HZ = 16000.0  # 高切（低通）默认截止
+LP_DEFAULT_HZ = 8000.0   # 高切（低通）默认截止（人声能量止于 8k 附近）
 
-# 预设：{频点: dB} 稀疏定义（键为标准频点；展开时按各规格栅格匹配，
-# 栅格里没有的频点自动跳过——同一套预设适配 10/31/61 三种段数）
-_PRESETS_SPARSE = {
-    "平直": {},
-    "低音增强": {63.0: 4.0, 125.0: 3.0, 250.0: 1.5},
-    "人声增强": {125.0: -1.5, 250.0: -1.0, 1000.0: 2.0, 2500.0: 2.5, 4000.0: 1.5},
-    "高音增强": {8000.0: 2.0, 12500.0: 3.0, 16000.0: 3.0},
+# 预设：与点位一一对应的 13 段增益（频点 80/150/250/400/600/850/1200/
+# 1700/2400/3400/4800/6500/8000 Hz），全部面向人声
+_PRESETS = {
+    "平直":       [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "人声清晰":   [-1, -2, -1.5, -1, 0, 1, 1.5, 2, 2.5, 2, 1, 0, 0],
+    "温暖厚实":   [1.5, 2.5, 2, 1.5, 1, 0, 0, -0.5, -1, -1, -1.5, -2, -2.5],
+    "电话音直播": [-6, -4.5, -3, -1, 0.5, 2, 2.5, 2.5, 1.5, 1, -2.5, -4.5, -6],
+    "去齿音":     [0, 0, 0, 0, 0, 0, 0, 0, 0, -0.5, -1.5, -2, -1.5],
+    "防喷增强":   [-4, -3, -1.5, -1, 0, 0, 1, 1, 1.5, 1, 0.5, 0, 0],
 }
 
 
-def _expand_preset(sparse, freqs=None):
-    if freqs is None:
-        freqs = _EQ_FREQS
-    out = []
-    for f in freqs:
-        g = 0.0
-        for bf, bg in sparse.items():
-            if abs(math.log10(bf) - math.log10(f)) < 1e-9:
-                g = bg
-                break
-        out.append(g)
-    return out
-
-
 class EQCurveCanvas(tk.Canvas):
-    """真实频点响应曲线（栅格可配：10/31/61 段），拖拽/滚轮直接调
-    对应频段；高切/低切虚线标记。"""
+    """人声频点响应曲线：横轴值固定 20 Hz ~ 20 kHz 对数轴（极高/极低频
+    只为低切/高切可视化），位置经指数 warp（压前段、放后段），
+    纵轴 ±30 dB（多出的下半给切滤下潜到 -30 用）；
+    13 个可调点位全在 8k 及以下，每段可调 ±10 dB；
+    拖拽/滚轮直接调对应频段；高切/低切虚线标记。"""
 
-    Y_LIMIT = 15
+    Y_LIMIT = 30
+    # 横坐标位置 warp：轴值仍是 20 Hz ~ 20 kHz 对数轴，只把位置再做
+    # 指数压缩——前段（80 Hz 以前无点位）只占 ~9% 宽度，后段放宽到 ~19%
+    _X_WARP = 1.5
 
     def __init__(self, parent, gains, filters=None, on_change=None,
-                 sizes=None, fonts=None, freqs=None, q=0.0):
+                 sizes=None, fonts=None, freqs=None, q=None):
         self.sizes = sizes or make_sizes(100)
         self.fonts = fonts or {}
         self.on_change = on_change
         self._freqs = tuple(freqs) if freqs is not None else _EQ_FREQS
-        self._q = float(q) if q > 0.0 else _EQ_Q
+        self._qs = _eq_norm_qs(q, self._freqs)
         self._gains = list(gains)
         if len(self._gains) != len(self._freqs):
             self._gains = [0.0] * len(self._freqs)
@@ -349,21 +347,29 @@ class EQCurveCanvas(tk.Canvas):
         return (bool(self._hp[0]), float(self._hp[1]),
                 bool(self._lp[0]), float(self._lp[1]))
 
-    # ── 几何 ──
+    # ── 几何（横轴值固定 _VIEW_LO ~ _VIEW_HI 对数轴；
+    # 位置经 _X_WARP 指数 warp：压前段、放后段）──
     def _geom(self):
         w = max(self.winfo_width(), 120)
         h = max(self.winfo_height(), 80)
         L, R, T, B = 26, 12, 8, 18
         return w, h, L, R, T, B
 
+    def _u_of_freq(self, f):
+        lo, hi = math.log10(_VIEW_LO), math.log10(_VIEW_HI)
+        u = (math.log10(f) - lo) / (hi - lo)
+        return min(max(u, 0.0), 1.0) ** self._X_WARP
+
+    def _freq_of_u(self, u):
+        lo, hi = math.log10(_VIEW_LO), math.log10(_VIEW_HI)
+        return 10.0 ** (lo + (min(max(u, 0.0), 1.0)
+                              ** (1.0 / self._X_WARP)) * (hi - lo))
+
     def _x_of_band(self, i, w, L, gw):
-        lo, hi = math.log10(self._freqs[0]), math.log10(self._freqs[-1])
-        return L + (math.log10(self._freqs[i]) - lo) / (hi - lo) * gw
+        return L + self._u_of_freq(self._freqs[i]) * gw
 
     def _x_of_freq(self, f, w, L, gw):
-        lo, hi = math.log10(self._freqs[0]), math.log10(self._freqs[-1])
-        u = min(max(math.log10(f), lo), hi)
-        return L + (u - lo) / (hi - lo) * gw
+        return L + self._u_of_freq(f) * gw
 
     def _y_of_gain(self, g, T, gh):
         # ±15dB 满幅
@@ -371,15 +377,13 @@ class EQCurveCanvas(tk.Canvas):
 
     def _gain_at_y(self, y, T, gh):
         g = (1 - (y - T) / gh) * 2 * self.Y_LIMIT - self.Y_LIMIT
-        return max(-self.Y_LIMIT, min(self.Y_LIMIT, round(g)))
+        return max(-_GAIN_LIMIT, min(_GAIN_LIMIT, round(g)))
 
     def _band_at_x(self, x, w, L, gw):
-        lo, hi = math.log10(self._freqs[0]), math.log10(self._freqs[-1])
-        u = min(max(x - L, 0.0), gw)
-        target = lo + (u / gw) * (hi - lo)
+        u = min(max((x - L) / gw if gw else 0.0, 0.0), 1.0)
         best, bd = 0, 1e9
         for i, f in enumerate(self._freqs):
-            d = abs(math.log10(f) - target)
+            d = abs(self._u_of_freq(f) - u)
             if d < bd:
                 best, bd = i, d
         return best
@@ -390,8 +394,8 @@ class EQCurveCanvas(tk.Canvas):
         gw, gh = w - L - R, h - T - B
         n = len(self._freqs)
         self.delete("all")
-        # 网格
-        for db in (-15, -10, -5, 0, 5, 10, 15):
+        # 网格（±30 dB，每 10 dB 一线）
+        for db in (-30, -20, -10, 0, 10, 20, 30):
             y = self._y_of_gain(db, T, gh)
             solid = db == 0
             self.create_line(L, y, L + gw, y,
@@ -399,35 +403,34 @@ class EQCurveCanvas(tk.Canvas):
             self.create_text(L - 4, y, text=f"{db:+d}" if db else "0",
                              anchor="e", fill=theme.TEXT_FAINT,
                              font=self._tick_font)
-        label_step = 5
+        label_step = 1
         for i in range(n):
             x = self._x_of_band(i, w, L, gw)
             if i % label_step == 0:
                 f = self._freqs[i]
-                lbl = f"{round(f / 1000)}k" if f >= 10000 \
-                    else (f"{f / 1000:g}k" if f >= 1000 else f"{int(f)}")
+                lbl = (f"{f / 1000:g}k" if f >= 1000 else f"{int(f)}")
                 self.create_text(x, T + gh + 2, text=lbl, anchor="n",
                                  fill=theme.TEXT_FAINT,
                                  font=self._tick_font)
-        # 高切/低切截止虚线
+        # 高切/低切截止虚线（全范围内均可标，超出点位区正是切滤的可视化意义）
         for on, hz in ((self._hp[0], self._hp[1]), (self._lp[0], self._lp[1])):
-            if not on or not (self._freqs[0] <= hz <= self._freqs[-1]):
+            if not on or not (_VIEW_LO <= hz <= _VIEW_HI):
                 continue
             x = self._x_of_freq(hz, w, L, gw)
             self.create_line(x, T, x, T + gh,
                              fill=theme.MID, dash=(4, 3))
-        # 响应曲线：引擎 response_at() 单一来源（含高/低切，按本规格栅格与 Q）；
+        # 响应曲线：引擎 response_at() 单一来源（含高/低切，人声栅格与逐段 Q）；
         # 限幅在 ±Y_LIMIT 内——越界会画出绘图区（压过轴标/边框）
         pts = []
         for k in range(160):
             u = k / 159.0
-            freq = (self._freqs[0]) * ((self._freqs[-1] / self._freqs[0]) ** u)
+            freq = self._freq_of_u(u)
             hp = self._hp[1] if self._hp[0] else 0.0
             lp = self._lp[1] if self._lp[0] else 0.0
             dbv = max(-float(self.Y_LIMIT),
                       min(float(self.Y_LIMIT),
                           _eq_response_at(freq, self._gains, hp_hz=hp, lp_hz=lp,
-                                          freqs=self._freqs, q=self._q)))
+                                          freqs=self._freqs, q=self._qs)))
             pts.append((L + u * gw, self._y_of_gain(dbv, T, gh)))
         flat = [c for p in pts for c in p]
         if len(flat) >= 4:
@@ -475,7 +478,8 @@ class EQCurveCanvas(tk.Canvas):
             return
         w, h, L, R, T, B = self._geom()
         i = self._band_at_x(e.x, w, L, w - L - R)
-        self._gains[i] = max(-self.Y_LIMIT, min(self.Y_LIMIT, self._gains[i] + d))
+        self._gains[i] = max(-_GAIN_LIMIT,
+                             min(_GAIN_LIMIT, self._gains[i] + d))
         self.redraw()
         if self.on_change:
             try:
@@ -496,8 +500,8 @@ class EQCurveCanvas(tk.Canvas):
 
 def open_eq_editor(parent, freqs, q, get_gains, set_gains, sizes=None,
                    fonts=None, get_filters=None, set_filters=None):
-    """均衡器编辑器：真实频点直接拖拽（栅格随插件规格 10/31/61 段）；
-    高切/低切复选框 + 截止频率。"""
+    """均衡器编辑器：人声频点直接拖拽（13 段 80 Hz ~ 8 kHz，
+    横轴 20 Hz ~ 20 kHz 展示、位置 warp 压前段）；高切/低切复选框 + 截止频率。"""
     dlg = DarkDialog(parent, T("均衡器"), 560, 430, sizes=sizes, fonts=fonts)
     cur = list(get_gains())
     if len(cur) != len(freqs):
@@ -528,34 +532,52 @@ def open_eq_editor(parent, freqs, q, get_gains, set_gains, sizes=None,
             except Exception:
                 pass
 
-    def _cut_block(var_on, var_hz, lo, hi, label):
+    def _cut_block(var_on, var_hz, lo, hi, label, side):
+        from .widgets import HSlider, DarkCheck
         box = tk.Frame(row, bg=theme.WINDOW)
-        box.pack(side=tk.LEFT, padx=(0, 14))
-        tk.Checkbutton(box, text=label, variable=var_on, command=push_filters,
-                       bg=theme.WINDOW, fg=theme.TEXT,
-                       activebackground=theme.WINDOW, highlightthickness=0,
-                       font=(fonts or {}).get("small")).pack(side=tk.LEFT)
-        tk.Scale(box, variable=var_hz, from_=lo, to=hi, resolution=10,
-                 orient=tk.HORIZONTAL, length=150, showvalue=True,
-                 command=push_filters, bg=theme.WINDOW, fg=theme.TEXT_DIM,
-                 troughcolor=theme.TRACK, highlightthickness=0,
-                 bd=0, font=(fonts or {}).get("small")).pack(side=tk.LEFT)
+        box.pack(side=side, padx=(0 if side == tk.LEFT else 0,
+                                  0 if side == tk.RIGHT else 14))
+        # 复选框与外面节点行/热键弹框一致：自绘 DarkCheck（正文大字）
+        DarkCheck(box, label, var_on, command=push_filters,
+                  sizes=sizes, fonts=fonts).pack(side=tk.LEFT)
+        # 自绘 HSlider + 右侧大号数值：与行内 ParamSlider 同一样式
+        # （原 tk.Scale 步进 10 Hz，此处 step 照旧）
+        val_lbl = tk.Label(box, text=f"{float(var_hz.get()):g} Hz",
+                           bg=theme.WINDOW, fg=theme.TEXT,
+                           font=(fonts or {}).get("bold"), anchor="e",
+                           width=9)
+        val_lbl.pack(side=tk.RIGHT)
+        ref = {}
 
-    _cut_block(hp_var, hp_hz_var, 20, 1000, T("低切"))
-    _cut_block(lp_var, lp_hz_var, 1000, 20000, T("高切"))
+        def _on_slide():
+            v = float(ref["s"].value)
+            var_hz.set(v)
+            val_lbl.configure(text=f"{v:g} Hz")
+            push_filters()
 
-    # ── 预设行（按本规格栅格展开；栅格没有的频点自动跳过）──
+        ref["s"] = HSlider(box, lo, hi, float(var_hz.get()), 10.0,
+                           sizes=sizes, width_px=130, command=_on_slide)
+        ref["s"].pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    # 低切靠左外沿、高切靠右外沿（复选框跟着各自往外 dock，不挤在中间）
+    # 低切下限 60 Hz（人声基频在此之上，更低无意义）
+    _cut_block(hp_var, hp_hz_var, 60, 1000, T("低切"), tk.LEFT)
+    _cut_block(lp_var, lp_hz_var, 1000, 20000, T("高切"), tk.RIGHT)
+
+    # ── 预设行（与点位一一对应的人声预设；
+    # 预设名只在渲染时翻译（T(name)），持久化的键仍是中文原名）──
     prow = tk.Frame(dlg.body, bg=theme.WINDOW)
     prow.pack(fill=tk.X, padx=10, pady=(0, 8))
-    for name, sparse in _PRESETS_SPARSE.items():
-        vals = _expand_preset(sparse, freqs)
-        # 预设名只在渲染时翻译（T(name)），持久化的键仍是中文原名
+    for name, vals in _PRESETS.items():
+        vs = [float(v) for v in vals]
+        if len(vs) != len(freqs):
+            continue
         b = tk.Label(prow, text=T(name), bg=theme.BUTTON, fg=theme.TEXT,
                      font=(fonts or {}).get("small"), padx=8, pady=2,
                      cursor="hand2")
         b.pack(side=tk.LEFT, padx=2)
         b.bind("<Button-1>",
-               lambda e, vs=vals: (curve.set_gains(vs), set_gains(vs)))
+               lambda e, vs=vs: (curve.set_gains(vs), set_gains(vs)))
         b.bind("<Enter>", lambda e, w=b: w.configure(bg=theme.DARK))
         b.bind("<Leave>", lambda e, w=b: w.configure(bg=theme.BUTTON))
 

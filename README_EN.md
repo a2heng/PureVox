@@ -14,7 +14,7 @@ echo cancellation, for both the local microphone and remote network streaming.
 - 🎤 Real-time AI denoising (48 kHz, models loaded on demand)
 - 🗣️ TSE target speech extraction (record a reference clip, then separate your voice from the background)
 - 🔊 AEC echo cancellation
-- 🎛️ EQ: 10-band (1-octave) / 31-band (1/3-octave) / 61-band (1/6-octave)
+- 🎛️ EQ: single voice EQ (13 bands, 80 Hz – 8 kHz, per-band matched Q) + high/low cut + 9 voice presets
 - 📊 AGC automatic gain control / VAD voice activity detection
 - 📱 Remote microphone: phone browser / Android APK streams over LAN to the PC for processing
 - 🖥️ Windows (WASAPI default / MME fallback) and Linux (pipewire-pulse compatibility layer + libpulse)

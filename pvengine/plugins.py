@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 
 from pvengine.components.core_plugins import (
     GainPlugin, GatePlugin,
-    Eq10Plugin, Eq31Plugin, Eq61Plugin,
+    EqPlugin,
     CompressorPlugin,
     DenoiserSmallPlugin, DenoiserMediumPlugin, DenoiserLargePlugin, DenoiserV6Plugin,
     TsePlugin,
@@ -66,9 +66,7 @@ CATALOG: list[type] = [
     TsePlugin,
     GatePlugin,
     AgcPlugin,
-    Eq10Plugin,
-    Eq31Plugin,
-    Eq61Plugin,
+    EqPlugin,
     CompressorPlugin,
     SoundPadPlugin,
     MusicPlayerPlugin,
@@ -89,9 +87,7 @@ UI_TIERS = {
     "denoiser_m": "toggle",
     "denoiser_l": "toggle",
     "denoiser_v6": "toggle",
-    "eq10": "expand",          # 展开：EQ 曲线编辑器（10 段）
-    "eq31": "expand",          # 展开：EQ 曲线编辑器（31 段）
-    "eq61": "expand",          # 展开：EQ 曲线编辑器（61 段）
+    "eq": "expand",              # 展开：EQ 曲线编辑器（人声 13 段）
     "tse": "expand",           # 展开：参考音频录制对话框
     "soundpad": "inline",      # 行内：音效垫子按钮组（+添加 / 全部停止）
     "music_player": "inline",  # 行内：曲目选择与进度 seek

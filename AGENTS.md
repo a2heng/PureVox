@@ -125,6 +125,14 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 11. **README 双语约定** — 默认中文 `README.md`，英文单独 `README_EN.md`；改文件名/平台结构/打包命令时两处必须同步，不得改名或删除。
 12. **弹框集中在 `uitk/dialogs.py`** — 桌面端独立弹框（关于/EQ 编辑器/TSE 录音等）一律放
     `uitk/dialogs.py`，入口函数走 `open_*` / `show_*` 命名；不得在仓库根重建 `dialog_*.py` 平行实现。
+13. **界面翻译机制（`i18n.py`）** — 中文字面量即 msgid：渲染点包 `T("中文")`（`from i18n import T`），
+    `zh` 下恒等返回，`en` 下查表、缺失回退中文；插值串用命名占位符模板
+    `T("端口 {port}").format(port=…)`，中英占位符集合必须一致（`tests/test_i18n.py` 做奇偶校验）。
+    范围仅桌面 UI（`uitk/`、经 UI 显示的 `spec.label` 与错误串）；日志串、注释、
+    `pvengine`/`pvplatform` 常量不翻译。持久化键保持中文原名、只在渲染时翻译
+    （如 EQ 预设名）。新增用户可见中文串必须同步加 en 表并跑 `test_i18n.py`。
+    语言存配置键 `language`（默认 `zh`），设置菜单切换即时生效。`i18n.py` 是叶子模块，
+    禁止 import 任何项目内代码。
 
 ---
 

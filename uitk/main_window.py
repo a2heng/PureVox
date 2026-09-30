@@ -1061,10 +1061,10 @@ class MainWindowTk:
         show_about_dialog(self.root, sizes=self.sizes, fonts=self.fonts)
 
     def _open_eq_editor(self, row):
-        """EQ 曲线编辑器（按行规格选栅格）；增益/高低切存该行节点 params。"""
+        """EQ 曲线编辑器（单一人声栅格）；增益/高低切存该行节点 params。"""
         from .dialogs import open_eq_editor
-        from pvengine.components.eq import EQ_VARIANTS
-        freqs, q = EQ_VARIANTS[row.spec.name]
+        from pvengine.components.eq import EQ_FREQS, EQ_QS
+        freqs, q = EQ_FREQS, EQ_QS
 
         def set_gains(g):
             self._on_param(row, "gains", [float(x) for x in g])
@@ -1083,7 +1083,7 @@ class MainWindowTk:
             get_filters=lambda: (bool(p.get("hp_enabled", False)),
                                  float(p.get("hp_hz", 80.0)),
                                  bool(p.get("lp_enabled", False)),
-                                 float(p.get("lp_hz", 16000.0))),
+                                 float(p.get("lp_hz", 8000.0))),
             set_filters=set_filters,
             sizes=self.sizes, fonts=self.fonts)
 
@@ -1326,8 +1326,8 @@ class MainWindowTk:
         # _viz_tick 跳过喂数——否则未勾选启动只剩标题）
         if spec.kind == "viz":
             self._attach_viz(row, spec.name)
-        # eq 行（三种规格）：标题后提供曲线编辑按钮
-        if spec.name in ("eq10", "eq31", "eq61"):
+        # eq 行（单一人声规格）：标题后提供曲线编辑按钮
+        if spec.name in ("eq",):
             FlatButton(row.mid, T("均衡器编辑"),
                        command=lambda r=row: self._open_eq_editor(r),
                        font=self.fonts.get("body"), sizes=self.sizes,

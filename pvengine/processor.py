@@ -306,7 +306,7 @@ class AudioProcessor:
         if g is not None and getattr(g, "enabled", True):
             db = float((getattr(g, "params", {}) or {}).get("gain_db", 0.0))
             x = x * np.float32(10.0 ** (db / 20.0))
-        eq = self._find("eq10") or self._find("eq31") or self._find("eq61")
+        eq = self._find("eq")
         if eq is not None and getattr(eq, "enabled", True):
             st = getattr(getattr(eq, "eff", eq), "stage", None)
             if st is not None:

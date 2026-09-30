@@ -99,15 +99,15 @@ class GatePlugin(Effect):
 
 
 class _EqPluginBase(Effect):
-    """均衡器基类：增益列表与高切/低切全部存节点 params（随链持久化），
-    经 set_params 热更到运行中的 Stage。三种规格（10/31/61 段）只是
-    频点栅格与匹配 Q 不同，处理路径完全同一份 EqStage 实现。"""
+    """均衡器：增益列表与高切/低切全部存节点 params（随链持久化），
+    经 set_params 热更到运行中的 Stage。单一人声栅格
+    （pvengine.components.eq.EQ_FREQS，逐段匹配 Q），处理走 EqStage。"""
 
     NAME = "eq"
-    LABEL = "均衡器"
+    LABEL = "均衡器 EQ · 人声"
     PARAMS = {}
-    FREQS = None   # 子类指定（pvengine.components.eq 的栅格常量）
-    Q = 0.0
+    FREQS = None   # 缺省用人声栅格
+    Q = None       # 缺省用逐段匹配 Q
 
     def __init__(self, params=None, engine_cache=None):
         from pvengine.components.eq import EqStage
@@ -139,7 +139,7 @@ class _EqPluginBase(Effect):
         self.stage.set_highpass(bool(p.get("hp_enabled", False)),
                                 float(p.get("hp_hz", 80.0)))
         self.stage.set_lowpass(bool(p.get("lp_enabled", False)),
-                               float(p.get("lp_hz", 16000.0)))
+                               float(p.get("lp_hz", 8000.0)))
 
     def on_params_changed(self):
         self._apply()
@@ -151,40 +151,11 @@ class _EqPluginBase(Effect):
         self.stage.reset()
 
 
-class Eq10Plugin(_EqPluginBase):
-    """均衡器 10 段（1 倍频程）。"""
+class EqPlugin(_EqPluginBase):
+    """均衡器（单一人声栅格，13 段 80 Hz ~ 8 kHz）。"""
 
-    NAME = "eq10"
-    LABEL = "均衡器 EQ · 10 段"
-
-    def __init__(self, params=None, engine_cache=None):
-        from pvengine.components.eq import EQ10_FREQS, EQ_Q10
-        self.FREQS, self.Q = EQ10_FREQS, EQ_Q10
-        super().__init__(params, engine_cache)
-
-
-class Eq31Plugin(_EqPluginBase):
-    """均衡器 31 段（1/3 倍频程，硬件图示 EQ 通用规格）。"""
-
-    NAME = "eq31"
-    LABEL = "均衡器 EQ · 31 段"
-
-    def __init__(self, params=None, engine_cache=None):
-        from pvengine.components.eq import EQ31_FREQS, EQ_Q31
-        self.FREQS, self.Q = EQ31_FREQS, EQ_Q31
-        super().__init__(params, engine_cache)
-
-
-class Eq61Plugin(_EqPluginBase):
-    """均衡器 61 段（1/6 倍频程）。"""
-
-    NAME = "eq61"
-    LABEL = "均衡器 EQ · 61 段"
-
-    def __init__(self, params=None, engine_cache=None):
-        from pvengine.components.eq import EQ61_FREQS, EQ_Q61
-        self.FREQS, self.Q = EQ61_FREQS, EQ_Q61
-        super().__init__(params, engine_cache)
+    NAME = "eq"
+    LABEL = "均衡器 EQ · 人声"
 
 
 class CompressorPlugin(Effect):
