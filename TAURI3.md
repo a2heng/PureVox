@@ -1,0 +1,196 @@
+# Tauri 3 工作指引（tauri-3 分支）
+
+本文件是 `tauri-3` 分支的入口文档：记录 Tauri 3 的现状、该看哪些文档、怎么编译。
+我们对 Tauri 3 从零开始，凡是标注「待验证」的内容都还没有在本仓库实际跑通，
+跑通一项就把标注去掉并补上实测结果。
+
+**进度**：Windows hello world 已跑通（编译、运行、前端到 Rust 的 IPC、MSI / NSIS 打包）；Linux 未开始。
+
+> 信息收集日期：2026-10-07。Tauri 3 处于 alpha，版本号、API 和文档都可能变化，
+> 引用任何结论前先核对下文「版本锚点」是否仍是最新。
+
+---
+
+## 1. 现状
+
+| 项目 | 状态 |
+| --- | --- |
+| Tauri 3 最新版本 | `3.0.0-alpha.4`（2026-10-01；alpha.0 发布于 2026-09-13） |
+| Tauri 2 最新稳定版 | `2.12.1`（2026-09-30） |
+| 3.0 里程碑进度 | 约 25%，无截止日期（GitHub milestone #5） |
+| 官方态度 | 迁移指南原文：alpha 用于试用新的 webview 运行时模型和反馈问题，**生产应用保持 2.x** |
+| 自动迁移 | `tauri migrate` **不支持** 2 到 3 的自动迁移 |
+| Rust 最低版本（MSRV） | 1.95 |
+
+### 1.1 Tauri 3 相对 2 的核心变化
+
+- **webview 运行时改为显式选择**：应用直接依赖运行时 crate，并在代码里调用
+  `tauri::Builder::runtime(...)` 选择；没选会报 `RuntimeNotConfigured`。
+  - `tauri-runtime-wry`：系统 webview（Windows WebView2 / Linux WebKitGTK），包小，Tauri 2 一直用的就是它。
+  - `tauri-runtime-cef`：新增的 Chromium Embedded Framework，随应用带一份 Chromium，包大但渲染一致。
+- 默认运行时类型为类型擦除的 `tauri::DynRuntime`，`AppHandle` 等类型不再需要写运行时泛型。
+- `devtools` / `unstable` 等 feature 改到运行时 crate 上开启。
+- Linux：`tauri` 新增 `gtk3` / `gtk4` feature（wry 用 GTK3，CEF 用 GTK4，二者不能同进程）；
+  托盘默认改用 ksni（D-Bus StatusNotifierItem），**不再需要 libayatana-appindicator**。
+- 开发期资源文件不再复制到 target 目录，改资源不会触发整体重编译。
+- 官方插件同步发布 `3.0.0-alpha.x`，npm 包走 `next` 标签；2.x 插件不能用于 3.0 应用。
+
+---
+
+## 2. 文档来源（按优先级）
+
+Tauri 3 的官方文档站 `v3.tauri.app` 是 v2 文档的一个分支，只新增或修改了 3 个页面
+（迁移指南、webview 运行时、CEF）。其余页面仍是 v2 内容，标题也还写着「Tauri 2.0」。
+因此：**v3 专有行为以下表第 1、2 项为准，通用概念（IPC、配置、权限、打包）查 v2 正文即可。**
+
+| # | 文档 | 用途 | 链接 |
+| --- | --- | --- | --- |
+| 1 | 升级到 Tauri 3.0 Alpha | 2 到 3 的全部破坏性变更与迁移步骤，**首读** | `https://v3.tauri.app/start/migrate/from-tauri-2/` |
+| 2 | Webview Runtime | 运行时选择、动态/静态分发、Linux GTK 与托盘 | `https://v3.tauri.app/develop/webview-runtime/` |
+| 3 | CEF | 只在决定用 CEF 运行时时才需要 | `https://v3.tauri.app/develop/cef/` |
+| 4 | Prerequisites | 各平台系统依赖（v2 内容，Linux 包列表仍含 appindicator，见 3.2 节说明） | `https://v3.tauri.app/start/prerequisites/` |
+| 5 | Embedding External Binaries（sidecar） | 随应用打包外部可执行文件；若选择保留 Python 引擎作为 sidecar 时需要 | `https://v3.tauri.app/develop/sidecar/` |
+| 6 | 各 crate 的 CHANGELOG | 每个 alpha 的精确变更，比文档更新更快 | tauri 仓库 `crates/*/CHANGELOG.md` |
+| 7 | API 参考（docs.rs） | Rust API 精确签名 | `https://docs.rs/tauri/3.0.0-alpha.4/` |
+| 8 | 官方示例 | 可直接编译的最小工程 | tauri 仓库 `examples/` |
+
+### 2.1 适合固化（离线、钉版本）的形式
+
+调研结论：**有，而且很好固化**。两种形式都是纯文本、带确定版本：
+
+1. **llms.txt 整合版（单文件）** —— Tauri 官方按 llms.txt 规范生成，整站文档合成一个 markdown 文件：
+   - `https://v3.tauri.app/llms-full.txt`（完整版，约 2.6 MB，已确认包含 v3 迁移指南）
+   - `https://v3.tauri.app/llms-small.txt`（精简版，约 2.0 MB）
+   - 缺点：URL 不带版本，内容随官网更新而变；固化时需要记下下载日期。
+2. **tauri-docs 仓库源文件（钉提交）** —— 文档源码是 `.mdx`，按提交 SHA 下载即可永久复现：
+   - 仓库 `tauri-apps/tauri-docs`，分支 `v3`
+   - raw 地址格式：`https://raw.githubusercontent.com/tauri-apps/tauri-docs/<SHA>/src/content/docs/<路径>.mdx`
+   - 三个 v3 专有页面路径：`start/migrate/from-tauri-2.mdx`、`develop/webview-runtime.mdx`、`develop/cef.mdx`
+
+固化时推荐：**v3 专有页面按 SHA 下载源文件（体积小、可复现）+ llms-full.txt 作为全文检索兜底**。
+是否把下载内容提交进仓库尚未决定（llms-full.txt 体积较大）。
+
+### 2.2 版本锚点
+
+更新本文时同步刷新这里，保证所有引用可复现：
+
+| 对象 | 版本 / 提交 |
+| --- | --- |
+| tauri（crate 与 CLI） | `3.0.0-alpha.4`，tag `tauri-v3.0.0-alpha.4`，提交 `a8703ee487c659efbebb27c799752d523a6d09a1` |
+| tauri-runtime-wry | `3.0.0-alpha.4` |
+| tauri-runtime-cef | `3.0.0-alpha.5` |
+| tauri-build / tauri-bundler | `3.0.0-alpha.3` |
+| @tauri-apps/cli（npm `next`） | `3.0.0-alpha.4` |
+| @tauri-apps/api（npm `next`） | `3.0.0-alpha.2` |
+| tauri-docs `v3` 分支 | 提交 `f2e14b4fdba36ac35a61ce309846b53c45ec606e` |
+
+注意：各 crate 版本号**不同步**（如 build 是 alpha.3、runtime-cef 是 alpha.5），
+不要假设「全部写同一个版本号」，以 crates.io 实际发布为准。
+
+---
+
+## 3. 编译
+
+### 3.1 Windows 工具链（2026-10-07 已在 Windows 10 22H2 x64 实测跑通）
+
+| 依赖 | 要求 | 实测版本 |
+| --- | --- | --- |
+| Rust | rustup，默认工具链 `stable-x86_64-pc-windows-msvc`，>= 1.95 | rustc 1.99.0 |
+| MSVC 编译器 | Visual Studio Build Tools 的 VCTools 工作负载（提供 link.exe 与 Windows SDK） | Build Tools 17.14.41 |
+| WebView2 运行时 | 运行与开发都需要；**Windows 10 不一定自带**（本机就缺，需手动装） | 154.0.4258.62 |
+| Node.js | 不需要（hello world 前端是纯静态 HTML，CLI 用 Cargo 版） | — |
+
+没有 winget 的机器按下面的命令装（管理员 PowerShell，全部静默；Build Tools 约 5~7 GB、十几分钟）：
+
+```powershell
+$d = "$env:TEMP"
+# 1) MSVC 编译器
+Invoke-WebRequest https://aka.ms/vs/17/release/vs_BuildTools.exe -OutFile "$d\vs_BuildTools.exe"
+Start-Process "$d\vs_BuildTools.exe" -Wait -ArgumentList '--quiet','--wait','--norestart','--nocache',
+  '--add','Microsoft.VisualStudio.Workload.VCTools','--includeRecommended'
+# 2) WebView2 运行时（Evergreen Bootstrapper）
+Invoke-WebRequest https://go.microsoft.com/fwlink/p/?LinkId=2124703 -OutFile "$d\MicrosoftEdgeWebview2Setup.exe"
+Start-Process "$d\MicrosoftEdgeWebview2Setup.exe" -Wait -ArgumentList '/silent','/install'
+# 3) Rust（装到 %USERPROFILE%\.cargo，新开终端后 PATH 生效）
+Invoke-WebRequest https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile "$d\rustup-init.exe"
+& "$d\rustup-init.exe" -y --default-toolchain stable --default-host x86_64-pc-windows-msvc --profile minimal
+```
+
+判断 WebView2 是否真的装了：看 `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\` 下有没有版本号目录。
+注册表 `EdgeUpdate\Clients\{F3017226-...}` 键**存在但 `pv` 为空**表示没装，不能只看键在不在。
+
+### 3.2 Linux 工具链（待验证）
+
+wry 运行时在 Linux 上依赖 WebKitGTK 4.1。官方 prerequisites 的 Debian 列表如下；
+其中 `libayatana-appindicator3-dev` 在 Tauri 3 中**已不需要**（托盘默认改用 ksni），
+文档页还没更新：
+
+```sh
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
+  libxdo-dev libssl-dev librsvg2-dev
+```
+
+Fedora / Arch / openSUSE 等发行版的包名见 prerequisites 页对应标签。
+
+### 3.3 安装 Tauri 3 CLI（Windows 已实测）
+
+本仓库**只用 Cargo 版 CLI**（`cargo tauri ...`），不引入 npm 版，仓库里也就没有 package.json / node_modules：
+
+```sh
+cargo install tauri-cli --version "^3.0.0-alpha" --locked   # 约 2.5 分钟，装出 cargo-tauri 3.0.0-alpha.4
+```
+
+### 3.4 工程布局（hello world，Windows 已实测）
+
+工程放在仓库根 `src-tauri/`：
+
+| 路径 | 作用 |
+| --- | --- |
+| `src-tauri/Cargo.toml` | 依赖：`tauri` 3.0.0-alpha.4、`tauri-runtime-wry` 3.0.0-alpha.4、`tauri-build` 3.0.0-alpha.3 |
+| `src-tauri/Cargo.lock` | 锁定依赖，**提交进仓库**（alpha 期间各 crate 频繁发版，靠它保证可复现） |
+| `src-tauri/build.rs` | `tauri_build::build()` |
+| `src-tauri/src/main.rs` | 选 wry 运行时 + 注册 `greet` 命令（验证前端到 Rust 的 IPC） |
+| `src-tauri/tauri.conf.json` | 应用配置；`build.frontendDist` 指向 `ui`，无 dev server |
+| `src-tauri/capabilities/default.json` | 权限：主窗口 `core:default` |
+| `src-tauri/ui/index.html` | 前端（纯静态，`withGlobalTauri` 下用 `window.__TAURI__.core.invoke`） |
+| `src-tauri/icons/` | 由 `assets/icons/audio_icon_base.png` 经 `cargo tauri icon` 生成，只保留配置引用的 5 个文件 |
+
+Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_runtime_wry::Wry::default())`，
+且 Cargo.toml 直接依赖 `tauri-runtime-wry`。
+
+### 3.5 常用命令（在 `src-tauri/` 下执行，Windows 已实测）
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo build` | 首次约 1 分钟，产出 `target/debug/purevox.exe` |
+| `cargo tauri dev` | 编译并运行开发版 |
+| `cargo tauri build` | release 版 + 两个安装包：`target/release/bundle/msi/PureVox_0.1.0_x64_en-US.msi`（2.9 MB）与 `target/release/bundle/nsis/PureVox_0.1.0_x64-setup.exe`（2.0 MB）；裸 exe 8.4 MB |
+| `cargo tauri icon <png>` | 从一张方形 PNG 生成全套图标 |
+
+`cargo tauri build` 首次会从 GitHub 下载 WiX 与 NSIS 工具（tauri-apps/binary-releases），需要能访问 GitHub。
+
+### 3.6 自动化验证的坑
+
+- **WebView2 远程调试环境变量无效**：wry 自己设置了浏览器参数，`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
+  会被覆盖，9222 之类的调试端口不会打开。
+- **不要用模拟键鼠测界面**：Windows 会拦截后台进程抢焦点，`SendKeys` 会打到当前前台窗口（别的程序）里。
+- 可行做法：用 Windows UI Automation（`UIAutomationClient`）直接调用页面按钮的 InvokePattern、
+  读取文本节点，不需要焦点。hello world 的 IPC 就是这样验证的（点击 Greet 后读到 Rust 返回的串）。
+
+---
+
+## 4. 与 PureVox 相关的待决问题
+
+以下问题需要先讨论再动手，决定后写回本文并删掉对应条目：
+
+1. **用 Tauri 3 alpha 还是 Tauri 2 稳定版**：官方明确建议生产应用留在 2.x；
+   2 到 3 的差异主要在运行时选择这一层，业务代码改动面较小。
+2. **运行时**：wry（系统 webview，包小）还是 CEF（自带 Chromium，包大）。
+3. **音频引擎用什么实现**：旧实现是纯 Python 引擎（`pvengine`，numpy + scipy + onnxruntime，
+   源码见 `legacy-v2026.09.30.1944/pvengine/`），主线已删除。可选方向：Rust 原生重写
+   （设备 I/O + onnxruntime Rust 绑定），或把 Python 引擎作为 sidecar（`bundle.externalBin`，
+   要求按目标三元组命名的可执行文件）挂在 Tauri 后面，并决定前后端通道（stdio / 本地 WebSocket / Tauri IPC）。
+4. **Linux 打包依赖变化**：wry 需要 WebKitGTK 4.1；托盘不再需要 appindicator。
+   旧的 deb Depends / rpm Requires 清单见 `legacy-v2026.09.30.1944/` 内的打包脚本。
+
+已决定：Tk 桌面 UI 与全部旧 Python 代码已从主线删除（2026-10-07），只保留归档快照。
