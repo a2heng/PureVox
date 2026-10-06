@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 自动根据 DayNight 主题切换 values/colors.xml 和 values-night/colors.xml -->
+    <!-- 这里放深色覆盖 -->
+</resources>

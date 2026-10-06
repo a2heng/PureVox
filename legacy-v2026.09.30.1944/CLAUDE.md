@@ -60,7 +60,7 @@ L0 平台    pvplatform/      device enumeration, system integration
 - **10ms hop everywhere**: `hop = SAMPLE_RATE // 100` (48kHz → 480 samples, NFFT = 2×hop = 960), derived from time, not fixed counts. No fixed blocks misaligned with the 10ms grid (1024/2048 etc.) anywhere, including viz, network Opus frames, browser capture. Buffer watermarks are hop multiples.
 - **Internal format is always F32 mono 48kHz**; resampling/channel conversion happens only at L0 (platform).
 - **Single implementation path per feature** (project's prime constraint): extend existing functions/classes before creating new ones; replaced implementations are deleted, never kept as alternatives. Exception: per-API-suffixed device config keys in `config_manager.py` are intentional shared placeholders — do not delete them.
-- `legacy-v2026.08.20.1943/` and `legacy-v2026.09.30.1944/` are **frozen read-only snapshots**: never modify them, never let them participate in builds/CI/tests/global refactors.
+- `legacy-v2026.08.20.1943/` is a **frozen read-only snapshot**: never modify it, never let it participate in builds/CI/tests/global refactors.
 
 ## Conventions
 

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 通用 -->
+    <color name="vu_green">#33cc66</color>
+    <color name="vu_yellow">#cccc44</color>
+    <color name="vu_red">#cc4433</color>
+    <color name="vu_dark_green">#1a3a1a</color>
+    <color name="vu_dark_yellow">#3a3a1a</color>
+    <color name="vu_dark_red">#3a1a1a</color>
+
+    <!-- 亮色 -->
+    <color name="bg_light">#f5f0e8</color>
+    <color name="bg_card_light">#e8e0d0</color>
+    <color name="bg_input_light">#ddd5c5</color>
+    <color name="border_light">#c0b8a8</color>
+    <color name="text_primary_light">#3a3530</color>
+    <color name="text_secondary_light">#8a8580</color>
+    <color name="text_dim_light">#aaa5a0</color>
+    <color name="btn_bg_light">#ddd5c5</color>
+    <color name="btn_active_bg_light">#d4e8d4</color>
+    <color name="log_bg_light">#ede8e0</color>
+
+    <!-- 深色 -->
+    <color name="bg_dark">#0d0d0d</color>
+    <color name="bg_card_dark">#1a1a1a</color>
+    <color name="bg_input_dark">#222222</color>
+    <color name="border_dark">#333333</color>
+    <color name="text_primary_dark">#c0c0c0</color>
+    <color name="text_secondary_dark">#888888</color>
+    <color name="text_dim_dark">#555555</color>
+    <color name="btn_bg_dark">#1a1a1a</color>
+    <color name="btn_active_bg_dark">#1a2a1a</color>
+    <color name="log_bg_dark">#0a0a0a</color>
+</resources>

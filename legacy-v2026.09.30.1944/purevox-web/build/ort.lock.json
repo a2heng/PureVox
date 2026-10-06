@@ -1,0 +1,12 @@
+{
+  "_comment": "ONNX Runtime Web 运行时锁定（第三方运行库，不入版本库；由 build_web.py 按此校验下载）。integrity 为 npm 公布的 sha512，用于校验 tarball 完整性。",
+  "package": "onnxruntime-web",
+  "version": "1.29.0",
+  "tarball": "https://registry.npmjs.org/onnxruntime-web/-/onnxruntime-web-1.29.0.tgz",
+  "integrity": "sha512-LuQlpX6MFLJZu756erwUeb1mNfoJGbs1kzDwJGNlf5RvfYMdqhcY3vNpDPK40CUV2HoWTkIj+uS0o36GFHjeYw==",
+  "files": [
+    "dist/ort.wasm.bundle.min.mjs",
+    "dist/ort-wasm-simd-threaded.wasm"
+  ],
+  "_why": "只取 wasm（CPU）EP 的 bundle 胶水 + 配套 wasm：胶水里已内联 emscripten 的 .mjs，故除 .wasm 外无第二个运行时文件；胶水与 wasm 均以 base64 注入单 HTML。"
+}

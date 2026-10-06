@@ -1,0 +1,25 @@
+# Linux 全量依赖
+
+# ── 引擎核心 ──
+numpy==2.5.2
+scipy==1.18.0
+onnxruntime==1.29.0
+
+# ── 网络/服务发现 ──
+cryptography>=41.0.0
+zeroconf==0.150.0
+aiohttp==3.14.3
+
+# ── 音频/媒体 ──
+opuslib==3.0.1
+av==18.1.0
+miniaudio==1.71
+
+# ── 连接二维码 ──
+qrcode==8.2
+
+# ── 工具 ──
+importlib_metadata
+packaging
+protobuf
+zipp

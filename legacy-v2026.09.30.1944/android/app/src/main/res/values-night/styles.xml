@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PureVox" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:colorBackground">#0d0d0d</item>
+        <item name="android:textColorPrimary">#c0c0c0</item>
+        <item name="android:textColorSecondary">#888888</item>
+        <item name="android:textColorTertiary">#555555</item>
+        <item name="colorPrimary">#55cc66</item>
+        <item name="colorSecondary">#33cc66</item>
+        <item name="android:navigationBarColor">#0d0d0d</item>
+        <item name="android:statusBarColor">#0d0d0d</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

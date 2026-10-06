@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="?android:colorBackground"
+    android:padding="16dp">
+
+    <!-- 顶栏 -->
+    <LinearLayout android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:gravity="center_vertical"
+        android:layout_marginBottom="8dp">
+        <LinearLayout android:layout_width="0dp"
+            android:layout_height="wrap_content" android:layout_weight="1"
+            android:orientation="vertical">
+            <TextView android:layout_width="wrap_content"
+                android:layout_height="wrap_content" android:text="PureVox"
+                android:textSize="16sp" android:textStyle="bold"
+                android:letterSpacing="0.04"
+                android:textColor="?android:textColorPrimary"/>
+            <TextView android:layout_width="wrap_content"
+                android:layout_height="wrap_content" android:text="远程麦克风"
+                android:textSize="10sp"
+                android:textColor="?android:textColorSecondary"/>
+        </LinearLayout>
+        <TextView android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="搜索中..."
+            android:textSize="10sp" android:fontFamily="monospace"
+            android:textColor="?android:textColorSecondary"/>
+    </LinearLayout>
+    <View android:layout_width="match_parent" android:layout_height="1dp"
+        android:background="?android:textColorTertiary"
+        android:layout_marginBottom="12dp"/>
+
+    <!-- 服务器 -->
+    <TextView android:id="@+id/tvServer"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="—" android:textSize="11sp" android:fontFamily="monospace"
+        android:textColor="?android:textColorSecondary"
+        android:visibility="gone" android:layout_marginBottom="8dp"/>
+
+    <!-- 音频源 -->
+    <Spinner android:id="@+id/spinnerAudioSource"
+        android:layout_width="match_parent" android:layout_height="36dp"
+        android:paddingStart="8dp" android:paddingEnd="8dp"
+        android:layout_marginBottom="10dp"/>
+
+    <!-- VU -->
+    <com.purevox.mic.VuMeterView
+        android:id="@+id/vuLevel"
+        android:layout_width="match_parent" android:layout_height="18dp"
+        android:layout_marginBottom="14dp"/>
+
+    <!-- 推流按钮 -->
+    <Button android:id="@+id/btnMic"
+        android:layout_width="match_parent" android:layout_height="44dp"
+        android:enabled="false" android:text="开始推流"
+        android:textSize="14sp" android:fontFamily="monospace"
+        android:letterSpacing="0.08" android:gravity="center"
+        android:textAllCaps="false" android:layout_marginBottom="10dp"/>
+
+    <!-- 状态栏 -->
+    <LinearLayout android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:gravity="center"
+        android:orientation="horizontal" android:layout_marginBottom="8dp">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="延迟 " android:textSize="10sp" android:fontFamily="monospace"
+            android:textColor="?android:textColorTertiary"/>
+        <TextView android:id="@+id/tvLatency" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="--ms"
+            android:textSize="10sp" android:fontFamily="monospace"
+            android:textColor="?android:textColorSecondary"/>
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text=" | " android:textSize="10sp"
+            android:textColor="?android:textColorTertiary"/>
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="包 " android:textSize="10sp" android:fontFamily="monospace"
+            android:textColor="?android:textColorTertiary"/>
+        <TextView android:id="@+id/tvPackets" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="0"
+            android:textSize="10sp" android:fontFamily="monospace"
+            android:textColor="?android:textColorSecondary"/>
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text=" | " android:textSize="10sp"
+            android:textColor="?android:textColorTertiary"/>
+        <TextView android:id="@+id/tvStreamState" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="○ 停止"
+            android:textSize="10sp" android:fontFamily="monospace"
+            android:textColor="?android:textColorSecondary"/>
+    </LinearLayout>
+
+    <!-- 调试信息 -->
+    <TextView android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:text="▸ 调试信息"
+        android:textSize="10sp" android:letterSpacing="0.05"
+        android:layout_marginBottom="4dp"
+        android:textColor="?android:textColorTertiary"/>
+    <LinearLayout android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:orientation="horizontal"
+        android:layout_marginBottom="6dp">
+        <LinearLayout android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:orientation="vertical">
+            <TextView android:id="@+id/dbg_ctx_sr" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="ctx SR --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+            <TextView android:id="@+id/dbg_dev_sr" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="dev SR --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+            <TextView android:id="@+id/dbg_enc_sr" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="enc SR 48000" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+            <TextView android:id="@+id/dbg_frame" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="frame 480" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+            <TextView android:id="@+id/dbg_bitrate" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="bitrate 32k" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+        </LinearLayout>
+        <LinearLayout android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" android:orientation="vertical">
+            <TextView android:id="@+id/dbg_rtt" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="RTT --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+            <TextView android:id="@+id/dbg_total_lat" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="总延迟 --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+            <TextView android:id="@+id/dbg_server_sr" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="srv SR --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+            <TextView android:id="@+id/dbg_backlog" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="backlog --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+            <TextView android:id="@+id/dbg_encoded" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="encoded 0" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 日志标题 -->
+    <TextView android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:text="▸ 日志"
+        android:textSize="10sp" android:letterSpacing="0.05"
+        android:textColor="?android:textColorTertiary"/>
+
+    <!-- 日志框（唯一滚动区域，填充剩余高度） -->
+    <TextView android:id="@+id/tvLog"
+        android:layout_width="match_parent" android:layout_height="0dp"
+        android:layout_weight="1"
+        android:padding="6dp"
+        android:textSize="9sp" android:fontFamily="monospace"
+        android:lineSpacingExtra="2dp"
+        android:textColor="?android:textColorSecondary"
+        android:scrollbars="vertical"
+        android:paddingBottom="20dp"/>
+
+</LinearLayout>

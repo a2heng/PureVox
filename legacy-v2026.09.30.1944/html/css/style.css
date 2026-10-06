@@ -1,0 +1,359 @@
+/* ── PureVox 复古极简风格 (支持自动/手动主题) ── */
+
+/* ── 亮色主题变量（默认） ── */
+:root {
+    --bg: #f5f0e8;
+    --bg-card: #e8e0d0;
+    --bg-input: #ddd5c5;
+    --border: #c0b8a8;
+    --text: #3a3530;
+    --text-dim: #8a8580;
+    --text-dimmer: #aaa5a0;
+    --vu-fill1: #44bb66;
+    --vu-fill2: #cccc44;
+    --vu-fill3: #cc5544;
+    --vu-bg1: #c8e8d0;
+    --vu-bg2: #e8e8c8;
+    --vu-bg3: #e8d0d0;
+    --vu-peak-color: #3a3530;
+    --vu-bg: #ddd5c5;
+    --log-bg: #ede8e0;
+    --scrollbar: #c0b8a8;
+    --btn-bg: #ddd5c5;
+    --btn-border: #c0b8a8;
+    --btn-text: #666260;
+    --btn-active-border: #44bb66;
+    --btn-active-text: #338855;
+    --topbar-border: #d0c8b8;
+}
+
+/* ── 深色主题变量 ── */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #0d0d0d;
+        --bg-card: #1a1a1a;
+        --bg-input: #222;
+        --border: #333;
+        --text: #c0c0c0;
+        --text-dim: #888;
+        --text-dimmer: #555;
+        --vu-fill1: #33cc66;
+        --vu-fill2: #cccc44;
+        --vu-fill3: #cc4433;
+        --vu-bg1: #1a4a2a;
+        --vu-bg2: #4a4a20;
+        --vu-bg3: #4a2020;
+        --vu-peak-color: #c0c0c0;
+        --vu-bg: #1e1e1e;
+        --log-bg: #0a0a0a;
+        --scrollbar: #333;
+        --btn-bg: #1a1a1a;
+        --btn-border: #444;
+        --btn-text: #999;
+        --btn-active-border: #55cc66;
+        --btn-active-text: #55cc66;
+        --topbar-border: #2a2a2a;
+    }
+}
+
+/* ── 手动强制主题 ── */
+:root.theme-light {
+    --bg: #f5f0e8; --bg-card: #e8e0d0; --bg-input: #ddd5c5;
+    --border: #c0b8a8; --text: #3a3530; --text-dim: #8a8580;
+    --text-dimmer: #aaa5a0;
+    --vu-fill1: #44bb66; --vu-fill2: #cccc44; --vu-fill3: #cc5544;
+    --vu-bg1: #c8e8d0; --vu-bg2: #e8e8c8; --vu-bg3: #e8d0d0;
+    --vu-peak-color: #3a3530; --vu-bg: #ddd5c5;
+    --log-bg: #ede8e0; --scrollbar: #c0b8a8;
+    --btn-bg: #ddd5c5; --btn-border: #c0b8a8;
+    --btn-text: #666260;
+    --btn-active-border: #44bb66; --btn-active-text: #338855;
+    --topbar-border: #d0c8b8;
+}
+:root.theme-dark {
+    --bg: #0d0d0d; --bg-card: #1a1a1a; --bg-input: #222;
+    --border: #333; --text: #c0c0c0; --text-dim: #888;
+    --text-dimmer: #555;
+    --vu-fill1: #33cc66; --vu-fill2: #cccc44; --vu-fill3: #cc4433;
+    --vu-bg1: #1a4a2a; --vu-bg2: #4a4a20; --vu-bg3: #4a2020;
+    --vu-peak-color: #c0c0c0; --vu-bg: #1e1e1e;
+    --log-bg: #0a0a0a; --scrollbar: #333;
+    --btn-bg: #1a1a1a; --btn-border: #444;
+    --btn-text: #999;
+    --btn-active-border: #55cc66; --btn-active-text: #55cc66;
+    --topbar-border: #2a2a2a;
+}
+
+/* ── 全局应用变量 ── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: 'Courier New', 'Noto Sans SC', monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    overflow: hidden;
+    transition: background 0.3s, color 0.3s;
+}
+#app {
+    width: 100%;
+    max-width: 420px;
+    padding: 12px 16px 80px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ── 顶栏 ── */
+#topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--topbar-border);
+}
+#title-block {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+#title-main {
+    font-size: 1.1rem;
+    font-weight: bold;
+    color: var(--text);
+    letter-spacing: 1px;
+}
+#title-sub {
+    font-size: 0.65rem;
+    color: var(--text-dimmer);
+}
+#top-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.65rem;
+    padding-top: 2px;
+}
+#theme-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+}
+#theme-toggle:hover {
+    background: var(--bg-card);
+}
+.sts.connected { color: var(--accent); }
+.sts.disconnected { color: var(--danger); }
+
+/* ── 连接区 ── */
+#connect-section {
+    margin-bottom: 12px;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+}
+#connect-section input {
+    width: 100%;
+    height: 36px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0 10px;
+    font-family: inherit;
+    font-size: 0.72rem;
+    margin-bottom: 6px;
+    border-radius: 4px;
+}
+#connect-section button {
+    height: 32px;
+    background: var(--btn-bg);
+    color: var(--text);
+    border: 1px solid var(--btn-border);
+    padding: 0 16px;
+    font-family: inherit;
+    font-size: 0.72rem;
+    cursor: pointer;
+    border-radius: 4px;
+}
+#connect-section button:hover {
+    filter: brightness(1.1);
+}
+#server-info {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+#server-name {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+}
+
+/* ── 麦克风选择 ── */
+#mic-select {
+    width: 100%;
+    height: 36px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0 8px;
+    font-family: inherit;
+    font-size: 0.7rem;
+    border-radius: 4px;
+    margin-bottom: 10px;
+}
+
+/* ── VU 表（双层：柔和背景 + clip-path 高亮填充） ── */
+#vu-meter {
+    position: relative;
+    width: 100%;
+    height: 18px;
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 14px;
+    border: 1px solid var(--border);
+    background: var(--vu-bg);
+}
+/* 背景层：三段柔和色，始终全宽显示分区 */
+.vu-track {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+}
+/* 高亮填充段：各段独立控制宽度 */
+.vu-fill-seg {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    z-index: 1;
+}
+.vu-zone {
+    position: absolute;
+    top: 0;
+    height: 100%;
+}
+#vu-peak {
+    position: absolute;
+    top: 0;
+    width: 3px;
+    height: 100%;
+    pointer-events: none;
+    display: none;
+    z-index: 2;
+    background: var(--vu-peak-color);
+    border-radius: 1px;
+}
+
+/* ── 推流按钮（横条） ── */
+.strip-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    height: 44px;
+    background: var(--btn-bg);
+    border: 1px solid var(--btn-border);
+    border-radius: 6px;
+    color: var(--btn-text);
+    font-family: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-bottom: 10px;
+}
+.strip-btn:hover {
+    filter: brightness(1.1);
+}
+.strip-btn.active {
+    background: var(--btn-bg);
+    border-color: var(--btn-active-border);
+    color: var(--btn-active-text);
+}
+.strip-icon { font-size: 0.7rem; }
+.strip-text { letter-spacing: 2px; }
+
+/* ── 状态栏 ── */
+#stats {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.65rem;
+    color: var(--text-dimmer);
+    margin-bottom: 12px;
+}
+#stats .sep { color: var(--border); }
+.st { font-size: 0.65rem; }
+
+/* ── 错误信息 ── */
+#error-detail {
+    color: var(--danger);
+    font-size: 0.7rem;
+    margin-bottom: 8px;
+}
+
+/* ── 调试信息（常驻） ── */
+#debug-section {
+    margin-bottom: 10px;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+}
+#debug-title {
+    font-size: 0.65rem;
+    color: var(--text-dimmer);
+    margin-bottom: 6px;
+    letter-spacing: 1px;
+}
+#debug-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 8px;
+}
+.dg-item {
+    font-size: 0.6rem;
+    display: inline-flex;
+    gap: 3px;
+    white-space: nowrap;
+}
+.dg-l { color: var(--text-dimmer); }
+.dg-r { color: var(--text); font-weight: bold; }
+
+/* ── 日志 ── */
+#log-section {
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+}
+#log-title {
+    font-size: 0.65rem;
+    color: var(--text-dimmer);
+    margin-bottom: 4px;
+    letter-spacing: 1px;
+}
+#log-content {
+    background: var(--log-bg);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 6px 8px 20px;
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+    font-size: 0.6rem;
+    line-height: 1.5;
+    color: var(--text-dim);
+    font-family: 'Courier New', monospace;
+}
+#log-content .log-line { white-space: nowrap; }
+#log-content::-webkit-scrollbar { width: 3px; }
+#log-content::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 1px; }

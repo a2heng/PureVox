@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PureVox Remote Mic</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app">
+
+        <!-- 顶栏：标题 + 状态 -->
+        <div id="topbar">
+            <div id="title-block">
+                <span id="title-main">PureVox</span>
+                <span id="title-sub">远程麦克风</span>
+            </div>
+            <div id="top-status">
+                <button id="theme-toggle">◐</button>
+                <span id="connection-status" class="sts disconnected">未连接</span>
+            </div>
+        </div>
+
+        <!-- 连接区 -->
+        <div id="connect-section">
+            <div id="discovery-status">正在搜索服务器...</div>
+            <div id="manual-connect" style="display:none;">
+                <input type="text" id="server-ip" placeholder="IP:端口 如 192.168.1.100:59123">
+                <button id="btn-connect">连接</button>
+            </div>
+            <div id="server-info" style="display:none;">
+                <span id="server-name"></span>
+            </div>
+        </div>
+
+        <!-- 音频区 -->
+        <div id="audio-section" style="display:none;">
+
+            <!-- 麦克风选择 -->
+            <select id="mic-select"></select>
+
+            <!-- VU 表（遮罩方式：遮罩层覆盖未激活区域） -->
+            <div id="vu-meter">
+                <!-- 柔和背景层：始终全宽显示三段分区 -->
+                <div class="vu-track">
+                    <div class="vu-zone" style="left:0%;width:66.67%;background:var(--vu-bg1);"></div>
+                    <div class="vu-zone" style="left:66.67%;width:18.33%;background:var(--vu-bg2);"></div>
+                    <div class="vu-zone" style="left:85%;width:15%;background:var(--vu-bg3);"></div>
+                </div>
+                <!-- 高亮填充段：各段独立控制宽度 -->
+                <div class="vu-fill-seg" id="vu-fill1" style="left:0%;width:0%;background:var(--vu-fill1);"></div>
+                <div class="vu-fill-seg" id="vu-fill2" style="left:66.67%;width:0%;background:var(--vu-fill2);"></div>
+                <div class="vu-fill-seg" id="vu-fill3" style="left:85%;width:0%;background:var(--vu-fill3);"></div>
+                <div id="vu-peak"></div>
+            </div>
+
+            <!-- 推流按钮（横条圆角矩形） -->
+            <button id="btn-mic" class="strip-btn">
+                <span class="strip-icon">&#9654;</span>
+                <span class="strip-text" id="strip-text">开始推流</span>
+            </button>
+
+            <!-- 状态栏 -->
+            <div id="stats">
+                <span>延迟 <span id="latency">--</span>ms</span>
+                <span class="sep">|</span>
+                <span>包 <span id="packet-count">0</span></span>
+                <span class="sep">|</span>
+                <span id="dbg-streaming" class="st">○ 停止</span>
+            </div>
+
+            <div id="error-detail" style="display:none;"></div>
+        </div>
+
+        <!-- ── 调试信息（常驻） ── -->
+        <div id="debug-section">
+            <div id="debug-title">▸ 调试信息</div>
+            <div id="debug-grid">
+                <span class="dg-item"><span class="dg-l">ctx SR</span> <span class="dg-r" id="dbg-ctx-sr">--</span></span>
+                <span class="dg-item"><span class="dg-l">dev SR</span> <span class="dg-r" id="dbg-device-sr">--</span></span>
+                <span class="dg-item"><span class="dg-l">enc SR</span> <span class="dg-r" id="dbg-enc-sr">48000</span></span>
+                <span class="dg-item"><span class="dg-l">frame</span> <span class="dg-r" id="dbg-frame-size">480</span></span>
+                <span class="dg-item"><span class="dg-l">bitrate</span> <span class="dg-r" id="dbg-bitrate">32k</span></span>
+                <span class="dg-item"><span class="dg-l">RTT</span> <span class="dg-r" id="dbg-rtt">--</span></span>
+                <span class="dg-item"><span class="dg-l">总延迟</span> <span class="dg-r" id="dbg-total-lat">--</span></span>
+                <span class="dg-item"><span class="dg-l">srv SR</span> <span class="dg-r" id="dbg-server-sr">--</span></span>
+                <span class="dg-item"><span class="dg-l">backlog</span> <span class="dg-r" id="dbg-backlog">0</span></span>
+                <span class="dg-item"><span class="dg-l">encoded</span> <span class="dg-r" id="dbg-encoded">0</span></span>
+            </div>
+        </div>
+
+        <!-- ── 日志 ── -->
+        <div id="log-section">
+            <div id="log-title">▸ 日志</div>
+            <div id="log-content"></div>
+        </div>
+
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>

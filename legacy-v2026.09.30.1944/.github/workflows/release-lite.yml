@@ -1,0 +1,121 @@
+name: Lite CI
+
+on:
+  push:
+    tags:
+      - "lite-v*"
+      - "lite*"
+  workflow_dispatch:
+
+jobs:
+  windows-lite:
+    name: Windows Lite (pure python, no gcc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set build timestamp (lite-v* -> lite version; else now)
+        id: ts
+        shell: pwsh
+        run: |
+          $ref = $env:GITHUB_REF_NAME
+          if ($ref) {
+            if ($ref.StartsWith("lite-v")) { $ref = $ref.Substring(6) }
+            elseif ($ref.StartsWith("lite")) { $ref = $ref.Substring(4) -replace "^[-_]*","" }
+            elseif ($ref.StartsWith("v")) { $ref = $ref.Substring(1) }
+          }
+          if ($ref) {
+            $stamp = $ref -replace '\.', '-'
+            $ver = $ref
+          } else {
+            $stamp = Get-Date -Format 'yyyy-MM-dd-HHmm'
+            $ver = $stamp -replace '-', '.'
+          }
+          "stamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "ver=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "BUILD_DATE=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # pip 缓存 restore-only：缓存由 cache.yml 统一管理写入，
+      # 本工作流只读不写。
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Restore pip wheel cache (shared with main CI, restore-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: purevox-windows-pip-v2-${{ hashFiles('requirements-win.txt') }}
+          restore-keys: |
+            purevox-windows-pip-v2-
+
+      - name: Build Lite Denoiser exe (build_lite_mic.ps1, single recipe local+CI)
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File build_lite_mic.ps1
+
+      - name: Build Lite Net exe (build_lite_net.ps1, single recipe local+CI)
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File build_lite_net.ps1
+
+      - name: Upload Lite Denoiser bundle (onedir)
+        uses: actions/upload-artifact@v7
+        with:
+          name: PureVoxLite-Windows-x64-${{ steps.ts.outputs.stamp }}
+          path: dist/PureVoxLite/
+          if-no-files-found: error
+
+      - name: Upload Lite Net bundle (onedir)
+        uses: actions/upload-artifact@v7
+        with:
+          name: PureVoxNetLite-Windows-x64-${{ steps.ts.outputs.stamp }}
+          path: dist/PureVoxNetLite/
+          if-no-files-found: error
+
+  release-lite:
+    name: Release Lite (lite-v* -> attach)
+    runs-on: ubuntu-latest
+    needs: [windows-lite]
+    if: startsWith(github.ref, 'refs/tags/lite')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout full history (commit log for release notes)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download Lite artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - name: List Lite exes
+        run: |
+          find artifacts -type f -name "*.exe" | xargs ls -lh || true
+      - name: Pack Lite bundles (onedir -> zip)
+        run: |
+          # download-artifact 不带子目录，exe 落在 artifacts/ 下；
+          # 归位到固定目录（PureVoxLite/ 与 PureVoxNetLite/），
+          # 保证解压即 <目录>/<同名>.exe；一次 release 附两个包
+          for app in PureVoxLite PureVoxNetLite; do
+            exe=$(find "artifacts" -type f -name "$app.exe" | head -n 1)
+            [ -n "$exe" ] || { echo "missing $app.exe"; exit 1; }
+            rm -rf "$app"
+            mv "$(dirname "$exe")" "$app"
+            zip -9 -q -r "${GITHUB_WORKSPACE}/${app}-Windows-x64-${GITHUB_REF_NAME#lite-v}.zip" "$app"
+            unzip -l "${app}-Windows-x64-*.zip" | head -n 6
+          done
+      - name: Build release notes (tools/automation/release_notes.sh is canonical)
+        run: |
+          bash tools/automation/release_notes.sh "${GITHUB_REF_NAME}" notes.md \
+            "Lite 纯 Python 版（无 gcc，Tk 像素风，onedir 解压即用）。PureVoxLite=降噪麦克风；PureVoxNetLite=网络推流播放。自动发布：${GITHUB_REF_NAME}"
+
+      - name: Create GitHub release for Lite
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(ls PureVoxLite-Windows-x64-*.zip PureVoxNetLite-Windows-x64-*.zip)
+          gh release create -R "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" \
+            --title "PureVox Lite ${GITHUB_REF_NAME}" \
+            --notes-file "${GITHUB_WORKSPACE}/notes.md" \
+            $assets || gh release upload "${GITHUB_REF_NAME}" $assets --clobber
