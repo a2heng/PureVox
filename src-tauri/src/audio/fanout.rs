@@ -18,8 +18,8 @@
 //! 信号源扇出：一个源（输入采集 / 测试音）把 48 kHz hop 分发给多个订阅者（输出流）。
 //! 只在工作线程之间使用（不在实时回调里），加锁可接受。
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
@@ -36,7 +36,11 @@ pub struct Fanout {
 
 impl Fanout {
   pub fn new(name: impl Into<String>) -> Self {
-    Fanout { name: name.into(), subscribers: Mutex::new(Vec::new()), closed: AtomicBool::new(false) }
+    Fanout {
+      name: name.into(),
+      subscribers: Mutex::new(Vec::new()),
+      closed: AtomicBool::new(false),
+    }
   }
 
   /// 源已停止（不会再有数据）。
@@ -63,7 +67,11 @@ impl Fanout {
   }
 
   pub fn unsubscribe(&self, id: &str) {
-    self.subscribers.lock().unwrap().retain(|(sid, _)| sid != id);
+    self
+      .subscribers
+      .lock()
+      .unwrap()
+      .retain(|(sid, _)| sid != id);
   }
 
   /// 分发一个 hop；订阅者缓冲满（其工作线程停摆）时丢弃该订阅者这一 hop 的多余部分。

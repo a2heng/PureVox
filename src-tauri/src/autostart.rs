@@ -19,7 +19,8 @@
 //! 值（当前可执行文件路径），只影响当前用户，不需要管理员。
 
 #[cfg(windows)]
-const RUN_KEY: windows::core::PCWSTR = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+const RUN_KEY: windows::core::PCWSTR =
+  windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 #[cfg(windows)]
 const VALUE_NAME: windows::core::PCWSTR = windows::core::w!("PureVox");
 

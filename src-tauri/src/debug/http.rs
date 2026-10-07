@@ -22,9 +22,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{Probe, SharedHub, DEBUG_HTTP_PORT};
+use super::{DEBUG_HTTP_PORT, Probe, SharedHub};
 
 const ENDPOINTS: [&str; 4] = ["/debug", "/debug/system", "/debug/audio", "/debug/devices"];
 
@@ -89,13 +89,20 @@ fn handle(hub: &SharedHub, mut stream: TcpStream) -> std::io::Result<()> {
   let mut parts = request_line.split_whitespace();
   let method = parts.next().unwrap_or("");
   let target = parts.next().unwrap_or("/");
-  let path = target.split('?').next().unwrap_or("/").trim_end_matches('/');
+  let path = target
+    .split('?')
+    .next()
+    .unwrap_or("/")
+    .trim_end_matches('/');
   let path = if path.is_empty() { "/" } else { path };
 
   let (status, body) = if method == "GET" {
     route(hub, path)
   } else {
-    ("405 Method Not Allowed", json!({ "error": "调试接口只读，仅支持 GET" }))
+    (
+      "405 Method Not Allowed",
+      json!({ "error": "调试接口只读，仅支持 GET" }),
+    )
   };
   let body = serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".into());
   write!(

@@ -56,7 +56,10 @@ pub struct RecorderHub {
 
 impl RecorderHub {
   pub fn new(hub: SharedHub) -> Self {
-    RecorderHub { state: Mutex::new(State::Idle), hub }
+    RecorderHub {
+      state: Mutex::new(State::Idle),
+      hub,
+    }
   }
 
   /// 是否正在录制（列工作线程每轮查一次，避免每行都锁）。
@@ -77,7 +80,9 @@ impl RecorderHub {
       path,
       last_pub: Instant::now(),
     };
-    self.hub.set_recorder(Probe::ok(format!("录制中 0.0/{seconds:.0} s")));
+    self
+      .hub
+      .set_recorder(Probe::ok(format!("录制中 0.0/{seconds:.0} s")));
     Ok(())
   }
 
@@ -85,7 +90,13 @@ impl RecorderHub {
   pub fn tap(&self, col: usize, row: usize, phase: Phase, samples: &[f32]) {
     let mut st = self.state.lock().unwrap();
     let full = {
-      let State::Recording { target, buf, needed, .. } = &mut *st else {
+      let State::Recording {
+        target,
+        buf,
+        needed,
+        ..
+      } = &mut *st
+      else {
         return;
       };
       if *target != (col, row, phase) {
@@ -95,19 +106,29 @@ impl RecorderHub {
       buf.len() >= *needed
     };
     if !full {
-      if let State::Recording { buf, needed, last_pub, .. } = &mut *st {
-        if last_pub.elapsed().as_millis() >= 200 {
-          *last_pub = Instant::now();
-          let secs = buf.len() as f64 / SAMPLE_RATE as f64;
-          let total = *needed as f64 / SAMPLE_RATE as f64;
-          self.hub.set_recorder(Probe::ok(format!("录制中 {secs:.1}/{total:.0} s")));
-        }
+      if let State::Recording {
+        buf,
+        needed,
+        last_pub,
+        ..
+      } = &mut *st
+        && last_pub.elapsed().as_millis() >= 200
+      {
+        *last_pub = Instant::now();
+        let secs = buf.len() as f64 / SAMPLE_RATE as f64;
+        let total = *needed as f64 / SAMPLE_RATE as f64;
+        self
+          .hub
+          .set_recorder(Probe::ok(format!("录制中 {secs:.1}/{total:.0} s")));
       }
       return;
     }
 
     let prev = std::mem::replace(&mut *st, State::Idle);
-    let State::Recording { buf, needed, path, .. } = prev else {
+    let State::Recording {
+      buf, needed, path, ..
+    } = prev
+    else {
       return;
     };
     match normalize_and_write(&buf[..needed], &path) {
@@ -158,7 +179,10 @@ fn normalize_and_write(samples: &[f32], path: &Path) -> Result<f32, String> {
   if peak * gain > 0.99 {
     gain = 0.99 / peak;
   }
-  let out: Vec<f32> = samples.iter().map(|x| (x * gain).clamp(-1.0, 1.0)).collect();
+  let out: Vec<f32> = samples
+    .iter()
+    .map(|x| (x * gain).clamp(-1.0, 1.0))
+    .collect();
   crate::wav::write_mono_16(path, &out, SAMPLE_RATE)?;
   Ok(20.0 * (peak * gain).max(1e-6).log10())
 }

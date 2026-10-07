@@ -73,19 +73,17 @@ fn token_of(t: &str) -> Option<(u32, &'static str)> {
       _ => None,
     };
   }
-  if let Some(n) = t.strip_prefix('f') {
-    if let Ok(i) = n.parse::<u32>() {
-      if (1..=24).contains(&i) {
-        return Some((0x70 + i - 1, ""));
-      }
-    }
+  if let Some(n) = t.strip_prefix('f')
+    && let Ok(i) = n.parse::<u32>()
+    && (1..=24).contains(&i)
+  {
+    return Some((0x70 + i - 1, ""));
   }
-  if let Some(n) = t.strip_prefix("num") {
-    if let Ok(i) = n.parse::<u32>() {
-      if i < 10 {
-        return Some((0x60 + i, ""));
-      }
-    }
+  if let Some(n) = t.strip_prefix("num")
+    && let Ok(i) = n.parse::<u32>()
+    && i < 10
+  {
+    return Some((0x60 + i, ""));
   }
   match t {
     "backspace" => Some((0x08, "Backspace")),
@@ -130,7 +128,11 @@ pub fn parse_spec(spec: &str) -> Option<(u32, u32)> {
   let token = token?;
   let (vk, _) = token_of(&token)?;
   // 无修饰键时只允许功能键
-  let is_fn = token.starts_with('f') && token[1..].parse::<u32>().map(|i| (1..=24).contains(&i)).unwrap_or(false);
+  let is_fn = token.starts_with('f')
+    && token[1..]
+      .parse::<u32>()
+      .map(|i| (1..=24).contains(&i))
+      .unwrap_or(false);
   if bits == 0 && !is_fn {
     return None;
   }
@@ -150,7 +152,12 @@ pub fn normalize_spec(spec: &str) -> String {
     }
   }
   let mut parts: Vec<String> = Vec::new();
-  for (name, bit) in [("Ctrl", MOD_CONTROL), ("Alt", MOD_ALT), ("Shift", MOD_SHIFT), ("Win", MOD_WIN)] {
+  for (name, bit) in [
+    ("Ctrl", MOD_CONTROL),
+    ("Alt", MOD_ALT),
+    ("Shift", MOD_SHIFT),
+    ("Win", MOD_WIN),
+  ] {
     if bits & bit != 0 {
       parts.push(name.to_string());
     }

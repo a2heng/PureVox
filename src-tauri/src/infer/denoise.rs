@@ -44,7 +44,12 @@ impl Denoise {
   pub fn load(path: &Path) -> Result<Self, String> {
     let session = super::build_session(path)?;
     let dim = super::cache_dim(&session, "cache_in")?;
-    Ok(Denoise { session, dim, cache: vec![0.0; dim], out: vec![0.0; HOP] })
+    Ok(Denoise {
+      session,
+      dim,
+      cache: vec![0.0; dim],
+      out: vec![0.0; HOP],
+    })
   }
 
   /// 处理一个 480 样本 hop，返回增强后的 hop（借用内部缓冲）。
@@ -56,7 +61,10 @@ impl Denoise {
     let cache = Tensor::from_array(([1i64, self.dim as i64], cache_in))
       .map_err(|e| format!("构造 cache_in 失败：{e}"))?;
 
-    let outputs = match self.session.run(ort::inputs!["mix_hop" => mix, "cache_in" => cache]) {
+    let outputs = match self
+      .session
+      .run(ort::inputs!["mix_hop" => mix, "cache_in" => cache])
+    {
       Ok(o) => o,
       Err(e) => {
         self.cache = vec![0.0; self.dim];

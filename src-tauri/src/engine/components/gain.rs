@@ -26,7 +26,10 @@ pub struct GainStage {
 
 impl GainStage {
   pub fn load(db: f64) -> Self {
-    GainStage { gain: 10f32.powf((db / 20.0) as f32), db }
+    GainStage {
+      gain: 10f32.powf((db / 20.0) as f32),
+      db,
+    }
   }
 }
 

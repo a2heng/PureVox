@@ -76,7 +76,11 @@ fn square(freq: f64, ms: f64) -> Vec<f32> {
   (0..n)
     .map(|i| {
       let t = i as f64 / SR;
-      let w = if (2.0 * std::f64::consts::PI * freq * t).sin() >= 0.0 { 1.0 } else { -1.0 };
+      let w = if (2.0 * std::f64::consts::PI * freq * t).sin() >= 0.0 {
+        1.0
+      } else {
+        -1.0
+      };
       (w * 0.5) as f32 * e[i]
     })
     .collect()
@@ -89,7 +93,11 @@ fn voice(preset: &str, start: bool) -> Vec<f32> {
       tone(f, 95.0, 26.0, 2.0, &[1.0, 0.45, 0.18])
     }
     "pop" => {
-      let (f0, f1) = if start { (1200.0f64, 520.0f64) } else { (700.0f64, 300.0f64) };
+      let (f0, f1) = if start {
+        (1200.0f64, 520.0f64)
+      } else {
+        (700.0f64, 300.0f64)
+      };
       let n = n_of(70.0);
       let e = env(n, 2.0, 22.0);
       let mut phase = 0.0f64;
@@ -129,7 +137,11 @@ fn voice(preset: &str, start: bool) -> Vec<f32> {
     }
     _ => {
       // soft（默认）
-      let (a, b) = if start { (587.33, 880.0) } else { (880.0, 587.33) };
+      let (a, b) = if start {
+        (587.33, 880.0)
+      } else {
+        (880.0, 587.33)
+      };
       let mut v = tone(a, 70.0, 40.0, 4.0, &[1.0]);
       v.extend(tone(b, 80.0, 45.0, 4.0, &[1.0]));
       v

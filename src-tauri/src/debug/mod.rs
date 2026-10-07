@@ -20,10 +20,10 @@
 //! UI 面板（Tauri 命令 `debug_snapshot`）与本机 HTTP 接口序列化的都是
 //! [`DebugHub::snapshot`] 返回的同一个 [`DebugSnapshot`]，禁止另算一套。
 
-pub mod http;
-pub mod system;
 #[cfg(windows)]
 mod gpu_win;
+pub mod http;
+pub mod system;
 
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -50,7 +50,9 @@ impl<T> Probe<T> {
     Probe::Ok { value }
   }
   pub fn unavailable(reason: impl Into<String>) -> Self {
-    Probe::Unavailable { reason: reason.into() }
+    Probe::Unavailable {
+      reason: reason.into(),
+    }
   }
 }
 
@@ -253,7 +255,10 @@ impl DebugHub {
     let mut devices = st.devices;
     if let Probe::Ok { value } = &mut devices {
       for d in &mut value.devices {
-        d.opened = st.streams.values().any(|s| s.device_id == d.id && s.direction == d.direction);
+        d.opened = st
+          .streams
+          .values()
+          .any(|s| s.device_id == d.id && s.direction == d.direction);
       }
     }
     let st_ui = st.ui.clone();

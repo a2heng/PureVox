@@ -23,7 +23,7 @@
 //! 处理链不在这里：见 `engine::session`（DESIGN.md §3.3）。
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
@@ -32,8 +32,8 @@ use rtrb::{Producer, RingBuffer};
 use serde::Serialize;
 
 use super::fanout::Fanout;
-use super::{WorkerHandle, HOP, SAMPLE_RATE};
-use crate::debug::{now_ms, Probe, SharedHub, StreamInfo};
+use super::{HOP, SAMPLE_RATE, WorkerHandle};
+use crate::debug::{Probe, SharedHub, StreamInfo, now_ms};
 use crate::dsp::meter::{Meter, RateMeter, SPECTRUM_BIN_HZ};
 use crate::dsp::resampler::ToHops;
 
@@ -123,7 +123,10 @@ pub(super) struct StallWatch {
 
 impl StallWatch {
   pub fn new() -> Self {
-    StallWatch { last_callbacks: 0, last_seen: Instant::now() }
+    StallWatch {
+      last_callbacks: 0,
+      last_seen: Instant::now(),
+    }
   }
 
   /// 返回已停顿的毫秒数。
@@ -136,11 +139,17 @@ impl StallWatch {
   }
 }
 
-pub(super) fn stalled_state(stalled_ms: u128, last_error: &Option<String>) -> Option<Probe<String>> {
+pub(super) fn stalled_state(
+  stalled_ms: u128,
+  last_error: &Option<String>,
+) -> Option<Probe<String>> {
   (stalled_ms >= STALL_LIMIT.as_millis()).then(|| {
     Probe::unavailable(format!(
       "设备回调已停止 {stalled_ms} ms{}",
-      last_error.as_ref().map(|e| format!("（最近错误：{e}）")).unwrap_or_default()
+      last_error
+        .as_ref()
+        .map(|e| format!("（最近错误：{e}）"))
+        .unwrap_or_default()
     ))
   })
 }
@@ -169,7 +178,7 @@ where
   let err_stats = stats.clone();
   dev
     .build_input_stream::<T, _, _>(
-      cfg.clone(),
+      *cfg,
       move |data: &[T], _info| {
         stats.on_block((data.len() / ch) as u32);
         let mut dropped = 0u64;
@@ -198,13 +207,23 @@ pub fn spawn(hub: SharedHub, device_id: String, tag: String) -> Result<Capture, 
   let stop = Arc::new(AtomicBool::new(false));
   let (tx, rx) = mpsc::channel::<Result<Arc<Fanout>, String>>();
   let stop2 = stop.clone();
-  let short: String = device_id.chars().rev().take(8).collect::<String>().chars().rev().collect();
+  let short: String = device_id
+    .chars()
+    .rev()
+    .take(8)
+    .collect::<String>()
+    .chars()
+    .rev()
+    .collect();
   let join = std::thread::Builder::new()
     .name(format!("capture-{short}"))
     .spawn(move || run(hub, device_id, tag, stop2, tx))
     .map_err(|e| format!("创建采集线程失败：{e}"))?;
   match rx.recv_timeout(OPEN_TIMEOUT) {
-    Ok(Ok(fanout)) => Ok(Capture { handle: WorkerHandle::new(stop, join), fanout }),
+    Ok(Ok(fanout)) => Ok(Capture {
+      handle: WorkerHandle::new(stop, join),
+      fanout,
+    }),
     Ok(Err(e)) => {
       let _ = join.join();
       Err(e)
@@ -228,7 +247,9 @@ fn run(
   // ---- 打开设备 ----
   let setup = (|| -> Result<_, String> {
     let (dev, name) = crate::devices::find(&device_id, true)?;
-    let supported = dev.default_input_config().map_err(|e| format!("读取默认格式失败：{e}"))?;
+    let supported = dev
+      .default_input_config()
+      .map_err(|e| format!("读取默认格式失败：{e}"))?;
     let cfg = supported.config();
     let fmt = supported.sample_format();
     // 环形缓冲 500 ms（原生采样率单声道）
@@ -258,21 +279,44 @@ fn run(
     channels: cfg.channels,
     sample_format: fmt.to_string(),
   };
-  worker(hub, tag, info, cons, stats, stream, stop, tx);
+  worker(
+    hub,
+    tag,
+    info,
+    WorkerSrc {
+      cons,
+      stats,
+      keep: stream,
+      stop,
+    },
+    tx,
+  );
+}
+
+/// 数据源侧交给工作线程的采集件：环消费端、回调统计、保活句柄、停止开关。
+/// 打包成一个类型，让 [`worker`] 的入参保持在「线程契约」的粒度上。
+pub(super) struct WorkerSrc<K> {
+  pub cons: rtrb::Consumer<f32>,
+  pub stats: Arc<CallbackStats>,
+  pub keep: K,
+  pub stop: Arc<AtomicBool>,
 }
 
 /// 工作循环：读环 → 重采样切 hop → 计量 → 发布 → 推扇出。
-/// `keep` 在循环期间保活（cpal 流 / WASAPI 轮询线程）；`stats` 由数据源侧更新。
+/// `src.keep` 在循环期间保活（cpal 流 / WASAPI 轮询线程）；`src.stats` 由数据源侧更新。
 pub(super) fn worker<K>(
   hub: SharedHub,
   tag: String,
   info: SourceInfo,
-  mut cons: rtrb::Consumer<f32>,
-  stats: Arc<CallbackStats>,
-  keep: K,
-  stop: Arc<AtomicBool>,
+  src: WorkerSrc<K>,
   tx: mpsc::Sender<Result<Arc<Fanout>, String>>,
 ) {
+  let WorkerSrc {
+    mut cons,
+    stats,
+    keep,
+    stop,
+  } = src;
   let _keep = keep;
   let mut to_hops = match ToHops::new(info.native_rate) {
     Ok(t) => t,
@@ -298,21 +342,21 @@ pub(super) fn worker<K>(
   while !stop.load(Relaxed) {
     let n = cons.slots();
     let ring_level_ms = n as f32 * 1000.0 / native_rate as f32;
-    if n > 0 {
-      if let Ok(chunk) = cons.read_chunk(n) {
-        let (a, b) = chunk.as_slices();
-        for part in [a, b] {
-          let r = to_hops.push(part, |hop| {
-            meter.on_hop(hop);
-            fanout.push_hop(hop);
-            hops += 1;
-          });
-          if let Err(e) = r {
-            resample_error = Some(e);
-          }
+    if n > 0
+      && let Ok(chunk) = cons.read_chunk(n)
+    {
+      let (a, b) = chunk.as_slices();
+      for part in [a, b] {
+        let r = to_hops.push(part, |hop| {
+          meter.on_hop(hop);
+          fanout.push_hop(hop);
+          hops += 1;
+        });
+        if let Err(e) = r {
+          resample_error = Some(e);
         }
-        chunk.commit_all();
       }
+      chunk.commit_all();
     }
 
     let now = Instant::now();

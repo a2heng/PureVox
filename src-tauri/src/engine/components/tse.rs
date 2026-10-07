@@ -47,7 +47,10 @@ impl TseStage {
 fn load_reference(engine: &mut Tse, model_file: &str, path: &Path) -> Result<f64, String> {
   let (samples, rate) = crate::wav::read_mono(path)?;
   if rate != crate::audio::SAMPLE_RATE {
-    return Err(format!("参考语音须为 48 kHz（当前 {rate} Hz）：{}", path.display()));
+    return Err(format!(
+      "参考语音须为 48 kHz（当前 {rate} Hz）：{}",
+      path.display()
+    ));
   }
   let secs = samples.len() as f64 / rate as f64;
   engine.set_reference(model_file, &samples)?;

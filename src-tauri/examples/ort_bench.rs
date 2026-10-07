@@ -25,13 +25,20 @@ use ort::session::Session;
 use ort::value::{Tensor, ValueType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let path = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../models/purevox_denoise_202609c_ep0012.onnx")
-  });
+  let path = std::env::args()
+    .nth(1)
+    .map(PathBuf::from)
+    .unwrap_or_else(|| {
+      PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../models/purevox_denoise_202609c_ep0012.onnx")
+    });
   println!("model: {}", path.display());
   let t = Instant::now();
   let mut session = Session::builder()?.commit_from_file(&path)?;
-  println!("session ready in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+  println!(
+    "session ready in {:.0} ms",
+    t.elapsed().as_secs_f64() * 1000.0
+  );
   let dim = session
     .inputs()
     .iter()
@@ -51,7 +58,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       let mix = Tensor::from_array(([1i64, 480], vec![0.0f32; 480])).unwrap();
       let t = Instant::now();
       let cin = Tensor::from_array(([1i64, dim as i64], std::mem::take(&mut cache))).unwrap();
-      let outputs = session.run(ort::inputs!["mix_hop" => mix, "cache_in" => cin]).unwrap();
+      let outputs = session
+        .run(ort::inputs!["mix_hop" => mix, "cache_in" => cin])
+        .unwrap();
       let (_, cache_out) = outputs["cache_out"].try_extract_tensor::<f32>().unwrap();
       cache = cache_out.to_vec();
       let ms = t.elapsed().as_secs_f64() * 1000.0;

@@ -1,0 +1,113 @@
+# PureVox 缓存 —— 全仓库唯一的缓存写入者。
+# ci.yml / release.yml 一律 restore-only。GitHub 缓存按触发 ref 分域，让各工作流
+# 各写各的只会堆出没人回读的重复条目（tag 上写入的尤其如此）；集中到一处写，
+# 每个键恒有一份有效条目，写入用 continue-on-error（同键已存在即视为成功）。
+# 触发：依赖与键文件变更的分支推送 + 每周定时（防缓存淘汰）+ 手动。
+# warm 用「冷构建 target」（不恢复 target 缓存）→ 保存的快照始终干净、无历史增量垃圾。
+name: Cache
+
+on:
+  push:
+    branches: [main, tauri-3]
+    paths:
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "tools/automation/versions.env"
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  warm:
+    name: Warm (sole cache writer)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load versions + cache keys (versions.env 是唯一来源)
+        shell: powershell
+        run: |
+          Get-Content tools/automation/versions.env | Where-Object { $_ -match '^(\w+)=(.*)$' } | ForEach-Object {
+            "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          $lock = "${{ hashFiles('src-tauri/Cargo.lock') }}"
+          "CARGO_CACHE_KEY=purevox-win-cargo-$env:CACHE_GEN-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TARGET_DEBUG_KEY=purevox-win-target-dbg-$env:CACHE_GEN-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TARGET_RELEASE_KEY=purevox-win-target-rel-$env:CACHE_GEN-$env:TCLI_VER-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TAURI_CLI_KEY=purevox-win-tauri-cli-$env:TCLI_VER" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Rust toolchain (rustfmt + clippy)
+        shell: powershell
+        run: |
+          rustup toolchain install "$env:RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+          rustup default "$env:RUST_TOOLCHAIN"
+
+      - name: Restore cargo registry (restore-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+          key: ${{ env.CARGO_CACHE_KEY }}
+          restore-keys: |
+            purevox-win-cargo-${{ env.CACHE_GEN }}-
+
+      - name: Restore cargo-tauri binary (restore-only)
+        id: tcli
+        uses: actions/cache/restore@v6
+        with:
+          path: ~\.cargo\bin\cargo-tauri.exe
+          key: ${{ env.TAURI_CLI_KEY }}
+
+      - name: Install tauri-cli (仅缓存未命中时编译，版本钉死)
+        if: steps.tcli.outputs.cache-hit != 'true'
+        shell: powershell
+        run: cargo install tauri-cli --version "$env:TCLI_VER" --locked
+
+      # 冷构建 debug（不恢复 target 缓存）：clippy/build/test 覆盖 target/debug 全部工件。
+      - name: Warm debug (clippy + build + test)
+        shell: powershell
+        run: |
+          .\tools\automation\check.ps1 -Gate clippy
+          .\tools\automation\check.ps1 -Gate build
+          .\tools\automation\check.ps1 -Gate test
+
+      # 冷构建 release + 打安装器：顺带预热 WiX/NSIS 下载与 onnxruntime 下载，
+      # 并顺手验证 bundle 配置（模型资源）在该提交上仍可打包。
+      - name: Warm release + installers
+        working-directory: src-tauri
+        shell: powershell
+        run: cargo tauri build
+
+      - name: Save cargo registry
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+          key: ${{ env.CARGO_CACHE_KEY }}
+
+      - name: Save target/debug
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: src-tauri\target\debug
+          key: ${{ env.TARGET_DEBUG_KEY }}
+
+      - name: Save target/release + WiX/NSIS + onnxruntime 下载
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            src-tauri\target\release
+            ~\AppData\Local\tauri
+            ~\AppData\Local\ort.pyke.io
+          key: ${{ env.TARGET_RELEASE_KEY }}
+
+      - name: Save cargo-tauri binary
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~\.cargo\bin\cargo-tauri.exe
+          key: ${{ env.TAURI_CLI_KEY }}

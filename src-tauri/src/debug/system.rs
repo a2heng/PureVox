@@ -21,7 +21,7 @@ use serde::Serialize;
 use std::time::Duration;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
-use super::{now_ms, Probe, SharedHub};
+use super::{Probe, SharedHub, now_ms};
 
 pub const SAMPLE_PERIOD: Duration = Duration::from_secs(1);
 
@@ -86,8 +86,10 @@ fn process_private_bytes() -> Probe<u64> {
     GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
   };
   use windows::Win32::System::Threading::GetCurrentProcess;
-  let mut pmc = PROCESS_MEMORY_COUNTERS_EX::default();
-  pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+  let mut pmc = PROCESS_MEMORY_COUNTERS_EX {
+    cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+    ..Default::default()
+  };
   let r = unsafe {
     GetProcessMemoryInfo(
       GetCurrentProcess(),

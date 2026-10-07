@@ -29,12 +29,12 @@ use std::time::{Duration, Instant};
 
 use rtrb::Consumer;
 
-use super::aec::{spawn_far_pump, AecRow, FarHistory, FarWin, FAR_HIST_SAMPLES};
+use super::aec::{AecRow, FAR_HIST_SAMPLES, FarHistory, FarWin, spawn_far_pump};
 use super::calib::CalibHub;
 use super::registry::{self, ParamValue, Params};
 use super::stage::{FrameContext, Stage, StageError};
 use crate::audio::fanout::Fanout;
-use crate::audio::{capture, loopback, playback, WorkerHandle, HOP};
+use crate::audio::{HOP, WorkerHandle, capture, loopback, playback};
 use crate::debug::SharedHub;
 use crate::infer::aec::Aec;
 use crate::plan::{ColumnSpec, Plan, RowKind};
@@ -106,14 +106,24 @@ impl Session {
       .name("session-publish".into())
       .spawn(move || {
         while !ps.load(Relaxed) {
-          let parts: Vec<String> = summaries.iter().map(|s| s.lock().unwrap().clone()).collect();
+          let parts: Vec<String> = summaries
+            .iter()
+            .map(|s| s.lock().unwrap().clone())
+            .collect();
           hub2.set_column(crate::debug::Probe::ok(parts.join(" ｜ ")));
           std::thread::sleep(Duration::from_millis(200));
         }
       })
       .ok();
 
-    (Session { columns, publisher_stop, publisher }, problems)
+    (
+      Session {
+        columns,
+        publisher_stop,
+        publisher,
+      },
+      problems,
+    )
   }
 
   pub fn stop(&mut self) {
@@ -138,7 +148,10 @@ impl Session {
 }
 
 fn to_params(map: &BTreeMap<String, String>) -> Params {
-  map.iter().map(|(k, v)| (k.clone(), ParamValue::Text(v.clone()))).collect()
+  map
+    .iter()
+    .map(|(k, v)| (k.clone(), ParamValue::Text(v.clone())))
+    .collect()
 }
 
 /// 从行输入环取 1 hop（超上限丢最旧到目标）；不足一 hop 返回 false。
@@ -149,14 +162,14 @@ fn take_hop(cons: &mut Consumer<f32>, out: &mut [f32; HOP]) -> bool {
       c.commit_all();
     }
   }
-  if cons.slots() >= HOP {
-    if let Ok(c) = cons.read_chunk(HOP) {
-      let (a, b) = c.as_slices();
-      out[..a.len()].copy_from_slice(a);
-      out[a.len()..].copy_from_slice(b);
-      c.commit_all();
-      return true;
-    }
+  if cons.slots() >= HOP
+    && let Ok(c) = cons.read_chunk(HOP)
+  {
+    let (a, b) = c.as_slices();
+    out[..a.len()].copy_from_slice(a);
+    out[a.len()..].copy_from_slice(b);
+    c.commit_all();
+    return true;
   }
   false
 }
@@ -228,9 +241,11 @@ fn build_column(
               if id.is_empty() {
                 Ok("默认输出回环".to_string())
               } else {
-                Ok(crate::devices::find(id, false)
-                  .map(|(_, n)| n)
-                  .unwrap_or_else(|_| "输出回环".to_string()))
+                Ok(
+                  crate::devices::find(id, false)
+                    .map(|(_, n)| n)
+                    .unwrap_or_else(|_| "输出回环".to_string()),
+                )
               }
             } else if far.is_empty() {
               Err("未选择远端设备".to_string())
@@ -244,7 +259,11 @@ fn build_column(
                     let far_cap = match &far_loop {
                       Some(id) => loopback::spawn(
                         hub.clone(),
-                        if id.is_empty() { None } else { Some(id.clone()) },
+                        if id.is_empty() {
+                          None
+                        } else {
+                          Some(id.clone())
+                        },
                         format!("c{idx}r{ri}f"),
                       ),
                       None => capture::spawn(hub.clone(), far.clone(), format!("c{idx}r{ri}f")),
@@ -252,7 +271,8 @@ fn build_column(
                     match far_cap {
                       Ok(far_cap) => {
                         let hist = Arc::new(Mutex::new(FarHistory::new(FAR_HIST_SAMPLES)));
-                        let pump = spawn_far_pump(&far_cap.fanout, hist.clone(), &format!("c{idx}r{ri}"));
+                        let pump =
+                          spawn_far_pump(&far_cap.fanout, hist.clone(), &format!("c{idx}r{ri}"));
                         match Aec::load(&model) {
                           Ok(engine) => {
                             row.label = format!("AEC：{mic_name}（远端 {far_name}）");
@@ -314,7 +334,9 @@ fn build_column(
       },
       RowKind::Process => match registry::create_stage(&r.ptype, &to_params(&r.params)) {
         Ok(st) => {
-          row.label = registry::get_spec(&r.ptype).map(|s| s.label.to_string()).unwrap_or(r.ptype.clone());
+          row.label = registry::get_spec(&r.ptype)
+            .map(|s| s.label.to_string())
+            .unwrap_or(r.ptype.clone());
           row.stage = Some(st);
         }
         Err(e) => row.error = Some(e),
@@ -326,7 +348,12 @@ fn build_column(
           Ok((_, name)) => {
             row.label = name;
             let fan = Arc::new(Fanout::new(format!("列{}输出", idx + 1)));
-            match playback::spawn(hub.clone(), dev.to_string(), fan.clone(), format!("c{idx}r{ri}")) {
+            match playback::spawn(
+              hub.clone(),
+              dev.to_string(),
+              fan.clone(),
+              format!("c{idx}r{ri}"),
+            ) {
               Ok(h) => {
                 row.output = Some(fan);
                 playbacks.push(h);
@@ -354,7 +381,13 @@ fn build_column(
     .spawn(move || run_column(idx, rows2, sum2, stop2, rec2, calib2))
     .ok();
 
-  ColumnRuntime { summary, stop, join, captures, playbacks }
+  ColumnRuntime {
+    summary,
+    stop,
+    join,
+    captures,
+    playbacks,
+  }
 }
 
 fn run_column(
@@ -453,41 +486,45 @@ fn run_column(
                   }
                 }
               }
-            } else if let Some(cons) = r.input.as_mut() {
-              if take_hop(cons, &mut tmp) {
-                for i in 0..HOP {
-                  acc[i] += tmp[i] * k;
-                }
+            } else if let Some(cons) = r.input.as_mut()
+              && take_hop(cons, &mut tmp)
+            {
+              for i in 0..HOP {
+                acc[i] += tmp[i] * k;
               }
             }
           }
           RowKind::Process => {
-            if r.enabled {
-              if let Some(st) = r.stage.as_mut() {
-                // 录音采样点：处理前 = 上游输出（TSE 行的输入即降噪后）
-                if recording {
-                  rec.tap(idx, ri, Phase::Pre, &acc);
-                }
-                let t = Instant::now();
-                if let Err(StageError::Fatal(m)) = st.process(&mut acc, &ctx) {
-                  r.error = Some(m);
-                }
-                let ms = t.elapsed().as_secs_f32() * 1000.0;
-                r.inf_ms = if r.inf_ms == 0.0 { ms } else { r.inf_ms * 0.9 + ms * 0.1 };
-                if ms > r.inf_max_ms {
-                  r.inf_max_ms = ms;
-                }
-                if recording {
-                  rec.tap(idx, ri, Phase::Post, &acc);
-                }
+            if r.enabled
+              && let Some(st) = r.stage.as_mut()
+            {
+              // 录音采样点：处理前 = 上游输出（TSE 行的输入即降噪后）
+              if recording {
+                rec.tap(idx, ri, Phase::Pre, &acc);
+              }
+              let t = Instant::now();
+              if let Err(StageError::Fatal(m)) = st.process(&mut acc, &ctx) {
+                r.error = Some(m);
+              }
+              let ms = t.elapsed().as_secs_f32() * 1000.0;
+              r.inf_ms = if r.inf_ms == 0.0 {
+                ms
+              } else {
+                r.inf_ms * 0.9 + ms * 0.1
+              };
+              if ms > r.inf_max_ms {
+                r.inf_max_ms = ms;
+              }
+              if recording {
+                rec.tap(idx, ri, Phase::Post, &acc);
               }
             }
           }
           RowKind::Output => {
-            if r.enabled {
-              if let Some(f) = r.output.as_ref() {
-                f.push_hop(&acc);
-              }
+            if r.enabled
+              && let Some(f) = r.output.as_ref()
+            {
+              f.push_hop(&acc);
             }
           }
         }
@@ -500,7 +537,10 @@ fn run_column(
           .iter()
           .filter(|r| r.kind == RowKind::Input && (r.input.is_some() || r.aec.is_some()))
           .count();
-        let n_out = g.iter().filter(|r| r.kind == RowKind::Output && r.output.is_some()).count();
+        let n_out = g
+          .iter()
+          .filter(|r| r.kind == RowKind::Output && r.output.is_some())
+          .count();
         let n_proc = g.iter().filter(|r| r.kind == RowKind::Process).count();
         let unconf = g.iter().filter(|r| r.unconfigured).count();
         let errs = g.iter().filter(|r| r.error.is_some()).count();
@@ -523,7 +563,10 @@ fn run_column(
               .as_ref()
               .and_then(|s| s.status())
               .unwrap_or_else(|| "运行中".to_string());
-            notes.push(format!("{}：{st}，{:.1} ms（最大 {:.1}）", r.label, r.inf_ms, r.inf_max_ms));
+            notes.push(format!(
+              "{}：{st}，{:.1} ms（最大 {:.1}）",
+              r.label, r.inf_ms, r.inf_max_ms
+            ));
           } else if let Some(aec) = r.aec.as_ref() {
             notes.push(format!(
               "{}：精确 {}，回退 {}，直通 {}，延时 {} ms",

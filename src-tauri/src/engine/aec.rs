@@ -28,7 +28,7 @@ use std::time::Duration;
 use rtrb::Consumer;
 
 use crate::audio::fanout::Fanout;
-use crate::audio::{WorkerHandle, HOP};
+use crate::audio::{HOP, WorkerHandle};
 use crate::infer::aec::Aec;
 
 /// far 历史网格容量（2 s @48 kHz，DESIGN.md §8）。
@@ -43,7 +43,11 @@ pub struct FarHistory {
 
 impl FarHistory {
   pub fn new(cap: usize) -> Self {
-    FarHistory { buf: vec![0.0; cap], cap, total: 0 }
+    FarHistory {
+      buf: vec![0.0; cap],
+      cap,
+      total: 0,
+    }
   }
 
   pub fn push(&mut self, hop: &[f32]) {
@@ -141,10 +145,10 @@ pub fn spawn_far_pump(fan: &Arc<Fanout>, hist: Arc<Mutex<FarHistory>>, tag: &str
       let mut hop = [0.0f32; HOP];
       while !stop2.load(Relaxed) {
         // far 只作参考：积压就丢最旧，避免越拖越迟
-        if cons.slots() > 8 * HOP {
-          if let Ok(c) = cons.read_chunk(cons.slots() - 2 * HOP) {
-            c.commit_all();
-          }
+        if cons.slots() > 8 * HOP
+          && let Ok(c) = cons.read_chunk(cons.slots() - 2 * HOP)
+        {
+          c.commit_all();
         }
         if cons.slots() >= HOP {
           if let Ok(c) = cons.read_chunk(HOP) {

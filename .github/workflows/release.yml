@@ -1,0 +1,158 @@
+# PureVox 发版 —— tag（v*）推上来后构建安装器并创建 release；手动触发只验证打包、
+# 不建 release（与测试 ci.yml 解耦：那边管代码本身，这边管「打包对象与环境」，
+# 但打包前仍跑全部门禁，确保发版来源是绿的）。
+# 缓存 restore-only（唯一写入者 warm-cache.yml）；产物断言与启动冒烟见
+# tools/automation/assert_bundle.ps1。
+# 注意 AGENTS.md §2.6：CI 失败、从未生成 release 的 tag 必须删除
+# （git tag -d <tag> && git push origin :refs/tags/<tag>），否则会截断下个 tag 的提交记录。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows (build · assert · smoke)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load versions + cache keys (versions.env 是唯一来源)
+        shell: powershell
+        run: |
+          Get-Content tools/automation/versions.env | Where-Object { $_ -match '^(\w+)=(.*)$' } | ForEach-Object {
+            "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          $lock = "${{ hashFiles('src-tauri/Cargo.lock') }}"
+          "CARGO_CACHE_KEY=purevox-win-cargo-$env:CACHE_GEN-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TARGET_DEBUG_KEY=purevox-win-target-dbg-$env:CACHE_GEN-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TARGET_RELEASE_KEY=purevox-win-target-rel-$env:CACHE_GEN-$env:TCLI_VER-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TAURI_CLI_KEY=purevox-win-tauri-cli-$env:TCLI_VER" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Rust toolchain (rustfmt + clippy)
+        shell: powershell
+        run: |
+          rustup toolchain install "$env:RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+          rustup default "$env:RUST_TOOLCHAIN"
+
+      - name: Restore cargo registry (restore-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+          key: ${{ env.CARGO_CACHE_KEY }}
+          restore-keys: |
+            purevox-win-cargo-${{ env.CACHE_GEN }}-
+
+      - name: Restore target/debug (restore-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: src-tauri\target\debug
+          key: ${{ env.TARGET_DEBUG_KEY }}
+          restore-keys: |
+            purevox-win-target-dbg-${{ env.CACHE_GEN }}-
+
+      - name: Restore target/release + WiX/NSIS + onnxruntime 下载 (restore-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            src-tauri\target\release
+            ~\AppData\Local\tauri
+            ~\AppData\Local\ort.pyke.io
+          key: ${{ env.TARGET_RELEASE_KEY }}
+          restore-keys: |
+            purevox-win-target-rel-${{ env.CACHE_GEN }}-
+
+      - name: Restore cargo-tauri binary (restore-only)
+        id: tcli
+        uses: actions/cache/restore@v6
+        with:
+          path: ~\.cargo\bin\cargo-tauri.exe
+          key: ${{ env.TAURI_CLI_KEY }}
+
+      - name: Install tauri-cli (仅缓存未命中时编译，版本钉死)
+        if: steps.tcli.outputs.cache-hit != 'true'
+        shell: powershell
+        run: cargo install tauri-cli --version "$env:TCLI_VER" --locked
+
+      - name: "Gate · fmt"
+        shell: powershell
+        run: .\tools\automation\check.ps1 -Gate fmt
+
+      - name: "Gate · clippy"
+        shell: powershell
+        run: .\tools\automation\check.ps1 -Gate clippy
+
+      - name: "Gate · build"
+        shell: powershell
+        run: .\tools\automation\check.ps1 -Gate build
+
+      - name: "Gate · test"
+        shell: powershell
+        run: .\tools\automation\check.ps1 -Gate test
+
+      - name: Load Node + TypeScript
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VER }}
+          cache: false
+
+      - name: "Gate · tsc"
+        shell: powershell
+        run: |
+          npm install -g "typescript@$env:TS_VER"
+          .\tools\automation\check.ps1 -Gate ui
+
+      - name: Build installers (cargo tauri build)
+        working-directory: src-tauri
+        shell: powershell
+        run: cargo tauri build
+
+      - name: Assert bundle layout + startup smoke
+        shell: powershell
+        run: .\tools\automation\assert_bundle.ps1 -Smoke
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: PureVox-Windows-x64-${{ github.ref_name }}
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  release:
+    name: Release (tag → attach installers)
+    runs-on: ubuntu-latest
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # release notes 需要上一个 tag 起的完整历史
+
+      - name: Download installers
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Build release notes (release_notes.ps1 是唯一实现)
+        shell: pwsh
+        run: ./tools/automation/release_notes.ps1 -Tag "${{ github.ref_name }}" -OutFile notes.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          files=$(find . -type f | sort | tr '\n' ' ')
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "PureVox ${{ github.ref_name }}" \
+            --notes-file "$GITHUB_WORKSPACE/notes.md" \
+            $files

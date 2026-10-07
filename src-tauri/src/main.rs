@@ -85,7 +85,10 @@ fn get_plan(mgr: tauri::State<'_, Arc<AudioManager>>) -> Plan {
 
 /// 应用新计划（结构性变更 → 重建会话）。返回逐行问题（非致命）。
 #[tauri::command]
-async fn apply_plan(plan: Plan, mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<Vec<String>, String> {
+async fn apply_plan(
+  plan: Plan,
+  mgr: tauri::State<'_, Arc<AudioManager>>,
+) -> Result<Vec<String>, String> {
   let mgr = mgr.inner().clone();
   tauri::async_runtime::spawn_blocking(move || mgr.apply_plan(plan))
     .await
@@ -108,7 +111,10 @@ fn list_models(ptype: String) -> Vec<ModelInfo> {
   };
   list
     .iter()
-    .map(|(f, l)| ModelInfo { file: (*f).into(), label: (*l).into() })
+    .map(|(f, l)| ModelInfo {
+      file: (*f).into(),
+      label: (*l).into(),
+    })
     .collect()
 }
 
@@ -148,7 +154,9 @@ fn list_nodes() -> Vec<NodeInfo> {
         .iter()
         .map(|p| {
           let (min, max, step) = match p.kind {
-            engine::registry::ParamKind::Number { lo, hi, step, .. } => (Some(lo), Some(hi), Some(step)),
+            engine::registry::ParamKind::Number { lo, hi, step, .. } => {
+              (Some(lo), Some(hi), Some(step))
+            }
             _ => (None, None, None),
           };
           ParamInfo {
@@ -169,7 +177,10 @@ fn list_nodes() -> Vec<NodeInfo> {
 /// 录制 TSE 参考：录「降噪后、TSE 前」的信号 `seconds` 秒，做音量归一化后写
 /// `~/.purevox/tse_reference.wav`；进度见 `/debug` 的 `recorder` 字段。
 #[tauri::command]
-fn record_tse_reference(seconds: f64, mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<String, String> {
+fn record_tse_reference(
+  seconds: f64,
+  mgr: tauri::State<'_, Arc<AudioManager>>,
+) -> Result<String, String> {
   mgr.record_reference(seconds)
 }
 
@@ -185,7 +196,11 @@ fn main() {
   debug::http::spawn(hub.clone());
   devices::spawn_refresh(hub.clone());
   let audio = Arc::new(AudioManager::new(hub.clone()));
-  let hotkey_host = HotkeyHost(Mutex::new(hotkey::Hotkeys::start("", hub.clone(), Arc::new(|| {}))));
+  let hotkey_host = HotkeyHost(Mutex::new(hotkey::Hotkeys::start(
+    "",
+    hub.clone(),
+    Arc::new(|| {}),
+  )));
 
   tauri::Builder::default()
     .runtime(tauri_runtime_wry::Wry::default())
@@ -214,10 +229,8 @@ fn main() {
         api.prevent_close();
         let _ = window.hide();
       }
-      tauri::WindowEvent::Resized(_) => {
-        if window.is_minimized().unwrap_or(false) {
-          let _ = window.hide();
-        }
+      tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
+        let _ = window.hide();
       }
       _ => {}
     })
@@ -316,7 +329,11 @@ fn build_tray_menu<R: tauri::Runtime, M: Manager<R>>(
   } else {
     "启动"
   };
-  let show = if en { "Show / Hide window" } else { "显示 / 隐藏窗口" };
+  let show = if en {
+    "Show / Hide window"
+  } else {
+    "显示 / 隐藏窗口"
+  };
   let quit = if en { "Quit PureVox" } else { "退出 PureVox" };
   let run = MenuItem::with_id(mgr, "run", run, true, None::<&str>)?;
   let show = MenuItem::with_id(mgr, "show", show, true, None::<&str>)?;
@@ -333,7 +350,10 @@ fn apply_running(app: &tauri::AppHandle, mgr: &AudioManager, on: bool) {
   }
   let s = config::load_settings();
   if s.cue_on {
-    cues::play(if on { &s.cue_start } else { &s.cue_stop }, if on { "start" } else { "stop" });
+    cues::play(
+      if on { &s.cue_start } else { &s.cue_stop },
+      if on { "start" } else { "stop" },
+    );
   }
   sync_tray(app, on);
 }
@@ -341,7 +361,11 @@ fn apply_running(app: &tauri::AppHandle, mgr: &AudioManager, on: bool) {
 /// 按当前设置（重）启动全局热键。
 fn start_hotkey(app: &tauri::AppHandle, host: &HotkeyHost) {
   let s = config::load_settings();
-  let spec = if s.hotkey_on { s.hotkey.clone() } else { String::new() };
+  let spec = if s.hotkey_on {
+    s.hotkey.clone()
+  } else {
+    String::new()
+  };
   let hub = app.state::<SharedHub>().inner().clone();
   let app2 = app.clone();
   let mgr = app.state::<Arc<AudioManager>>().inner().clone();
@@ -368,7 +392,10 @@ struct CueInfo {
 fn list_cues() -> Vec<CueInfo> {
   cues::PRESETS
     .iter()
-    .map(|(id, label)| CueInfo { id: (*id).into(), label: (*label).into() })
+    .map(|(id, label)| CueInfo {
+      id: (*id).into(),
+      label: (*label).into(),
+    })
     .collect()
 }
 
@@ -379,10 +406,10 @@ fn set_settings(mut settings: config::AppSettings, app: tauri::AppHandle) -> Res
   config::save_settings(&settings)?;
   start_hotkey(&app, &app.state::<HotkeyHost>());
   let running = app.state::<Arc<AudioManager>>().is_running();
-  if let Some(tray) = app.tray_by_id("main") {
-    if let Ok(menu) = build_tray_menu(&app, &settings.lang, running) {
-      let _ = tray.set_menu(Some(menu));
-    }
+  if let Some(tray) = app.tray_by_id("main")
+    && let Ok(menu) = build_tray_menu(&app, &settings.lang, running)
+  {
+    let _ = tray.set_menu(Some(menu));
   }
   Ok(())
 }
@@ -401,10 +428,10 @@ fn sync_tray(app: &tauri::AppHandle, running: bool) {
       let _ = w.set_icon(icon);
     }
   }
-  if let Ok(menu) = build_tray_menu(app, &config::load_lang(), running) {
-    if let Some(tray) = app.tray_by_id("main") {
-      let _ = tray.set_menu(Some(menu));
-    }
+  if let Ok(menu) = build_tray_menu(app, &config::load_lang(), running)
+    && let Some(tray) = app.tray_by_id("main")
+  {
+    let _ = tray.set_menu(Some(menu));
   }
 }
 

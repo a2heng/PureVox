@@ -26,19 +26,19 @@
 
 use std::collections::{HashMap, HashSet};
 
-use windows::core::{w, Interface, PCWSTR};
 use windows::Win32::Graphics::Dxgi::{
-  CreateDXGIFactory1, IDXGIAdapter3, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
-  DXGI_ERROR_NOT_FOUND, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
+  CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND,
+  DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3, IDXGIFactory1,
 };
 use windows::Win32::System::Performance::{
-  PdhAddEnglishCounterW, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
   PDH_CSTATUS_NEW_DATA, PDH_CSTATUS_VALID_DATA, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE,
-  PDH_HCOUNTER, PDH_HQUERY, PDH_MORE_DATA,
+  PDH_HCOUNTER, PDH_HQUERY, PDH_MORE_DATA, PdhAddEnglishCounterW, PdhCollectQueryData,
+  PdhGetFormattedCounterArrayW, PdhOpenQueryW,
 };
+use windows::core::{Interface, PCWSTR, w};
 
-use super::system::GpuAdapter;
 use super::Probe;
+use super::system::GpuAdapter;
 
 const ENGINE_PATH: PCWSTR = w!("\\GPU Engine(*)\\Utilization Percentage");
 const ADAPTER_MEM_PATH: PCWSTR = w!("\\GPU Adapter Memory(*)\\Dedicated Usage");
@@ -64,14 +64,21 @@ impl Pdh {
       let mut engine = PDH_HCOUNTER::default();
       let st = PdhAddEnglishCounterW(query, ENGINE_PATH, 0, &mut engine);
       if st != 0 {
-        return Err(format!("PDH 计数器 GPU Engine 不可用：0x{st:08X}（需 Windows 10 1709+ 与 WDDM 2.x 驱动）"));
+        return Err(format!(
+          "PDH 计数器 GPU Engine 不可用：0x{st:08X}（需 Windows 10 1709+ 与 WDDM 2.x 驱动）"
+        ));
       }
       let mut adapter_mem = PDH_HCOUNTER::default();
       let st = PdhAddEnglishCounterW(query, ADAPTER_MEM_PATH, 0, &mut adapter_mem);
       if st != 0 {
         return Err(format!("PDH 计数器 GPU Adapter Memory 不可用：0x{st:08X}"));
       }
-      Ok(Pdh { query, engine, adapter_mem, primed: false })
+      Ok(Pdh {
+        query,
+        engine,
+        adapter_mem,
+        primed: false,
+      })
     }
   }
 
@@ -89,7 +96,13 @@ impl Pdh {
       // u64 缓冲保证对齐；字符串数据也在同一块缓冲内
       let mut buf: Vec<u64> = vec![0; (size as usize).div_ceil(8)];
       let items_ptr = buf.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W;
-      let st = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &mut size, &mut count, Some(items_ptr));
+      let st = PdhGetFormattedCounterArrayW(
+        counter,
+        PDH_FMT_DOUBLE,
+        &mut size,
+        &mut count,
+        Some(items_ptr),
+      );
       if st != 0 {
         return Err(format!("PdhGetFormattedCounterArray 失败：0x{st:08X}"));
       }
@@ -125,20 +138,25 @@ fn engtype_of(name: &str) -> &str {
 
 /// PDH 引擎计数器里出现过的全部 LUID。
 fn engine_luids(items: &[(String, f64)]) -> HashSet<String> {
-  items.iter().filter_map(|(name, _)| luid_key(name)).collect()
+  items
+    .iter()
+    .filter_map(|(name, _)| luid_key(name))
+    .collect()
 }
 
 /// 按 LUID 汇总：先按引擎类型求和，再取各类型最大值（任务管理器口径）。
 fn utilization_by_luid(items: &[(String, f64)], only_pid: Option<u32>) -> HashMap<String, f64> {
   let mut per_type: HashMap<(String, String), f64> = HashMap::new();
   for (name, v) in items {
-    if let Some(p) = only_pid {
-      if pid_of(name) != Some(p) {
-        continue;
-      }
+    if let Some(p) = only_pid
+      && pid_of(name) != Some(p)
+    {
+      continue;
     }
     if let Some(l) = luid_key(name) {
-      *per_type.entry((l, engtype_of(name).to_string())).or_default() += v;
+      *per_type
+        .entry((l, engtype_of(name).to_string()))
+        .or_default() += v;
     }
   }
   let mut out: HashMap<String, f64> = HashMap::new();
@@ -170,11 +188,17 @@ fn dxgi_adapters() -> Result<Vec<DxgiAdapter>, String> {
         Err(e) => return Err(format!("EnumAdapters1({i}) 失败：{e}")),
       };
       i += 1;
-      let desc = adapter.GetDesc1().map_err(|e| format!("GetDesc1 失败：{e}"))?;
+      let desc = adapter
+        .GetDesc1()
+        .map_err(|e| format!("GetDesc1 失败：{e}"))?;
       if desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 {
         continue; // Microsoft Basic Render Driver 等软件适配器
       }
-      let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(desc.Description.len());
+      let len = desc
+        .Description
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(desc.Description.len());
       let name = String::from_utf16_lossy(&desc.Description[..len]);
       let luid = format!(
         "luid_0x{:08x}_0x{:08x}",
@@ -209,7 +233,10 @@ pub struct GpuSampler {
 
 impl GpuSampler {
   pub fn new() -> Self {
-    GpuSampler { pdh: Pdh::open(), pid: std::process::id() }
+    GpuSampler {
+      pdh: Pdh::open(),
+      pid: std::process::id(),
+    }
   }
 
   pub fn sample(&mut self) -> Probe<Vec<GpuAdapter>> {
@@ -222,13 +249,28 @@ impl GpuSampler {
     }
 
     // PDH 一轮采集；结果按 LUID 归并
-    type Maps = (Probe<HashSet<String>>, HashMap<String, f64>, HashMap<String, f64>, HashMap<String, f64>);
+    type Maps = (
+      Probe<HashSet<String>>,
+      HashMap<String, f64>,
+      HashMap<String, f64>,
+      HashMap<String, f64>,
+    );
     let (pdh_state, util_all, util_proc, mem_used): Maps = match &mut self.pdh {
-      Err(e) => (Probe::unavailable(e.clone()), HashMap::new(), HashMap::new(), HashMap::new()),
+      Err(e) => (
+        Probe::unavailable(e.clone()),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+      ),
       Ok(p) => {
         let st = unsafe { PdhCollectQueryData(p.query) };
         if st != 0 {
-          (Probe::unavailable(format!("PdhCollectQueryData 失败：0x{st:08X}")), HashMap::new(), HashMap::new(), HashMap::new())
+          (
+            Probe::unavailable(format!("PdhCollectQueryData 失败：0x{st:08X}")),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+          )
         } else {
           let mem = match Pdh::read_array(p.adapter_mem) {
             Ok(items) => {

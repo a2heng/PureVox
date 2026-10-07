@@ -28,19 +28,19 @@
 //! - 封顶：48k 环超过 `CAP_MS` 时丢弃最旧样本回到目标水位。
 
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 use rtrb::{Consumer, RingBuffer};
 
-use super::capture::{stalled_state, CallbackStats, StallWatch, OPEN_TIMEOUT, PUBLISH_PERIOD};
+use super::capture::{CallbackStats, OPEN_TIMEOUT, PUBLISH_PERIOD, StallWatch, stalled_state};
 use super::fanout::Fanout;
-use super::{WorkerHandle, HOP, SAMPLE_RATE};
+use super::{HOP, SAMPLE_RATE, WorkerHandle};
+use crate::debug::{Probe, SharedHub, StreamInfo, now_ms};
 use crate::dsp::meter::{Meter, RateMeter, SPECTRUM_BIN_HZ};
 use crate::dsp::resampler::Converter;
-use crate::debug::{now_ms, Probe, SharedHub, StreamInfo};
 
 /// 48k 源缓冲目标水位（伺服设定点，也是预热量）。
 const TARGET_MS: f64 = 40.0;
@@ -77,7 +77,7 @@ where
   let err_stats = stats.clone();
   dev
     .build_output_stream::<T, _, _>(
-      cfg.clone(),
+      *cfg,
       move |data: &mut [T], _info| {
         stats.on_block((data.len() / ch) as u32);
         let mut silent = 0u64;
@@ -115,7 +115,14 @@ pub fn spawn(
   let stop = Arc::new(AtomicBool::new(false));
   let (tx, rx) = mpsc::channel::<Result<(), String>>();
   let stop2 = stop.clone();
-  let short: String = device_id.chars().rev().take(8).collect::<String>().chars().rev().collect();
+  let short: String = device_id
+    .chars()
+    .rev()
+    .take(8)
+    .collect::<String>()
+    .chars()
+    .rev()
+    .collect();
   let join = std::thread::Builder::new()
     .name(format!("playback-{short}"))
     .spawn(move || run(hub, device_id, source, tag, stop2, tx))
@@ -142,7 +149,11 @@ struct Servo {
 
 impl Servo {
   fn new() -> Self {
-    Servo { ema_ms: TARGET_MS, integral: 0.0, adj: 0.0 }
+    Servo {
+      ema_ms: TARGET_MS,
+      integral: 0.0,
+      adj: 0.0,
+    }
   }
 
   /// 预热完成 / 重同步后，从设定点重新起算水位（保留积分项 = 已学到的速率差）。
@@ -176,7 +187,9 @@ fn run(
   // ---- 打开设备 ----
   let setup = (|| -> Result<_, String> {
     let (dev, name) = crate::devices::find(&device_id, false)?;
-    let supported = dev.default_output_config().map_err(|e| format!("读取默认格式失败：{e}"))?;
+    let supported = dev
+      .default_output_config()
+      .map_err(|e| format!("读取默认格式失败：{e}"))?;
     let cfg = supported.config();
     let fmt = supported.sample_format();
     let conv = Converter::new(SAMPLE_RATE, cfg.sample_rate, HOP, true)?;

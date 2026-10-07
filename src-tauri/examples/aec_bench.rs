@@ -26,9 +26,10 @@ const HOP: usize = 480;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let args: Vec<String> = std::env::args().collect();
-  let path = args.get(1).cloned().unwrap_or_else(|| {
-    "../models/purevox_aec_202609_cpx_ep0375.onnx".to_string()
-  });
+  let path = args
+    .get(1)
+    .cloned()
+    .unwrap_or_else(|| "../models/purevox_aec_202609_cpx_ep0375.onnx".to_string());
   let delay_ms: f64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5.0);
   let gain: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.5);
   let d = (delay_ms * 48.0) as usize;
@@ -80,7 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let far = Tensor::from_array(([1i64, HOP as i64], far_hop.clone()))?;
     let cache_in = std::mem::take(&mut cache);
     let cache_t = Tensor::from_array(([1i64, dim as i64], cache_in))?;
-    let outs = session.run(ort::inputs!["mic_hop" => mic, "far_hop" => far, "cache_in" => cache_t])?;
+    let outs =
+      session.run(ort::inputs!["mic_hop" => mic, "far_hop" => far, "cache_in" => cache_t])?;
     let (_, enh) = outs["enh_hop"].try_extract_tensor::<f32>()?;
     let (_, cout) = outs["cache_out"].try_extract_tensor::<f32>()?;
     cache.clear();

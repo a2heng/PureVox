@@ -31,8 +31,8 @@
 
 use ort::session::Session;
 use ort::value::Tensor;
-use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 
 use crate::audio::{HOP, SAMPLE_RATE};
 
@@ -52,7 +52,9 @@ pub fn tse_models() -> &'static [(&'static str, &'static str)] {
 pub fn ref_encoder_file(model_file: &str) -> String {
   let stem = model_file.strip_suffix(".onnx").unwrap_or(model_file);
   let stem = match stem.rfind("_ep") {
-    Some(i) if i + 3 < stem.len() && stem[i + 3..].bytes().all(|b| b.is_ascii_digit()) => &stem[..i],
+    Some(i) if i + 3 < stem.len() && stem[i + 3..].bytes().all(|b| b.is_ascii_digit()) => {
+      &stem[..i]
+    }
     _ => stem,
   };
   format!("{stem}_ref_encoder.onnx")
@@ -72,7 +74,13 @@ impl Tse {
     let path = crate::infer::model_path(model_file)?;
     let session = crate::infer::build_session(&path)?;
     let dim = crate::infer::cache_dim(&session, "cache_in")?;
-    Ok(Tse { session, dim, cache: vec![0.0; dim], out: vec![0.0; HOP], enr_tok: None })
+    Ok(Tse {
+      session,
+      dim,
+      cache: vec![0.0; dim],
+      out: vec![0.0; HOP],
+      enr_tok: None,
+    })
   }
 
   /// 用 48 kHz 单声道参考语音计算 `enr_tok`（一次性；会话内不热切换）。
@@ -95,8 +103,8 @@ impl Tse {
 
     let mix = Tensor::from_array(([1i64, HOP as i64], hop.to_vec()))
       .map_err(|e| format!("构造 mix_hop 失败：{e}"))?;
-    let enr_tok = Tensor::from_array((*shape, enr.clone()))
-      .map_err(|e| format!("构造 enr_tok 失败：{e}"))?;
+    let enr_tok =
+      Tensor::from_array((*shape, enr.clone())).map_err(|e| format!("构造 enr_tok 失败：{e}"))?;
     let cache_in = std::mem::take(&mut self.cache);
     let cache = Tensor::from_array(([1i64, self.dim as i64], cache_in))
       .map_err(|e| format!("构造 cache_in 失败：{e}"))?;

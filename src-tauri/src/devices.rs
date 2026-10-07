@@ -24,7 +24,7 @@ use std::time::Instant;
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::Serialize;
 
-use crate::debug::{now_ms, Probe, SharedHub};
+use crate::debug::{Probe, SharedHub, now_ms};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct DeviceInfo {
@@ -67,7 +67,9 @@ static REFRESHING: AtomicBool = AtomicBool::new(false);
 /// 按设备 ID 查找设备（输入/输出共用的唯一查找入口），返回设备与显示名。
 pub fn find(device_id: &str, input: bool) -> Result<(cpal::Device, String), String> {
   for host_id in cpal::available_hosts() {
-    let Ok(host) = cpal::host_from_id(host_id) else { continue };
+    let Ok(host) = cpal::host_from_id(host_id) else {
+      continue;
+    };
     let Ok(devs) = host.devices() else { continue };
     for d in devs {
       if d.id().map(|i| i.to_string()).ok().as_deref() != Some(device_id) {
@@ -76,12 +78,17 @@ pub fn find(device_id: &str, input: bool) -> Result<(cpal::Device, String), Stri
       if (input && !d.supports_input()) || (!input && !d.supports_output()) {
         continue;
       }
-      let name = d.description().map(|x| x.name().to_string()).unwrap_or_else(|_| d.to_string());
+      let name = d
+        .description()
+        .map(|x| x.name().to_string())
+        .unwrap_or_else(|_| d.to_string());
       return Ok((d, name));
     }
   }
   let dir = if input { "输入" } else { "输出" };
-  Err(format!("找不到{dir}设备 {device_id}（可能已拔出，请刷新设备列表）"))
+  Err(format!(
+    "找不到{dir}设备 {device_id}（可能已拔出，请刷新设备列表）"
+  ))
 }
 
 /// 系统默认输出设备的 ID（cpal 稳定 ID）；找不到返回 None。
@@ -105,9 +112,7 @@ pub fn spawn_refresh(hub: SharedHub) {
     .expect("spawn device-enum");
 }
 
-fn native_of(
-  r: Result<cpal::SupportedStreamConfig, cpal::Error>,
-) -> Probe<NativeFormat> {
+fn native_of(r: Result<cpal::SupportedStreamConfig, cpal::Error>) -> Probe<NativeFormat> {
   match r {
     Ok(c) => Probe::ok(NativeFormat {
       sample_rate: c.sample_rate(),
@@ -152,7 +157,11 @@ fn enumerate() -> DeviceList {
         }
       };
       let (name, device_type, interface_type) = match dev.description() {
-        Ok(d) => (d.name().to_string(), d.device_type().to_string(), d.interface_type().to_string()),
+        Ok(d) => (
+          d.name().to_string(),
+          d.device_type().to_string(),
+          d.interface_type().to_string(),
+        ),
         Err(_) => (dev.to_string(), "未知".into(), "未知".into()),
       };
       let mut push = |direction: &'static str, native: Probe<NativeFormat>, is_default: bool| {
@@ -170,10 +179,18 @@ fn enumerate() -> DeviceList {
         });
       };
       if dev.supports_input() {
-        push("input", native_of(dev.default_input_config()), default_in.as_ref() == Some(&id));
+        push(
+          "input",
+          native_of(dev.default_input_config()),
+          default_in.as_ref() == Some(&id),
+        );
       }
       if dev.supports_output() {
-        push("output", native_of(dev.default_output_config()), default_out.as_ref() == Some(&id));
+        push(
+          "output",
+          native_of(dev.default_output_config()),
+          default_out.as_ref() == Some(&id),
+        );
       }
     }
   }

@@ -26,20 +26,20 @@
 //! COM 接口对象 `!Send`：全部在本线程（轮询线程）内创建与释放，格式经通道回传。
 
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use rtrb::RingBuffer;
 use windows::Win32::Media::Audio::{
-  eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
-  MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
-  AUDCLNT_STREAMFLAGS_LOOPBACK, WAVEFORMATEX,
+  AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
+  IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+  WAVEFORMATEX, eConsole, eRender,
 };
 use windows::Win32::System::Com::{
-  CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
+  CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
 };
 
-use super::capture::{self, CallbackStats, Capture, SourceInfo, OPEN_TIMEOUT};
+use super::capture::{self, CallbackStats, Capture, OPEN_TIMEOUT, SourceInfo};
 use super::fanout::Fanout;
 use crate::debug::SharedHub;
 
@@ -58,7 +58,10 @@ pub fn spawn(hub: SharedHub, output_id: Option<String>, tag: String) -> Result<C
     .spawn(move || run(hub, output_id, tag, stop2, tx))
     .map_err(|e| format!("创建回环采集线程失败：{e}"))?;
   match rx.recv_timeout(OPEN_TIMEOUT) {
-    Ok(Ok(fanout)) => Ok(Capture { handle: super::WorkerHandle::new(stop, join), fanout }),
+    Ok(Ok(fanout)) => Ok(Capture {
+      handle: super::WorkerHandle::new(stop, join),
+      fanout,
+    }),
     Ok(Err(e)) => {
       let _ = join.join();
       Err(e)
@@ -105,9 +108,24 @@ fn run(
     device_id: "loopback".into(),
     native_rate: rate,
     channels,
-    sample_format: if bits == 32 { "f32".into() } else { "i16".into() },
+    sample_format: if bits == 32 {
+      "f32".into()
+    } else {
+      "i16".into()
+    },
   };
-  capture::worker(hub, tag, info, cons, stats, poll, stop, tx);
+  capture::worker(
+    hub,
+    tag,
+    info,
+    capture::WorkerSrc {
+      cons,
+      stats,
+      keep: poll,
+      stop,
+    },
+    tx,
+  );
 }
 
 /// 打开回环并把数据写进无锁环（本线程持有全部 COM 对象）。格式经 `fmt_tx` 回传。
@@ -243,5 +261,11 @@ unsafe fn read_format(wfx: *const WAVEFORMATEX) -> (u32, u16, u16) {
 }
 
 fn short_id(id: &str) -> String {
-  id.chars().rev().take(8).collect::<String>().chars().rev().collect()
+  id.chars()
+    .rev()
+    .take(8)
+    .collect::<String>()
+    .chars()
+    .rev()
+    .collect()
 }

@@ -83,7 +83,11 @@ pub fn read_mono(path: &Path) -> Result<(Vec<f32>, u32), String> {
         s / ch as f32
       })
       .collect(),
-    (f, b) => return Err(format!("不支持的 WAV 格式（format={f} bits={b}），仅支持 PCM16 / float32")),
+    (f, b) => {
+      return Err(format!(
+        "不支持的 WAV 格式（format={f} bits={b}），仅支持 PCM16 / float32"
+      ));
+    }
   };
   Ok((mono, rate))
 }

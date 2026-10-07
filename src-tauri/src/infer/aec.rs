@@ -50,7 +50,12 @@ impl Aec {
     let path = crate::infer::model_path(model_file)?;
     let session = crate::infer::build_session(&path)?;
     let dim = crate::infer::cache_dim(&session, "cache_in")?;
-    Ok(Aec { session, dim, cache: vec![0.0; dim], out: vec![0.0; HOP] })
+    Ok(Aec {
+      session,
+      dim,
+      cache: vec![0.0; dim],
+      out: vec![0.0; HOP],
+    })
   }
 
   /// 处理一对对齐好的 hop（mic + far），返回增强后的 hop（借用内部缓冲）。

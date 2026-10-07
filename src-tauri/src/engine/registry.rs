@@ -47,9 +47,18 @@ pub type Params = BTreeMap<String, ParamValue>;
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)] // 预留
 pub enum ParamKind {
-  Number { lo: f64, hi: f64, default: f64, step: f64 },
-  Text { default: &'static str },
-  Bool { default: bool },
+  Number {
+    lo: f64,
+    hi: f64,
+    default: f64,
+    step: f64,
+  },
+  Text {
+    default: &'static str,
+  },
+  Bool {
+    default: bool,
+  },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -68,8 +77,18 @@ pub struct NodeSpec {
 
 static SPECS: &[NodeSpec] = &[
   // 输入行（源）
-  NodeSpec { ptype: "audio_input", label: "录音输入", kind: NodeKind::Input, params: &[] },
-  NodeSpec { ptype: "tone", label: "测试音 1 kHz", kind: NodeKind::Input, params: &[] },
+  NodeSpec {
+    ptype: "audio_input",
+    label: "录音输入",
+    kind: NodeKind::Input,
+    params: &[],
+  },
+  NodeSpec {
+    ptype: "tone",
+    label: "测试音 1 kHz",
+    kind: NodeKind::Input,
+    params: &[],
+  },
   NodeSpec {
     ptype: "echo_cancel",
     label: "AEC 回声消除",
@@ -78,28 +97,53 @@ static SPECS: &[NodeSpec] = &[
       ParamSpec {
         key: "model",
         label: "模型",
-        kind: ParamKind::Text { default: crate::infer::aec::MODEL_AEC },
+        kind: ParamKind::Text {
+          default: crate::infer::aec::MODEL_AEC,
+        },
       },
       // far/远端参考设备：`loopback` = 系统默认输出回环、`loopback:<渲染端点ID>` = 指定输出回环、
       // 其它 = 输入设备。校准探针自动送到被回环的输出（无需另选播放）。
-      ParamSpec { key: "far_device", label: "远端设备", kind: ParamKind::Text { default: "" } },
+      ParamSpec {
+        key: "far_device",
+        label: "远端设备",
+        kind: ParamKind::Text { default: "" },
+      },
       // 进 AEC 模型前的端侧增益（近端抬高听得清；远端与近端做电平匹配）
       ParamSpec {
         key: "mic_gain_db",
         label: "近端增益",
-        kind: ParamKind::Number { lo: -40.0, hi: 40.0, default: 0.0, step: 1.0 },
+        kind: ParamKind::Number {
+          lo: -40.0,
+          hi: 40.0,
+          default: 0.0,
+          step: 1.0,
+        },
       },
       ParamSpec {
         key: "far_gain_db",
         label: "远端增益",
-        kind: ParamKind::Number { lo: -40.0, hi: 40.0, default: 0.0, step: 1.0 },
+        kind: ParamKind::Number {
+          lo: -40.0,
+          hi: 40.0,
+          default: 0.0,
+          step: 1.0,
+        },
       },
       // 直通：跳过 AEC 直接过 mic（A/B 对比）
-      ParamSpec { key: "bypass", label: "直通", kind: ParamKind::Bool { default: false } },
+      ParamSpec {
+        key: "bypass",
+        label: "直通",
+        kind: ParamKind::Bool { default: false },
+      },
       ParamSpec {
         key: "far_delay_ms",
         label: "远端延时",
-        kind: ParamKind::Number { lo: -1000.0, hi: 1000.0, default: 0.0, step: 10.0 },
+        kind: ParamKind::Number {
+          lo: -1000.0,
+          hi: 1000.0,
+          default: 0.0,
+          step: 10.0,
+        },
       },
     ],
   },
@@ -111,7 +155,9 @@ static SPECS: &[NodeSpec] = &[
     params: &[ParamSpec {
       key: "model",
       label: "模型",
-      kind: ParamKind::Text { default: crate::infer::MODEL_DENOISE },
+      kind: ParamKind::Text {
+        default: crate::infer::MODEL_DENOISE,
+      },
     }],
   },
   NodeSpec {
@@ -121,7 +167,12 @@ static SPECS: &[NodeSpec] = &[
     params: &[ParamSpec {
       key: "gain_db",
       label: "增益(dB)",
-      kind: ParamKind::Number { lo: -40.0, hi: 40.0, default: 0.0, step: 1.0 },
+      kind: ParamKind::Number {
+        lo: -40.0,
+        hi: 40.0,
+        default: 0.0,
+        step: 1.0,
+      },
     }],
   },
   NodeSpec {
@@ -132,14 +183,25 @@ static SPECS: &[NodeSpec] = &[
       ParamSpec {
         key: "model",
         label: "模型",
-        kind: ParamKind::Text { default: crate::infer::tse::MODEL_TSE },
+        kind: ParamKind::Text {
+          default: crate::infer::tse::MODEL_TSE,
+        },
       },
       // 留空 = 默认 ~/.purevox/tse_reference.wav
-      ParamSpec { key: "reference", label: "参考语音", kind: ParamKind::Text { default: "" } },
+      ParamSpec {
+        key: "reference",
+        label: "参考语音",
+        kind: ParamKind::Text { default: "" },
+      },
     ],
   },
   // 输出行（汇）
-  NodeSpec { ptype: "audio_output", label: "音频输出", kind: NodeKind::Output, params: &[] },
+  NodeSpec {
+    ptype: "audio_output",
+    label: "音频输出",
+    kind: NodeKind::Output,
+    params: &[],
+  },
 ];
 
 impl NodeKind {
@@ -188,7 +250,9 @@ pub fn create_stage(ptype: &str, params: &Params) -> Result<Box<dyn Stage>, Stri
         Some(ParamValue::Text(t)) => t.clone(),
         _ => crate::infer::MODEL_DENOISE.to_string(),
       };
-      Ok(Box::new(super::components::denoise::DenoiseStage::load(&model)?))
+      Ok(Box::new(super::components::denoise::DenoiseStage::load(
+        &model,
+      )?))
     }
     "tse" => {
       let model = match params.get("model") {
@@ -199,7 +263,10 @@ pub fn create_stage(ptype: &str, params: &Params) -> Result<Box<dyn Stage>, Stri
         Some(ParamValue::Text(t)) if !t.trim().is_empty() => Some(t.clone()),
         _ => None,
       };
-      Ok(Box::new(super::components::tse::TseStage::load(&model, reference.as_deref())?))
+      Ok(Box::new(super::components::tse::TseStage::load(
+        &model,
+        reference.as_deref(),
+      )?))
     }
     "gain" => {
       let db = match params.get("gain_db") {

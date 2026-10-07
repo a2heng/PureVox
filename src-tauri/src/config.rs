@@ -39,10 +39,10 @@ pub fn session_path() -> Result<PathBuf, String> {
 /// 展开路径里的 `~`（用户目录）。
 pub fn expand_path(p: &str) -> PathBuf {
   let p = p.trim();
-  if let Some(rest) = p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\")) {
-    if let Ok(home) = home_dir() {
-      return home.join(rest);
-    }
+  if let Some(rest) = p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\"))
+    && let Ok(home) = home_dir()
+  {
+    return home.join(rest);
   }
   PathBuf::from(p)
 }
@@ -61,7 +61,11 @@ pub fn load_lang() -> String {
 
 pub fn save_lang(lang: &str) -> Result<(), String> {
   let mut s = load_settings();
-  s.lang = if lang == "en" { "en".to_string() } else { "zh".to_string() };
+  s.lang = if lang == "en" {
+    "en".to_string()
+  } else {
+    "zh".to_string()
+  };
   save_settings(&s)
 }
 
@@ -136,8 +140,12 @@ pub fn save_settings(s: &AppSettings) -> Result<(), String> {
 
 /// 读取已保存的计划；无文件或解析失败则返回默认计划。
 pub fn load_plan() -> Plan {
-  let Ok(path) = session_path() else { return Plan::default() };
-  let Ok(text) = std::fs::read_to_string(&path) else { return Plan::default() };
+  let Ok(path) = session_path() else {
+    return Plan::default();
+  };
+  let Ok(text) = std::fs::read_to_string(&path) else {
+    return Plan::default();
+  };
   serde_json::from_str(&text).unwrap_or_else(|_| Plan::default())
 }
 

@@ -49,7 +49,10 @@ pub struct WorkerHandle {
 
 impl WorkerHandle {
   pub fn new(stop: Arc<AtomicBool>, join: JoinHandle<()>) -> Self {
-    WorkerHandle { stop, join: Some(join) }
+    WorkerHandle {
+      stop,
+      join: Some(join),
+    }
   }
 
   pub fn stop(mut self) {
@@ -84,7 +87,11 @@ impl AudioManager {
       hub,
       rec,
       calib,
-      state: Mutex::new(State { plan, session: None, running: false }),
+      state: Mutex::new(State {
+        plan,
+        session: None,
+        running: false,
+      }),
     }
   }
 
@@ -99,8 +106,12 @@ impl AudioManager {
   /// 启动：按当前计划构建并运行会话。返回逐行问题。
   pub fn start(&self) -> Result<Vec<String>, String> {
     let plan = self.plan();
-    let (session, problems) =
-      Session::build(self.hub.clone(), &plan, self.rec.clone(), self.calib.clone());
+    let (session, problems) = Session::build(
+      self.hub.clone(),
+      &plan,
+      self.rec.clone(),
+      self.calib.clone(),
+    );
     let mut g = self.state.lock().unwrap();
     if let Some(mut old) = g.session.take() {
       old.stop();
@@ -122,7 +133,9 @@ impl AudioManager {
     drop(g);
     self.hub.set_running(false);
     // 清掉列概要，界面显示「列未启动」
-    self.hub.set_column(crate::debug::Probe::unavailable("列未启动".to_string()));
+    self
+      .hub
+      .set_column(crate::debug::Probe::unavailable("列未启动".to_string()));
   }
 
   /// 录制 TSE 参考（降噪后、音量归一化，48 kHz 单声道）；返回目标文件路径。
@@ -151,12 +164,11 @@ impl AudioManager {
     let mut outs: Vec<String> = Vec::new();
     for c in &plan.columns {
       for r in &c.rows {
-        if r.kind == crate::plan::RowKind::Output {
-          if let Some(d) = r.device.as_deref().filter(|d| !d.is_empty()) {
-            if !outs.iter().any(|x| x == d) {
-              outs.push(d.to_string());
-            }
-          }
+        if r.kind == crate::plan::RowKind::Output
+          && let Some(d) = r.device.as_deref().filter(|d| !d.is_empty())
+          && !outs.iter().any(|x| x == d)
+        {
+          outs.push(d.to_string());
         }
       }
     }
@@ -172,10 +184,10 @@ impl AudioManager {
       } else {
         Some(id)
       };
-      if let Some(t) = target {
-        if !outs.iter().any(|x| x == &t) {
-          outs.push(t);
-        }
+      if let Some(t) = target
+        && !outs.iter().any(|x| x == &t)
+      {
+        outs.push(t);
       }
     }
     if outs.is_empty() {
@@ -201,8 +213,12 @@ impl AudioManager {
       self.state.lock().unwrap().plan = plan;
       return Ok(vec![]);
     }
-    let (new_session, problems) =
-      Session::build(self.hub.clone(), &plan, self.rec.clone(), self.calib.clone());
+    let (new_session, problems) = Session::build(
+      self.hub.clone(),
+      &plan,
+      self.rec.clone(),
+      self.calib.clone(),
+    );
     let mut g = self.state.lock().unwrap();
     if let Some(mut old) = g.session.take() {
       old.stop();

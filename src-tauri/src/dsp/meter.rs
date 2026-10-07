@@ -35,7 +35,12 @@ const WAVE_LEN: usize = 5 * HOP;
 const DB_FLOOR: f32 = -160.0;
 
 fn db(x: f64) -> f32 {
-  if x <= 0.0 { DB_FLOOR } else { (20.0 * x.log10()) as f32 }.max(DB_FLOOR)
+  if x <= 0.0 {
+    DB_FLOOR
+  } else {
+    (20.0 * x.log10()) as f32
+  }
+  .max(DB_FLOOR)
 }
 
 pub struct MeterOutput {
@@ -93,9 +98,9 @@ impl Meter {
     self.samples += hop.len() as u64;
 
     // 上一 hop + 本 hop 组成 960 点帧
-    for i in 0..HOP {
+    for (i, &x) in hop.iter().enumerate() {
       self.scratch[i] = Complex::new(self.prev_hop[i] * self.window[i], 0.0);
-      self.scratch[HOP + i] = Complex::new(hop[i] * self.window[HOP + i], 0.0);
+      self.scratch[HOP + i] = Complex::new(x * self.window[HOP + i], 0.0);
     }
     self.fft.process(&mut self.scratch);
     for (k, acc) in self.power_acc.iter_mut().enumerate() {
@@ -119,14 +124,23 @@ impl Meter {
     let spectrum = if self.frames == 0 {
       Vec::new()
     } else {
-      self.power_acc.iter().map(|p| db((p / self.frames as f64).sqrt())).collect()
+      self
+        .power_acc
+        .iter()
+        .map(|p| db((p / self.frames as f64).sqrt()))
+        .collect()
     };
     self.power_acc.iter_mut().for_each(|p| *p = 0.0);
     self.frames = 0;
     self.peak = 0.0;
     self.sumsq = 0.0;
     self.samples = 0;
-    MeterOutput { peak_dbfs: peak, rms_dbfs: rms, waveform: self.wave.iter().copied().collect(), spectrum_db: spectrum }
+    MeterOutput {
+      peak_dbfs: peak,
+      rms_dbfs: rms,
+      waveform: self.wave.iter().copied().collect(),
+      spectrum_db: spectrum,
+    }
   }
 }
 
@@ -142,7 +156,9 @@ impl RateMeter {
   const WINDOW: Duration = Duration::from_secs(3);
 
   pub fn new() -> Self {
-    RateMeter { hist: VecDeque::new() }
+    RateMeter {
+      hist: VecDeque::new(),
+    }
   }
 
   pub fn push(&mut self, now: Instant, total: u64) -> Probe<f64> {

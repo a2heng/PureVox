@@ -97,7 +97,9 @@ impl Converter {
   pub fn set_relative_ratio(&mut self, rel: f64) -> Result<(), String> {
     match &mut self.inner {
       None => Err("直通转换器不能调比例".into()),
-      Some(rs) => rs.set_resample_ratio_relative(rel, true).map_err(|e| format!("调比例失败：{e}")),
+      Some(rs) => rs
+        .set_resample_ratio_relative(rel, true)
+        .map_err(|e| format!("调比例失败：{e}")),
     }
   }
 
@@ -132,7 +134,11 @@ impl ToHops {
     // 原生 10 ms 块；非 100 整除的采样率（如 22050）取整，输出侧 hop 网格不受影响
     let chunk = ((native_rate as usize) / 100).max(1);
     let conv = Converter::new(native_rate, SAMPLE_RATE, chunk, false)?;
-    Ok(ToHops { conv, in_buf: Vec::with_capacity(chunk * 8), pending: Vec::with_capacity(HOP * 4) })
+    Ok(ToHops {
+      conv,
+      in_buf: Vec::with_capacity(chunk * 8),
+      pending: Vec::with_capacity(HOP * 4),
+    })
   }
 
   pub fn description(&self) -> &str {
@@ -157,7 +163,9 @@ impl ToHops {
       let chunk = self.conv.chunk;
       let mut consumed = 0;
       while self.in_buf.len() - consumed >= chunk {
-        let out = self.conv.process(&self.in_buf[consumed..consumed + chunk])?;
+        let out = self
+          .conv
+          .process(&self.in_buf[consumed..consumed + chunk])?;
         self.pending.extend_from_slice(out);
         consumed += chunk;
       }

@@ -1,0 +1,105 @@
+# PureVox CI —— 分支推送 / PR 的代码门禁，不打包（打包与发版见 release.yml）。
+# 纪律（沿袭旧版）：
+#   - 缓存全部 restore-only，唯一写入者是 warm-cache.yml；
+#   - 键的唯一来源是 tools/automation/versions.env（本文件只组合，不硬编码版本）；
+#   - 门禁实现只有一处 tools/automation/check.ps1，本机开发跑同一份；
+#   - legacy-v*/ 快照不参与 CI（paths-ignore，AGENTS.md 维护准则 3）。
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore:
+      - "legacy-*/**"
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "legacy-*/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+jobs:
+  rust:
+    name: Rust (fmt · clippy · build · test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load versions + cache keys (versions.env 是唯一来源)
+        shell: powershell
+        run: |
+          Get-Content tools/automation/versions.env | Where-Object { $_ -match '^(\w+)=(.*)$' } | ForEach-Object {
+            "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          $lock = "${{ hashFiles('src-tauri/Cargo.lock') }}"
+          "CARGO_CACHE_KEY=purevox-win-cargo-$env:CACHE_GEN-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TARGET_DEBUG_KEY=purevox-win-target-dbg-$env:CACHE_GEN-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Rust toolchain (rustfmt + clippy)
+        shell: powershell
+        run: |
+          rustup toolchain install "$env:RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+          rustup default "$env:RUST_TOOLCHAIN"
+          rustc --version
+
+      - name: Restore cargo registry (restore-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+          key: ${{ env.CARGO_CACHE_KEY }}
+          restore-keys: |
+            purevox-win-cargo-${{ env.CACHE_GEN }}-
+
+      - name: Restore target/debug (restore-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: src-tauri\target\debug
+          key: ${{ env.TARGET_DEBUG_KEY }}
+          restore-keys: |
+            purevox-win-target-dbg-${{ env.CACHE_GEN }}-
+
+      - name: "Gate · fmt"
+        shell: powershell
+        run: .\tools\automation\check.ps1 -Gate fmt
+
+      - name: "Gate · clippy"
+        shell: powershell
+        run: .\tools\automation\check.ps1 -Gate clippy
+
+      - name: "Gate · build"
+        shell: powershell
+        run: .\tools\automation\check.ps1 -Gate build
+
+      - name: "Gate · test"
+        shell: powershell
+        run: .\tools\automation\check.ps1 -Gate test
+
+  ui:
+    name: UI (tsc · i18n)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load versions (versions.env 是唯一来源)
+        shell: powershell
+        run: |
+          Get-Content tools/automation/versions.env | Where-Object { $_ -match '^(\w+)=(.*)$' } | ForEach-Object {
+            "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
+      # cache: false —— 本仓库无 package.json，也不允许 setup-node 偷偷写缓存
+      # （缓存只由 warm-cache.yml 写）。
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VER }}
+          cache: false
+
+      - name: Install TypeScript (版本钉死在 versions.env)
+        shell: powershell
+        run: npm install -g "typescript@$env:TS_VER"
+
+      - name: "Gate · ui (tsc + i18n_lint)"
+        shell: powershell
+        run: .\tools\automation\check.ps1 -Gate ui

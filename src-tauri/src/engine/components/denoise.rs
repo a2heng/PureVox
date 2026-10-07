@@ -29,7 +29,9 @@ pub struct DenoiseStage {
 impl DenoiseStage {
   pub fn load(model_file: &str) -> Result<Self, String> {
     let path = infer::model_path(model_file)?;
-    Ok(DenoiseStage { engine: Denoise::load(&path)? })
+    Ok(DenoiseStage {
+      engine: Denoise::load(&path)?,
+    })
   }
 }
 

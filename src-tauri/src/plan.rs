@@ -65,8 +65,20 @@ impl Default for Plan {
     Plan {
       columns: vec![ColumnSpec {
         rows: vec![
-          RowSpec { kind: RowKind::Input, ptype: "audio_input".into(), device: None, enabled: true, params: BTreeMap::new() },
-          RowSpec { kind: RowKind::Output, ptype: "audio_output".into(), device: None, enabled: true, params: BTreeMap::new() },
+          RowSpec {
+            kind: RowKind::Input,
+            ptype: "audio_input".into(),
+            device: None,
+            enabled: true,
+            params: BTreeMap::new(),
+          },
+          RowSpec {
+            kind: RowKind::Output,
+            ptype: "audio_output".into(),
+            device: None,
+            enabled: true,
+            params: BTreeMap::new(),
+          },
         ],
       }],
     }

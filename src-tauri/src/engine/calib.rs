@@ -27,8 +27,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 
 use crate::audio::SAMPLE_RATE;
 use crate::debug::{Probe, SharedHub};
@@ -56,7 +56,10 @@ pub struct CalibHub {
 
 impl CalibHub {
   pub fn new(hub: SharedHub) -> Self {
-    CalibHub { state: Arc::new(Mutex::new(State::Idle)), hub }
+    CalibHub {
+      state: Arc::new(Mutex::new(State::Idle)),
+      hub,
+    }
   }
 
   pub fn active(&self) -> bool {
@@ -83,7 +86,9 @@ impl CalibHub {
       current_delay_ms,
       last_pub: Instant::now(),
     };
-    self.hub.set_calib(Probe::ok(format!("采集中 0.0/{seconds:.0} s")));
+    self
+      .hub
+      .set_calib(Probe::ok(format!("采集中 0.0/{seconds:.0} s")));
     Ok(())
   }
 
@@ -91,7 +96,14 @@ impl CalibHub {
   pub fn feed(&self, col: usize, row: usize, mic: &[f32], far: &[f32]) {
     let mut st = self.state.lock().unwrap();
     let full = {
-      let State::Collecting { target, mic: m, far: f, needed, .. } = &mut *st else {
+      let State::Collecting {
+        target,
+        mic: m,
+        far: f,
+        needed,
+        ..
+      } = &mut *st
+      else {
         return;
       };
       if *target != (col, row) {
@@ -102,20 +114,34 @@ impl CalibHub {
       m.len() >= *needed
     };
     if !full {
-      if let State::Collecting { mic: m, needed, last_pub, .. } = &mut *st {
-        if last_pub.elapsed().as_millis() >= 200 {
-          *last_pub = Instant::now();
-          let secs = m.len() as f64 / SAMPLE_RATE as f64;
-          let total = *needed as f64 / SAMPLE_RATE as f64;
-          self.hub.set_calib(Probe::ok(format!("采集中 {secs:.1}/{total:.0} s")));
-        }
+      if let State::Collecting {
+        mic: m,
+        needed,
+        last_pub,
+        ..
+      } = &mut *st
+        && last_pub.elapsed().as_millis() >= 200
+      {
+        *last_pub = Instant::now();
+        let secs = m.len() as f64 / SAMPLE_RATE as f64;
+        let total = *needed as f64 / SAMPLE_RATE as f64;
+        self
+          .hub
+          .set_calib(Probe::ok(format!("采集中 {secs:.1}/{total:.0} s")));
       }
       return;
     }
 
     // 收齐 → 后台计算，别卡住列线程
     let prev = std::mem::replace(&mut *st, State::Computing);
-    let State::Collecting { mic: m, far: f, max_lag, current_delay_ms, .. } = prev else {
+    let State::Collecting {
+      mic: m,
+      far: f,
+      max_lag,
+      current_delay_ms,
+      ..
+    } = prev
+    else {
       return;
     };
     drop(st);
@@ -210,7 +236,11 @@ fn estimate_delay(mic: &[f32], far: &[f32], max_lag: usize) -> (f64, f64, f64, f
   let (band_lo, band_hi) = ((PROBE_F0 * 0.85) as f32, (PROBE_F1 * 1.1) as f32);
   let bin_hz = SAMPLE_RATE as f32 / size as f32;
   for k in 0..size {
-    let f = if k <= size / 2 { k as f32 * bin_hz } else { (size - k) as f32 * bin_hz };
+    let f = if k <= size / 2 {
+      k as f32 * bin_hz
+    } else {
+      (size - k) as f32 * bin_hz
+    };
     if f < band_lo || f > band_hi {
       fa[k] = Complex::new(0.0, 0.0);
       fb[k] = Complex::new(0.0, 0.0);
@@ -235,7 +265,7 @@ fn estimate_delay(mic: &[f32], far: &[f32], max_lag: usize) -> (f64, f64, f64, f
     fb[k] /= rb;
   }
   for k in 0..size {
-    fa[k] = fa[k] * fb[k].conj();
+    fa[k] *= fb[k].conj();
   }
   inv.process(&mut fa);
 
@@ -244,21 +274,26 @@ fn estimate_delay(mic: &[f32], far: &[f32], max_lag: usize) -> (f64, f64, f64, f
   // 对称搜索：正 lag = mic 滞后 far（残余为正）；负 = 远端超前
   let mut best: i64 = 0;
   let mut best_v = f32::MIN;
-  for k in 0..=hi {
-    let v = fa[k].re * scale;
+  for (k, &c) in fa.iter().enumerate().take(hi + 1) {
+    let v = c.re * scale;
     if v > best_v {
       best_v = v;
       best = k as i64;
     }
   }
-  for k in (size - hi)..size {
-    let v = fa[k].re * scale;
+  for (k, &c) in fa.iter().enumerate().skip(size - hi).take(hi) {
+    let v = c.re * scale;
     if v > best_v {
       best_v = v;
       best = k as i64 - size as i64;
     }
   }
-  (best as f64 / (SAMPLE_RATE as f64 / 1000.0), best_v as f64, mic_rms, far_rms)
+  (
+    best as f64 / (SAMPLE_RATE as f64 / 1000.0),
+    best_v as f64,
+    mic_rms,
+    far_rms,
+  )
 }
 
 /// 把最近一次校准的 mic / far 缓冲写盘（`~/.purevox/calib_last_{mic,far}.f32`），便于离线排查。
@@ -298,7 +333,8 @@ pub fn play_probe(hub: SharedHub, devices: Vec<String>) {
   for (i, dev) in devices.into_iter().enumerate() {
     let fan = Arc::new(crate::audio::fanout::Fanout::new("校准探针".to_string()));
     let tag = format!("probe{i}");
-    let Ok(handle) = crate::audio::playback::spawn(hub.clone(), dev.clone(), fan.clone(), tag) else {
+    let Ok(handle) = crate::audio::playback::spawn(hub.clone(), dev.clone(), fan.clone(), tag)
+    else {
       continue;
     };
     let fan2 = fan.clone();
