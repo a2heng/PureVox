@@ -28,7 +28,7 @@ rust-version = "1.95"
 tauri-build = { version = "3.0.0-alpha.3", features = [] }
 
 [dependencies]
-tauri = { version = "3.0.0-alpha.4", features = [] }
+tauri = { version = "3.0.0-alpha.4", features = ["tray-icon", "image-png"] }
 # devtools：WebView2 开发者工具（JS 交互式调试；迁移期 release 也保留，见 AGENTS.md §1）
 tauri-runtime-wry = { version = "3.0.0-alpha.4", features = ["devtools"] }
 serde = { version = "1", features = ["derive"] }
@@ -61,6 +61,10 @@ windows = { version = "0.62", features = [
   "Win32_System_Performance",
   "Win32_System_ProcessStatus",
   "Win32_System_Threading",
+  "Win32_System_Registry",
+  # 启动/停止：全局快捷键 + 提示音
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
   # AEC 远端参考：输出设备 WASAPI 回环采集
   "Win32_Media_Audio",
   "Win32_Media_KernelStreaming",

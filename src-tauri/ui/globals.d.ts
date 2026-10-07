@@ -30,6 +30,12 @@ interface Window {
   __pvOnSnapshot?: (snapshot: any) => void
   /** 前端调试桥（jsdebug.js）：把信息转发到调试接口 */
   __pvDebug?: (message: string) => void
+  /** i18n（i18n.js）：中文 msgid → 当前语言 */
+  __pvT?: (s: string) => string
+  __pvLang?: () => string
+  __pvSetLang?: (lang: string) => void
+  /** 语言切换后各模块重渲染（columns.js 实现） */
+  __pvOnLangChange?: () => void
 }
 
 /** 调试快照（结构见 Rust `DebugSnapshot`；前端只做宽松声明，字段按需取用）。 */

@@ -191,6 +191,9 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
 
 `cargo tauri build` 首次会从 GitHub 下载 WiX 与 NSIS 工具（tauri-apps/binary-releases），需要能访问 GitHub。
 
+图标：`icons/` 由 `cargo tauri icon <源图.png>` 从一张 1024 方形源图生成（PureVox 源图为深蓝渐变圆角方块 +
+白色「PureVox」字样），窗口 / 托盘 / 安装包共用同一套；源图改设计后重跑该命令即可。
+
 ### 3.6 自动化验证的坑
 
 - **WebView2 远程调试环境变量无效**：wry 自己设置了浏览器参数，`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
@@ -216,14 +219,11 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
 
 以下问题需要先讨论再动手，决定后写回本文并删掉对应条目：
 
-1. **用 Tauri 3 alpha 还是 Tauri 2 稳定版**：官方明确建议生产应用留在 2.x；
-   2 到 3 的差异主要在运行时选择这一层，业务代码改动面较小。
-2. **运行时**：wry（系统 webview，包小）还是 CEF（自带 Chromium，包大）。
-3. **音频引擎用什么实现**：旧实现是纯 Python 引擎（`pvengine`，numpy + scipy + onnxruntime，
-   源码见 `legacy-v2026.09.30.1944/pvengine/`），主线已删除。可选方向：Rust 原生重写
-   （设备 I/O + onnxruntime Rust 绑定），或把 Python 引擎作为 sidecar（`bundle.externalBin`，
-   要求按目标三元组命名的可执行文件）挂在 Tauri 后面，并决定前后端通道（stdio / 本地 WebSocket / Tauri IPC）。
-4. **Linux 打包依赖变化**：wry 需要 WebKitGTK 4.1；托盘不再需要 appindicator。
+1. **Linux 打包依赖变化**：wry 需要 WebKitGTK 4.1；托盘不再需要 appindicator。
    旧的 deb Depends / rpm Requires 清单见 `legacy-v2026.09.30.1944/` 内的打包脚本。
+
+已决（写回 §1/§3）：
+- 用 **Tauri 3 alpha**（`3.0.0-alpha.4`）+ **wry**（系统 WebView2，包小）。
+- 音频引擎**用 Rust 原生重写**（设备 I/O + onnxruntime Rust 绑定），不挂 Python sidecar。
 
 已决定：Tk 桌面 UI 与全部旧 Python 代码已从主线删除（2026-10-07），只保留归档快照。

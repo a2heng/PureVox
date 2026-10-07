@@ -62,10 +62,12 @@ impl WorkerHandle {
 
 struct State {
   plan: Plan,
-  session: Session,
+  /// 运行中才有会话；停止时为空
+  session: Option<Session>,
+  running: bool,
 }
 
-/// 音频子系统：持有当前计划与由其构建的会话。
+/// 音频子系统：持有当前计划与由其构建的会话（可启动 / 停止）。
 pub struct AudioManager {
   hub: SharedHub,
   rec: Arc<RecorderHub>,
@@ -78,12 +80,49 @@ impl AudioManager {
     let plan = config::load_plan();
     let rec = Arc::new(RecorderHub::new(hub.clone()));
     let calib = Arc::new(CalibHub::new(hub.clone()));
-    let (session, _problems) = Session::build(hub.clone(), &plan, rec.clone(), calib.clone());
-    AudioManager { hub, rec, calib, state: Mutex::new(State { plan, session }) }
+    AudioManager {
+      hub,
+      rec,
+      calib,
+      state: Mutex::new(State { plan, session: None, running: false }),
+    }
   }
 
   pub fn plan(&self) -> Plan {
     self.state.lock().unwrap().plan.clone()
+  }
+
+  pub fn is_running(&self) -> bool {
+    self.state.lock().unwrap().running
+  }
+
+  /// 启动：按当前计划构建并运行会话。返回逐行问题。
+  pub fn start(&self) -> Result<Vec<String>, String> {
+    let plan = self.plan();
+    let (session, problems) =
+      Session::build(self.hub.clone(), &plan, self.rec.clone(), self.calib.clone());
+    let mut g = self.state.lock().unwrap();
+    if let Some(mut old) = g.session.take() {
+      old.stop();
+    }
+    g.session = Some(session);
+    g.running = true;
+    drop(g);
+    self.hub.set_running(true);
+    Ok(problems)
+  }
+
+  /// 停止：停会话、释放设备。
+  pub fn stop(&self) {
+    let mut g = self.state.lock().unwrap();
+    if let Some(mut s) = g.session.take() {
+      s.stop();
+    }
+    g.running = false;
+    drop(g);
+    self.hub.set_running(false);
+    // 清掉列概要，界面显示「列未启动」
+    self.hub.set_column(crate::debug::Probe::unavailable("列未启动".to_string()));
   }
 
   /// 录制 TSE 参考（降噪后、音量归一化，48 kHz 单声道）；返回目标文件路径。
@@ -153,15 +192,22 @@ impl AudioManager {
     Ok(format!("第 {} 列第 {} 行（探针已送出）", ci + 1, ri + 1))
   }
 
-  /// 应用新计划（结构性变更）：保存配置 → 构建新会话 → 停旧会话 → 换新。
+  /// 应用新计划：保存配置；运行中则重建会话（结构性变更），停止时只存计划。
   /// 返回构建过程中的问题（非致命，逐行展示）。应在阻塞线程调用（会打开/关闭设备）。
   pub fn apply_plan(&self, plan: Plan) -> Result<Vec<String>, String> {
+    let _ = config::save_plan(&plan);
+    let running = self.state.lock().unwrap().running;
+    if !running {
+      self.state.lock().unwrap().plan = plan;
+      return Ok(vec![]);
+    }
     let (new_session, problems) =
       Session::build(self.hub.clone(), &plan, self.rec.clone(), self.calib.clone());
-    let _ = config::save_plan(&plan);
     let mut g = self.state.lock().unwrap();
-    g.session.stop();
-    g.session = new_session;
+    if let Some(mut old) = g.session.take() {
+      old.stop();
+    }
+    g.session = Some(new_session);
     g.plan = plan;
     Ok(problems)
   }

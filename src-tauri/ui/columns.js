@@ -23,6 +23,7 @@
 ;(() => {
 const { invoke } = window.__TAURI__.core
 const $ = (id) => document.getElementById(id)
+const T = (s) => (window.__pvT ? window.__pvT(s) : s)
 
 let plan = null
 let NODES = []
@@ -32,6 +33,15 @@ let devices = { inputs: [], outputs: [] }
 let deviceStamp = null
 let lastRec = ''
 let lastCalib = ''
+let running = false
+
+function renderRunButton() {
+  const b = $('btn-run')
+  if (!b) return
+  // 按「动作」上色：显示「启动」= 绿，显示「停止」= 红
+  b.textContent = running ? T('停止') : T('启动')
+  b.className = running ? 'run-stop' : 'run-start'
+}
 
 const kindLabel = { input: '输入', process: '处理', output: '输出' }
 const nodesOf = (kind) => NODES.filter((n) => n.kind === kind)
@@ -74,7 +84,7 @@ function defaultColumn() {
 function setStatus(problems) {
   const el = $('plan-status')
   if (!problems || problems.length === 0) {
-    el.textContent = '已应用'
+    el.textContent = T('已应用')
     el.className = 'mono ok'
   } else {
     el.textContent = problems.join('；')
@@ -106,21 +116,21 @@ function select(options, value, onChange, enabled = true) {
 
 function deviceOptions(kind, selectedId) {
   const list = kind === 'input' ? devices.inputs : devices.outputs
-  const opts = [['', '（未选择设备）']].concat(
+  const opts = [['', T('未选择设备')]].concat(
     list.map((d) => [d.id, (d.is_default ? '★ ' : '') + d.name]))
   if (selectedId && !opts.some((o) => o[0] === selectedId)) {
-    opts.push([selectedId, '（设备不在）'])
+    opts.push([selectedId, T('设备不在')])
   }
   return opts
 }
 
 function farOptions(selected) {
   // 远端 = 扬声器（输出设备）→ 自动回环它；值就是输出设备 ID
-  const opts = [['', '（未选择）']].concat(
+  const opts = [['', T('未选择设备')]].concat(
     devices.outputs.map((d) => [d.id, (d.is_default ? '★ ' : '') + '🔁 ' + d.name]))
   if (selected && !opts.some((o) => o[0] === selected)) {
     // 兼容旧的 loopback / 输入设备取值
-    opts.push([selected, selected.startsWith('loopback') ? '🔁 输出回环（默认输出）' : '（设备不在）'])
+    opts.push([selected, selected.startsWith('loopback') ? T('输出回环默认输出') : T('设备不在')])
   }
   return opts
 }
@@ -180,7 +190,7 @@ function rowElement(col, ci, row, ri) {
 
   const badge = document.createElement('span')
   badge.className = 'badge'
-  badge.textContent = kindLabel[kind]
+  badge.textContent = T(kindLabel[kind])
   el.appendChild(badge)
 
   // 类型下拉（两端固定行也可换类型，只是不能删/移动）
@@ -198,7 +208,7 @@ function rowElement(col, ci, row, ri) {
   if (fixed) {
     const tag = document.createElement('span')
     tag.className = 'fixed-tag'
-    tag.textContent = '固定'
+    tag.textContent = T('固定')
     el.appendChild(tag)
   } else {
     const acts = document.createElement('span')
@@ -244,7 +254,7 @@ function rowElement(col, ci, row, ri) {
     detail.appendChild(paramControls(row, row.ptype === 'tse' ? ['model'] : undefined))
   } else if (kind === 'input' && row.ptype === 'echo_cancel') {
     // 近端 mic + 直通开关；远端 + 端侧增益在第 3 行
-    detail.appendChild(lbl('近端'))
+    detail.appendChild(lbl(T('近端')))
     detail.appendChild(select(deviceOptions('input', row.device), row.device ?? '', (v) => {
       row.device = v || null
       apply()
@@ -254,12 +264,12 @@ function rowElement(col, ci, row, ri) {
     const cb = document.createElement('input')
     cb.type = 'checkbox'
     cb.checked = row.params.bypass === '1' || row.params.bypass === 'true'
-    cb.title = '勾选 = 直通（跳过 AEC），用于 A/B 对比'
+    cb.title = 'Bypass (A/B compare)'
     cb.addEventListener('change', () => {
       row.params.bypass = cb.checked ? '1' : '0'
       apply()
     })
-    by.append(cb, document.createTextNode('直通'))
+    by.append(cb, document.createTextNode(T('直通')))
     detail.appendChild(by)
   } else if ((kind === 'input' && row.ptype !== 'tone') || kind === 'output') {
     detail.appendChild(select(deviceOptions(kind, row.device), row.device ?? '', (v) => {
@@ -269,7 +279,7 @@ function rowElement(col, ci, row, ri) {
   } else {
     const hint = document.createElement('span')
     hint.className = 'hint'
-    hint.textContent = kind === 'input' ? '无需设备（测试音）' : '—'
+    hint.textContent = kind === 'input' ? T('无需设备测试音') : '—'
     detail.appendChild(hint)
   }
   el.appendChild(detail)
@@ -279,7 +289,7 @@ function rowElement(col, ci, row, ri) {
     el.classList.add('aec')
     const d2 = document.createElement('div')
     d2.className = 'detail2'
-    d2.appendChild(lbl('远端'))
+    d2.appendChild(lbl(T('远端')))
     d2.appendChild(select(farOptions(row.params.far_device), row.params.far_device ?? '', (v) => {
       row.params.far_device = v
       apply()
@@ -288,17 +298,17 @@ function rowElement(col, ci, row, ri) {
 
     const d3 = document.createElement('div')
     d3.className = 'detail3'
-    d3.appendChild(lbl('近端增益'))
-    d3.appendChild(numParam(row, 'mic_gain_db', '-40', '40', '1', 4))
-    d3.appendChild(lbl('远端增益'))
-    d3.appendChild(numParam(row, 'far_gain_db', '-40', '40', '1', 4))
-    d3.appendChild(lbl('延时'))
+    d3.appendChild(lbl(T('近端增益')))
+    d3.appendChild(numParam(row, 'mic_gain_db', '-40', '40', '1', 3.2))
+    d3.appendChild(lbl(T('远端增益')))
+    d3.appendChild(numParam(row, 'far_gain_db', '-40', '40', '1', 3.2))
+    d3.appendChild(lbl(T('延时')))
     const num = document.createElement('input')
     num.type = 'number'
     num.min = '-1000'
     num.max = '1000'
     num.step = '10'
-    num.style.width = '5em'
+    num.style.width = '4em'
     const dn = Number(row.params.far_delay_ms)
     num.value = Number.isFinite(dn) ? String(dn) : '0'
     num.title = '远端相对近端的延时（ms）'
@@ -309,7 +319,7 @@ function rowElement(col, ci, row, ri) {
     d3.appendChild(num)
     const cal = document.createElement('button')
     cal.type = 'button'
-    cal.textContent = '校准'
+    cal.textContent = T('校准')
     cal.title = '送扫频探针：测延时并自动配平近端 / 远端'
     cal.addEventListener('click', () => {
       invoke('calibrate_aec_delay')
@@ -328,7 +338,7 @@ function rowElement(col, ci, row, ri) {
     d2.appendChild(paramControls(row, ['reference']))
     const rec = document.createElement('button')
     rec.type = 'button'
-    rec.textContent = '录制参考'
+    rec.textContent = T('录制参考')
     rec.title = '录制 10 s「降噪后」的信号作为 TSE 参考（音量归一化）'
     rec.addEventListener('click', () => {
       invoke('record_tse_reference', { seconds: 10 })
@@ -353,7 +363,7 @@ function columnElement(col, ci) {
   // 常驻（仅一列时禁用），避免按钮出现/消失
   const del = document.createElement('button')
   del.type = 'button'
-  del.textContent = '删除列'
+  del.textContent = T('删除列')
   del.disabled = plan.columns.length <= 1
   del.title = del.disabled ? '至少保留一列' : '删除此列'
   del.addEventListener('click', () => {
@@ -375,7 +385,7 @@ function columnElement(col, ci) {
   for (const kind of ['input', 'process', 'output']) {
     const b = document.createElement('button')
     b.type = 'button'
-    b.textContent = `+ ${kindLabel[kind]}`
+    b.textContent = `+ ${T(kindLabel[kind])}`
     b.addEventListener('click', () => {
       col.rows.splice(col.rows.length - 1, 0, defaultRow(kind))
       render(); apply()
@@ -394,7 +404,7 @@ function render() {
   const add = document.createElement('button')
   add.type = 'button'
   add.className = 'add-column'
-  add.textContent = '+ 加一列'
+  add.textContent = '+ ' + T('加一列')
   add.addEventListener('click', () => {
     plan.columns.push(defaultColumn())
     render(); apply()
@@ -404,6 +414,12 @@ function render() {
 
 // ---------- 快照回调（设备列表来自调试快照） ----------
 window.__pvOnSnapshot = (s) => {
+  // 运行状态：顶栏启动/停止按钮
+  if (typeof s.running === 'boolean') {
+    running = s.running
+    renderRunButton()
+  }
+
   // 录制状态：顶栏显示；从「录制中」变「完成」时重建会话以加载新参考
   const rec = s.recorder
   if (rec) {
@@ -465,8 +481,18 @@ window.__pvOnSnapshot = (s) => {
 
 // ---------- 启动 ----------
 $('btn-refresh').addEventListener('click', () => {
-  setStatus(['正在刷新设备…'])
+  setStatus([T('正在刷新设备')])
   invoke('refresh_devices')
+})
+
+// 语言切换后重渲染列（静态串由 i18n.js 处理）
+window.__pvOnLangChange = () => {
+  if (plan) render()
+  renderRunButton()
+}
+
+$('btn-run').addEventListener('click', () => {
+  invoke('set_running', { on: !running }).catch((e) => window.__pvDebug?.('启动/停止失败：' + e))
 })
 
 async function init() {

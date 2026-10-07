@@ -120,7 +120,10 @@ function isOutLabel(inLabel, outLabel) {
   return { in: inLabel, out: outLabel }
 }
 /** @param {string | {in: string, out: string}} l @param {any} s */
-const labelOf = (l, s) => (typeof l === 'string' ? l : isOut(s) ? l.out : l.in)
+const labelOf = (l, s) => {
+  const t = typeof l === 'string' ? l : isOut(s) ? l.out : l.in
+  return window.__pvT ? window.__pvT(t) : t
+}
 
 /** @type {Array<[string | {in: string, out: string}, (s: any) => string[]]>} */
 const STREAM_FIELDS = [

@@ -27,40 +27,60 @@
   <body>
     <header id="topbar">
       <span class="brand">PureVox</span>
-      <button id="btn-refresh" type="button">刷新设备</button>
-      <button id="btn-devtools" type="button">开发者工具</button>
-      <button id="btn-debug" type="button">调试面板</button>
+      <button id="btn-settings" type="button" data-i18n="设置">设置</button>
+      <button id="btn-run" type="button" class="run-start">启动</button>
+      <button id="btn-refresh" type="button" data-i18n="刷新设备">刷新设备</button>
+      <button id="btn-debug" type="button" data-i18n="调试面板">调试面板</button>
+      <button id="btn-devtools" type="button" data-i18n="开发者工具">开发者工具</button>
       <span id="plan-status" class="mono"></span>
       <span id="rec-status" class="mono"></span>
       <span id="calib-status" class="mono"></span>
+      <button id="btn-lang" type="button" title="Language">EN</button>
     </header>
 
     <main id="columns">
       <!-- 音频列：由 columns.js 渲染（默认一列，可增加；每列两端固定为输入/输出） -->
       <div id="audio-columns"></div>
 
-      <!-- 调试列：最后一列，迁移期常驻 -->
+      <!-- 调试列：最后一列，迁移期常驻（顶栏开关显隐） -->
       <section id="debug" class="column debug">
-        <h2>调试 <span id="dbg-status" class="mono"></span></h2>
+        <h2><span data-i18n="调试">调试</span> <span id="dbg-status" class="mono"></span></h2>
 
         <section>
-          <h3>应用</h3>
+          <h3 data-i18n="应用">应用</h3>
           <table class="kv">
-            <tr><th>版本</th><td id="app-version"></td><th>PID</th><td id="app-pid"></td></tr>
-            <tr><th>运行时长</th><td id="app-uptime"></td><th>快照时间</th><td id="app-ts"></td></tr>
-            <tr><th>调试接口</th><td id="app-http" colspan="3"></td></tr>
+            <tr>
+              <th data-i18n="版本">版本</th><td id="app-version"></td>
+              <th>PID</th><td id="app-pid"></td>
+            </tr>
+            <tr>
+              <th data-i18n="运行时长">运行时长</th><td id="app-uptime"></td>
+              <th data-i18n="快照时间">快照时间</th><td id="app-ts"></td>
+            </tr>
+            <tr><th data-i18n="调试接口">调试接口</th><td id="app-http" colspan="3"></td></tr>
           </table>
         </section>
 
         <section>
-          <h3>CPU / 内存 <span id="sys-sampled" class="sub"></span></h3>
+          <h3><span data-i18n="CPU 系统">CPU 系统</span> / <span data-i18n="内存">内存</span> <span id="sys-sampled" class="sub"></span></h3>
           <table class="kv">
-            <tr><th>CPU 系统</th><td id="cpu-system"></td><th>CPU 本进程</th><td id="cpu-process"></td></tr>
-            <tr><th>逻辑核数</th><td id="cpu-cores"></td><th></th><td></td></tr>
-            <tr><th>内存 系统已用</th><td id="mem-used"></td><th>内存 系统可用</th><td id="mem-avail"></td></tr>
-            <tr><th>本进程 工作集</th><td id="mem-ws"></td><th>本进程 私有字节</th><td id="mem-private"></td></tr>
+            <tr>
+              <th data-i18n="CPU 系统">CPU 系统</th><td id="cpu-system"></td>
+              <th data-i18n="CPU 本进程">CPU 本进程</th><td id="cpu-process"></td>
+            </tr>
+            <tr>
+              <th data-i18n="逻辑核数">逻辑核数</th><td id="cpu-cores"></td><th></th><td></td>
+            </tr>
+            <tr>
+              <th data-i18n="内存 系统已用">内存 系统已用</th><td id="mem-used"></td>
+              <th data-i18n="内存 系统可用">内存 系统可用</th><td id="mem-avail"></td>
+            </tr>
+            <tr>
+              <th data-i18n="本进程 工作集">本进程 工作集</th><td id="mem-ws"></td>
+              <th data-i18n="本进程 私有字节">本进程 私有字节</th><td id="mem-private"></td>
+            </tr>
           </table>
-          <p class="note">本进程不含 WebView2 子进程（界面渲染在 msedgewebview2.exe 中）。</p>
+          <p class="note" data-i18n="本进程不含 WebView2 子进程（界面渲染在 msedgewebview2.exe 中）。">本进程不含 WebView2 子进程（界面渲染在 msedgewebview2.exe 中）。</p>
         </section>
 
         <section>
@@ -68,24 +88,79 @@
           <div id="gpu-state" class="state"></div>
           <table class="grid" id="gpu-table">
             <colgroup><col class="c-name" /><col class="c-num" /><col class="c-num" /><col class="c-mem" /><col class="c-num" /></colgroup>
-            <thead><tr><th>适配器</th><th>整卡占用</th><th>本进程占用</th><th>显存已用 / 总量</th><th>本进程显存</th></tr></thead>
+            <thead>
+              <tr>
+                <th data-i18n="适配器">适配器</th>
+                <th data-i18n="整卡占用">整卡占用</th>
+                <th data-i18n="本进程占用">本进程占用</th>
+                <th data-i18n="显存已用 / 总量">显存已用 / 总量</th>
+                <th data-i18n="本进程显存">本进程显存</th>
+              </tr>
+            </thead>
             <tbody></tbody>
           </table>
         </section>
 
         <section>
-          <h3>音频</h3>
+          <h3 data-i18n="音频">音频</h3>
           <table class="kv">
-            <tr><th>引擎</th><td id="audio-engine" colspan="3"></td></tr>
-            <tr><th>参考录制</th><td id="audio-recorder" colspan="3"></td></tr>
-            <tr><th>延时校准</th><td id="audio-calib" colspan="3"></td></tr>
+            <tr><th data-i18n="引擎">引擎</th><td id="audio-engine" colspan="3"></td></tr>
+            <tr><th data-i18n="参考录制">参考录制</th><td id="audio-recorder" colspan="3"></td></tr>
+            <tr><th data-i18n="延时校准">延时校准</th><td id="audio-calib" colspan="3"></td></tr>
           </table>
           <div id="audio-streams"></div>
         </section>
       </section>
     </main>
 
+    <!-- 设置面板（通用 / 热键 / 提示音 / 关于） -->
+    <div id="settings" class="panel hidden">
+      <div class="panel-box">
+        <h3 data-i18n="设置">设置</h3>
+        <div class="set-row">
+          <label class="topcheck">
+            <input id="set-autostart" type="checkbox" />
+            <span data-i18n="开机自启">开机自启</span>
+          </label>
+          <label class="topcheck">
+            <input id="set-start-hidden" type="checkbox" />
+            <span data-i18n="启动自运行并隐藏窗口">启动自运行并隐藏窗口</span>
+          </label>
+        </div>
+        <div class="set-row">
+          <label class="topcheck">
+            <input id="set-hotkey-on" type="checkbox" />
+            <span data-i18n="启用全局热键">启用全局热键</span>
+          </label>
+          <input id="set-hotkey" type="text" class="mono" placeholder="Alt+." />
+          <button id="set-rec" type="button" data-i18n="录制">录制</button>
+        </div>
+        <div class="set-row">
+          <label class="topcheck">
+            <input id="set-cue-on" type="checkbox" />
+            <span data-i18n="启用提示音">启用提示音</span>
+          </label>
+          <span data-i18n="启动音">启动音</span>
+          <select id="set-cue-start"></select>
+          <span data-i18n="停止音">停止音</span>
+          <select id="set-cue-stop"></select>
+        </div>
+        <div class="set-sec" data-i18n="关于">关于</div>
+        <div class="about mono">
+          <div>PureVox <span id="about-ver"></span> — GPL-3.0-or-later</div>
+          <div data-i18n="关于模型声明">内置 AI 模型不随 GPL 授权，仅随 PureVox 经授权使用（见 MODEL-LICENSE.md）。</div>
+          <div id="about-http"></div>
+        </div>
+        <div class="set-foot">
+          <button id="set-save" type="button" data-i18n="保存">保存</button>
+          <button id="set-close" type="button" data-i18n="关闭">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="i18n.js"></script>
     <script src="jsdebug.js"></script>
+    <script src="settings.js"></script>
     <script src="columns.js"></script>
     <script src="debug.js"></script>
   </body>

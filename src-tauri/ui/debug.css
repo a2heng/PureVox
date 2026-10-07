@@ -33,6 +33,7 @@
   --line: #d2d2d7;
   --warn: #b25000;
   --ok: #1a7f37;
+  --danger: #c62828;
   --accent: #0a58ca;
   --topbar-h: 40px;
   --col-w: 400px;
@@ -47,6 +48,7 @@
     --line: #3a3a3c;
     --warn: #ff9f0a;
     --ok: #30d158;
+    --danger: #ff453a;
     --accent: #4c8dff;
   }
 }
@@ -76,7 +78,37 @@ body {
   border-bottom: 1px solid var(--line);
   background: var(--panel);
 }
-#topbar .brand { font-weight: 700; font-size: 15px; }
+#topbar .brand { flex: 0 0 auto; font-weight: 700; font-size: 15px; white-space: nowrap; }
+.topcheck { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); flex: 0 0 auto; white-space: nowrap; }
+/* 顶栏控件不换行、不收缩；状态串占中间并省略，语言按钮靠最右 */
+#topbar button { flex: 0 0 auto; white-space: nowrap; }
+#plan-status,
+#rec-status,
+#calib-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#plan-status { flex: 1 1 auto; }
+#rec-status,
+#calib-status { flex: 0 1 auto; max-width: 32%; }
+#btn-lang { margin-left: auto; }
+#btn-run.run-start { color: var(--ok); font-weight: 600; }
+#btn-run.run-stop { color: var(--danger); font-weight: 600; }
+
+/* 设置面板（覆盖式） */
+.panel { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: flex; align-items: center; justify-content: center; z-index: 20; }
+.panel.hidden { display: none; }
+.panel-box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; min-width: 460px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3); }
+.panel-box h3 { margin: 0 0 10px; font-size: 14px; }
+.set-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.set-row input[type="text"] { flex: 1 1 auto; min-width: 0; height: 24px; font: inherit; }
+.set-row select { max-width: 8em; }
+.set-row .topcheck { flex: 0 0 auto; }
+.set-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.set-sec { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.about { margin-top: 6px; font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
 #plan-status { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- 主区：左音频列区（唯一滚动）+ 右调试列（纵向滚动） ---------- */
@@ -163,13 +195,13 @@ body.debug-on #debug { display: block; }
   min-width: 0;
 }
 .row .detail select { flex: 1 1 auto; min-width: 0; }
-.row .detail .plabel { color: var(--muted); flex: 0 0 auto; }
+.row .detail .plabel { color: var(--muted); flex: 0 0 auto; white-space: nowrap; }
 .row .detail .params { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
 .row .detail .params select { flex: 1 1 auto; }
 .row .detail .en { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); flex: 0 0 auto; }
 .row .detail .hint { color: var(--muted); }
 .row .detail select { flex: 1 1 auto; min-width: 0; }
-.row .detail .lbl { color: var(--muted); flex: 0 0 auto; }
+.row .detail .lbl { color: var(--muted); flex: 0 0 auto; white-space: nowrap; }
 /* AEC 行 4 行（近端 / 远端+端侧增益 / 延时+测延时），TSE 行 3 行；只影响这些行 */
 .row.tall { grid-template-rows: 26px 26px 26px; height: 92px; }
 .row.aec { grid-template-rows: 26px 26px 26px 26px; height: 118px; }
@@ -191,7 +223,7 @@ body.debug-on #debug { display: block; }
   min-width: 0;
 }
 .row .detail2 select { flex: 1 1 auto; min-width: 0; }
-.row .detail2 .lbl { color: var(--muted); flex: 0 0 auto; }
+.row .detail2 .lbl { color: var(--muted); flex: 0 0 auto; white-space: nowrap; }
 .row .detail2 input[type="number"] { width: 5em; }
 .row select, .row input[type="text"] { height: 24px; font: inherit; }
 .row input[type="text"] { width: 100%; min-width: 0; }
@@ -211,7 +243,15 @@ td, .mono, .state {
   white-space: pre;
 }
 table { border-collapse: collapse; table-layout: fixed; width: 100%; }
-th { text-align: left; font-weight: normal; color: var(--muted); padding: 2px 8px 2px 0; }
+th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--muted);
+  padding: 2px 8px 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 td { padding: 2px 8px 2px 0; overflow: hidden; text-overflow: ellipsis; }
 
 .kv tr { height: 20px; }
@@ -233,5 +273,5 @@ td { padding: 2px 8px 2px 0; overflow: hidden; text-overflow: ellipsis; }
 .pending { color: var(--muted); }
 .ok { color: var(--ok); }
 .state:empty { display: none; }
-button { font: inherit; height: 24px; padding: 0 8px; }
+button { font: inherit; height: 24px; padding: 0 8px; white-space: nowrap; }
 button:disabled { opacity: 0.4; }

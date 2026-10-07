@@ -70,17 +70,37 @@
     } catch (_) {
       /* 忽略 */
     }
-    btn?.addEventListener('click', () => setDebug(!document.body.classList.contains('debug-on')))
+    btn?.addEventListener('click', () => {
+      setDebug(!document.body.classList.contains('debug-on'))
+      setTimeout(checkLayout, 100)
+    })
   })
 
-  // 布局自检：文档本身不得溢出（滚动只允许发生在音频列区与调试列）。结果写进调试接口。
+  // 布局自检：文档本身不得溢出（滚动只允许发生在音频列区与调试列）；顶栏子元素不得折行/溢出。
   const checkLayout = () => {
     const de = document.documentElement
     const over = de.scrollWidth > de.clientWidth + 1 || de.scrollHeight > de.clientHeight + 1
-    if (over) {
-      send('error', `布局溢出（文档不应滚动）：文档 ${de.scrollWidth}x${de.scrollHeight} > 视口 ${de.clientWidth}x${de.clientHeight}`)
+    const bar = document.getElementById('topbar')
+    let barMsg = ''
+    if (bar) {
+      let tallest = 0
+      bar.querySelectorAll('*').forEach((el) => {
+        tallest = Math.max(tallest, el.getBoundingClientRect().height)
+      })
+      if (bar.scrollWidth > bar.clientWidth + 1 || tallest > bar.clientHeight + 1) {
+        barMsg = `；顶栏溢出（scrollW ${bar.scrollWidth}/${bar.clientWidth}，最高子元素 ${Math.round(tallest)}/${bar.clientHeight}）`
+      }
+    }
+    let rowMsg = ''
+    document.querySelectorAll('.row').forEach((r) => {
+      if (r.scrollWidth > r.clientWidth + 1) {
+        rowMsg = `；行溢出（scrollW ${r.scrollWidth}/${r.clientWidth}）`
+      }
+    })
+    if (over || barMsg || rowMsg) {
+      send('error', `布局溢出：文档 ${de.scrollWidth}x${de.scrollHeight} > 视口 ${de.clientWidth}x${de.clientHeight}${barMsg}${rowMsg}`)
     } else {
-      send('info', `布局正常：文档无外层滚动，视口 ${de.clientWidth}x${de.clientHeight}`)
+      send('info', `布局正常：文档无外层滚动，顶栏/行无溢出，视口 ${de.clientWidth}x${de.clientHeight}`)
     }
   }
   window.addEventListener('load', () => setTimeout(checkLayout, 400))

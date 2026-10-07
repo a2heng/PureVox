@@ -115,6 +115,15 @@ release 构建同样保留（不允许用编译开关剔除）。
   `ui_report`（即快照的 `ui` 数组）；顶栏「开发者工具」打开 WebView2 devtools（Cargo 已开
   `devtools` 特性，release 保留）。JS 静态检查用项目 `opencode.json` 的 LSP + `ui/jsconfig.json`
   （`checkJs`，配合 `ui/globals.d.ts`）。
+- **外围**：系统托盘（启动/停止、显示/隐藏、退出；图标随运行状态在 `icons/tray_running.png` /
+  `tray_stopped.png` 间切换，菜单随语言与状态重建）；**窗口最小化/关闭都收到托盘**（不退出）；
+  开机自启（`autostart.rs`，写/删 `HKCU\...\Run`）；**启动/停止**（命令 `set_running`/`get_running`，
+  界面顶栏按钮（启动绿/停止红）、托盘、全局热键共用；快照带 `running`）；**全局热键**（`hotkey.rs`：
+  `RegisterHotKey` + 规范串「`Ctrl+Alt+Shift+Win` 顺序」，空串=不监听，注册结果进 `ui`）；
+  **提示音**（`cues.rs` 自合成 6 套预设，start 上行 / stop 下行，`PlaySound` SND_MEMORY）；
+  **设置**（`~/.purevox/settings.json`：语言 / 热键 / 提示音；顶栏「设置」面板，键位可录制）；
+  中英文（`ui/i18n.js`，中文即 msgid，顶栏「EN/中」）。应用图标 `icons/`（`cargo tauri icon`
+  从源图生成，源图 = 深蓝渐变圆角矩形 + PureVox 像素 P）。打包用 `cargo tauri build`。
 
 ---
 

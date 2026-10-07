@@ -142,6 +142,8 @@ pub struct DebugSnapshot {
   pub devices: Probe<DeviceList>,
   /// 界面自报的最近消息（新在前，最多 50 条；见 `ui_report` 命令）
   pub ui: Vec<String>,
+  /// 音频引擎是否运行中（启动/停止状态）
+  pub running: bool,
   /// TSE 参考录音状态/进度
   pub recorder: Probe<String>,
   /// AEC 延时校准状态/结果
@@ -157,6 +159,8 @@ struct State {
   column: Probe<String>,
   /// 界面自报的最近消息（迁移期定位前端问题用；新在前，最多 50 条）
   ui: Vec<String>,
+  /// 音频引擎是否运行中
+  running: bool,
   /// TSE 参考录音状态/进度
   recorder: Probe<String>,
   /// AEC 延时校准状态/结果
@@ -188,6 +192,7 @@ impl DebugHub {
         http: Probe::Pending,
         column: Probe::Pending,
         ui: Vec::new(),
+        running: false,
         recorder: Probe::Pending,
         calib: Probe::Pending,
         streams: BTreeMap::new(),
@@ -223,6 +228,10 @@ impl DebugHub {
     self.state.write().unwrap().calib = v;
   }
 
+  pub fn set_running(&self, v: bool) {
+    self.state.write().unwrap().running = v;
+  }
+
   /// 追加一条界面自报消息（新在前，最多 50 条）。
   pub fn push_ui(&self, level: &str, message: String) {
     let mut st = self.state.write().unwrap();
@@ -250,6 +259,7 @@ impl DebugHub {
     let st_ui = st.ui.clone();
     let st_recorder = st.recorder.clone();
     let st_calib = st.calib.clone();
+    let st_running = st.running;
     let engine = match st.column {
       Probe::Ok { value } => Probe::ok(value),
       _ => Probe::unavailable("列未启动"),
@@ -268,6 +278,7 @@ impl DebugHub {
       audio: AudioInfo { engine, streams },
       devices,
       ui: st_ui,
+      running: st_running,
       recorder: st_recorder,
       calib: st_calib,
     }

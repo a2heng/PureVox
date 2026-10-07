@@ -19,21 +19,28 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+mod autostart;
 mod config;
+mod cues;
 mod debug;
 mod devices;
 mod dsp;
 mod engine;
+mod hotkey;
 mod infer;
 mod plan;
 mod recorder;
 mod wav;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use audio::AudioManager;
 use debug::{DebugHub, DebugSnapshot, SharedHub};
 use plan::Plan;
+use tauri::Manager;
+
+/// 热键宿主（可重启）：设置变更时先停旧的再起新的。
+struct HotkeyHost(Mutex<hotkey::Hotkeys>);
 
 /// UI 调试面板取数：与 HTTP 接口同一个快照。
 #[tauri::command]
@@ -57,6 +64,17 @@ fn ui_report(kind: String, message: String, hub: tauri::State<'_, SharedHub>) {
 #[tauri::command]
 fn open_devtools(window: tauri::WebviewWindow) {
   window.open_devtools();
+}
+
+/// 开机自启开关（写/删当前用户 Run 键）。
+#[tauri::command]
+fn set_autostart(on: bool) -> Result<(), String> {
+  autostart::set(on)
+}
+
+#[tauri::command]
+fn get_autostart() -> bool {
+  autostart::get()
 }
 
 /// 读取当前会话计划。
@@ -167,16 +185,55 @@ fn main() {
   debug::http::spawn(hub.clone());
   devices::spawn_refresh(hub.clone());
   let audio = Arc::new(AudioManager::new(hub.clone()));
+  let hotkey_host = HotkeyHost(Mutex::new(hotkey::Hotkeys::start("", hub.clone(), Arc::new(|| {}))));
 
   tauri::Builder::default()
     .runtime(tauri_runtime_wry::Wry::default())
     .manage(hub)
     .manage(audio)
+    .manage(hotkey_host)
+    .setup(|app| {
+      setup_tray(app)?;
+      start_hotkey(app.handle(), &app.state::<HotkeyHost>());
+      // 初始状态同步窗口图标
+      sync_tray(app.handle(), app.state::<Arc<AudioManager>>().is_running());
+      // 启动自运行并隐藏窗口（收到托盘）
+      if config::load_settings().start_hidden {
+        let mgr = app.state::<Arc<AudioManager>>().inner().clone();
+        let _ = mgr.start();
+        sync_tray(app.handle(), true);
+        if let Some(w) = app.get_webview_window("main") {
+          let _ = w.hide();
+        }
+      }
+      Ok(())
+    })
+    // 最小化 / 关闭都收到托盘（不退出）
+    .on_window_event(|window, event| match event {
+      tauri::WindowEvent::CloseRequested { api, .. } => {
+        api.prevent_close();
+        let _ = window.hide();
+      }
+      tauri::WindowEvent::Resized(_) => {
+        if window.is_minimized().unwrap_or(false) {
+          let _ = window.hide();
+        }
+      }
+      _ => {}
+    })
     .invoke_handler(tauri::generate_handler![
       debug_snapshot,
       refresh_devices,
       ui_report,
       open_devtools,
+      set_autostart,
+      get_autostart,
+      set_running,
+      get_running,
+      set_language,
+      get_settings,
+      set_settings,
+      list_cues,
       get_plan,
       apply_plan,
       list_models,
@@ -186,4 +243,197 @@ fn main() {
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+/// 系统托盘：启动/停止、显示/隐藏主窗口、退出；图标随运行状态变化。
+fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+  use tauri::tray::TrayIconBuilder;
+
+  let mgr = app.state::<Arc<AudioManager>>().inner().clone();
+  let menu = build_tray_menu(app, &config::load_lang(), mgr.is_running())?;
+  let mgr2 = mgr.clone();
+  let app_ev = app.handle().clone();
+  let mut builder = TrayIconBuilder::with_id("main")
+    .tooltip("PureVox")
+    .menu(&menu)
+    // 左键单击 = 显隐窗口；右键 = 弹菜单
+    .show_menu_on_left_click(false)
+    .on_menu_event(move |app, event| match event.id.as_ref() {
+      "run" => toggle_running(app, &mgr2),
+      "show" => toggle_window(app),
+      "quit" => app.exit(0),
+      _ => {}
+    })
+    .on_tray_icon_event(move |_tray, event| {
+      if let tauri::tray::TrayIconEvent::Click {
+        button: tauri::tray::MouseButton::Left,
+        button_state: tauri::tray::MouseButtonState::Up,
+        ..
+      } = event
+      {
+        toggle_window(&app_ev);
+      }
+    });
+  if let Some(icon) = tray_icon(mgr.is_running()) {
+    builder = builder.icon(icon);
+  }
+  builder.build(app)?;
+  Ok(())
+}
+
+const TRAY_RUN_PNG: &[u8] = include_bytes!("../icons/tray_running.png");
+const TRAY_STOP_PNG: &[u8] = include_bytes!("../icons/tray_stopped.png");
+
+fn tray_icon(running: bool) -> Option<tauri::image::Image<'static>> {
+  tauri::image::Image::from_bytes(if running { TRAY_RUN_PNG } else { TRAY_STOP_PNG }).ok()
+}
+
+/// 显隐主窗口（托盘左键 / 菜单「显示/隐藏」共用）。
+fn toggle_window(app: &tauri::AppHandle) {
+  if let Some(w) = app.get_webview_window("main") {
+    if w.is_visible().unwrap_or(true) {
+      let _ = w.hide();
+    } else {
+      let _ = w.unminimize();
+      let _ = w.show();
+      let _ = w.set_focus();
+    }
+  }
+}
+
+/// 托盘菜单（随语言与运行状态重建）。
+fn build_tray_menu<R: tauri::Runtime, M: Manager<R>>(
+  mgr: &M,
+  lang: &str,
+  running: bool,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+  use tauri::menu::{Menu, MenuItem};
+  let en = lang == "en";
+  let run = if running {
+    if en { "Stop" } else { "停止" }
+  } else if en {
+    "Start"
+  } else {
+    "启动"
+  };
+  let show = if en { "Show / Hide window" } else { "显示 / 隐藏窗口" };
+  let quit = if en { "Quit PureVox" } else { "退出 PureVox" };
+  let run = MenuItem::with_id(mgr, "run", run, true, None::<&str>)?;
+  let show = MenuItem::with_id(mgr, "show", show, true, None::<&str>)?;
+  let quit = MenuItem::with_id(mgr, "quit", quit, true, None::<&str>)?;
+  Menu::with_items(mgr, &[&run, &show, &quit])
+}
+
+/// 启动 / 停止：改引擎状态 + 提示音 + 同步托盘图标与菜单。
+fn apply_running(app: &tauri::AppHandle, mgr: &AudioManager, on: bool) {
+  if on {
+    let _ = mgr.start();
+  } else {
+    mgr.stop();
+  }
+  let s = config::load_settings();
+  if s.cue_on {
+    cues::play(if on { &s.cue_start } else { &s.cue_stop }, if on { "start" } else { "stop" });
+  }
+  sync_tray(app, on);
+}
+
+/// 按当前设置（重）启动全局热键。
+fn start_hotkey(app: &tauri::AppHandle, host: &HotkeyHost) {
+  let s = config::load_settings();
+  let spec = if s.hotkey_on { s.hotkey.clone() } else { String::new() };
+  let hub = app.state::<SharedHub>().inner().clone();
+  let app2 = app.clone();
+  let mgr = app.state::<Arc<AudioManager>>().inner().clone();
+  let cb: Arc<dyn Fn() + Send + Sync> = Arc::new(move || toggle_running(&app2, &mgr));
+  let hk = hotkey::Hotkeys::start(&spec, hub, cb);
+  let mut guard = host.0.lock().unwrap();
+  guard.stop();
+  *guard = hk;
+}
+
+#[tauri::command]
+fn get_settings() -> config::AppSettings {
+  config::load_settings()
+}
+
+#[derive(serde::Serialize)]
+struct CueInfo {
+  id: String,
+  label: String,
+}
+
+/// 可选提示音预设（供设置面板下拉）。
+#[tauri::command]
+fn list_cues() -> Vec<CueInfo> {
+  cues::PRESETS
+    .iter()
+    .map(|(id, label)| CueInfo { id: (*id).into(), label: (*label).into() })
+    .collect()
+}
+
+/// 保存设置：归一化热键 → 落盘 → 重启热键 → 刷新托盘菜单（语言）。
+#[tauri::command]
+fn set_settings(mut settings: config::AppSettings, app: tauri::AppHandle) -> Result<(), String> {
+  settings.hotkey = hotkey::normalize_spec(&settings.hotkey);
+  config::save_settings(&settings)?;
+  start_hotkey(&app, &app.state::<HotkeyHost>());
+  let running = app.state::<Arc<AudioManager>>().is_running();
+  if let Some(tray) = app.tray_by_id("main") {
+    if let Ok(menu) = build_tray_menu(&app, &settings.lang, running) {
+      let _ = tray.set_menu(Some(menu));
+    }
+  }
+  Ok(())
+}
+
+fn toggle_running(app: &tauri::AppHandle, mgr: &AudioManager) {
+  apply_running(app, mgr, !mgr.is_running());
+}
+
+fn sync_tray(app: &tauri::AppHandle, running: bool) {
+  // 托盘图标 + 窗口（标题栏/任务栏）图标都随运行状态切换
+  if let Some(icon) = tray_icon(running) {
+    if let Some(tray) = app.tray_by_id("main") {
+      let _ = tray.set_icon(Some(icon.clone()));
+    }
+    if let Some(w) = app.get_webview_window("main") {
+      let _ = w.set_icon(icon);
+    }
+  }
+  if let Ok(menu) = build_tray_menu(app, &config::load_lang(), running) {
+    if let Some(tray) = app.tray_by_id("main") {
+      let _ = tray.set_menu(Some(menu));
+    }
+  }
+}
+
+/// 启动 / 停止音频引擎（界面按钮、托盘、快捷键共用）。
+#[tauri::command]
+async fn set_running(
+  on: bool,
+  app: tauri::AppHandle,
+  mgr: tauri::State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+  let mgr = mgr.inner().clone();
+  tauri::async_runtime::spawn_blocking(move || apply_running(&app, &mgr, on))
+    .await
+    .map_err(|e| format!("启动/停止异常：{e}"))
+}
+
+#[tauri::command]
+fn get_running(mgr: tauri::State<'_, Arc<AudioManager>>) -> bool {
+  mgr.is_running()
+}
+
+/// 切换界面语言：保存 + 更新托盘菜单（界面文案由前端 i18n 处理）。
+#[tauri::command]
+fn set_language(lang: String, app: tauri::AppHandle) -> Result<(), String> {
+  let _ = config::save_lang(&lang);
+  let running = app.state::<Arc<AudioManager>>().is_running();
+  if let Some(tray) = app.tray_by_id("main") {
+    let menu = build_tray_menu(&app, &lang, running).map_err(|e| e.to_string())?;
+    tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+  }
+  Ok(())
 }
