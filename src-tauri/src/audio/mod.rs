@@ -193,13 +193,10 @@ impl AudioManager {
     if outs.is_empty() {
       return Err("没有输出设备可播放校准探针".into());
     }
-    // 当前延时（自校正的基准）：新延时 = 旧延时 + 残余
-    let current_delay: f64 = plan.columns[ci].rows[ri]
-      .params
-      .get("far_delay_ms")
-      .and_then(|v| v.trim().parse().ok())
-      .unwrap_or(0.0);
-    self.calib.start(ci, ri, 1.6, 1000.0, current_delay)?;
+    // 固定参考延时（见 calib::CALIB_REF_MS）：校准测的是绝对延时，不依赖当前存储值
+    self
+      .calib
+      .start(ci, ri, 1.6, 1000.0, crate::engine::calib::CALIB_REF_MS)?;
     crate::engine::calib::play_probe(self.hub.clone(), outs);
     Ok(format!("第 {} 列第 {} 行（探针已送出）", ci + 1, ri + 1))
   }

@@ -17,15 +17,20 @@
 
 //! AEC 校准：**与运行同一坐标系**求延时 + 电平配平。
 //!
-//! 关键：喂给校准器的是「**原始近端 hop**」与「**当前延时下的远端窗口**」（即 AEC 实际用的那对
-//! 信号）。互相关峰 = 当前延时的**残余偏差**；新延时 = 旧延时 + 残余 → 自校正，且与运行坐标系
-//! 严格一致（不会因为两路采集起点不同而整体偏掉）。
+//! 关键：喂给校准器的是「**原始近端 hop**」与「**固定参考延时下的远端窗口**」（far 网格按实时
+//! 推进，两者坐标系一致）。互相关峰 = 相对该参考的偏差；新延时 = 参考 + 偏差 = **绝对延时**，
+//! 与当前存储值无关（若用存储值取窗口，旧值很错时窗口会落在探针之外 → 相关为 0、无法自纠）。
 //!
 //! 同时按原始电平做自动配平（近端/远端各自 RMS 归一到 -24 dBFS）；因为喂的是**增益前**的信号，
 //! 反复校准不会叠加。结果发布到调试快照的 `calib` 字段，界面回填后重建会话。
+//!
+//! 只采集**精确窗口**（far 网格按实时推进，见 `aec.rs` 的 `spawn_far_pump`）：回退的「最近段」
+//! 没有按延时偏移，量到的是绝对偏移，参与测量会让延时越加越大。精确窗口一直取不到（回环设备
+//! 没数据）时按超时失败并给出原因，不让界面停在采集中。
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
@@ -43,6 +48,8 @@ enum State {
     max_lag: usize,
     current_delay_ms: f64,
     last_pub: Instant,
+    /// 采集超时（精确窗口一直取不到时的兜底）
+    deadline: Instant,
   },
   Computing,
   Done,
@@ -52,6 +59,8 @@ enum State {
 pub struct CalibHub {
   state: Arc<Mutex<State>>,
   hub: SharedHub,
+  /// 重置代号：校准开始时自增，far 网格泵与列线程据此把各自序号归零（far 与 mic 同一原点）
+  epoch: Arc<AtomicU64>,
 }
 
 impl CalibHub {
@@ -59,7 +68,13 @@ impl CalibHub {
     CalibHub {
       state: Arc::new(Mutex::new(State::Idle)),
       hub,
+      epoch: Arc::new(AtomicU64::new(0)),
     }
+  }
+
+  /// 重置代号句柄（far 泵与列线程共享；会话起步与每次校准都会自增）。
+  pub fn epoch(&self) -> Arc<AtomicU64> {
+    self.epoch.clone()
   }
 
   pub fn active(&self) -> bool {
@@ -85,15 +100,19 @@ impl CalibHub {
       max_lag,
       current_delay_ms,
       last_pub: Instant::now(),
+      deadline: Instant::now() + Duration::from_secs_f64(seconds.max(1.0) * 3.0),
     };
+    // 通知 far 泵与列线程重置序号（与本次采集从同一原点开始）
+    self.epoch.fetch_add(1, Ordering::Relaxed);
     self
       .hub
       .set_calib(Probe::ok(format!("采集中 0.0/{seconds:.0} s")));
     Ok(())
   }
 
-  /// 列工作线程喂入「原始近端 hop + 当前延时下的远端窗口」。
-  pub fn feed(&self, col: usize, row: usize, mic: &[f32], far: &[f32]) {
+  /// 列工作线程喂入「原始近端 hop + 当前延时下的远端窗口」。`exact` = 该窗口是否为精确段：
+  /// 回退段（最近段）没有按延时偏移，参与测量会把绝对偏移当残余累加，故不采集、只用于超时判定。
+  pub fn feed(&self, col: usize, row: usize, mic: &[f32], far: &[f32], exact: bool) {
     let mut st = self.state.lock().unwrap();
     let full = {
       let State::Collecting {
@@ -109,11 +128,25 @@ impl CalibHub {
       if *target != (col, row) {
         return;
       }
-      m.extend_from_slice(mic);
-      f.extend_from_slice(far);
+      if exact {
+        m.extend_from_slice(mic);
+        f.extend_from_slice(far);
+      }
       m.len() >= *needed
     };
     if !full {
+      // 超时兜底：精确窗口一直取不到（回环设备没数据）时明确失败，别让界面永远停在采集
+      let expired = matches!(
+        &*st,
+        State::Collecting { deadline, .. } if Instant::now() >= *deadline
+      );
+      if expired {
+        *st = State::Failed;
+        self.hub.set_calib(Probe::unavailable(
+          "远端窗口一直不可用：回环设备没有数据（确认扬声器在播放、回环设备正确）",
+        ));
+        return;
+      }
       if let State::Collecting {
         mic: m,
         needed,
@@ -177,6 +210,16 @@ impl CalibHub {
 
 /// 自动配平目标：近端/远端 RMS 都归一到这个 dBFS。
 const TARGET_RMS_DB: f64 = -24.0;
+
+/// 校准取 far 窗口用的**固定参考延时**（ms）：与当前存储的延时值无关。
+///
+/// 探针是一次性短信号：若用当前（可能很错的）延时取窗口，窗口会落在探针之外 → 相关为 0，
+/// 校准无法自我纠正。改用固定的小参考延时后，测得的就是**绝对延时**（新延时 = 参考 + 残余），
+/// 从任何旧值出发都一次到位。
+pub const CALIB_REF_MS: f64 = 20.0;
+
+/// 固定参考延时的采样数（列工作线程取 far 窗口用）。
+pub const CALIB_REF_SAMPLES: i64 = (CALIB_REF_MS * SAMPLE_RATE as f64 / 1000.0) as i64;
 
 /// 峰值附近 ±62.5 ms 窗口的 RMS（dBFS）——只量「探针那一段」，不受静音/底噪拖累。
 fn peak_window_rms_db(x: &[f32]) -> f64 {
@@ -354,5 +397,38 @@ pub fn play_probe(hub: SharedHub, devices: Vec<String>) {
         handle.stop();
       })
       .ok();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// 合成信号钉死符号约定：mic(i) = far(i − K)（mic 滞后 far K 个样本）→ 估计器应返回 +K ms。
+  #[test]
+  fn estimate_delay_positive_when_mic_lags_far() {
+    let far = make_probe();
+    let k = (0.1 * SAMPLE_RATE as f64) as usize; // 100 ms
+    let mut mic = vec![0.0f32; far.len()];
+    mic[k..].copy_from_slice(&far[..far.len() - k]);
+    let (ms, coef, _, _) = estimate_delay(&mic, &far, SAMPLE_RATE as usize);
+    assert!(coef > 0.5, "相关系数太低：{coef}");
+    assert!((ms - 100.0).abs() < 1.0, "期望 +100 ms，得到 {ms} ms");
+  }
+
+  /// 绝对测量公式：mic(i) = far(i − D)，窗口取 far(i − ref) → 残余 = D − ref，新延时 = D。
+  #[test]
+  fn absolute_delay_from_fixed_reference() {
+    let far = make_probe();
+    let d = (0.06 * SAMPLE_RATE as f64) as usize; // 真实延时 60 ms
+    let r = (CALIB_REF_MS / 1000.0 * SAMPLE_RATE as f64) as usize; // 参考 20 ms
+    // 模拟列线程：喂 mic(i) 与 far(i − r)
+    let n = far.len() - d;
+    let mic = &far[..n];
+    let win = &far[d - r..d - r + n];
+    let (residual_ms, coef, _, _) = estimate_delay(mic, win, SAMPLE_RATE as usize);
+    assert!(coef > 0.5, "相关系数太低：{coef}");
+    let new_ms = CALIB_REF_MS + residual_ms;
+    assert!((new_ms - 60.0).abs() < 1.0, "期望 60 ms，得到 {new_ms} ms");
   }
 }

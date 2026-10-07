@@ -271,8 +271,12 @@ fn build_column(
                     match far_cap {
                       Ok(far_cap) => {
                         let hist = Arc::new(Mutex::new(FarHistory::new(FAR_HIST_SAMPLES)));
-                        let pump =
-                          spawn_far_pump(&far_cap.fanout, hist.clone(), &format!("c{idx}r{ri}"));
+                        let pump = spawn_far_pump(
+                          &far_cap.fanout,
+                          hist.clone(),
+                          &format!("c{idx}r{ri}"),
+                          calib.epoch(),
+                        );
                         match Aec::load(&model) {
                           Ok(engine) => {
                             row.label = format!("AEC：{mic_name}（远端 {far_name}）");
@@ -406,6 +410,10 @@ fn run_column(
   let mut next = Instant::now() + TICK;
   let mut ticks: u64 = 0;
   let mut last_ticks: u64 = 0;
+  // 重置代号：会话起步 / 每次校准都让 far 网格与 mic 序号从同一原点计时
+  let calib_epoch = calib.epoch();
+  let mut epoch_seen = calib_epoch.load(Relaxed);
+  let mut aec_boot = true;
 
   while !stop.load(Relaxed) {
     ticks += 1;
@@ -426,6 +434,17 @@ fn run_column(
             if let Some(aec) = r.aec.as_mut() {
               // AEC 行：mic hop 与 far 窗口对齐后过模型；far 历史不足则直通 mic
               if take_hop(&mut aec.mic, &mut tmp) {
+                // 会话起步：让 far 泵的时钟与 mic 序号同起点（否则两者相差设备打开时间，
+                // 校准会测出负延时且每次会话不同）；校准开始时代号变化 → 序号同样归零。
+                if aec_boot {
+                  aec_boot = false;
+                  calib_epoch.fetch_add(1, Relaxed);
+                }
+                let e = calib_epoch.load(Relaxed);
+                if e != epoch_seen {
+                  epoch_seen = e;
+                  aec.mic_hops = 0;
+                }
                 let hop_idx = aec.mic_hops;
                 aec.mic_hops += 1;
                 if aec.bypass {
@@ -439,16 +458,23 @@ fn run_column(
                     acc[i] += tmp[i] * k;
                   }
                 } else {
-                  let start = hop_idx as i64 * HOP as i64 - aec.delay_samples;
+                  // 校准时用固定参考延时取 far 窗口（与存储值无关，见 calib::CALIB_REF_MS）
+                  let delay_samples = if calibrating {
+                    crate::engine::calib::CALIB_REF_SAMPLES
+                  } else {
+                    aec.delay_samples
+                  };
+                  let start = hop_idx as i64 * HOP as i64 - delay_samples;
                   let mut far = [0.0f32; HOP];
                   let win = {
                     let h = aec.hist.lock().unwrap();
                     h.window_or_latest(start, &mut far)
                   };
                   // 校准：喂「原始近端 + 当前延时下的远端窗口」（与运行同一坐标、且在增益前）。
-                  // 不要求精确窗口（否则延时不对时会永远取不到 → 校准卡死）；回退时用最近段也能测。
+                  // 只让精确窗口参与测量：回退段没有按延时偏移，量到的是绝对偏移，会把延时
+                  // 越加越大（far 网格已按实时推进，精确窗口正常可用；一直不可用由 calib 超时兜底）。
                   if calibrating {
-                    calib.feed(idx, ri, &tmp, &far);
+                    calib.feed(idx, ri, &tmp, &far, win == FarWin::Exact);
                   }
                   // 端侧增益（进模型前）
                   if aec.mic_gain != 1.0 {

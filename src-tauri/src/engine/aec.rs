@@ -21,14 +21,14 @@
 //! 列工作线程按「mic 采样序号 − far_delay」从网格取一段作为 far_hop。理想窗口未就绪时，
 //! 有历史就先用最近一段（模型多抽头自对齐），完全没有则直通 mic（不丢人声、不动缓存）。
 
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rtrb::Consumer;
 
 use crate::audio::fanout::Fanout;
-use crate::audio::{HOP, WorkerHandle};
+use crate::audio::{HOP, SAMPLE_RATE, WorkerHandle};
 use crate::infer::aec::Aec;
 
 /// far 历史网格容量（2 s @48 kHz，DESIGN.md §8）。
@@ -89,6 +89,12 @@ impl FarHistory {
     }
     FarWin::None
   }
+
+  /// 清空网格并把序号归零（校准重置 / 会话起步用：far 与 mic 从同一原点重新计时）。
+  pub fn clear(&mut self) {
+    self.buf.fill(0.0);
+    self.total = 0;
+  }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -134,34 +140,79 @@ pub fn far_loopback_id(far: &str) -> Option<String> {
   None
 }
 
-/// 启动 far 采集的消费线程：把 far 的 hop 灌进历史网格。返回句柄（随会话停止）。
-pub fn spawn_far_pump(fan: &Arc<Fanout>, hist: Arc<Mutex<FarHistory>>, tag: &str) -> WorkerHandle {
+/// 启动 far 采集的消费线程：把 far 灌进历史网格。返回句柄（随会话停止）。
+///
+/// 网格按**实时**推进：每轮按已流逝时间写入应到的样本数，设备没出数据（WASAPI 回环在渲染
+/// 端点空闲时几乎不回调）就补零。这样 far 采样序号与 mic 采样序号始终同步，两者之间的常量
+/// 偏移由 `far_delay` 吸收；否则 far 序号会随会话时长越落越后，取窗口永远失败 → 一直回退
+/// 最近段 → 延时校准量到绝对偏移、越测越大。
+pub fn spawn_far_pump(
+  fan: &Arc<Fanout>,
+  hist: Arc<Mutex<FarHistory>>,
+  tag: &str,
+  epoch: Arc<AtomicU64>,
+) -> WorkerHandle {
   let mut cons = fan.subscribe(&format!("{tag}-far"));
   let stop = Arc::new(AtomicBool::new(false));
   let stop2 = stop.clone();
   let join = std::thread::Builder::new()
     .name(format!("aec-far-{tag}"))
     .spawn(move || {
-      let mut hop = [0.0f32; HOP];
+      let mut last_epoch = epoch.load(Relaxed);
+      let mut t0 = Instant::now();
+      let mut written: u64 = 0;
+      let mut buf = [0.0f32; HOP];
       while !stop2.load(Relaxed) {
+        // 重置（会话起步 / 校准开始）：网格与时钟一起归零，far 与 mic 序号从同一原点计时
+        let e = epoch.load(Relaxed);
+        if e != last_epoch {
+          last_epoch = e;
+          t0 = Instant::now();
+          written = 0;
+          if let Ok(mut h) = hist.lock() {
+            h.clear();
+          }
+        }
+        let want = (t0.elapsed().as_secs_f64() * SAMPLE_RATE as f64) as u64;
+        let mut need = want.saturating_sub(written);
+        if need == 0 {
+          std::thread::sleep(Duration::from_millis(1));
+          continue;
+        }
         // far 只作参考：积压就丢最旧，避免越拖越迟
         if cons.slots() > 8 * HOP
           && let Ok(c) = cons.read_chunk(cons.slots() - 2 * HOP)
         {
           c.commit_all();
         }
-        if cons.slots() >= HOP {
-          if let Ok(c) = cons.read_chunk(HOP) {
-            let (a, b) = c.as_slices();
-            hop[..a.len()].copy_from_slice(a);
-            hop[a.len()..].copy_from_slice(b);
-            c.commit_all();
-            if let Ok(mut h) = hist.lock() {
-              h.push(&hop);
+        while need > 0 {
+          let take = need.min(HOP as u64) as usize;
+          let avail = cons.slots();
+          let got = if avail == 0 {
+            0
+          } else {
+            let g = take.min(avail);
+            match cons.read_chunk(g) {
+              Ok(c) => {
+                let (a, b) = c.as_slices();
+                let n = a.len() + b.len();
+                buf[..a.len()].copy_from_slice(a);
+                buf[a.len()..n].copy_from_slice(b);
+                c.commit_all();
+                n
+              }
+              Err(_) => 0,
             }
+          };
+          // 设备没出数据 → 补零，保持网格序号与实时一致
+          for x in buf[got..take].iter_mut() {
+            *x = 0.0;
           }
-        } else {
-          std::thread::sleep(Duration::from_millis(2));
+          if let Ok(mut h) = hist.lock() {
+            h.push(&buf[..take]);
+          }
+          written += take as u64;
+          need -= take as u64;
         }
       }
     })

@@ -87,13 +87,16 @@ release 构建同样保留（不允许用编译开关剔除）。
 - **AEC 行 / TSE 行**：AEC 是**输入行**（`ptype = echo_cancel`，本行 `device` = 近端 mic，
   `params.far_device` = 远端参考：`loopback` = 系统默认输出回环、`loopback:<渲染端点ID>` = 指定输出
   回环（WASAPI loopback，`audio/loopback.rs`，仅 Windows）、其它 = 输入设备；`far_delay_ms` **有符号**
-  （正 = 远端超前、向后取历史；负 = 远端缓冲超前、向前取）。far 历史 2 s 采样网格（`engine/aec.rs`），
-  窗口 = mic 采样序号 − 延时，历史不足先退最近段、再没有就直通 mic）。TSE 是**处理行**
+  （正 = 远端超前、向后取历史；负 = 远端缓冲超前、向前取）。far 历史 2 s 采样网格（`engine/aec.rs`）
+  **按实时推进**（回环设备空闲不出数据时补零，否则序号会随会话时长越落越后、取窗口永远失败），
+  窗口 = mic 采样序号 − 延时，历史不足先退最近段、再没有就直通 mic；far 与 mic 序号同原点
+  （会话起步 / 校准开始归零）。TSE 是**处理行**
   （`ptype = tse`，`params.reference` = 参考 WAV，默认 `~/.purevox/tse_reference.wav`，须 48 kHz 单声道；
   10 s → `enr_tok`；无参考直通）。行状态（对齐计数 / 推理耗时 / 参考状态）经 `Stage::status` 进列概要。
 - **参考录制 / 延时校准**：命令 `record_tse_reference(seconds)` 录「降噪后、TSE 前」的信号（`recorder.rs`，
   RMS 归一化到 -20 dBFS，峰值不削顶）→ `~/.purevox/tse_reference.wav`；命令 `calibrate_aec_delay()`
-  对第一个 AEC 行采集 1.6 s、向被回环的输出送 800→6000 Hz 扫频探针，FFT 互相关**对称搜索**延时，并
+  对第一个 AEC 行采集 1.6 s、向被回环的输出送 800→6000 Hz 扫频探针，FFT 互相关**对称搜索**延时（**从零
+  重置、固定参考延时、只喂精确窗口 → 测的是绝对延时**，不累加、每次可重复），并
   **自动配平**（近端/远端各自 RMS 归一到 -24 dBFS → 回填 `mic_gain_db` / `far_gain_db`）。去直流 + 带限
   （与探针带一致）+ 带内 RMS 归一化（`engine/calib.rs`）。最近一次缓冲落在 `~/.purevox/calib_last_{mic,far}.f32`
   便于离线排查。进度/结果都在快照里（`recorder` / `calib`），界面据此回填参数并重建会话。
