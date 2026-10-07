@@ -7,7 +7,11 @@
 **进度**：
 - Windows hello world 已跑通（编译、运行、前端到 Rust 的 IPC、MSI / NSIS 打包）。
 - 调试面板 + 本机 HTTP 调试接口（`127.0.0.1:47821`）已在 Windows 实现并验证：CPU / 内存 / GPU、
-  设备枚举（cpal / WASAPI）；音频数据端点已定字段，待音频引擎接入。
+  设备枚举（cpal / WASAPI）。
+- 输入采集 + 重采样到 48 kHz 已实现（2026-10-07 实测）：16 kHz（Mic Device）、44.1 kHz 双声道（Realtek）、
+  48 kHz（YUKUI D80）三路同时采集，输出速率均≈48000，回调块恰为原生 10 ms（160 / 441 / 480 帧），
+  输出帧恒为 480 整数倍，无丢样；重采样后原生奈奎斯特以上的频谱处于 -160 dB 测量下限（无镜像）。
+  三路并发 debug 构建本进程 CPU ≈ 1.7%。
 - Linux 未开始。
 
 > 信息收集日期：2026-10-07。Tauri 3 处于 alpha，版本号、API 和文档都可能变化，
@@ -150,12 +154,13 @@ cargo install tauri-cli --version "^3.0.0-alpha" --locked   # 约 2.5 分钟，�
 
 | 路径 | 作用 |
 | --- | --- |
-| `src-tauri/Cargo.toml` | 依赖：`tauri` 3.0.0-alpha.4、`tauri-runtime-wry` 3.0.0-alpha.4、`tauri-build` 3.0.0-alpha.3；调试与设备：`sysinfo` 0.39、`cpal` 0.18、`windows` 0.62（仅 Windows） |
+| `src-tauri/Cargo.toml` | 依赖：`tauri` 3.0.0-alpha.4、`tauri-runtime-wry` 3.0.0-alpha.4、`tauri-build` 3.0.0-alpha.3；调试与设备：`sysinfo` 0.39、`cpal` 0.18、`windows` 0.62（仅 Windows）；音频：`rubato` 5（重采样）、`rtrb` 0.4（无锁环）、`rustfft` 6（调试频谱） |
 | `src-tauri/Cargo.lock` | 锁定依赖，**提交进仓库**（alpha 期间各 crate 频繁发版，靠它保证可复现） |
 | `src-tauri/build.rs` | `tauri_build::build()` |
 | `src-tauri/src/main.rs` | 选 wry 运行时，启动调试采样 / HTTP / 设备枚举，注册命令 `debug_snapshot`、`refresh_devices` |
 | `src-tauri/src/debug/` | 调试状态唯一数据源 `DebugHub`（`mod.rs`）、系统采样线程（`system.rs`）、Windows GPU（`gpu_win.rs`）、HTTP 接口（`http.rs`） |
 | `src-tauri/src/devices.rs` | cpal 设备枚举，刷新单一入口 `spawn_refresh` |
+| `src-tauri/src/audio/` | 采集管理 `CaptureManager`（`mod.rs`）、单路采集线程（`capture.rs`）、重采样切 hop（`resampler.rs`）、电平/波形/频谱/速率测量（`meter.rs`） |
 | `src-tauri/tauri.conf.json` | 应用配置；`build.frontendDist` 指向 `ui`，无 dev server |
 | `src-tauri/capabilities/default.json` | 权限：主窗口 `core:default` |
 | `src-tauri/ui/` | 前端（纯静态，`withGlobalTauri` 下用 `window.__TAURI__.core.invoke`）：`index.html` + 调试面板 `debug.js` / `debug.css` |
@@ -186,6 +191,9 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
 - 界面交互用 Windows UI Automation（`UIAutomationClient`）：按名称找到按钮后调 InvokePattern，
   不需要焦点。脚本里的中文控件名要用码点拼（如 `[string]::new([char[]]@(0x5237,0x65B0))` 即「刷新」），
   直接写中文字面量会被控制台代码页弄乱，查找失败。
+- 有音频流时 `/debug` 响应含波形与频谱数组（数百 KB），Windows PowerShell 5 的 `ConvertFrom-Json`
+  解析失败且只回显原文；改用 `.venv\Scripts\python.exe` 跑脚本解析。PowerShell 向原生程序传参会吞掉双引号，
+  Python 代码写进文件再执行，不要用 `python -c "..."`。
 - 截图用 `PrintWindow(hwnd, hdc, 2)`（`PW_RENDERFULLCONTENT`，能截到 WebView2 内容），
   不用 `CopyFromScreen`（截的是屏幕上最前面的窗口）。注意：
   - 从智能体 shell 启动的程序窗口是**最小化**的，先 `ShowWindow(hwnd, 4)`（`SW_SHOWNOACTIVATE`，不抢焦点）再截。

@@ -106,9 +106,133 @@ function renderGpu(gpu) {
   })
 }
 
+// ---------- 音频流 ----------
+const db = (v) => v.toFixed(1).padStart(6) + ' dBFS'
+const hz = (v) => v.toFixed(1).padStart(8) + ' Hz'
+const ms = (v) => v.toFixed(2).padStart(6) + ' ms'
+
+// 每路流卡片里的文本项：[标签, 取值函数]
+const STREAM_FIELDS = [
+  ['状态', (s) => probeText(s.state, (v) => v)],
+  ['原生格式', (s) => [`${s.sample_rate} Hz ${s.channels} ch ${s.sample_format}`, '']],
+  ['重采样', (s) => [s.resampler, '']],
+  ['实测输入速率', (s) => probeText(s.measured_input_rate, hz)],
+  ['实测输出速率', (s) => probeText(s.measured_output_rate, hz)],
+  ['回调块（帧）', (s) => probeText(s.callback_frames, (v) => `最近 ${v.last}  最小 ${v.min}  最大 ${v.max}`)],
+  ['回调次数', (s) => [String(s.callbacks), '']],
+  ['输入帧 / 输出帧', (s) => [`${s.frames_in} / ${s.frames_processed}`, '']],
+  ['hop 数 / 剩余帧', (s) => [`${s.hops} / ${s.pending_frames}`, s.pending_frames < 480 ? '' : 'na']],
+  ['峰值 / RMS', (s) => {
+    const [p, pc] = probeText(s.peak_dbfs, db)
+    const [r] = probeText(s.rms_dbfs, db)
+    return [`${p}  /  ${r}`, pc]
+  }],
+  ['环形缓冲水位', (s) => [ms(s.buffer_level_ms), '']],
+  ['重采样延迟', (s) => [ms(s.resampler_delay_ms), '']],
+  ['丢弃样本 / 流错误', (s) => [`${s.overruns} / ${s.stream_errors}${s.last_error ? '  ' + s.last_error : ''}`, s.overruns || s.stream_errors ? 'na' : '']],
+  ['端到端延迟', (s) => probeText(s.latency_ms, ms)],
+  ['推理耗时', (s) => probeText(s.inference_ms_avg, ms)],
+]
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+}
+
+function fitCanvas(cv) {
+  const r = cv.getBoundingClientRect()
+  const dpr = window.devicePixelRatio || 1
+  const w = Math.max(1, Math.round(r.width * dpr))
+  const h = Math.max(1, Math.round(r.height * dpr))
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h }
+  return [cv.getContext('2d'), w, h, dpr]
+}
+
+function drawWave(cv, wave) {
+  const [g, w, h] = fitCanvas(cv)
+  g.clearRect(0, 0, w, h)
+  g.strokeStyle = cssVar('--line'); g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke()
+  if (!wave.length) return
+  g.strokeStyle = cssVar('--ok'); g.beginPath()
+  // 每个像素列画该列样本的最小 / 最大值
+  const per = wave.length / w
+  for (let x = 0; x < w; x++) {
+    let lo = 1, hi = -1
+    const a = Math.floor(x * per), b = Math.max(a + 1, Math.floor((x + 1) * per))
+    for (let i = a; i < b && i < wave.length; i++) { lo = Math.min(lo, wave[i]); hi = Math.max(hi, wave[i]) }
+    g.moveTo(x + 0.5, h / 2 - hi * h / 2); g.lineTo(x + 0.5, h / 2 - lo * h / 2 + 1)
+  }
+  g.stroke()
+}
+
+const SPEC_MIN = -140, SPEC_MAX = 0
+function drawSpectrum(cv, spec, binHz, nativeRate) {
+  const [g, w, h, dpr] = fitCanvas(cv)
+  g.clearRect(0, 0, w, h)
+  const maxHz = binHz * (spec.length - 1 || 480)
+  g.font = `${10 * dpr}px Consolas, monospace`
+  g.fillStyle = cssVar('--muted'); g.strokeStyle = cssVar('--line')
+  for (let f = 4000; f < maxHz; f += 4000) {
+    const x = (f / maxHz) * w
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke()
+    g.fillText(`${f / 1000}k`, x + 2 * dpr, h - 3 * dpr)
+  }
+  // 原生奈奎斯特频率：重采样后此线以上应无信号
+  const nyq = nativeRate / 2
+  if (nyq < maxHz) {
+    const x = (nyq / maxHz) * w
+    g.strokeStyle = cssVar('--warn'); g.setLineDash([4 * dpr, 3 * dpr])
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); g.setLineDash([])
+    g.fillStyle = cssVar('--warn'); g.fillText(`原生奈奎斯特 ${(nyq / 1000).toFixed(2)}k`, x + 3 * dpr, 12 * dpr)
+  }
+  if (!spec.length) return
+  g.strokeStyle = cssVar('--ok'); g.beginPath()
+  spec.forEach((v, k) => {
+    const x = (k / (spec.length - 1)) * w
+    const y = h - ((Math.max(SPEC_MIN, v) - SPEC_MIN) / (SPEC_MAX - SPEC_MIN)) * h
+    k ? g.lineTo(x, y) : g.moveTo(x, y)
+  })
+  g.stroke()
+}
+
+function makeStreamCard() {
+  const card = document.createElement('div')
+  card.className = 'stream'
+  card.innerHTML =
+    '<h3></h3><table class="kv"><tbody></tbody></table>' +
+    '<div class="plots">' +
+    '<figure><figcaption>波形（48 kHz，最近 50 ms）</figcaption><canvas class="wave"></canvas></figure>' +
+    '<figure><figcaption>平均频谱（0 ~ 24 kHz，-140 ~ 0 dBFS）</figcaption><canvas class="spec"></canvas></figure>' +
+    '</div>'
+  const tbody = card.querySelector('tbody')
+  // 两列一行
+  for (let i = 0; i < STREAM_FIELDS.length; i += 2) {
+    const tr = document.createElement('tr')
+    for (let j = i; j < i + 2; j++) {
+      const th = document.createElement('th'); const td = document.createElement('td')
+      th.textContent = STREAM_FIELDS[j] ? STREAM_FIELDS[j][0] : ''
+      tr.append(th, td)
+    }
+    tbody.appendChild(tr)
+  }
+  return card
+}
+
 function renderAudio(audio) {
   putProbe($('audio-engine'), audio.engine, (v) => v)
-  put($('audio-streams'), audio.streams.length ? `${audio.streams.length} 路` : '无')
+  const box = $('audio-streams')
+  const ids = audio.streams.map((s) => s.id).join('|')
+  if (box.dataset.ids !== ids) {
+    box.dataset.ids = ids
+    box.replaceChildren(...audio.streams.map(makeStreamCard))
+  }
+  audio.streams.forEach((s, i) => {
+    const card = box.children[i]
+    put(card.querySelector('h3'), `输入：${s.device_name}`)
+    const tds = card.querySelectorAll('td')
+    STREAM_FIELDS.forEach(([, f], j) => { const [t, c] = f(s); put(tds[j], t, c) })
+    drawWave(card.querySelector('.wave'), s.waveform)
+    drawSpectrum(card.querySelector('.spec'), s.spectrum_db, s.spectrum_bin_hz, s.sample_rate)
+  })
 }
 
 let devStamp = null
@@ -120,8 +244,10 @@ function renderDevices(dev) {
   }
   put($('dev-state'), '')
   const v = dev.value
-  if (v.enumerated_at === devStamp) return // 列表只在重新枚举后重建
-  devStamp = v.enumerated_at
+  // 列表只在重新枚举或打开状态变化后重建
+  const stamp = v.enumerated_at + ':' + v.devices.map((d) => (d.opened ? 1 : 0)).join('')
+  if (stamp === devStamp) return
+  devStamp = stamp
   put($('dev-meta'), `枚举于 ${clock(v.enumerated_at)}，耗时 ${v.duration_ms} ms，接口 ${v.hosts.join(' / ') || '无'}，共 ${v.devices.length} 项`)
   const sorted = [...v.devices].sort((a, b) => a.direction.localeCompare(b.direction) || Number(b.is_default) - Number(a.is_default))
   tbody.replaceChildren(...sorted.map((d) => {
@@ -140,6 +266,24 @@ function renderDevices(dev) {
       put(td, t, c)
       tr.appendChild(td)
     }
+    const act = document.createElement('td')
+    if (d.direction === 'input') {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.textContent = d.opened ? '停止' : '采集'
+      btn.addEventListener('click', async () => {
+        btn.disabled = true
+        try {
+          await invoke(d.opened ? 'stop_capture' : 'start_capture', { deviceId: d.id })
+          put($('dev-action'), '')
+        } catch (e) {
+          put($('dev-action'), `${d.opened ? '停止' : '采集'} ${d.name} 失败：${e}`, 'na')
+          btn.disabled = false
+        }
+      })
+      act.appendChild(btn)
+    }
+    tr.appendChild(act)
     return tr
   }))
   $('dev-errors').replaceChildren(...v.errors.map((e) => {

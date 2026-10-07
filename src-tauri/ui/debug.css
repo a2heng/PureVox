@@ -86,6 +86,17 @@ td { padding: 2px 8px 2px 0; overflow: hidden; text-overflow: ellipsis; }
 .c-fmt { width: 13em; }
 .c-type { width: 12em; }
 
+.c-act { width: 6em; }
+
+/* 音频流卡片 */
+.stream { border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; margin: 6px 0; }
+.stream h3 { font-size: 13px; margin: 0 0 4px; }
+.stream .kv th { width: 9em; }
+.plots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
+.plots figure { margin: 0; }
+.plots figcaption { color: var(--muted); font-size: 12px; }
+.plots canvas { width: 100%; height: 120px; display: block; background: var(--bg); border-radius: 3px; }
+
 .na { color: var(--warn); }
 .pending { color: var(--muted); }
 .ok { color: var(--ok); }

@@ -39,8 +39,9 @@ pub struct DeviceInfo {
   /// 设备原生（共享模式默认）格式；读取失败时为不可用 + 原因
   pub native: Probe<NativeFormat>,
   pub is_default: bool,
-  /// 音频引擎尚未实现，恒为 false；接入后由引擎维护
+  /// 设备选择尚未实现，恒为 false
   pub selected: bool,
+  /// 由 DebugHub::snapshot 按当前活动流推出（枚举时恒为 false）
   pub opened: bool,
 }
 

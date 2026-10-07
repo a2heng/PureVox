@@ -26,6 +26,7 @@ pub mod system;
 mod gpu_win;
 
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -62,29 +63,56 @@ pub struct AppInfo {
   pub debug_http: Probe<String>,
 }
 
-/// 单路音频流的调试数据。字段先于实现定下，见 AGENTS.md 1.2 节。
-#[allow(dead_code)]
+/// 单路音频流的调试数据，见 AGENTS.md 1.2 节。测不到的项一律 Probe 不可用，不填 0。
 #[derive(Clone, Debug, Serialize)]
 pub struct StreamInfo {
   pub id: String,
   pub direction: &'static str,
   pub device_id: String,
+  pub device_name: String,
+  /// running / 不可用 + 错误原因
+  pub state: Probe<String>,
+  pub started_at: u64,
+  /// 设备以此原生格式打开
   pub sample_rate: u32,
   pub channels: u32,
   pub sample_format: String,
+  /// 回调实际送达的帧率（3 s 滑动窗口）
+  pub measured_input_rate: Probe<f64>,
+  /// 引擎内部采样率（恒 48000）
+  pub output_rate: u32,
+  /// 重采样后实际产出的帧率（3 s 滑动窗口），应≈48000
+  pub measured_output_rate: Probe<f64>,
+  pub resampler: String,
+  pub resampler_delay_ms: f64,
+  pub callbacks: u64,
+  /// 设备回调块大小（帧）：最近 / 最小 / 最大
+  pub callback_frames: Probe<crate::audio::capture::CallbackFrames>,
+  /// 已收到的原生帧数
+  pub frames_in: u64,
+  /// 已产出的 48 kHz 帧数（恒为 HOP 整数倍）
   pub frames_processed: u64,
-  pub peak_dbfs: f32,
-  pub rms_dbfs: f32,
-  pub underruns: u64,
+  pub hops: u64,
+  /// 已重采样但不足一个 hop 的剩余帧（恒 < 480）
+  pub pending_frames: u32,
+  /// 最近一个发布周期（200 ms）内
+  pub peak_dbfs: Probe<f32>,
+  pub rms_dbfs: Probe<f32>,
+  pub underruns: Probe<u64>,
+  /// 环形缓冲满导致丢弃的样本数
   pub overruns: u64,
+  pub stream_errors: u64,
+  pub last_error: Option<String>,
+  /// 回调到工作线程的环形缓冲水位
   pub buffer_level_ms: f32,
-  pub latency_ms: f32,
-  pub inference_ms_avg: f32,
-  pub inference_ms_max: f32,
-  /// 最近一段波形（48 kHz 单声道，按 10 ms 整数倍截取）。
+  pub latency_ms: Probe<f32>,
+  pub inference_ms_avg: Probe<f32>,
+  pub inference_ms_max: Probe<f32>,
+  /// 最近 50 ms 波形（48 kHz 单声道，5 个 hop）
   pub waveform: Vec<f32>,
-  /// 最近一帧频谱（dB）。
+  /// 最近一个发布周期的平均频谱（dBFS，481 个 bin，NFFT = 960）
   pub spectrum_db: Vec<f32>,
+  pub spectrum_bin_hz: f32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -108,6 +136,7 @@ struct State {
   system: SystemInfo,
   devices: Probe<DeviceList>,
   http: Probe<String>,
+  streams: BTreeMap<String, StreamInfo>,
 }
 
 pub struct DebugHub {
@@ -132,6 +161,7 @@ impl DebugHub {
         system: SystemInfo::default(),
         devices: Probe::Pending,
         http: Probe::Pending,
+        streams: BTreeMap::new(),
       }),
     })
   }
@@ -152,8 +182,29 @@ impl DebugHub {
     self.state.write().unwrap().http = v;
   }
 
+  pub fn set_stream(&self, v: StreamInfo) {
+    self.state.write().unwrap().streams.insert(v.id.clone(), v);
+  }
+
+  pub fn remove_stream(&self, id: &str) {
+    self.state.write().unwrap().streams.remove(id);
+  }
+
   pub fn snapshot(&self) -> DebugSnapshot {
     let st = self.state.read().unwrap().clone();
+    // 设备表的「已打开」由当前活动流推出，避免两处各存一份
+    let mut devices = st.devices;
+    if let Probe::Ok { value } = &mut devices {
+      for d in &mut value.devices {
+        d.opened = st.streams.values().any(|s| s.device_id == d.id && s.direction == d.direction);
+      }
+    }
+    let streams: Vec<StreamInfo> = st.streams.into_values().collect();
+    let engine = if streams.is_empty() {
+      Probe::unavailable("音频引擎尚未实现（可在设备表中启动输入采集测试）")
+    } else {
+      Probe::ok(format!("采集 + 重采样测试：{} 路（未接入模型）", streams.len()))
+    };
     DebugSnapshot {
       ts: now_ms(),
       uptime_ms: self.uptime_ms(),
@@ -164,11 +215,8 @@ impl DebugHub {
         debug_http: st.http,
       },
       system: st.system,
-      audio: AudioInfo {
-        engine: Probe::unavailable("音频引擎尚未实现"),
-        streams: Vec::new(),
-      },
-      devices: st.devices,
+      audio: AudioInfo { engine, streams },
+      devices,
     }
   }
 }

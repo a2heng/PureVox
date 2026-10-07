@@ -34,8 +34,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 调试接口：系统 CPU / 内存
 sysinfo = "0.39"
-# 音频设备枚举（后续音频 I/O 同用此库，单一实现路径）
+# 音频设备枚举与采集（单一实现路径）
 cpal = "0.18"
+# 重采样（引擎唯一重采样实现）
+rubato = "5"
+# 实时回调 -> 工作线程的无锁单生产者单消费者环形缓冲
+rtrb = "0.4"
+# 调试频谱
+rustfft = "6"
 
 [target.'cfg(windows)'.dependencies]
 # 调试接口：GPU 占用 / 显存（DXGI + PDH）、进程私有字节

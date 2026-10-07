@@ -67,16 +67,17 @@
         <h2>音频</h2>
         <table class="kv">
           <tr><th>引擎</th><td id="audio-engine" colspan="3"></td></tr>
-          <tr><th>音频流</th><td id="audio-streams" colspan="3"></td></tr>
         </table>
+        <div id="audio-streams"></div>
       </section>
 
       <section>
         <h2>设备 <button id="dev-refresh" type="button">刷新</button> <span id="dev-meta" class="sub"></span></h2>
         <div id="dev-state" class="state"></div>
+        <div id="dev-action" class="state"></div>
         <table class="grid" id="dev-table">
-          <colgroup><col class="c-dir" /><col class="c-def" /><col class="c-name" /><col class="c-host" /><col class="c-fmt" /><col class="c-type" /></colgroup>
-          <thead><tr><th>方向</th><th>默认</th><th>名称</th><th>接口</th><th>原生格式</th><th>类型 / 总线</th></tr></thead>
+          <colgroup><col class="c-dir" /><col class="c-def" /><col class="c-name" /><col class="c-host" /><col class="c-fmt" /><col class="c-type" /><col class="c-act" /></colgroup>
+          <thead><tr><th>方向</th><th>默认</th><th>名称</th><th>接口</th><th>原生格式</th><th>类型 / 总线</th><th>采集测试</th></tr></thead>
           <tbody></tbody>
         </table>
         <ul id="dev-errors" class="errors"></ul>
