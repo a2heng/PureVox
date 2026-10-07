@@ -23,6 +23,11 @@
   重采样 + PI 时钟伺服（±3%）+ 预热/重同步/封顶。VB-Cable 回环（播放到 CABLE Input、从 CABLE Output
   采集）与真实默认输出（EDIFIER）各测 30 s / 16 s：48k 缓冲稳定在目标 40 ms，欠载 0、重同步 0、
   丢弃 0、流错误 0，伺服修正量约 ±300 ppm 内；回环采回频谱峰值 1000 Hz @ -20 dB。
+- CI 与发版流水线已建立（2026-10-07，见 §3.7）：`ci.yml`（门禁）/ `warm-cache.yml`（唯一缓存写入者）/
+  `release.yml`（tag → 门禁 → 打包 → `assert_bundle -Smoke` 安装冒烟（7 模型布局）→ gh release）；
+  门禁与断言脚本集中在 `tools/automation/`，本机与 CI 跑同一份 `check.ps1`。
+- UI 字符串统一管理已落地（2026-10-07）：`i18n.js` 单字典 + `T()` 占位符 + `__pvTpl()` Rust 模板表
+  + `i18n_lint` 门禁（规则见 AGENTS.md §4）。
 - Linux 未开始。
 
 > 信息收集日期：2026-10-07。Tauri 3 处于 alpha，版本号、API 和文档都可能变化，
@@ -212,6 +217,35 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
   不用 `CopyFromScreen`（截的是屏幕上最前面的窗口）。注意：
   - 从智能体 shell 启动的程序窗口是**最小化**的，先 `ShowWindow(hwnd, 4)`（`SW_SHOWNOACTIVATE`，不抢焦点）再截。
   - `Process.MainWindowHandle` 可能指向 26×26 的辅助窗口，要用 `EnumWindows` 按标题 `PureVox` 找主窗口。
+
+### 3.7 CI 与发版（2026-10-07 起，Windows 优先）
+
+纪律（沿袭旧实现，规则正文见 AGENTS.md §2.6 第 7 条）：
+
+- **门禁唯一实现** `tools/automation/check.ps1`：`fmt`（rustfmt --check，缩进见 `src-tauri/rustfmt.toml`）/
+  `clippy`（`--all-targets -D warnings`）/ `build` / `test` / `ui`（`tsc -p ui/jsconfig.json --noEmit` +
+  `i18n_lint.js`）。本机跑全量或 `-Gate <项>`；CI 按 step 拆开跑同一脚本，日志好定位。
+- **工作流** `.github/workflows/`（`paths-ignore` 排除 `legacy-*/**` 与 `**/*.md`）：
+  - `ci.yml`：分支推送 / PR → rust job（fmt/clippy/build/test）+ ui job（setup-node → `-Gate ui`）。
+  - `warm-cache.yml`：**全仓库唯一缓存写入者**。触发 = `Cargo.toml`/`Cargo.lock`/`versions.env`
+    变更的 `main`/`tauri-3` 推送 + 每周一定时（防淘汰）+ 手动；**冷构建**（不恢复 target 缓存）
+    debug 三门禁 + `cargo tauri build`（顺带预热 WiX/NSIS 与 onnxruntime 下载），再 save 四个桶
+    （`continue-on-error`，同键已存在即视为成功）。
+  - `release.yml`：tag `v*` → 全部门禁 → `cargo tauri build` → `assert_bundle.ps1 -Smoke`
+    → 上传 MSI/NSIS → ubuntu job `release_notes.ps1`（上一 tag 区间）+ `gh release create`；
+    手动 dispatch 只验证打包、不建 release。
+- **缓存纪律**：`ci.yml` / `release.yml` 全部 `actions/cache/restore`（save 一步都没有）；
+  键与版本的唯一来源 = `tools/automation/versions.env`（`CACHE_GEN` / `RUST_TOOLCHAIN` /
+  `TCLI_VER` / `TS_VER` / `NODE_VER`），工作流只组合 `hashFiles('src-tauri/Cargo.lock')`。
+  四个键：`purevox-win-cargo-…`（registry+git）、`purevox-win-target-dbg-…`、
+  `purevox-win-target-rel-…`（含 `%LOCALAPPDATA%\tauri` 的 WiX/NSIS 与 `%LOCALAPPDATA%\ort.pyke.io`）、
+  `purevox-win-tauri-cli-<ver>`（`cargo-tauri.exe`，未命中才 `cargo install tauri-cli --version 钉死`）。
+  为什么集中写：GitHub 缓存按触发 ref 分域，各工作流各写各的只会堆出没人回读的重复条目（tag 上尤甚）。
+- **产物断言** `tools/automation/assert_bundle.ps1 -Smoke`：安装包 ≥ 40 MB（模型在包内的兜底）→
+  NSIS `/S /D=` 静默安装 → 校验安装目录 `models\*.onnx` 7/7 → 启动并轮询 `http://127.0.0.1:47821/debug`
+  就绪 → 杀进程清残留。
+- **UI 字符串门禁** `tools/automation/i18n_lint.js`（`-Gate ui` 内）：裸中文上屏 / 缺键 / 占位符奇偶 /
+  孤儿键等，规则见 AGENTS.md §4「UI 字符串（i18n）」。
 
 ---
 

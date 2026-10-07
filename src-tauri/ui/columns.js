@@ -23,7 +23,7 @@
 ;(() => {
 const { invoke } = window.__TAURI__.core
 const $ = (id) => document.getElementById(id)
-const T = (s) => (window.__pvT ? window.__pvT(s) : s)
+const T = (s, vars) => (window.__pvT ? window.__pvT(s, vars) : s)
 
 let plan = null
 let NODES = []
@@ -43,7 +43,8 @@ function renderRunButton() {
   b.className = running ? 'run-stop' : 'run-start'
 }
 
-const kindLabel = { input: '输入', process: '处理', output: '输出' }
+/** 行类型名（msgids 必须内联在 T() 里，i18n_lint 才能查缺键） */
+const kindName = (kind) => T(kind === 'input' ? '输入' : kind === 'process' ? '处理' : '输出')
 const nodesOf = (kind) => NODES.filter((n) => n.kind === kind)
 const specOf = (ptype) => NODES.find((n) => n.ptype === ptype)
 
@@ -81,13 +82,21 @@ function defaultColumn() {
   return { rows: [defaultRow('input'), defaultRow('output')] }
 }
 
+// 状态串是动态写入的（非 data-i18n 静态元素）：记录最近一次结果，切语言时按当前
+// 语言重放（paintStatus 由 pv-langchange 调用）；null = 尚未 apply 过（保持空 span）。
+let lastProblems = null
 function setStatus(problems) {
+  lastProblems = problems
+  paintStatus()
+}
+function paintStatus() {
+  if (lastProblems === null) return
   const el = $('plan-status')
-  if (!problems || problems.length === 0) {
+  if (!lastProblems || lastProblems.length === 0) {
     el.textContent = T('已应用')
     el.className = 'mono ok'
   } else {
-    el.textContent = problems.join('；')
+    el.textContent = lastProblems.join('；')
     el.className = 'mono na'
   }
 }
@@ -145,10 +154,10 @@ function paramControls(row, keys) {
     if (keys && !keys.includes(p.key)) continue
     const label = document.createElement('span')
     label.className = 'plabel'
-    label.textContent = p.label
+    label.textContent = T(p.label)
     box.appendChild(label)
     if (p.key === 'model') {
-      const opts = (MODELS[row.ptype] ?? []).map((m) => [m.file, m.label])
+      const opts = (MODELS[row.ptype] ?? []).map((m) => [m.file, T(m.label)])
       box.appendChild(select(opts, row.params.model ?? p.default, (v) => {
         row.params.model = v
         apply()
@@ -169,7 +178,8 @@ function paramControls(row, keys) {
       const input = document.createElement('input')
       input.type = 'text'
       input.value = row.params[p.key] ?? p.default
-      input.placeholder = p.key === 'reference' ? '默认 ~/.purevox/tse_reference.wav' : ''
+      input.placeholder =
+    p.key === 'reference' ? T('默认 {path}', { path: '~/.purevox/tse_reference.wav' }) : ''
       input.addEventListener('change', () => {
         row.params[p.key] = input.value
         apply()
@@ -190,11 +200,11 @@ function rowElement(col, ci, row, ri) {
 
   const badge = document.createElement('span')
   badge.className = 'badge'
-  badge.textContent = T(kindLabel[kind])
+  badge.textContent = kindName(kind)
   el.appendChild(badge)
 
   // 类型下拉（两端固定行也可换类型，只是不能删/移动）
-  const ptype = select(nodesOf(kind).map((n) => [n.ptype, n.label]), row.ptype, (v) => {
+  const ptype = select(nodesOf(kind).map((n) => [n.ptype, T(n.label)]), row.ptype, (v) => {
     row.ptype = v
     row.params = {}
     if (v === 'tone') row.device = null
@@ -219,17 +229,17 @@ function rowElement(col, ci, row, ri) {
       b.addEventListener('click', fn)
       return b
     }
-    acts.appendChild(mk('↑', '上移', () => {
+    acts.appendChild(mk('↑', T('上移'), () => {
       const [r] = col.rows.splice(ri, 1)
       col.rows.splice(ri - 1, 0, r)
       render(); apply()
     }, ri - 1 <= 0))
-    acts.appendChild(mk('↓', '下移', () => {
+    acts.appendChild(mk('↓', T('下移'), () => {
       const [r] = col.rows.splice(ri, 1)
       col.rows.splice(ri + 1, 0, r)
       render(); apply()
     }, ri + 1 >= last))
-    acts.appendChild(mk('✕', '删除', () => {
+    acts.appendChild(mk('✕', T('删除'), () => {
       col.rows.splice(ri, 1)
       render(); apply()
     }))
@@ -249,7 +259,7 @@ function rowElement(col, ci, row, ri) {
       row.enabled = cb.checked
       apply()
     })
-    lab.append(cb, document.createTextNode('启用'))
+    lab.append(cb, document.createTextNode(T('启用')))
     detail.appendChild(lab)
     detail.appendChild(paramControls(row, row.ptype === 'tse' ? ['model'] : undefined))
   } else if (kind === 'input' && row.ptype === 'echo_cancel') {
@@ -264,7 +274,7 @@ function rowElement(col, ci, row, ri) {
     const cb = document.createElement('input')
     cb.type = 'checkbox'
     cb.checked = row.params.bypass === '1' || row.params.bypass === 'true'
-    cb.title = 'Bypass (A/B compare)'
+    cb.title = T('直通（A/B 对比）')
     cb.addEventListener('change', () => {
       row.params.bypass = cb.checked ? '1' : '0'
       apply()
@@ -311,7 +321,7 @@ function rowElement(col, ci, row, ri) {
     num.style.width = '4em'
     const dn = Number(row.params.far_delay_ms)
     num.value = Number.isFinite(dn) ? String(dn) : '0'
-    num.title = '远端相对近端的延时（ms）'
+    num.title = T('远端相对近端的延时（ms）')
     num.addEventListener('change', () => {
       row.params.far_delay_ms = num.value
       apply()
@@ -320,7 +330,7 @@ function rowElement(col, ci, row, ri) {
     const cal = document.createElement('button')
     cal.type = 'button'
     cal.textContent = T('校准')
-    cal.title = '送扫频探针：测延时并自动配平近端 / 远端'
+    cal.title = T('送扫频探针：测延时并自动配平近端 / 远端')
     cal.addEventListener('click', () => {
       invoke('calibrate_aec_delay')
         .then((t) => window.__pvDebug?.('开始校准：' + t))
@@ -339,7 +349,7 @@ function rowElement(col, ci, row, ri) {
     const rec = document.createElement('button')
     rec.type = 'button'
     rec.textContent = T('录制参考')
-    rec.title = '录制 10 s「降噪后」的信号作为 TSE 参考（音量归一化）'
+    rec.title = T('录制 10 s「降噪后」的信号作为 TSE 参考（音量归一化）')
     rec.addEventListener('click', () => {
       invoke('record_tse_reference', { seconds: 10 })
         .then((p) => window.__pvDebug?.('开始录制参考：' + p))
@@ -358,14 +368,14 @@ function columnElement(col, ci) {
   const head = document.createElement('div')
   head.className = 'col-head'
   const title = document.createElement('span')
-  title.textContent = `列 ${ci + 1}`
+  title.textContent = T('列 {n}', { n: ci + 1 })
   head.appendChild(title)
   // 常驻（仅一列时禁用），避免按钮出现/消失
   const del = document.createElement('button')
   del.type = 'button'
   del.textContent = T('删除列')
   del.disabled = plan.columns.length <= 1
-  del.title = del.disabled ? '至少保留一列' : '删除此列'
+  del.title = del.disabled ? T('至少保留一列') : T('删除此列')
   del.addEventListener('click', () => {
     if (plan.columns.length <= 1) return
     plan.columns.splice(ci, 1)
@@ -385,7 +395,7 @@ function columnElement(col, ci) {
   for (const kind of ['input', 'process', 'output']) {
     const b = document.createElement('button')
     b.type = 'button'
-    b.textContent = `+ ${T(kindLabel[kind])}`
+    b.textContent = `+ ${kindName(kind)}`
     b.addEventListener('click', () => {
       col.rows.splice(col.rows.length - 1, 0, defaultRow(kind))
       render(); apply()
@@ -412,6 +422,31 @@ function render() {
   host.appendChild(add)
 }
 
+// ---------- 顶栏状态串（录制 / 校准） ----------
+// Rust 侧的值是中文模板串（调试接口同源）：显示走 __pvTpl 按语言重排（zh 恒显原文），
+// 判定 / 参数回填用模板 id 与占位符取值，业务代码不写中文正则、不写中文拼接。
+let recSnap = { state: '', value: '', reason: '' }
+let calSnap = { state: '', value: '', reason: '' }
+/** ok 行 → 模板重排；失败行 → 前缀调用点先过 T()（reason 体是 Rust 诊断文本，按边界保持中文）。 */
+const probeShow = (v, failPrefix) =>
+  v.state === 'ok'
+    ? window.__pvTpl(v.value)?.text ?? v.value
+    : v.state === 'unavailable'
+      ? failPrefix + v.reason
+      : ''
+function paintRecCal() {
+  const r = $('rec-status')
+  if (r) {
+    r.textContent = probeShow(recSnap, T('录制失败：'))
+    r.className = 'mono ' + (recSnap.state === 'ok' ? 'ok' : 'na')
+  }
+  const c = $('calib-status')
+  if (c) {
+    c.textContent = probeShow(calSnap, T('校准失败：'))
+    c.className = 'mono ' + (calSnap.state === 'ok' ? 'ok' : 'na')
+  }
+}
+
 // ---------- 快照回调（设备列表来自调试快照） ----------
 window.__pvOnSnapshot = (s) => {
   // 运行状态：顶栏启动/停止按钮
@@ -423,15 +458,11 @@ window.__pvOnSnapshot = (s) => {
   // 录制状态：顶栏显示；从「录制中」变「完成」时重建会话以加载新参考
   const rec = s.recorder
   if (rec) {
-    const el = $('rec-status')
-    const text =
-      rec.state === 'ok' ? rec.value : rec.state === 'unavailable' ? '录制失败：' + rec.reason : ''
-    if (el) {
-      el.textContent = text
-      el.className = 'mono ' + (rec.state === 'ok' ? 'ok' : 'na')
-    }
-    if (rec.state === 'ok' && text.startsWith('完成') && text !== lastRec) {
-      lastRec = text
+    recSnap = { state: rec.state ?? '', value: rec.value ?? '', reason: rec.reason ?? '' }
+    paintRecCal()
+    const t = recSnap.state === 'ok' ? window.__pvTpl(recSnap.value) : null
+    if (t && t.id === 'rec.done' && recSnap.value !== lastRec) {
+      lastRec = recSnap.value
       window.__pvDebug?.('参考录制完成，重建会话以加载新参考')
       apply()
     }
@@ -440,25 +471,20 @@ window.__pvOnSnapshot = (s) => {
   // 延时校准：顶栏显示；测出「延时 X ms」时回填第一个 AEC 行并重建会话
   const cal = s.calib
   if (cal) {
-    const el = $('calib-status')
-    const text =
-      cal.state === 'ok' ? cal.value : cal.state === 'unavailable' ? '校准失败：' + cal.reason : ''
-    if (el) {
-      el.textContent = text
-      el.className = 'mono ' + (cal.state === 'ok' ? 'ok' : 'na')
-    }
-    const m = /延时\s*(-?[\d.]+)\s*ms/.exec(text)
-    const mg = /近端\s*([+-]?[\d.]+)\s*dB/.exec(text)
-    const fg = /远端\s*([+-]?[\d.]+)\s*dB/.exec(text)
-    if (m && text !== lastCalib) {
-      lastCalib = text
+    calSnap = { state: cal.state ?? '', value: cal.value ?? '', reason: cal.reason ?? '' }
+    paintRecCal()
+    const t = calSnap.state === 'ok' ? window.__pvTpl(calSnap.value) : null
+    if (t && t.id === 'cal.result' && plan && calSnap.value !== lastCalib) {
+      lastCalib = calSnap.value
       const col = plan.columns.find((c) => c.rows.some((r) => r.ptype === 'echo_cancel'))
       const row = col && col.rows.find((r) => r.ptype === 'echo_cancel')
       if (row) {
-        row.params.far_delay_ms = m[1]
-        if (mg) row.params.mic_gain_db = mg[1]
-        if (fg) row.params.far_gain_db = fg[1]
-        window.__pvDebug?.(`校准：延时 ${m[1]} ms，近端 ${mg ? mg[1] : '-'} dB，远端 ${fg ? fg[1] : '-'} dB，已回填并重建`)
+        row.params.far_delay_ms = t.vars.d
+        row.params.mic_gain_db = t.vars.m
+        row.params.far_gain_db = t.vars.f
+        window.__pvDebug?.(
+          `校准：延时 ${t.vars.d} ms，近端 ${t.vars.m} dB，远端 ${t.vars.f} dB，已回填并重建`
+        )
         render()
         apply()
       }
@@ -485,11 +511,13 @@ $('btn-refresh').addEventListener('click', () => {
   invoke('refresh_devices')
 })
 
-// 语言切换后重渲染列（静态串由 i18n.js 处理）
-window.__pvOnLangChange = () => {
+// 语言切换后重渲染列（静态串由 i18n.js 处理；顶栏状态串在此立即重排）
+document.addEventListener('pv-langchange', () => {
   if (plan) render()
   renderRunButton()
-}
+  paintRecCal()
+  paintStatus()
+})
 
 $('btn-run').addEventListener('click', () => {
   invoke('set_running', { on: !running }).catch((e) => window.__pvDebug?.('启动/停止失败：' + e))
@@ -508,7 +536,7 @@ async function init() {
     setStatus([])
     window.__pvDebug?.('界面就绪')
   } catch (e) {
-    setStatus(['初始化失败：' + e])
+    setStatus([T('初始化失败：') + e])
     window.__pvDebug?.('界面初始化失败：' + e)
   }
 }

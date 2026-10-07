@@ -20,7 +20,7 @@
 // 设置面板：全局热键（开关 + 键位录制）与提示音（开关 + 启动/停止预设）。
 ;(() => {
   const { invoke } = window.__TAURI__.core
-  const T = (s) => (window.__pvT ? window.__pvT(s) : s)
+  const T = (s, vars) => (window.__pvT ? window.__pvT(s, vars) : s)
   const $ = (id) => document.getElementById(id)
   const $in = (id) => /** @type {HTMLInputElement} */ ($(id))
   const $sel = (id) => /** @type {HTMLSelectElement} */ ($(id))
@@ -109,14 +109,33 @@
       .catch((e) => window.__pvDebug?.('保存设置失败：' + e))
   }
 
+  /** 提示音预设（标签来自 Rust，经 T() 翻译） */
+  /** @type {Array<{id: string, label: string}>} */
+  let cueList = []
+  let recActive = false
+
+  /** 填充提示音预设下拉；保留当前选中值（切语言时重放）。 */
+  function fillCues() {
+    if (!cueList.length) return
+    for (const id of ['set-cue-start', 'set-cue-stop']) {
+      const sel = $sel(id)
+      const cur = sel.value
+      sel.replaceChildren(...cueList.map((c) => new Option(T(c.label), c.id)))
+      sel.value = cur
+    }
+  }
+
+  /** 键位按钮文字（动态写入）：录制中 =「按键…」，否则「录制」。 */
+  function paintRec() {
+    const rec = $('set-rec')
+    if (rec) rec.textContent = recActive ? T('按键…') : T('录制')
+  }
+
   window.addEventListener('DOMContentLoaded', () => {
-    // 提示音预设下拉
     invoke('list_cues')
       .then((raw) => {
-        const list = /** @type {Array<{id: string, label: string}>} */ (raw)
-        for (const id of ['set-cue-start', 'set-cue-stop']) {
-          $sel(id).replaceChildren(...list.map((c) => new Option(c.label, c.id)))
-        }
+        cueList = /** @type {Array<{id: string, label: string}>} */ (raw)
+        fillCues()
         if (settings) render()
       })
       .catch(() => {})
@@ -126,20 +145,28 @@
     // 键位录制
     const rec = $('set-rec')
     rec?.addEventListener('click', () => {
-      rec.textContent = T('按键…')
+      recActive = true
+      paintRec()
       rec.focus()
     })
     rec?.addEventListener('blur', () => {
-      rec.textContent = T('录制')
+      recActive = false
+      paintRec()
     })
     rec?.addEventListener('keydown', (e) => {
       e.preventDefault()
       const spec = specFromEvent(e)
       if (spec) {
         $in('set-hotkey').value = spec
-        rec.textContent = T('录制')
+        recActive = false
+        paintRec()
         rec.blur()
       }
+    })
+    // 语言切换：动态文字（键位按钮 / 预设下拉标签）重放
+    document.addEventListener('pv-langchange', () => {
+      paintRec()
+      fillCues()
     })
   })
 })()

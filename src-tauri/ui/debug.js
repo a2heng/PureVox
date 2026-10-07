@@ -24,6 +24,7 @@ const { invoke } = window.__TAURI__.core
 
 const POLL_MS = 500 // 2 Hz
 const $ = (id) => document.getElementById(id)
+const T = (s, vars) => (window.__pvT ? window.__pvT(s, vars) : s)
 
 // ---------- 格式化：固定宽度 ----------
 const pct = (v) => v.toFixed(1).padStart(5) + ' %'
@@ -41,10 +42,10 @@ const clock = (ts) => {
 
 // Probe：{state:'ok', value} | {state:'pending'} | {state:'unavailable', reason}
 function probeText(p, fmt) {
-  if (!p) return ['（无数据）', 'na']
+  if (!p) return [T('（无数据）'), 'na']
   if (p.state === 'ok') return [fmt(p.value), '']
-  if (p.state === 'pending') return ['采集中…', 'pending']
-  return ['不可用：' + p.reason, 'na']
+  if (p.state === 'pending') return [T('采集中…'), 'pending']
+  return [T('不可用：') + p.reason, 'na']
 }
 function put(el, text, cls = '') {
   if (el.textContent !== text) el.textContent = text
@@ -70,7 +71,7 @@ function renderApp(s) {
 }
 
 function renderSystem(sys) {
-  put($('sys-sampled'), sys.sampled_at ? '采样于 ' + clock(sys.sampled_at) : '')
+  put($('sys-sampled'), sys.sampled_at ? T('采样于 {time}', { time: clock(sys.sampled_at) }) : '')
   putFrom($('cpu-system'), sys.cpu, (el, v) => put(el, pct(v.system_pct)))
   putFrom($('cpu-process'), sys.cpu, (el, v) => put(el, pct(v.process_pct)))
   putFrom($('cpu-cores'), sys.cpu, (el, v) => put(el, String(v.logical_cores)))
@@ -122,7 +123,7 @@ function isOutLabel(inLabel, outLabel) {
 /** @param {string | {in: string, out: string}} l @param {any} s */
 const labelOf = (l, s) => {
   const t = typeof l === 'string' ? l : isOut(s) ? l.out : l.in
-  return window.__pvT ? window.__pvT(t) : t
+  return T(t)
 }
 
 /** @type {Array<[string | {in: string, out: string}, (s: any) => string[]]>} */
@@ -135,7 +136,7 @@ const STREAM_FIELDS = [
   ['引擎侧速率（48k）', (s) => probeText(engRate(s), hz)],
   ['时钟伺服修正', (s) => probeText(s.asrc_adjust_ppm, ppm)],
   ['重采样延迟', (s) => [ms(s.resampler_delay_ms), '']],
-  ['回调块（帧）', (s) => probeText(s.callback_frames, (v) => `最近 ${v.last}  最小 ${v.min}  最大 ${v.max}`)],
+  ['回调块（帧）', (s) => probeText(s.callback_frames, (v) => T('最近 {last}  最小 {min}  最大 {max}', { last: v.last, min: v.min, max: v.max }))],
   ['回调次数', (s) => [String(s.callbacks), '']],
   [isOutLabel('输入帧 / 输出帧', '48k 消耗帧 / 设备帧'), (s) => [`${s.frames_in} / ${s.frames_processed}`, '']],
   ['hop 数 / 剩余帧', (s) => [`${s.hops} / ${s.pending_frames}`, s.pending_frames < 480 ? '' : 'na']],
@@ -250,7 +251,7 @@ function drawSpectrum(cv, spec, binHz, nativeRate) {
     g.stroke()
     g.setLineDash([])
     g.fillStyle = cssVar('--warn')
-    g.fillText(`原生奈奎斯特 ${(nyq / 1000).toFixed(2)}k`, x + 3 * dpr, 12 * dpr)
+    g.fillText(T('原生奈奎斯特 {f}k', { f: (nyq / 1000).toFixed(2) }), x + 3 * dpr, 12 * dpr)
   }
   if (!spec.length) return
   g.strokeStyle = cssVar('--ok')
@@ -269,8 +270,8 @@ function makeStreamCard(s) {
   card.innerHTML =
     '<h4></h4><table class="kv"><tbody></tbody></table>' +
     '<div class="plots">' +
-    `<figure><figcaption>波形（48 kHz，最近 50 ms${isOut(s) ? '，送入重采样前' : ''}）</figcaption><canvas class="wave"></canvas></figure>` +
-    '<figure><figcaption>平均频谱（0 ~ 24 kHz，-140 ~ 0 dBFS）</figcaption><canvas class="spec"></canvas></figure>' +
+    `<figure><figcaption>${T(isOut(s) ? '波形（48 kHz，最近 50 ms，送入重采样前）' : '波形（48 kHz，最近 50 ms）')}</figcaption><canvas class="wave"></canvas></figure>` +
+    `<figure><figcaption>${T('平均频谱（0 ~ 24 kHz，-140 ~ 0 dBFS）')}</figcaption><canvas class="spec"></canvas></figure>` +
     '</div>'
   const tbody = card.querySelector('tbody')
   for (let i = 0; i < STREAM_FIELDS.length; i += 2) {
@@ -295,7 +296,7 @@ function renderAudio(audio) {
   }
   audio.streams.forEach((s, i) => {
     const card = box.children[i]
-    put(card.querySelector('h4'), isOut(s) ? `输出：${s.device_name}` : `输入：${s.device_name}`)
+    put(card.querySelector('h4'), isOut(s) ? T('输出：{name}', { name: s.device_name }) : T('输入：{name}', { name: s.device_name }))
     const tds = card.querySelectorAll('td')
     STREAM_FIELDS.forEach(([, f], j) => { const [t, c] = f(s); put(tds[j], t, c) })
     drawWave(card.querySelector('.wave'), s.waveform)
@@ -310,9 +311,11 @@ function renderRecorder(s) {
 }
 
 let reported = false
+let last = /** @type {PvSnapshot | null} */ (null)
 async function tick() {
   try {
     const s = /** @type {PvSnapshot} */ (await invoke('debug_snapshot'))
+    last = s
     renderApp(s)
     renderSystem(s.system)
     renderGpu(s.system.gpu)
@@ -325,11 +328,23 @@ async function tick() {
       window.__pvDebug?.(`调试面板已渲染快照（流 ${s.audio.streams.length} 路）`)
     }
   } catch (e) {
-    put($('dbg-status'), '取快照失败：' + e, 'na')
+    put($('dbg-status'), T('取快照失败：') + e, 'na')
     window.__pvDebug?.('调试面板取快照失败：' + e)
   }
   setTimeout(tick, POLL_MS)
 }
+
+// 语言切换：立即按新语言重绘（流卡片的标签 / 图注在建卡时定型，需强制重建卡片）
+document.addEventListener('pv-langchange', () => {
+  if (!last) return
+  const box = $('audio-streams')
+  if (box) box.dataset.ids = ''
+  renderApp(last)
+  renderSystem(last.system)
+  renderGpu(last.system.gpu)
+  renderAudio(last.audio)
+  renderRecorder(last)
+})
 
 tick()
 })()

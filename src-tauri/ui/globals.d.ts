@@ -30,12 +30,13 @@ interface Window {
   __pvOnSnapshot?: (snapshot: any) => void
   /** 前端调试桥（jsdebug.js）：把信息转发到调试接口 */
   __pvDebug?: (message: string) => void
-  /** i18n（i18n.js）：中文 msgid → 当前语言 */
-  __pvT?: (s: string) => string
+  /** i18n（i18n.js）：中文 msgid → 当前语言；可选 {name} 占位符替换 */
+  __pvT?: (s: string, vars?: Record<string, string | number>) => string
+  /** i18n（i18n.js）：匹配 Rust 中文模板串（录制 / 校准等）→ id / 占位符取值 / 显示串 */
+  __pvTpl?: (raw: string) => { id: string; vars: Record<string, string>; text: string } | null
   __pvLang?: () => string
   __pvSetLang?: (lang: string) => void
-  /** 语言切换后各模块重渲染（columns.js 实现） */
-  __pvOnLangChange?: () => void
+  // 语言切换后各模块重渲染：在 document 上监听 'pv-langchange'（i18n.js 派发）
 }
 
 /** 调试快照（结构见 Rust `DebugSnapshot`；前端只做宽松声明，字段按需取用）。 */

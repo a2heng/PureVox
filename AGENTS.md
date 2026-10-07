@@ -141,7 +141,17 @@ release 构建同样保留（不允许用编译开关剔除）。
    是旧实现留下的二进制，按原路径保留以备复用；新实现决定使用或确定弃用时再移动/删除并在此更新。
 6. **发版 tag**：主线 `v<yyyy.MM.dd.HHmm>`。CI 失败、从未生成 release 的 tag 必须删除
    （`git tag -d <tag> && git push origin :refs/tags/<tag>`），否则会截断下一个 release 的提交记录。
-   迁移期暂无 CI 与发版流程。
+7. **CI 与门禁（Windows 优先，测试与发版解耦）**：
+   - 门禁唯一实现 = `tools/automation/check.ps1`（`fmt` / `clippy`（`-D warnings`）/ `build` /
+     `test` / `ui`（`tsc` + `i18n_lint`））；CI 与本机跑同一份，按 `-Gate` 拆 step 便于定位日志。
+   - 工作流（`.github/workflows/`）：`ci.yml`（分支推送 / PR 跑门禁，不打包）；
+     `warm-cache.yml`（**全仓库唯一缓存写入者**：`Cargo.lock` / `Cargo.toml` / `versions.env`
+     变更的分支推送 + 每周定时 + 手动触发，冷构建 target 预热后保存）；
+     `release.yml`（tag `v*` → 全部门禁 → `cargo tauri build` → `assert_bundle.ps1 -Smoke`
+     → 上传安装包 → `release_notes.ps1` 生成说明并 `gh release create`；手动触发只验证打包、不建 release）。
+   - **缓存纪律**：`ci.yml` / `release.yml` 只 restore、不写缓存；缓存桶与键的唯一来源 =
+     `tools/automation/versions.env`（其余 workflow 不得硬编码版本或直写缓存）。
+   - `legacy-v*/` 快照与 `*.md` 改动不进 CI（`paths-ignore`）。
 
 ---
 
@@ -167,6 +177,19 @@ release 构建同样保留（不允许用编译开关剔除）。
 - **许可证头**：每个源码文件（`.rs` / `.toml` / `.html` / `.js` / `.ts` / `.css` 等）顶部必须带 GPL-3.0 版权头 +
   模型声明 + `SPDX-License-Identifier: GPL-3.0-or-later`，照抄 `src-tauri/src/main.rs` 顶部并按注释风格替换。
   JSON 无注释语法，豁免。
+- **UI 字符串（i18n，沿袭旧实现 `i18n.py` / 旧 AGENTS 规则 13）**：中文字面量即 msgid，
+  唯一字典 `src-tauri/ui/i18n.js`（zh 恒等返回、en 查表、缺键回退中文）。上屏只有三个入口：
+  静态 `data-i18n="…"`、动态 `T('…')`（可带占位符 `T('列 {n}', { n: 1 })`，中英 `{name}`
+  集合必须一致）、Rust 中文模板串 `__pvTpl(raw)`（TPL 表：zh = Rust `format!` 字面骨架、
+  en = 同构英文模板、id 为稳定短名供业务逻辑判定，Rust 改拼串必须同步 TPL 骨架）。
+  **Rust 提供的固定标签**（注册表节点/参数名、模型表、提示音预设）同样在界面侧经 `T()`
+  翻译（中文即 msgid，条目必须在字典里）；**动态写入的文本**（状态串、按钮文字、下拉选项）
+  必须同时可重放：记录最近状态 + 监听 `document` 的 `pv-langchange` 事件按新语言重绘。
+  **其余中文一律不上屏**；不翻译的边界：注释、调试日志（`__pvDebug` / `ui_report` /
+  `console`）、Rust 诊断文本（probe 的 reason 体，由变量拼接不经扫描）。**新增用户可见中文串
+  必须同步加 en 条目**（漏了 en 就是漏译）。门禁 `tools/automation/i18n_lint.js`
+  （挂 `check.ps1 -Gate ui`）：E1 裸中文上屏、E2/E3 缺键、E4 占位符奇偶、E5 模板 id 重复、
+  E6 Rust 标签缺条目为错误；W1 孤儿键、W2 TPL 骨架与 Rust 源脱节为告警。
 - **README 双语**：中文 `README.md` + 英文 `README_EN.md`，结构变化时两处同步。
 
 ---
