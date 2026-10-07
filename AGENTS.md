@@ -5,7 +5,7 @@
 
 **栈**：Tauri 3（alpha）+ Rust 后端 + WebView 前端（Windows WebView2，wry 运行时）
 **工程**：`src-tauri/`（编译/运行/打包命令与工具链安装见 `TAURI3.md`）
-**状态**：Windows hello world 已跑通；音频、模型推理、设备管理均未开始。
+**状态**：Windows 上调试面板与 HTTP 调试接口已实现（系统指标、GPU、设备枚举）；音频引擎、模型推理未开始。
 
 > 文档索引：
 > - `TAURI3.md`：Tauri 3 现状、文档来源与固化方式、版本锚点、编译步骤、待决问题。**开工前先读**。
@@ -29,7 +29,10 @@ release 构建同样保留（不允许用编译开关剔除）。
 ### 1.2 本机 HTTP 调试接口
 
 - 只绑 `127.0.0.1`（禁止监听 `0.0.0.0` 或局域网地址），只读 JSON，无鉴权、无写操作。
-- 端口固定写在一处常量里并在本节登记（实现时确定后填入）；端口被占用时日志报错并在 UI 面板显示，不静默失败。
+- 端口 **47821**（`http://127.0.0.1:47821/debug`），唯一定义在 `src-tauri/src/debug/mod.rs` 的
+  `DEBUG_HTTP_PORT`，改动须同步本节；端口被占用时日志报错并在 UI 面板「调试接口」行显示原因，不静默失败。
+- 每项指标是一个 Probe：`{"state":"ok","value":…}` / `{"state":"pending"}`（如 CPU、GPU 占用率首轮差分前）/
+  `{"state":"unavailable","reason":"…"}`。未知路径返回 404 + 端点列表，非 GET 返回 405。
 - 端点（每个返回体都带 `ts`（毫秒时间戳）与 `uptime_ms`）：
 
 | 端点 | 内容 |
@@ -43,8 +46,14 @@ release 构建同样保留（不允许用编译开关剔除）。
 
 ### 1.3 实现约束
 
-- **单一数据源**：Rust 侧维护一份调试状态快照，UI 面板（经 Tauri 命令/事件）与 HTTP 接口
-  序列化的是**同一个结构**；禁止前端自己另算一套。
+- **单一数据源**：Rust 侧 `DebugHub`（`src-tauri/src/debug/mod.rs`）维护唯一快照，UI 面板
+  （Tauri 命令 `debug_snapshot`，2 Hz 轮询）与 HTTP 接口序列化的是**同一个 `DebugSnapshot`**；
+  前端（`src-tauri/ui/debug.js`）只渲染，禁止自己另算一套。
+- **采集来源（Windows）**：CPU / 内存用 `sysinfo`，私有字节用 `GetProcessMemoryInfo`；GPU 适配器与
+  本进程显存用 DXGI，整卡占用率与显存已用用 PDH 计数器 `GPU Engine` / `GPU Adapter Memory`
+  （任务管理器同源）；设备用 `cpal`（后续音频 I/O 同用此库）。设备刷新单一入口
+  `devices::spawn_refresh`（启动时 + 面板「刷新」按钮），后台线程执行。
+- 「本进程」指标不含 WebView2 子进程（界面渲染在 `msedgewebview2.exe`）。
 - **不得影响音频**：音频线程只做无锁计数/写环形缓冲，汇总与序列化在采集线程完成；
   系统指标采样周期 1 s。
 - **新功能的完成标准**包含调试输出：新增模块（流、设备、模型、效果）必须同时把自身状态

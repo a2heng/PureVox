@@ -4,7 +4,11 @@
 我们对 Tauri 3 从零开始，凡是标注「待验证」的内容都还没有在本仓库实际跑通，
 跑通一项就把标注去掉并补上实测结果。
 
-**进度**：Windows hello world 已跑通（编译、运行、前端到 Rust 的 IPC、MSI / NSIS 打包）；Linux 未开始。
+**进度**：
+- Windows hello world 已跑通（编译、运行、前端到 Rust 的 IPC、MSI / NSIS 打包）。
+- 调试面板 + 本机 HTTP 调试接口（`127.0.0.1:47821`）已在 Windows 实现并验证：CPU / 内存 / GPU、
+  设备枚举（cpal / WASAPI）；音频数据端点已定字段，待音频引擎接入。
+- Linux 未开始。
 
 > 信息收集日期：2026-10-07。Tauri 3 处于 alpha，版本号、API 和文档都可能变化，
 > 引用任何结论前先核对下文「版本锚点」是否仍是最新。
@@ -146,13 +150,15 @@ cargo install tauri-cli --version "^3.0.0-alpha" --locked   # 约 2.5 分钟，�
 
 | 路径 | 作用 |
 | --- | --- |
-| `src-tauri/Cargo.toml` | 依赖：`tauri` 3.0.0-alpha.4、`tauri-runtime-wry` 3.0.0-alpha.4、`tauri-build` 3.0.0-alpha.3 |
+| `src-tauri/Cargo.toml` | 依赖：`tauri` 3.0.0-alpha.4、`tauri-runtime-wry` 3.0.0-alpha.4、`tauri-build` 3.0.0-alpha.3；调试与设备：`sysinfo` 0.39、`cpal` 0.18、`windows` 0.62（仅 Windows） |
 | `src-tauri/Cargo.lock` | 锁定依赖，**提交进仓库**（alpha 期间各 crate 频繁发版，靠它保证可复现） |
 | `src-tauri/build.rs` | `tauri_build::build()` |
-| `src-tauri/src/main.rs` | 选 wry 运行时 + 注册 `greet` 命令（验证前端到 Rust 的 IPC） |
+| `src-tauri/src/main.rs` | 选 wry 运行时，启动调试采样 / HTTP / 设备枚举，注册命令 `debug_snapshot`、`refresh_devices` |
+| `src-tauri/src/debug/` | 调试状态唯一数据源 `DebugHub`（`mod.rs`）、系统采样线程（`system.rs`）、Windows GPU（`gpu_win.rs`）、HTTP 接口（`http.rs`） |
+| `src-tauri/src/devices.rs` | cpal 设备枚举，刷新单一入口 `spawn_refresh` |
 | `src-tauri/tauri.conf.json` | 应用配置；`build.frontendDist` 指向 `ui`，无 dev server |
 | `src-tauri/capabilities/default.json` | 权限：主窗口 `core:default` |
-| `src-tauri/ui/index.html` | 前端（纯静态，`withGlobalTauri` 下用 `window.__TAURI__.core.invoke`） |
+| `src-tauri/ui/` | 前端（纯静态，`withGlobalTauri` 下用 `window.__TAURI__.core.invoke`）：`index.html` + 调试面板 `debug.js` / `debug.css` |
 | `src-tauri/icons/` | 由 `assets/icons/audio_icon_base.png` 经 `cargo tauri icon` 生成，只保留配置引用的 5 个文件 |
 
 Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_runtime_wry::Wry::default())`，
@@ -174,8 +180,16 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
 - **WebView2 远程调试环境变量无效**：wry 自己设置了浏览器参数，`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
   会被覆盖，9222 之类的调试端口不会打开。
 - **不要用模拟键鼠测界面**：Windows 会拦截后台进程抢焦点，`SendKeys` 会打到当前前台窗口（别的程序）里。
-- 可行做法：用 Windows UI Automation（`UIAutomationClient`）直接调用页面按钮的 InvokePattern、
-  读取文本节点，不需要焦点。hello world 的 IPC 就是这样验证的（点击 Greet 后读到 Rust 返回的串）。
+- 运行状态一律用 HTTP 调试接口验证：`curl.exe -s http://127.0.0.1:47821/debug`。
+  PowerShell 的 `Invoke-WebRequest` 会按错误字符集解码中文，用 `curl.exe` 并先设
+  `[Console]::OutputEncoding=[Text.Encoding]::UTF8`。
+- 界面交互用 Windows UI Automation（`UIAutomationClient`）：按名称找到按钮后调 InvokePattern，
+  不需要焦点。脚本里的中文控件名要用码点拼（如 `[string]::new([char[]]@(0x5237,0x65B0))` 即「刷新」），
+  直接写中文字面量会被控制台代码页弄乱，查找失败。
+- 截图用 `PrintWindow(hwnd, hdc, 2)`（`PW_RENDERFULLCONTENT`，能截到 WebView2 内容），
+  不用 `CopyFromScreen`（截的是屏幕上最前面的窗口）。注意：
+  - 从智能体 shell 启动的程序窗口是**最小化**的，先 `ShowWindow(hwnd, 4)`（`SW_SHOWNOACTIVATE`，不抢焦点）再截。
+  - `Process.MainWindowHandle` 可能指向 26×26 的辅助窗口，要用 `EnumWindows` 按标题 `PureVox` 找主窗口。
 
 ---
 

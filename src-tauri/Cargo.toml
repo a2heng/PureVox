@@ -30,3 +30,20 @@ tauri-build = { version = "3.0.0-alpha.3", features = [] }
 [dependencies]
 tauri = { version = "3.0.0-alpha.4", features = [] }
 tauri-runtime-wry = "3.0.0-alpha.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 调试接口：系统 CPU / 内存
+sysinfo = "0.39"
+# 音频设备枚举（后续音频 I/O 同用此库，单一实现路径）
+cpal = "0.18"
+
+[target.'cfg(windows)'.dependencies]
+# 调试接口：GPU 占用 / 显存（DXGI + PDH）、进程私有字节
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_System_Performance",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+] }

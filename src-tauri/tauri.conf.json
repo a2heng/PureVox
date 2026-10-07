@@ -10,8 +10,8 @@
     "windows": [
       {
         "title": "PureVox",
-        "width": 800,
-        "height": 600,
+        "width": 1100,
+        "height": 820,
         "resizable": true
       }
     ],

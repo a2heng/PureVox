@@ -1,0 +1,94 @@
+/*
+ * PureVox — AI 麦克风降噪工具
+ * Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+ *
+ * PureVox is licensed under the GNU General Public License v3.0 or
+ * later (GPL-3.0-or-later).  See LICENSE for details.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * The built-in AI models are NOT covered by the GPL; they are the
+ * property of a2heng and may only be used with PureVox under
+ * authorization.  See MODEL-LICENSE.md for details.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+:root {
+  color-scheme: light dark;
+  --fg: #1d1d1f;
+  --muted: #6e6e73;
+  --bg: #f5f5f7;
+  --panel: #ffffff;
+  --line: #d2d2d7;
+  --warn: #b25000;
+  --ok: #1a7f37;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e8e8ed;
+    --muted: #98989d;
+    --bg: #1c1c1e;
+    --panel: #2c2c2e;
+    --line: #3a3a3c;
+    --warn: #ff9f0a;
+    --ok: #30d158;
+  }
+}
+
+body {
+  margin: 0;
+  font: 13px system-ui, "Microsoft YaHei UI", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+.placeholder { padding: 12px 16px; margin: 0; color: var(--muted); }
+
+#debug {
+  margin: 0 12px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+#debug > summary {
+  padding: 8px 12px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+#debug section { padding: 4px 12px 8px; border-top: 1px solid var(--line); }
+h2 { font-size: 13px; margin: 6px 0; }
+.sub, .note { color: var(--muted); font-weight: normal; }
+.note { margin: 4px 0 0; font-size: 12px; }
+
+/* 数值：等宽 + 表格数字 + 不换行，刷新时布局不跳动 */
+td, .mono, .state {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+}
+table { border-collapse: collapse; table-layout: fixed; width: 100%; }
+th { text-align: left; font-weight: normal; color: var(--muted); padding: 2px 8px 2px 0; }
+td { padding: 2px 8px 2px 0; overflow: hidden; text-overflow: ellipsis; }
+
+.kv th { width: 9em; }
+.grid thead th { border-bottom: 1px solid var(--line); }
+.grid td { border-bottom: 1px dashed var(--line); }
+.c-name { width: auto; }
+.c-num { width: 8em; }
+.c-mem { width: 15em; }
+.c-dir { width: 4em; }
+.c-def { width: 3em; }
+.c-host { width: 6em; }
+.c-fmt { width: 13em; }
+.c-type { width: 12em; }
+
+.na { color: var(--warn); }
+.pending { color: var(--muted); }
+.ok { color: var(--ok); }
+.state:empty { display: none; }
+.errors { margin: 4px 0 0; padding-left: 18px; color: var(--warn); font-size: 12px; }
+button { font: inherit; padding: 0 8px; margin-left: 6px; }

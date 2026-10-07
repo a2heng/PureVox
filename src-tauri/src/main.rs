@@ -18,16 +18,33 @@
 // release 版不弹控制台窗口（Windows）
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-/// hello world：前端经 IPC 调用，验证 Rust <-> WebView 通路。
+mod debug;
+mod devices;
+
+use debug::{DebugHub, DebugSnapshot, SharedHub};
+
+/// UI 调试面板取数：与 HTTP 接口同一个快照。
 #[tauri::command]
-fn greet(name: &str) -> String {
-  format!("Hello {name}, from PureVox (Tauri 3)!")
+fn debug_snapshot(hub: tauri::State<'_, SharedHub>) -> DebugSnapshot {
+  hub.snapshot()
+}
+
+/// 刷新设备列表（后台执行，立即返回）。
+#[tauri::command]
+fn refresh_devices(hub: tauri::State<'_, SharedHub>) {
+  devices::spawn_refresh(hub.inner().clone());
 }
 
 fn main() {
+  let hub = DebugHub::new();
+  debug::system::spawn_sampler(hub.clone());
+  debug::http::spawn(hub.clone());
+  devices::spawn_refresh(hub.clone());
+
   tauri::Builder::default()
     .runtime(tauri_runtime_wry::Wry::default())
-    .invoke_handler(tauri::generate_handler![greet])
+    .manage(hub)
+    .invoke_handler(tauri::generate_handler![debug_snapshot, refresh_devices])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
