@@ -121,6 +121,7 @@ const engRate = (s) => (isOut(s) ? s.measured_input_rate : s.measured_output_rat
 const STREAM_FIELDS = [
   ['状态', (s) => probeText(s.state, (v) => v)],
   ['信号源', (s) => [s.source ?? '—（输入流）', '']],
+  ['降噪', (s) => probeText(s.denoise, (v) => v)],
   ['设备格式', (s) => [`${s.sample_rate} Hz ${s.channels} ch ${s.sample_format}`, '']],
   ['重采样', (s) => [s.resampler, '']],
   ['设备侧速率', (s) => probeText(devRate(s), hz)],
@@ -151,7 +152,11 @@ const STREAM_FIELDS = [
   }],
   ['丢弃样本 / 流错误', (s) => [`${s.overruns} / ${s.stream_errors}${s.last_error ? '  ' + s.last_error : ''}`, s.overruns || s.stream_errors ? 'na' : '']],
   ['端到端延迟', (s) => probeText(s.latency_ms, ms)],
-  ['推理耗时', (s) => probeText(s.inference_ms_avg, ms)],
+  ['推理耗时 均值 / 最大', (s) => {
+    const [a, c] = probeText(s.inference_ms_avg, ms)
+    const [b] = probeText(s.inference_ms_max, ms)
+    return [`${a}  /  ${b}`, c]
+  }],
   ['', () => ['', '']],
 ]
 // 标签随方向变化的项：渲染时按流方向取
@@ -274,8 +279,14 @@ function renderDevices(dev, streams) {
   // 输出可选的信号源：测试音 + 正在采集的输入
   const sources = [['tone', '测试音 1 kHz']].concat(
     streams.filter((s) => s.direction === 'input').map((s) => [s.device_id, '输入：' + s.device_name]))
-  // 列表只在重新枚举、打开状态或可选信号源变化后重建
-  const stamp = v.enumerated_at + ':' + v.devices.map((d) => (d.opened ? 1 : 0)).join('') + ':' + sources.map((x) => x[0]).join('|')
+  // 每路输入的降噪状态从对应音频流推出（开启 = denoise 为 ok）
+  const dnOf = (id) => {
+    const s = streams.find((x) => x.direction === 'input' && x.device_id === id)
+    return s ? s.denoise.state : '-'
+  }
+  // 列表只在重新枚举、打开状态、信号源或降噪状态变化后重建
+  const stamp = v.enumerated_at + ':' + v.devices.map((d) => (d.opened ? 1 : 0)).join('') + ':' +
+    sources.map((x) => x[0]).join('|') + ':' + v.devices.filter((d) => d.direction === 'input').map((d) => dnOf(d.id)).join(',')
   if (stamp === devStamp) return
   devStamp = stamp
   put($('dev-meta'), `枚举于 ${clock(v.enumerated_at)}，耗时 ${v.duration_ms} ms，接口 ${v.hosts.join(' / ') || '无'}，共 ${v.devices.length} 项`)
@@ -312,6 +323,23 @@ function renderDevices(dev, streams) {
         }
       })
       act.appendChild(btn)
+      // 降噪开关（仅采集运行时可用）
+      const dnOn = dnOf(d.id) === 'ok'
+      const dn = document.createElement('button')
+      dn.type = 'button'
+      dn.textContent = dnOn ? '降噪：开' : '降噪：关'
+      dn.disabled = !d.opened
+      dn.addEventListener('click', async () => {
+        dn.disabled = true
+        try {
+          await invoke('set_denoise', { deviceId: d.id, on: !dnOn })
+          put($('dev-action'), '')
+        } catch (e) {
+          put($('dev-action'), `切换降噪失败：${e}`, 'na')
+          dn.disabled = false
+        }
+      })
+      act.appendChild(dn)
     } else {
       const sel = document.createElement('select')
       sel.setAttribute('aria-label', '信号源')

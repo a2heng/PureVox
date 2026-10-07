@@ -21,6 +21,7 @@
 mod audio;
 mod debug;
 mod devices;
+mod infer;
 
 use std::sync::Arc;
 
@@ -76,6 +77,16 @@ async fn stop_playback(device_id: String, mgr: tauri::State<'_, Arc<AudioManager
   blocking(&mgr, move |m| m.stop_playback(&device_id)).await
 }
 
+/// 开关某路采集的降噪（输入行「降噪」按钮）。
+#[tauri::command]
+async fn set_denoise(
+  device_id: String,
+  on: bool,
+  mgr: tauri::State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+  blocking(&mgr, move |m| m.set_denoise(&device_id, on)).await?
+}
+
 fn main() {
   let hub = DebugHub::new();
   debug::system::spawn_sampler(hub.clone());
@@ -93,7 +104,8 @@ fn main() {
       start_capture,
       stop_capture,
       start_playback,
-      stop_playback
+      stop_playback,
+      set_denoise
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

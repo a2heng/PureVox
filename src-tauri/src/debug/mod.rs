@@ -75,6 +75,8 @@ pub struct StreamInfo {
   pub started_at: u64,
   /// 输出流播放的信号源名称；输入流为 None
   pub source: Option<String>,
+  /// 本流的降噪状态：ok = 运行中的模型名；unavailable = 未启用或失败原因（输出流恒为不适用）
+  pub denoise: Probe<String>,
   /// 设备以此原生格式打开
   pub sample_rate: u32,
   pub channels: u32,

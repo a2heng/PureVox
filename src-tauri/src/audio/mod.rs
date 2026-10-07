@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use crate::debug::SharedHub;
+use capture::Capture;
 use fanout::Fanout;
 
 /// 引擎内部采样率。
@@ -66,7 +67,7 @@ impl WorkerHandle {
 /// 音频流管理：按设备 ID 启停输入采集与输出，每个设备每个方向最多一路。
 pub struct AudioManager {
   hub: SharedHub,
-  captures: Mutex<HashMap<String, (WorkerHandle, Arc<Fanout>)>>,
+  captures: Mutex<HashMap<String, Capture>>,
   playbacks: Mutex<HashMap<String, WorkerHandle>>,
   tone: OnceLock<Arc<Fanout>>,
 }
@@ -86,17 +87,30 @@ impl AudioManager {
     if self.captures.lock().unwrap().contains_key(device_id) {
       return Ok(());
     }
-    let started = capture::spawn(self.hub.clone(), device_id.to_string())?;
-    self.captures.lock().unwrap().insert(device_id.to_string(), started);
+    let capture = capture::spawn(self.hub.clone(), device_id.to_string())?;
+    self.captures.lock().unwrap().insert(device_id.to_string(), capture);
     Ok(())
   }
 
   pub fn stop_capture(&self, device_id: &str) {
     let entry = self.captures.lock().unwrap().remove(device_id);
-    if let Some((h, _)) = entry {
-      h.stop();
+    if let Some(c) = entry {
+      c.handle.stop();
     }
   }
+
+  /// 开关某路采集的降噪（模型在采集工作线程内惰性加载）。
+  pub fn set_denoise(&self, device_id: &str, on: bool) -> Result<(), String> {
+    let captures = self.captures.lock().unwrap();
+    match captures.get(device_id) {
+      Some(c) => {
+        c.denoise.store(on, Relaxed);
+        Ok(())
+      }
+      None => Err("该输入设备未在采集，无法切换降噪".into()),
+    }
+  }
+
 
   /// 在输出设备上播放某个源（`SOURCE_TONE` 或正在采集的输入设备 ID）；已在播放则切换源。
   pub fn start_playback(&self, device_id: &str, source: &str) -> Result<(), String> {
@@ -104,7 +118,7 @@ impl AudioManager {
       self.tone.get_or_init(tone::spawn).clone()
     } else {
       match self.captures.lock().unwrap().get(source) {
-        Some((_, f)) => f.clone(),
+        Some(c) => c.fanout.clone(),
         None => return Err("信号源未运行：请先启动该输入设备的采集".into()),
       }
     };

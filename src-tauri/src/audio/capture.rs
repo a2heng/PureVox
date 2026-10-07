@@ -35,6 +35,15 @@ use super::meter::{Meter, RateMeter, SPECTRUM_BIN_HZ};
 use super::resampler::ToHops;
 use super::{WorkerHandle, HOP, SAMPLE_RATE};
 use crate::debug::{now_ms, Probe, SharedHub, StreamInfo};
+use crate::infer;
+use crate::infer::denoise::Denoise;
+
+/// 一路采集：工作线程句柄、源扇出、降噪开关（运行时可切）。
+pub struct Capture {
+  pub handle: WorkerHandle,
+  pub fanout: Arc<Fanout>,
+  pub denoise: Arc<AtomicBool>,
+}
 
 pub(super) const PUBLISH_PERIOD: Duration = Duration::from_millis(200);
 const POLL_PERIOD: Duration = Duration::from_millis(5);
@@ -176,18 +185,20 @@ where
     .map_err(|e| format!("打开输入流失败：{e}"))
 }
 
-/// 打开输入设备并启动采集线程；阻塞到打开成功/失败（最多 5 s）。返回句柄与该源的扇出。
-pub fn spawn(hub: SharedHub, device_id: String) -> Result<(WorkerHandle, Arc<Fanout>), String> {
+/// 打开输入设备并启动采集线程；阻塞到打开成功/失败（最多 5 s）。
+pub fn spawn(hub: SharedHub, device_id: String) -> Result<Capture, String> {
   let stop = Arc::new(AtomicBool::new(false));
+  let denoise = Arc::new(AtomicBool::new(false));
   let (tx, rx) = mpsc::channel::<Result<Arc<Fanout>, String>>();
   let stop2 = stop.clone();
+  let denoise2 = denoise.clone();
   let short: String = device_id.chars().rev().take(8).collect::<String>().chars().rev().collect();
   let join = std::thread::Builder::new()
     .name(format!("capture-{short}"))
-    .spawn(move || run(hub, device_id, stop2, tx))
+    .spawn(move || run(hub, device_id, stop2, denoise2, tx))
     .map_err(|e| format!("创建采集线程失败：{e}"))?;
   match rx.recv_timeout(OPEN_TIMEOUT) {
-    Ok(Ok(fanout)) => Ok((WorkerHandle::new(stop, join), fanout)),
+    Ok(Ok(fanout)) => Ok(Capture { handle: WorkerHandle::new(stop, join), fanout, denoise }),
     Ok(Err(e)) => {
       let _ = join.join();
       Err(e)
@@ -203,6 +214,7 @@ fn run(
   hub: SharedHub,
   device_id: String,
   stop: Arc<AtomicBool>,
+  denoise_on: Arc<AtomicBool>,
   tx: mpsc::Sender<Result<Arc<Fanout>, String>>,
 ) {
   let stats = Arc::new(CallbackStats::new());
@@ -248,6 +260,15 @@ fn run(
   let mut hops: u64 = 0;
   let mut resample_error: Option<String> = None;
   let mut last_publish = Instant::now() - PUBLISH_PERIOD;
+  // 降噪：首次打开时在本线程内惰性加载模型（避免跨线程移动会话）
+  let mut denoise: Option<Denoise> = None;
+  let mut denoise_probe = Probe::unavailable("未启用降噪");
+  let mut inf_sum_ms = 0.0f64;
+  let mut inf_max_ms = 0.0f64;
+  let mut inf_count: u64 = 0;
+  // 保留上一次的推理耗时（窗口内无完成 hop 时不清零，便于低频时也能看到数值）
+  let mut inf_probe: (Probe<f32>, Probe<f32>) =
+    (Probe::unavailable("未启用降噪"), Probe::unavailable("未启用降噪"));
 
   while !stop.load(Relaxed) {
     let n = cons.slots();
@@ -257,6 +278,38 @@ fn run(
         let (a, b) = chunk.as_slices();
         for part in [a, b] {
           let r = to_hops.push(part, |hop| {
+            if denoise_on.load(Relaxed) {
+              if denoise.is_none() {
+                match infer::model_path(infer::MODEL_DENOISE)
+                  .and_then(|p| Denoise::load(&p))
+                {
+                  Ok(d) => {
+                    denoise_probe = Probe::ok(d.model_name().to_string());
+                    denoise = Some(d);
+                  }
+                  Err(e) => {
+                    denoise_probe = Probe::unavailable(e);
+                    denoise_on.store(false, Relaxed);
+                  }
+                }
+              }
+              if let Some(d) = denoise.as_mut() {
+                let t = Instant::now();
+                match d.process(hop) {
+                  Ok(out) => {
+                    let ms = t.elapsed().as_secs_f64() * 1000.0;
+                    inf_sum_ms += ms;
+                    inf_max_ms = inf_max_ms.max(ms);
+                    inf_count += 1;
+                    meter.on_hop(out);
+                    fanout.push_hop(out);
+                    hops += 1;
+                    return;
+                  }
+                  Err(e) => denoise_probe = Probe::unavailable(e),
+                }
+              }
+            }
             meter.on_hop(hop);
             fanout.push_hop(hop);
             hops += 1;
@@ -284,6 +337,17 @@ fn run(
       };
       let frames_in = stats.frames.load(Relaxed);
       let frames_out = hops * HOP as u64;
+      if inf_count > 0 {
+        // 窗口内有完成时就更新；否则保留上次数值（低频时也能看到，而不是 pending）
+        let max = if inf_max_ms > 0.0 { inf_max_ms } else { denoise.as_ref().map(|d| d.last_ms()).unwrap_or(0.0) };
+        inf_probe = (Probe::ok((inf_sum_ms / inf_count as f64) as f32), Probe::ok(max as f32));
+        inf_sum_ms = 0.0;
+        inf_max_ms = 0.0;
+        inf_count = 0;
+      } else if !denoise_on.load(Relaxed) {
+        inf_probe = (Probe::unavailable("未启用降噪"), Probe::unavailable("未启用降噪"));
+      }
+      let (inf_avg, inf_max) = inf_probe.clone();
       hub.set_stream(StreamInfo {
         id: stream_id.clone(),
         direction: "input",
@@ -292,6 +356,7 @@ fn run(
         state,
         started_at,
         source: None,
+        denoise: denoise_probe.clone(),
         sample_rate: native_rate,
         channels: cfg.channels as u32,
         sample_format: fmt.to_string(),
@@ -317,8 +382,8 @@ fn run(
         buffer_level_ms: ring_level_ms,
         device_buffer_ms: Probe::unavailable("输入流：环形缓冲即设备侧缓冲，见 buffer_level_ms"),
         latency_ms: Probe::unavailable("端到端延迟尚未测量"),
-        inference_ms_avg: Probe::unavailable("未接入模型"),
-        inference_ms_max: Probe::unavailable("未接入模型"),
+        inference_ms_avg: inf_avg,
+        inference_ms_max: inf_max,
         waveform: m.waveform,
         spectrum_db: m.spectrum_db,
         spectrum_bin_hz: SPECTRUM_BIN_HZ,

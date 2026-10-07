@@ -312,6 +312,7 @@ fn run(
         state,
         started_at,
         source: Some(source.name().to_string()),
+        denoise: Probe::unavailable("输出流不适用（降噪在输入侧）"),
         sample_rate: dev_rate,
         channels: cfg.channels as u32,
         sample_format: fmt.to_string(),

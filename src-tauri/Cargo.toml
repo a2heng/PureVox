@@ -42,6 +42,14 @@ rubato = "5"
 rtrb = "0.4"
 # 调试频谱
 rustfft = "6"
+# ONNX 推理（onnxruntime 绑定；构建时下载 onnxruntime 并把 dll 复制到产物旁）
+ort = { version = "2.0.0-rc.13", default-features = false, features = [
+  "std",
+  "download-binaries",
+  "copy-dylibs",
+  "tls-native",
+  "api-27",
+] }
 
 [target.'cfg(windows)'.dependencies]
 # 调试接口：GPU 占用 / 显存（DXGI + PDH）、进程私有字节

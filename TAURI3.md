@@ -12,6 +12,13 @@
   48 kHz（YUKUI D80）三路同时采集，输出速率均≈48000，回调块恰为原生 10 ms（160 / 441 / 480 帧），
   输出帧恒为 480 整数倍，无丢样；重采样后原生奈奎斯特以上的频谱处于 -160 dB 测量下限（无镜像）。
   三路并发 debug 构建本进程 CPU ≈ 1.7%。
+- 降噪（ONNX）已接入（2026-10-07 实测）：`ort` 2.0.0-rc.13（构建时自动下载 onnxruntime 并复制 dll）；
+  `purevox_denoise_202609c_ep0012.onnx` 流式推理，实测 **1.83 ms/hop 均值、2.47 ms 最大**（实时余量约 5×），
+  采集侧输出速率保持 47.9 kHz；1 kHz 测试音经降噪后电平从 -20 dB 降到约 -110 dB（非语音被抑制），
+  证明模型在实际处理而非直通。输入行「降噪」按钮运行时开关。
+- **踩坑**：onnxruntime 会话默认为每个核建线程池并**忙等**，在实时音频进程里会占满 CPU 并把推理
+  拖慢 50 倍；必须 `with_intra_threads(1)` + `with_inter_threads(1)` + `with_intra_op_spinning(false)`。
+  另有基准工具 `cargo run --release --example ort_bench`（不经过音频链路）。
 - 输出已实现（2026-10-07 实测）：测试音（1 kHz -20 dBFS）和任意输入源 → 输出设备，工作线程按设备采样率
   重采样 + PI 时钟伺服（±3%）+ 预热/重同步/封顶。VB-Cable 回环（播放到 CABLE Input、从 CABLE Output
   采集）与真实默认输出（EDIFIER）各测 30 s / 16 s：48k 缓冲稳定在目标 40 ms，欠载 0、重同步 0、
