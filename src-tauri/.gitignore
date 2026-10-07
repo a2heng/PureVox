@@ -1,0 +1,3 @@
+# Cargo 构建产物与 tauri-build 生成的 schema
+/target/
+/gen/schemas

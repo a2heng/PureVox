@@ -1,0 +1,277 @@
+/*
+ * PureVox — AI 麦克风降噪工具
+ * Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+ *
+ * PureVox is licensed under the GNU General Public License v3.0 or
+ * later (GPL-3.0-or-later).  See LICENSE for details.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * The built-in AI models are NOT covered by the GPL; they are the
+ * property of a2heng and may only be used with PureVox under
+ * authorization.  See MODEL-LICENSE.md for details.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/* 布局约定（避免跳动 / 嵌套滚动）：
+   1) 文档本身不滚动：html/body 撑满视口、overflow:hidden，滚动只发生在两个明确区域
+      —— 音频列区（可横可纵）与调试列（纵向）。
+   2) 所有会随状态出现/消失的控件都占据固定几何：行固定两行高、列头/列脚固定高、
+      顶栏固定高；按钮用 disabled 表达不可用，而不是移除。
+   3) 下拉框定宽（grid 单元格内 100%），选中项文字长短不影响布局。 */
+
+:root {
+  color-scheme: light dark;
+  --fg: #1d1d1f;
+  --muted: #6e6e73;
+  --bg: #f5f5f7;
+  --panel: #ffffff;
+  --line: #d2d2d7;
+  --warn: #b25000;
+  --ok: #1a7f37;
+  --danger: #c62828;
+  --accent: #0a58ca;
+  --topbar-h: 40px;
+  --col-w: 400px;
+  --dbg-w: 640px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e8e8ed;
+    --muted: #98989d;
+    --bg: #1c1c1e;
+    --panel: #2c2c2e;
+    --line: #3a3a3c;
+    --warn: #ff9f0a;
+    --ok: #30d158;
+    --danger: #ff453a;
+    --accent: #4c8dff;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+body {
+  display: flex;
+  flex-direction: column;
+  font: 13px system-ui, "Microsoft YaHei UI", sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+/* ---------- 顶栏（固定高） ---------- */
+#topbar {
+  flex: 0 0 var(--topbar-h);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+#topbar .brand { flex: 0 0 auto; font-weight: 700; font-size: 15px; white-space: nowrap; }
+.topcheck { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); flex: 0 0 auto; white-space: nowrap; }
+/* 顶栏控件不换行、不收缩；状态串占中间并省略，语言按钮靠最右 */
+#topbar button { flex: 0 0 auto; white-space: nowrap; }
+#plan-status,
+#rec-status,
+#calib-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#plan-status { flex: 1 1 auto; }
+#rec-status,
+#calib-status { flex: 0 1 auto; max-width: 32%; }
+#btn-lang { margin-left: auto; }
+#btn-run.run-start { color: var(--ok); font-weight: 600; }
+#btn-run.run-stop { color: var(--danger); font-weight: 600; }
+
+/* 设置面板（覆盖式） */
+.panel { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: flex; align-items: center; justify-content: center; z-index: 20; }
+.panel.hidden { display: none; }
+.panel-box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; min-width: 460px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3); }
+.panel-box h3 { margin: 0 0 10px; font-size: 14px; }
+.set-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.set-row input[type="text"] { flex: 1 1 auto; min-width: 0; height: 24px; font: inherit; }
+.set-row select { max-width: 8em; }
+.set-row .topcheck { flex: 0 0 auto; }
+.set-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.set-sec { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.about { margin-top: 6px; font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
+#plan-status { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 主区：左音频列区（唯一滚动）+ 右调试列（纵向滚动） ---------- */
+#columns {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  overflow: hidden;
+  align-items: stretch;
+}
+#audio-columns {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  overflow: auto;
+}
+.column {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  flex: 0 0 auto;
+}
+.column.audio { width: var(--col-w); }
+/* 调试列：默认隐藏（不挤占列宽度），顶栏「调试面板」开关切换；展开时更宽不省略 */
+#debug { display: none; }
+body.debug-on #debug { display: block; }
+.column.debug { flex: 0 0 var(--dbg-w); min-height: 0; overflow-y: auto; }
+
+/* ---------- 列头 / 列脚（固定高，按钮常驻） ---------- */
+.col-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 26px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.col-head button { flex: 0 0 auto; }
+.col-foot { display: flex; gap: 4px; height: 26px; margin-top: 8px; }
+.col-foot button { flex: 1 1 0; }
+.add-column { flex: 0 0 auto; align-self: flex-start; height: 26px; }
+
+/* ---------- 行：固定两行高，控件按位置摆放，增删不改变高度 ---------- */
+.rows { display: flex; flex-direction: column; }
+.row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: 26px 26px;
+  gap: 2px 6px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 6px;
+  margin: 3px 0;
+  background: var(--bg);
+  height: 66px; /* = 5+26+2+26+5+边框，恒定 */
+}
+.row .badge {
+  grid-column: 1;
+  grid-row: 1;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: #fff;
+  background: var(--muted);
+}
+.row.input .badge { background: var(--ok); }
+.row.output .badge { background: var(--accent); }
+.row.process .badge { background: var(--warn); }
+.row .ptype { grid-column: 2; grid-row: 1; width: 100%; }
+.row .row-actions { grid-column: 3; grid-row: 1; display: inline-flex; gap: 2px; justify-self: end; }
+.row .fixed-tag { grid-column: 3; grid-row: 1; justify-self: end; color: var(--muted); font-size: 11px; }
+.row .detail {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.row .detail select { flex: 1 1 auto; min-width: 0; }
+.row .detail .plabel { color: var(--muted); flex: 0 0 auto; white-space: nowrap; }
+.row .detail .params { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.row .detail .params select { flex: 1 1 auto; }
+.row .detail .en { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); flex: 0 0 auto; }
+.row .detail .hint { color: var(--muted); }
+.row .detail select { flex: 1 1 auto; min-width: 0; }
+.row .detail .lbl { color: var(--muted); flex: 0 0 auto; white-space: nowrap; }
+/* AEC 行 4 行（近端 / 远端+端侧增益 / 延时+测延时），TSE 行 3 行；只影响这些行 */
+.row.tall { grid-template-rows: 26px 26px 26px; height: 92px; }
+.row.aec { grid-template-rows: 26px 26px 26px 26px; height: 118px; }
+.row .detail2 input[type="number"] { width: 4em; }
+.row .detail3 {
+  grid-column: 1 / -1;
+  grid-row: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.row .detail2 {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.row .detail2 select { flex: 1 1 auto; min-width: 0; }
+.row .detail2 .lbl { color: var(--muted); flex: 0 0 auto; white-space: nowrap; }
+.row .detail2 input[type="number"] { width: 5em; }
+.row select, .row input[type="text"] { height: 24px; font: inherit; }
+.row input[type="text"] { width: 100%; min-width: 0; }
+
+/* ---------- 调试列 ---------- */
+#debug h2 { font-size: 14px; margin: 0 0 6px; }
+#debug section { border-top: 1px solid var(--line); padding: 6px 0; }
+#debug section:first-of-type { border-top: none; }
+#debug h3 { font-size: 13px; margin: 0 0 4px; }
+#debug h4 { font-size: 13px; margin: 0 0 4px; }
+.sub, .note { color: var(--muted); font-weight: normal; }
+.note { margin: 4px 0 0; font-size: 12px; }
+
+td, .mono, .state {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+}
+table { border-collapse: collapse; table-layout: fixed; width: 100%; }
+th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--muted);
+  padding: 2px 8px 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+td { padding: 2px 8px 2px 0; overflow: hidden; text-overflow: ellipsis; }
+
+.kv tr { height: 20px; }
+.kv th { width: 9em; }
+.grid thead th { border-bottom: 1px solid var(--line); }
+.grid td { border-bottom: 1px dashed var(--line); }
+.c-name { width: auto; }
+.c-num { width: 8em; }
+.c-mem { width: 15em; }
+
+.stream { border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; margin: 6px 0; }
+.stream .kv th { width: 11em; }
+.plots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
+.plots figure { margin: 0; }
+.plots figcaption { color: var(--muted); font-size: 12px; }
+.plots canvas { width: 100%; height: 120px; display: block; background: var(--bg); border-radius: 3px; }
+
+.na { color: var(--warn); }
+.pending { color: var(--muted); }
+.ok { color: var(--ok); }
+.state:empty { display: none; }
+button { font: inherit; height: 24px; padding: 0 8px; white-space: nowrap; }
+button:disabled { opacity: 0.4; }

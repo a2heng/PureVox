@@ -1,267 +1,285 @@
-# PureVox 顶层设计与规范（DESIGN）
+# PureVox 设计（Tauri 3 / Rust）
 
-> 本文件是节点化架构的**规范来源**。代码与本文件冲突时，以本文件为准修改代码；
-> 修改设计必须先改本文件并同步更新日志。工程约束（功能最小化、单一实现路径等）
-> 见 AGENTS.md，两者互补：AGENTS 管"做什么/不做什么"，本文件管"怎么构成"。
+本文件是 Tauri 主线（`src-tauri/`）的顶层设计：分层、数据单位与不变量、**列（Column）** 模型、
+Stage 契约、SessionPlan、设备生命周期（含刷新语义）、模型生命周期、内存管理、扩展指南。
+**实现与本文件冲突时以本文件为准**，改动设计先改这里再改代码。
 
-## 1. 分层架构
+> 旧实现（Python + Tk）冻结在 `legacy-v2026.09.30.1944/`。本文**不照搬**它：只保留骨架
+> （10 ms hop / Stage 契约 / 单一实现路径 / 有界缓冲），并按下面的**列模型**重组链路。
 
-自底向上五层，每层只依赖下一层：
+## 0. 设计取向
 
-```
-┌─────────────────────────────────────────────────────┐
-│ L4 UI        uitk/（Tkinter）                        │
-│              渲染节点行 · 收集用户意图 · 展示状态      │
-├─────────────────────────────────────────────────────┤
-│ L3 会话      session_plan.py + uitk/engine.py        │
-│              链文档 → 可执行会话计划（纯函数，可单测） │
-├─────────────────────────────────────────────────────┤
-│ L2 传输      audio_processor.AudioThread             │
-│              统一处理循环(read→process→sinks.write)   │
-│              后端插件：PwBridge(Linux) / PaBridge(Win) │
-│              每输出一个 pvengine.dsp.playback.PlaybackSink │
-├─────────────────────────────────────────────────────┤
-│ L1 引擎      pvengine（Stage 管线，纯 DSP，无 I/O） │
-├─────────────────────────────────────────────────────┤
-│ L0 平台      pvplatform（设备枚举 / 系统集成）       │
-└─────────────────────────────────────────────────────┘
-```
+- **显式优于隐式**：刷新设备、开始/停止、模型选择都由用户明确点击触发；不做后台自动重连、
+  不自动改选设备、不做空闲自动卸载。
+- **少状态**：流只有「运行中 / 已停止」两态；异常统一为「不可用 + 原因字符串」，无状态机、无重试。
+- **列与列完全独立**：没有跨列混合，没有全局混音器。
 
-依赖铁律：
-- 上层可以 import 下层；下层禁止 import 上层。
-- L4 不直接操作音频流；一切运行时行为经由 L3 的计划与 L2 的线程 API。
-- DSP（numpy/scipy/onnxruntime）只允许出现在 L1（AGENTS 工程约定第 7 条）。
+---
 
-## 2. 节点模型规范
+## 1. 分层与目录
 
-### 2.1 NodeSpec
+| 层 | 位置 | 职责 | 禁止 |
+| --- | --- | --- | --- |
+| L0 平台 | `src-tauri/src/audio/`（capture / playback / fanout）、`devices.rs` | 设备枚举与打开、流读写、时钟主控 | 不做 DSP |
+| L1 DSP | `src-tauri/src/dsp/`（resampler / meter / ring） | 重采样、hop 切片、环形缓冲、播放时钟伺服、频谱 | 不碰设备 |
+| L2 引擎 | `src-tauri/src/engine/`（stage / pipeline / registry / column / components） | 列与行、信号装配、会话生命周期 | 不做设备枚举 |
+| L3 计划 | `src-tauri/src/plan.rs` | `SessionPlan`：配置 → 可启动描述；纯函数 | 不做 I/O |
+| L4 推理 | `src-tauri/src/infer/` | ONNX 会话加载/卸载与流式推理 | 不碰设备 |
+| L5 界面 | `src-tauri/ui/`、`src-tauri/src/main.rs` | 面板、命令、调试接口 | 不做信号处理 |
 
-一切用户可见的音频组件都是**节点**，由唯一注册表描述：
+**单一实现路径**：DSP 只在 L1，播放缓冲策略只在 L1，设备枚举只在 L0，推理会话只在 L4。
+新增音频功能 = 新增一个 Stage 或一种行/源，不改骨架。
 
-```python
-@dataclass(frozen=True)
-class NodeSpec:
-    name: str     # 全局唯一稳定 id：如 "audio_input"、"denoiser"
-    label: str    # 中文显示名
-    kind: str     # input | output | fx | viz
-    tier: str     # toggle | inline | expand （UI 三级形态）
-    params: dict  # 参数模式 {key: (label, lo, hi, default, step)}
-```
+---
 
-- `kind` 决定行体形态与在信号流中的位置：
-  - `input`：采集源，位于处理链**之前**；可多实例（混音）。
-  - `output`：播放汇，位于处理链**之后**；可多实例（扇出）。
-  - `fx`：处理级，按用户排列顺序串接。
-  - `viz`：可视化旁路（tap），只读，不参与信号流。
-- `fx` 节点的 spec 从插件类（NAME/LABEL/PARAMS + `ui_tier`）自动派生；
-  系统（input/output/viz）节点显式注册。
-- 注册表 API（pvengine/plugins.py）：`all_specs() -> List[NodeSpec]`、
-  `get_spec(name) -> Optional[NodeSpec]`。UI 与会话计划**只允许**通过这两个
-  入口发现节点，禁止各自维护类型清单。
+## 2. 数据单位与不变量
 
-### 2.2 链文档（配置的唯一事实）
+- **内部格式恒为 F32 单声道 48 kHz**；原生采样率/声道只在 L0 转换（下混 + 重采样）。
+- **10 ms hop 是唯一时间粒度**：`SAMPLE_RATE = 48_000`，`HOP = 480`，`NFFT = 960`，`FREQ = 481`。
+  所有数据面按 hop 整数倍前进，禁止 1024/2048 等错位块。
+- **一帧 = 480 样本**，链路内就地处理（`&mut [f32]`），数据面不新增分配。
+- **设备回调是唯一主时钟**：回调只做「取样 / 补静音 / 写无锁环 + 原子计数」，
+  **禁止在回调里写任何缓冲策略**。
+- 采样率与 hop 唯一定义在 `audio/mod.rs`，其它模块一律引用。
 
-```json
-[{"type": "audio_input", "enabled": true, "params": {"device": "..."}},
- {"type": "denoiser",    "enabled": true, "params": {}},
- {"type": "audio_output","enabled": true, "params": {"device": ""}}]
-```
+---
 
-- 配置键固定为 `plugin_chain`；条目三字段 `type/enabled/params`。
-- 未知 `type` 一律忽略（向前兼容旧配置）；不迁移、不改写。
-- `enabled=false` 的节点保留在链中（UI 显示关断态，运行时不生效）。
+## 3. 列（Column）与行（Row）
 
-### 2.3 生命周期
+### 3.1 结构
+
+**一个会话 = 若干列；一列 = 一条自上而下的有序节点列表；列与列完全独立（不混合）。**
 
 ```
-定义(注册表) → 实例化(UI 行 ↔ 链文档) → 校验(SessionPlan)
-→ 绑定(L2 建流) → 运行(数据面) → 拆除(stop/close)
+列 1（默认，可增加更多列）
+┌───────────────────────────────────────────────┐
+│ 【输入】 mic（固定，不可删，下拉可换类型）        │  ← 最上面必须是输入
+│   输入   loopback（可加，可拖动）                │
+│   处理   denoise（可加，可拖动）                 │
+│   输出   扬声器（可加，可拖动）                  │
+│   处理   eq（可加，可拖动）                      │
+│ 【输出】 CABLE Input（固定，不可删，下拉可换类型）│  ← 最下面必须是输出
+└───────────────────────────────────────────────┘
 ```
 
-任何阶段失败只影响该节点或整体启动（见 §6），不得留下半开资源。
+- **最上面一行必须是输入、最下面一行必须是输出**，两者默认存在、**不可删除**，类型用下拉切换。
+- **中间可任意增删、拖动**输入 / 输出 / 处理节点；增加的输入与输出也遵守「只能在最上面输入
+  之下、最下面输出之上」。
+- **列与列之间零耦合**：各自的输入、各自的处理、各自的输出。
 
-## 3. 数据流规范（不变量）
+### 3.2 一列的执行语义（自上而下累加）
 
-以下不变量对所有平台成立，违反即为缺陷：
-
-1. **格式**：内部唯一格式 F32 单声道 48kHz；重采样/声道转换只发生在 L0。
-   Windows 本地输入（主输入/AEC far=mic）按设备原生采样率/声道打开，
-   回调内下混单声道后经 pvengine.Resampler 转 48k（与 AEC far=扬声器的
-   MixFormat 自适应同机制）；输出按设备原生采样率打开，回调经
-   OutputRateAdapter（pa_backend）把 48k 帧重采样到设备域（逐回调精确帧数）。
-   启动不做任何采样率门禁。
-2. **10ms hop**：所有数据面按 10ms hop 前进——`hop = SAMPLE_RATE // 100`
-   （48kHz → 480 样本，NFFT = 2×hop = 960），**按时间派生而非固定样本数**。
-   引擎 Stage 进出帧、平台回调块、桥接 FIFO 分块、重采样输出、网络 Opus 帧
-   一律对齐 10ms 网格；缓冲水位取 hop 整数倍；禁止引入与网格错位的固定
-   样本块（1024/2048 等）。202609 模型三件套契约一致（波形 hop 进出、
-   STFT 在模型图内、enh_hop 滞后 1 hop），未来多采样率仅换 SAMPLE_RATE。
-3. **混音**：N 路 input 等权平均；某路暂无数据则跳过该路；全部无数据 = 本帧无输入。
-   AEC 行的 mic 先经本行 AEC 处理再进混音（同设备普通输入行被接管跳过，
-   一行设备只进一次混音）；回环输入行样本带采集时间戳入 GridHistory，逐 hop 出队后进混音（时间由外部时钟保证）。
-4. **扇出**：M 路 output 各持一个 PlaybackSink，写入同一份降噪后音频（或
-   各自链位置的线性抽头帧）；任一路积压/阻塞不得拖累其余路与处理循环。
-5. **顺序**：信号流 = inputs（含 AEC 行处理后 / 回环拉齐后）(混合)
-   → [fx 按链序] → outputs ∥ viz。AEC 与回环采集发生在混音之前，
-   far 参考永不进 fx 链。
-6. **旁路**：viz 只读 tap，永不反压、永不修改样本。
-7. **远端参考**：AEC far 是独立采集支路（扬声器回环 / 麦克风专用二选一），
-   仅当链中存在启用的 `echo_cancel` 输入行时按行建立；far 带采集时间戳入
-   行内 `GridHistory`（48k 时间戳网格），模型 far 输入取「mic 时刻 −
-   far_delay」的历史段直达行内 AecRow（时间原点由外部时钟 QPC/perf 保证，
-   无隐藏缓冲），不经过任何 fx 处理。
-   回环输入行（`loopback`）与 AEC far=扬声器继承同一套回环采集机制。
-8. **设备时钟唯一主时钟（2026-09 播放重构）**：处理线程按自身节奏推进 hop，
-   播放侧由设备回调经 PlaybackSink.pull 拉帧；一切跨时钟域消费（多输出设备、
-   网络流、媒体从设备）的速率差由 PlaybackSink 变速消化（PI 伺服 ASRC ±3%、
-   预热、欠载静音重同步、封顶丢最旧）。**禁止在任何回调里重写缓冲策略**
-   （垫零/丢帧/复用上一帧/手写重采样都是平行实现，一律不得新增）。
-
-## 4. 会话计划（SessionPlan）契约
-
-L3 是**纯函数层**：输入链文档 + 注册表，输出可执行计划，无 Qt、无音频副作用。
-
-```python
-@dataclass(frozen=True)
-class SessionPlan:
-    inputs: List[str]            # 启用的采集设备（node.name / Windows 设备名，含 AEC 行 mic）
-    outputs: List[str]           # 启用的播放设备
-    remote_url: Optional[str]    # 远程推流地址；None = 无网络输入
-    viz: frozenset               # 启用的可视化节点名子集
-    fx_chain: List[dict]         # 仅含启用的 fx 节点（引擎就绪格式）
-    aec_rows: List[dict]         # 启用的 AEC 行：{mic, far_gain_db, far_kind, far_device}
-    aec_far_mics: List[str]      # AEC far=mic 的专用采集设备（直达 AEC，不进混音）
-    loopbacks: List[str]         # 启用的回环输入（扬声器设备，拉齐后进混音）
-    problems: Tuple[str, ...]    # 阻断性问题（中文，面向用户）；非空则不得建流
-    warnings: Tuple[str, ...]    # 非阻断提示（未知名节点被忽略等）
-
-    def ok(self) -> bool         # problems 为空（warnings 不影响）
-    @classmethod
-    def from_chain(cls, chain_cfg) -> "SessionPlan"
+```
+acc = 0
+for row in column.rows:          # 从最上面到最下面
+    Input  → acc += 该源的一个 hop × k    # 多个输入在此混合
+    Process→ acc = stage.process(acc)     # 就地处理
+    Output → 把当前的 acc 送到该输出       # 位置 tap：取「到这里为止」的信号
+    Viz    → 把当前的 acc 交给可视化缓冲   # 只读，不入信号路径
 ```
 
-校验规则：
-- 产生 `problems`（阻断）：无网络输入且无本地输入（AEC 行 mic /
-  回环输入行亦算本地输入）；outputs 为空；remote_mic 已启用但 url 为空。
-- 产生 `warnings`（不阻断）：未知 type 被忽略；空 device 的 input/output 行被跳过；
-  AEC 行缺 far 整行跳过；同设备普通输入行被 AEC 行接管时跳过。
-- `echo_cancel` / `loopback` 是 input 种节点：mic/device 与 audio_input 继承
-  同一设备机制（同解析、同列表；输入端任意采样率自适应，输出端同 48k 门禁），
-  增删启停走重启（端点绑定）。
+- 信号在一个 hop 内自上而下流动；**输出的位置决定它拿到哪一段信号**（放在处理之前即原始声）。
+- 多个输入按 `k = 1 / max(1, 该列的输入数)`（用**配置的**输入数，避免拔插时增益跳变）混合。
+- 一列至少是「输入 → 输出」（直通）。
 
-L4 在点击启动时调用 `from_chain`；`ok()` 为假则展示 problems 并中止，
-为真则把字段分发给 L2（AudioThread/PwBridge）与 L1（set_plugins）。
+### 3.3 列的运行方式
 
-## 5. 传输层与后端插件（L2）
+每列一个**列工作线程**，由系统时钟按 10 ms 驱动：
 
-### 5.1 TransportBackend 契约
-
-每个平台音频 API 是一个**可插拔后端**，与节点解耦：SessionPlan 只描述
-设备名列表，不关心由谁采集/播放。后端由注册表描述：
-
-```python
-@dataclass(frozen=True)
-class BackendSpec:
-    name: str                # "pipewire" / "wasapi" / "mme" / "network"
-    label: str               # 中文显示名
-    platforms: tuple         # ("linux",) / ("windows",) / ("windows","macos")
-    capabilities: frozenset  # {"multi_input","multi_output","loopback_far"}
+```
+各输入行: 采集线程 → [L0 原生→48k, 切 hop] → 行输入环(有界)
+列工作线程: 每 10ms:  从每个输入行的环各取 1 hop（空则补静音）→ 按 §3.2 执行整列
+                     → 输出行把 acc 推给该输出的扇出环 → 输出设备(playback + PI 时钟伺服)
 ```
 
-后端数据面为**哑传输**（2026-09 播放重构后）：
-`open(inputs, outputs, out_pull)` / `read(n)`（混音输入）/
-`read_each(n)`（逐路输入，与 open 时 inputs 顺序对齐，AEC 行按路取用）/
-`close()` / `active()` / `last_error()` /
-`open_far(dev, monitor)` / `close_far(h)` / `read_far_h(h, n)` /
-`far_available(h)`（AEC far / 回环输入专用采集流，多路，直达行内 GridHistory 时间戳入历史）。
+- **链上所有处理都在列工作线程里跑**（不在采集回调里），模型/滤波器状态天然**每列一份**。
+- 每个输入行一个输入环（目标 2 hop，超 4 hop 丢最旧，空则补静音）；每个输出一个扇出环（1 s）。
+- 设备与系统时钟的速率差由「输入环水位 + 输出 PI 伺服（±3%）」消化，列工作线程不需要知道任何设备时钟。
+- **节拍必须绝对对齐 10 ms 网格**：`next += 10ms; sleep(next - now)`，**不能**用 `sleep(10ms - 本轮已用)`。
+  后者每轮把 sleep 过冲累加，实测只产 ~96 hop/s；输出设备仍按 100 hop/s 消耗，4% 缺口超出 ±3% 伺服，
+  会周期性抽干 48k 环 → 约 1 s 一次的欠载 + 重同步（听感为周期性断档）。节拍速率由列概要的
+  `hop/s` 字段观测，正常必须稳定在 100。测试音等系统时钟源同理用绝对时刻节拍。
 
-- 后端不做任何缓冲策略与时钟逻辑；`out_pull[i]` 是输出 i 的帧供给函数
-  （PlaybackSink.pull，由后端在设备回调线程按设备时钟调用）。
-- 产出侧不经后端：处理循环把每帧结果直接写入各 PlaybackSink（L2 持有）。
+### 3.4 Stage 契约
 
-### 5.2 注册表与选择规则
+```rust
+pub struct FrameContext { pub ts: f64 }   // 当前无必需字段，固定签名
 
-- 注册表唯一入口：`pvplatform/audio/backends.py` 的 `BACKENDS` 列表与
-  `probe_backends()` / `select_backend(required_caps)`。
-- 启动时按 **平台匹配 → probe() 可用 → 能力覆盖计划需求** 选出唯一后端，
-  结果写入启动日志（名称 + 能力 + 探测结果）。
-- 禁止在传输代码里散布 `if IS_LINUX` 平台分支——平台差异只允许存在于
-  后端实现与 probe 内部。
+pub trait Stage: Send {
+    fn name(&self) -> &'static str;
+    fn accepts(&self, _ctx: &FrameContext) -> bool { true }
+    fn process(&mut self, frame: &mut [f32], ctx: &FrameContext) -> Result<(), StageError>;
+    fn reset(&mut self) {}
+    fn release(&mut self) {}
+}
+pub enum StageError { Unavailable(String), Fatal(String) }
+```
 
-### 5.3 各后端现状
+- 进出一律 480；组件不做采样率/声道转换、不切 hop。
+- `Fatal` → 该列标记不可用并显示原因；`Unavailable` → 本帧跳过（直通）。
+- 组件实例属于**行**（每列每行一份），因此流式状态按行隔离。
 
-| 后端 | 平台 | 能力 | 实现状态 |
-|---|---|---|---|
-| pipewire | Linux | multi_input, multi_output, loopback_far | ✅ PwBridge，`_libpulse` ctypes 绑定（threaded mainloop + 流回调） |
-| wasapi | Windows | multi_output, loopback_far | ✅ PaBridge（输入/输出独立回调流，每输出一个 pull） |
-| mme | Windows | multi_output（无 loopback；驱动自动重采样故 48k 检测宽松） | ✅ 同 PaBridge |
-| network | 全平台 | multi_input（作为一路输入注入） | 经服务器 RemoteAudioSource 注入，随会话建立 |
+### 3.5 注册表
 
-### 5.4 其他传输规范
+```rust
+pub enum NodeKind { Input, Process, Output, Viz }
+pub struct NodeSpec { pub ptype: &'static str, pub label: &'static str,
+                      pub kind: NodeKind, pub params: &'static [ParamSpec] }
+pub fn all_specs() -> &'static [NodeSpec];                       // 下拉与计划唯一来源
+pub fn get_spec(ptype: &str) -> Option<&'static NodeSpec>;
+pub fn create_stage(ptype: &str, params: &Params) -> Result<Box<dyn Stage>, String>;  // 仅 Process
+```
 
-- 「监听」概念已废除——监听就是一个 output 节点实例。
-- 网络：remote_mic 节点经 HTTPS/WSS 服务器注入，等同一路 input；
-  输出侧与本地完全一致（同一处理循环 + 同一组 PlaybackSink）。
-- 纯媒体会话（无设备输入）：MediaSession（miniaudio 拉模型），
-  每设备一个注入的 PlaybackSink，主设备回调驱动引擎帧源。
+- 输入 / 输出节点不是 Stage（它们是源与汇），由 L0 实现，注册表里只登记它们的类型与参数。
 
-## 6. 错误处理与降级
+### 3.6 可视化
 
-| 场景 | 行为 |
-|---|---|
-| 计划校验失败（无输入/输出等） | UI 弹出/记录 problems，不建流 |
-| 主输入或主输出建流失败 | 整体启动失败，报错（输入/输出全自适应，原生参数打开，无采样率门禁） |
-| 额外输出建流失败 | 跳过该路，日志告警，主流程继续 |
-| fx 插件实例化失败 | 该节点不入管线，记入 plugin_errors，其余继续 |
-| 传输流死亡（设备拔出/断连） | 统一循环 ~2s 健康探测 → 退出线程，走会话重启路径 |
+- viz 是**列内的一种行**，取它所在位置的信号（只读）。
+- 缓冲有界：`cap = 48_000 * 5`（5 s），满时丢最旧。**禁止未上界的可视化缓冲**。
 
-## 7. 变更生效矩阵（热更 vs 重启）
+---
 
-原则：**参数类变更热更，结构类（端点绑定）变更重启**。
-结构类变更在处理运行中触发时，UI 以防抖（400ms）自动执行
-`stop_processing → start_processing`（`restart_processing`，带重入保护），
-用户无感知手工操作；未运行则仅保存配置，下次启动生效。
+## 4. 节点清单
 
-| 变更 | 生效方式 | 机制 |
-|---|---|---|
-| fx 参数滑杆 | 热更 | `update_plugin_param` 直达运行实例 |
-| fx 行启用/停用 | 热更 | `set_plugin_enabled` 只翻 Stage/Effect enabled；媒体源类（FADE_THROUGH）自行淡出/淡入 |
-| fx 行增删/排序 | 热更 | 整链 `set_plugins` 重建（模型经 stage_cache 复用，不断流） |
-| EQ 增益/预设 | 热更 | eq 插件参数 |
-| TSE 参考录音/加载 | 热更 | `set_tse_reference` |
-| viz 行启停 | 热更 | UI tap 开关，不进引擎 |
-| 输入/输出设备选择 | 重启（自动） | 流绑定于 open() 时的设备名 |
-| remote_mic 地址 | 重启（自动） | 服务器注入路径绑定 |
-| audio_input/output 行启停/增删/排序 | 重启（自动） | 端点集合变化 |
-| echo_cancel/loopback 行启停/增删/参数 | 重启（自动） | 行采集生命周期绑定建流（与输入行一致） |
-| 传输后端切换 | 重启（自动） | 后端在 open 时绑定 |
+| 类别 | ptype（示例） | 说明 |
+| --- | --- | --- |
+| 输入 | `audio_input` / `loopback` / `remote_mic` / `media` / `echo_cancel` | 源；同列多个混合 |
+| 处理 | `denoise_*` / `eq` / `gain` / `agc` / `compressor` | Stage；就地处理 |
+| 输出 | `audio_output` | 汇；位置 tap，送往设备 |
+| 可视化 | `vu_meter` / `spectrum` | 只读 tap |
 
-判定规则（代码层）：`SessionPlan.from_chain` 的签名元组
-`(inputs, outputs, remote_url, aec_rows, loopbacks)` 发生变化 ⇒ 结构类变更。
+- **AEC 行**：一个输入行 =「一路 mic + 一路 far」，mic 在行内先过 AEC 再进列；
+  far 参考只给模型用，**不进信号路径**；历史不足则直通 mic。
+- **媒体行**（音板 / 音乐 / 系统声）：无采集设备，按需生成 hop 的输入行。
+- **网络行**：`remote_mic`，Opus 帧即 480，只允许一个。
 
-## 8. 扩展指南
+---
 
-新增 **fx 处理插件**：
-1. `pvengine/components/` 新建 Stage（process/reset/release 契约）。
-2. `pvengine/plugins.py` CATALOG 注册类（NAME/LABEL/PARAMS）。
-3. 如需特殊 UI 形态，在 UI_TIERS 声明 tier。
-4. `plugin_smoke` 加一条实例化断言。
-5. 更新日志追加一行。
+## 5. SessionPlan（L3）
 
-新增 **系统节点**（input/output/viz）：
-1. `pvengine/plugins.py` SYSTEM_NODES 注册（name/label/kind/tier/params）。
-2. 若是新 kind 或新参数形态：PluginRow 行体渲染分支 + SessionPlan 抽取规则。
-3. L2 传输实现对应端点能力（Linux/Windows 分别评估）。
-4. `session_plan` 单测 + UI 冒烟断言。
-5. 更新日志追加一行。
+```rust
+pub struct SessionPlan { pub columns: Vec<ColumnSpec>, pub problems: Vec<String>, pub warnings: Vec<String> }
+pub struct ColumnSpec { pub rows: Vec<RowSpec> }        // rows[0] 必为 Input，rows[last] 必为 Output
+pub struct RowSpec {
+    pub kind: NodeKind,
+    pub ptype: String,
+    pub enabled: bool,
+    pub params: Params,
+    pub device: Option<DeviceRef>,   // 输入/输出行
+    pub fixed: bool,                 // 两端的默认输入/输出 = true（不可删）
+}
+```
 
-## 9. 平台差异矩阵
+- `SessionPlan::from_config(cfg)`：**纯函数**，只读注册表与配置，不做 I/O。
+- 校验：每列首行必须是输入、末行必须是输出（否则 `problems`）；网络行仅一个；无输出等。
+- **变更语义**：结构性变更（增删/排序行、开关节点、换设备、换型号、增删列）→ **整会话重启**；
+  热参数（增益、EQ 频点、阈值）→ 下发给运行中的实例，不重启。
 
-| 能力 | Linux (PipeWire) | Windows (PortAudio) |
-|---|---|---|
-| 多输入混音 | 支持 | 单输入（TODO） |
-| 多输出扇出 | 支持 | 支持（extras 回调） |
-| AEC far 参考 | monitor 源采集 / 麦克风真源采集（二选一） | WASAPI loopback / 麦克风输入流（二选一） |
-| 回环输入行 | monitor 源采集进混音 | WASAPI loopback 进混音 |
-| 远程推流输入 | 支持 | 支持 |
-| 虚拟麦克风 | module-remap-source 方案 | VB-CABLE 外部 |
+---
+
+## 6. 设备生命周期
+
+### 6.1 枚举与刷新（唯一入口）
+
+- 枚举只用 cpal（`devices.rs`），**唯一入口** `devices::spawn_refresh`，后台线程执行。
+- 触发点只有两个：**程序启动**、**面板上显眼的「刷新设备」按钮**。
+
+### 6.2 标识与持久化
+
+- **标识用 cpal 稳定 `DeviceId`**（不用名字；旧实现按名字模糊匹配是有意修正掉的坑）。
+- 配置键按接口后缀写全：`input_device_<host>` / `output_device_<host>` / `aec_far_sink_<host>`，
+  全部接口显式写全（占位保留）。
+- 设备不存在时条目**保留**并标记不可用（附原因），**不静默替换**。
+
+### 6.3 刷新对运行中链路的影响
+
+**刷新只更新列表，不动正在跑的流，不重建链路。**
+
+- 流按设备 ID 绑定：设备还在 → 不受影响；设备不在 → 该行标「设备不在（+原因）」并停止产出
+  （回调停顿 ≥ 1 s 判定），界面给「重新打开」；**只标记、不动流**，不自动换设备、不自动重连。
+- 只有**改设备选择**（结构性变更）才重启会话。
+
+### 6.4 流的加载 / 卸载
+
+- **两态 + 一个原因**：运行中 / 已停止 + 不可用原因；无状态机、无重试计数。
+- 停止即停线程、关流、释放该行对模型的引用。
+- 打开/关闭设备不在 UI 线程（异步命令 + 阻塞线程池）。
+
+---
+
+## 7. 模型生命周期
+
+```rust
+pub enum ModelKind { Denoise, Tse, Aec, TseRefEncoder }
+pub struct ModelDesc { pub key: &'static str, pub file: &'static str, pub label: &'static str, pub kind: ModelKind }
+pub fn models() -> &'static [ModelDesc];
+pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
+```
+
+- 现存：`purevox_denoise_202609c_ep0012.onnx`（现役）、`202609b` / `202609a` / `202606`、
+  `purevox_aec_202609_cpx_ep0375.onnx`、`purevox_tse_202609c_ep0201.onnx`（+ `..._ref_encoder.onnx`）。
+  **缓存维度从模型输入读，不写死**。
+- 选择存配置（`denoise_model` 等），计划构建时校验文件存在，缺失进 `problems`。
+- 会话配置：`with_intra_threads(1)` + `with_inter_threads(1)` + `with_intra_op_spinning(false)`
+  （实时音频必须；默认多线程忙等会占满 CPU 并把推理拖慢 50 倍）。
+- **权重按文件共享一份**（`Arc<Session>`），**`cache` 每行一份**；惰性加载；行/会话停止即释放引用。
+- **不做空闲自动卸载**；**不热切换模型文件**（改型号 = 结构性变更 → 重启）。
+
+---
+
+## 8. 内存管理
+
+| 缓冲 | 位置 | 容量 / 策略 |
+| --- | --- | --- |
+| 采集回调 → 工作线程环 | `audio::capture`（rtrb） | 原生 500 ms；满则丢样并计数 |
+| 行输入环 | `engine` | 目标 2 hop，超 4 hop 丢最旧；空补静音 |
+| 输出扇出环 | `audio::fanout`（rtrb） | 1 s/订阅者；满则丢最旧 |
+| 源缓冲（输出侧） | `audio::playback` | 目标 40 ms，封顶 300 ms，超限丢最旧 |
+| 设备侧环 | `audio::playback` | 目标 30 ms |
+| 重采样状态 | `dsp::resampler`（rubato） | 固定（数帧） |
+| viz 缓冲 | `engine` | 5 s，丢最旧 |
+| 频谱 / 波形 | `dsp::meter` | 波形 50 ms、频谱 481 bin，固定 |
+| AEC far 历史 | `engine` | 2 s 网格；`far_delay` ≤ 1000 ms |
+| 回环历史 | `engine` | 1.5 s |
+| 网络 acc | 未来 | 目标 50 ms，硬顶 80 ms |
+| 模型 `cache` | `infer` | 由模型决定（降噪 36506 / AEC 215504 / TSE 513216 f32），**每行一份** |
+
+规则：**音频回调零分配零加锁零日志**；工作线程预分配复用；任何进入数据面的容器都必须有上限与丢弃策略。
+
+---
+
+## 9. 扩展指南
+
+- **新增处理组件**：`engine/components/` 新建实现 `Stage` → 注册表登记 `NodeSpec{kind: Process}` →
+  冒烟测试 → 用户可感知的变更追加 `about/changelog.md`。
+- **新增输入/输出**：注册表登记 + 实现 L0 端点 + `SessionPlan` 提取规则 + 单测。
+- 必须遵守：先扩展再新建；被替代实现直接删除、不留平行；DSP 只在 L1；不改骨架。
+
+---
+
+## 10. 现状对照与实施顺序
+
+| 能力 | 现状 | 目标 |
+| --- | --- | --- |
+| 设备枚举（cpal / 稳定 ID）+ 刷新按钮 | ✅ 已实现（顶栏「刷新设备」，只更新列表、不动流） | §6 |
+| 采集 → 重采样 → 48k hop | ✅ 已实现 | 作为「输入行」的源 |
+| 输出 + 时钟伺服 | ✅ 已实现 | 作为「输出行」的汇 |
+| 降噪 ONNX | ✅ 已实现（1.8 ms/hop） | 包成 `Stage`，放进列 |
+| 调试面板 + HTTP 调试接口 | ✅ 已实现（含 `ui` 前端自报、`column` 列概要） | 补行状态、模型字段 |
+| **Stage / Pipeline / 注册表** | ✅ 已实现 | §3.4 / 3.5 |
+| **列工作线程 + 行环** | ✅ 已实现（多列独立、自上而下位置语义） | §3.3 |
+| **配置 + SessionPlan** | ◑ 列/行/设备/型号已接入并持久化；热参数下发未做 | §5 |
+| **列 UI（增删列、加/拖行、两端固定）** | ✅ 已实现（增删列、加/删/上下移行、两端固定；拖动待做） | §3.1 |
+| **模型注册表 + 型号选择** | ◑ 降噪/TSE 型号下拉已接入；统一 `ModelDesc` 注册表待做 | §7 |
+| **TSE 目标说话人提取** | ✅ 已实现（参考 10 s → `enr_tok`，3.9 ms/hop；参考可录制=降噪后+音量归一化；无参考直通） | §4 / §7 |
+| **AEC 回声消除** | ✅ 已实现（far 参考采集 + 2 s 网格对齐 + 每行缓存 + 互相关延时校准） | §4 |
+| 回环 / 媒体 / 网络 | ⛔ | §4 |
+
+**实施顺序**：
+1. ✅ Stage / Pipeline / 注册表骨架 + 现有降噪包成 Stage。
+2. ✅ 列工作线程 + 行输入环（源 → 列 → 输出；多列独立）。
+3. ◑ 配置 + SessionPlan（计划/校验/持久化/重建已接入；热参数待做）。
+4. ◑ 列 UI（两端固定、中间加/删/移、增删列已接入；拖动排序待做）。
+5. 刷新按钮 + 行状态展示（含「重新打开」）。
+6. ◑ 模型注册表 + 型号选择（降噪/TSE/AEC 已接入）。
+7. ✅ TSE、✅ AEC（含参考录制、延时校准）；再回环 → 媒体 / 网络。

@@ -1,150 +1,113 @@
+# PureVox 缓存 —— 全仓库唯一的缓存写入者。
+# ci.yml / release.yml 一律 restore-only。GitHub 缓存按触发 ref 分域，让各工作流
+# 各写各的只会堆出没人回读的重复条目（tag 上写入的尤其如此）；集中到一处写，
+# 每个键恒有一份有效条目，写入用 continue-on-error（同键已存在即视为成功）。
+# 触发：依赖与键文件变更的分支推送 + 每周定时（防缓存淘汰）+ 手动。
+# warm 用「冷构建 target」（不恢复 target 缓存）→ 保存的快照始终干净、无历史增量垃圾。
 name: Cache
-
-# SOLE cache writer in the repo. ci.yml / lite.yml / test.yml are all
-# restore-only; only this workflow saves. That keeps each bucket at exactly one
-# entry per key instead of one duplicate per tag (GitHub cache scope = trigger
-# ref, so tag-triggered saves are garbage nobody ever reads back).
-#
-# Warms on: main pushes touching deps/bootstrap/opus, weekly schedule (guards
-# against eviction), manual dispatch (after bumping tools/automation/versions.env).
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, tauri-3]
     paths:
-      - 'requirements-win.txt'
-      - 'requirements-linux.txt'
-      - 'bootstrap_python312.sh'
-      - 'tools/automation/versions.env'
-      - 'android/opus-src/**'
-      - 'android/**/*.gradle'
-      - 'android/**/*.gradle.kts'
-      - 'android/**/libs.versions.toml'
-      - 'android/gradle/wrapper/gradle-wrapper.properties'
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "tools/automation/versions.env"
   schedule:
-    - cron: '0 3 * * 1'
+    - cron: "0 3 * * 1"
   workflow_dispatch:
 
 jobs:
-  pip-windows:
-    name: Pip cache (Windows)
+  warm:
+    name: Warm (sole cache writer)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Load cache generation (tools/automation/versions.env is canonical)
-        shell: pwsh
+
+      - name: Load versions + cache keys (versions.env 是唯一来源)
+        shell: powershell
         run: |
           Get-Content tools/automation/versions.env | Where-Object { $_ -match '^(\w+)=(.*)$' } | ForEach-Object {
             "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: Install deps
-        shell: pwsh
-        run: python -m pip install -q -r requirements-win.txt
-      - name: Save pip cache
-        uses: actions/cache/save@v6
-        with:
-          path: ~\AppData\Local\pip\Cache
-          key: purevox-windows-pip-${{ env.WINDOWS_PIP_CACHE_GEN }}-${{ hashFiles('requirements-win.txt') }}
+          $lock = "${{ hashFiles('src-tauri/Cargo.lock') }}"
+          "CARGO_CACHE_KEY=purevox-win-cargo-$env:CACHE_GEN-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TARGET_DEBUG_KEY=purevox-win-target-dbg-$env:CACHE_GEN-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TARGET_RELEASE_KEY=purevox-win-target-rel-$env:CACHE_GEN-$env:TCLI_VER-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TAURI_CLI_KEY=purevox-win-tauri-cli-$env:TCLI_VER" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-  bootstrap-linux:
-    name: Bootstrap cache (Linux)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Load cache key (tools/automation/versions.env is canonical)
+      - name: Install Rust toolchain (rustfmt + clippy)
+        shell: powershell
         run: |
-          . tools/automation/versions.env
-          echo "LINUX_CACHE_KEY=purevox-linux-cache-${LINUX_CACHE_GEN}-cpython-${PBS_CPYTHON_VER}-appimagetool-x64" >> "$GITHUB_ENV"
-      - name: Bootstrap embedded Python + deps
-        run: ./bootstrap_python312.sh
-      - name: Save bootstrap cache
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/purevox
-          key: ${{ env.LINUX_CACHE_KEY }}
+          rustup toolchain install "$env:RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+          rustup default "$env:RUST_TOOLCHAIN"
 
-  opus-android:
-    name: Opus source (Android)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Load cache key (tools/automation/versions.env is canonical)
-        run: |
-          . tools/automation/versions.env
-          echo "OPUS_CACHE_KEY=purevox-android-opus-src-${OPUS_VER}" >> "$GITHUB_ENV"
-      - name: Download Opus source (tools/automation/ensure_opus_src.sh is canonical)
-        run: bash tools/automation/ensure_opus_src.sh
-      - name: Save opus cache
-        uses: actions/cache/save@v6
-        with:
-          path: android/opus-src
-          key: ${{ env.OPUS_CACHE_KEY }}
-
-  android-gradle:
-    name: Gradle cache (Android)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Load gradle cache keys
-        run: |
-          echo "GRADLE_CACHE_KEY=purevox-android-gradle-${{ hashFiles('android/**/*.gradle', 'android/**/*.gradle.kts', 'android/**/libs.versions.toml', 'android/gradle/wrapper/gradle-wrapper.properties') }}" >> "$GITHUB_ENV"
-          echo "GRADLE_WRAPPER_KEY=purevox-android-gradle-wrapper-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties') }}" >> "$GITHUB_ENV"
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4.0.1
-        with:
-          # "tools" was removed from the SDK repo; platform-34 / build-tools /
-          # NDK are installed by the next step.
-          packages: platform-tools
-
-      - name: Install SDK platform 34 + NDK r27
-        run: bash tools/automation/install_android_sdk.sh
-
-      - name: Download Opus source
-        run: bash tools/automation/ensure_opus_src.sh
-
-      - name: Restore Gradle cache (speed up warm build)
+      - name: Restore cargo registry (restore-only)
         uses: actions/cache/restore@v6
         with:
-          path: ~/.gradle/caches
-          key: ${{ env.GRADLE_CACHE_KEY }}
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+          key: ${{ env.CARGO_CACHE_KEY }}
           restore-keys: |
-            purevox-android-gradle-
-      - name: Restore Gradle wrapper cache
+            purevox-win-cargo-${{ env.CACHE_GEN }}-
+
+      - name: Restore cargo-tauri binary (restore-only)
+        id: tcli
         uses: actions/cache/restore@v6
         with:
-          path: ~/.gradle/wrapper/dists
-          key: ${{ env.GRADLE_WRAPPER_KEY }}
-          restore-keys: |
-            purevox-android-gradle-wrapper-
+          path: ~\.cargo\bin\cargo-tauri.exe
+          key: ${{ env.TAURI_CLI_KEY }}
 
-      - name: Warm Gradle (assemble fills ~/.gradle)
-        working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+      - name: Install tauri-cli (仅缓存未命中时编译，版本钉死)
+        if: steps.tcli.outputs.cache-hit != 'true'
+        shell: powershell
+        run: cargo install tauri-cli --version "$env:TCLI_VER" --locked
 
-      # Sole writers for these keys. continue-on-error: a same-key entry may
-      # already exist from an earlier run (deps unchanged) — that is success.
-      - name: Save Gradle cache
+      # 冷构建 debug（不恢复 target 缓存）：clippy/build/test 覆盖 target/debug 全部工件。
+      - name: Warm debug (clippy + build + test)
+        shell: powershell
+        run: |
+          .\tools\automation\check.ps1 -Gate clippy
+          .\tools\automation\check.ps1 -Gate build
+          .\tools\automation\check.ps1 -Gate test
+
+      # 冷构建 release + 打安装器：顺带预热 WiX/NSIS 下载与 onnxruntime 下载，
+      # 并顺手验证 bundle 配置（模型资源）在该提交上仍可打包。
+      - name: Warm release + installers
+        working-directory: src-tauri
+        shell: powershell
+        run: cargo tauri build
+
+      - name: Save cargo registry
         continue-on-error: true
         uses: actions/cache/save@v6
         with:
-          path: ~/.gradle/caches
-          key: ${{ env.GRADLE_CACHE_KEY }}
-      - name: Save Gradle wrapper cache
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+          key: ${{ env.CARGO_CACHE_KEY }}
+
+      - name: Save target/debug
         continue-on-error: true
         uses: actions/cache/save@v6
         with:
-          path: ~/.gradle/wrapper/dists
-          key: ${{ env.GRADLE_WRAPPER_KEY }}
+          path: src-tauri\target\debug
+          key: ${{ env.TARGET_DEBUG_KEY }}
+
+      - name: Save target/release + WiX/NSIS + onnxruntime 下载
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            src-tauri\target\release
+            ~\AppData\Local\tauri
+            ~\AppData\Local\ort.pyke.io
+          key: ${{ env.TARGET_RELEASE_KEY }}
+
+      - name: Save cargo-tauri binary
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~\.cargo\bin\cargo-tauri.exe
+          key: ${{ env.TAURI_CLI_KEY }}

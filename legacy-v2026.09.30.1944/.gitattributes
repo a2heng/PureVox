@@ -1,0 +1,30 @@
+# 换行符终极规约（随仓库分发，优先级高于任何机器的 core.autocrlf）：
+# 仓库存 LF，检出到工作区也强制 LF——Windows / Linux / macOS 行为完全一致，
+# 幻影整文件差异从机制上不可能再出现。
+* text=auto eol=lf
+
+# Windows 批处理按惯例必须 CRLF（label/goto 解析依赖）
+*.bat text eol=crlf
+
+# 二进制资产：绝不转换（text=auto 会按 NUL 嗅探兜底，这里显式声明双保险）
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.gif -text
+*.ico -text
+*.icns -text
+*.ttf -text
+*.otf -text
+*.woff -text
+*.woff2 -text
+*.dll -text
+*.so -text
+*.dylib -text
+*.exe -text
+*.onnx -text
+*.wasm -text
+*.zip -text
+*.7z -text
+*.wav -text
+*.mp3 -text
+*.opus -text

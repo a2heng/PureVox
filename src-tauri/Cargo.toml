@@ -1,0 +1,72 @@
+# PureVox — AI 麦克风降噪工具
+# Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+#
+# PureVox is licensed under the GNU General Public License v3.0 or
+# later (GPL-3.0-or-later).  See LICENSE for details.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# The built-in AI models are NOT covered by the GPL; they are the
+# property of a2heng and may only be used with PureVox under
+# authorization.  See MODEL-LICENSE.md for details.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "purevox"
+version = "0.1.0"
+description = "PureVox"
+authors = ["a2heng"]
+license = "GPL-3.0-or-later"
+edition = "2024"
+rust-version = "1.95"
+
+[build-dependencies]
+tauri-build = { version = "3.0.0-alpha.3", features = [] }
+
+[dependencies]
+tauri = { version = "3.0.0-alpha.4", features = ["tray-icon", "image-png"] }
+# devtools：WebView2 开发者工具（JS 交互式调试；迁移期 release 也保留，见 AGENTS.md §1）
+tauri-runtime-wry = { version = "3.0.0-alpha.4", features = ["devtools"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 调试接口：系统 CPU / 内存
+sysinfo = "0.39"
+# 音频设备枚举与采集（单一实现路径）
+cpal = "0.18"
+# 重采样（引擎唯一重采样实现）
+rubato = "5"
+# 实时回调 -> 工作线程的无锁单生产者单消费者环形缓冲
+rtrb = "0.4"
+# 调试频谱
+rustfft = "6"
+# ONNX 推理（onnxruntime 绑定；构建时下载 onnxruntime 并把 dll 复制到产物旁）
+ort = { version = "2.0.0-rc.13", default-features = false, features = [
+  "std",
+  "download-binaries",
+  "copy-dylibs",
+  "tls-native",
+  "api-27",
+] }
+
+[target.'cfg(windows)'.dependencies]
+# 调试接口：GPU 占用 / 显存（DXGI + PDH）、进程私有字节
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_System_Performance",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+  "Win32_System_Registry",
+  # 启动/停止：全局快捷键 + 提示音
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  # AEC 远端参考：输出设备 WASAPI 回环采集
+  "Win32_Media_Audio",
+  "Win32_Media_KernelStreaming",
+  "Win32_System_Com",
+] }
