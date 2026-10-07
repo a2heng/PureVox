@@ -86,7 +86,8 @@ td { padding: 2px 8px 2px 0; overflow: hidden; text-overflow: ellipsis; }
 .c-fmt { width: 13em; }
 .c-type { width: 12em; }
 
-.c-act { width: 6em; }
+.c-act { width: 17em; }
+select { font: inherit; max-width: 11em; }
 
 /* 音频流卡片 */
 .stream { border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; margin: 6px 0; }

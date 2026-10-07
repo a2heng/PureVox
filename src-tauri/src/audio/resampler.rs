@@ -15,62 +15,59 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 引擎唯一的重采样实现：任意原生采样率单声道 → 48 kHz，并切成 10 ms hop。
+//! 引擎唯一的重采样实现（rubato `Async` sinc，固定输入块，单声道）。
 //!
-//! rubato `Async` sinc（固定输入块）：输入按原生 10 ms 块喂入，输出长度随比例浮动，
-//! 累积后按 HOP 切片——hop 网格建立在 48 kHz 输出侧，与原生采样率无关。
-//! 原生即 48 kHz 时直通，不经过 rubato。
+//! - [`Converter`]：任意采样率 → 任意采样率，可在运行时微调比例（输出侧 ASRC 时钟伺服用）。
+//! - [`ToHops`]：输入侧，原生采样率 → 48 kHz，并在 48k 输出侧切 10 ms hop。
 
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
-  Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+  Adjustable, Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+  WindowFunction,
 };
 
 use super::{HOP, SAMPLE_RATE};
 
-pub struct ToHops {
+/// 比例可调范围：允许相对标称比例 ±10%（伺服本身另行限幅到 ±3%）。
+const MAX_RELATIVE: f64 = 1.1;
+
+pub struct Converter {
   inner: Option<Async<f32>>,
-  in_chunk: usize,
-  in_buf: Vec<f32>,
+  chunk: usize,
   out_buf: Vec<f32>,
-  pending: Vec<f32>,
   description: String,
   delay_frames: usize,
 }
 
-impl ToHops {
-  pub fn new(native_rate: u32) -> Result<Self, String> {
-    if native_rate == 0 {
-      return Err("原生采样率为 0".into());
+impl Converter {
+  /// `chunk`：每次 [`process`](Self::process) 的输入帧数。
+  /// `adjustable`：需要运行时微调比例时为 true（此时即使采样率相同也走 rubato）。
+  pub fn new(in_rate: u32, out_rate: u32, chunk: usize, adjustable: bool) -> Result<Self, String> {
+    if in_rate == 0 || out_rate == 0 {
+      return Err(format!("非法采样率 {in_rate} → {out_rate}"));
     }
-    if native_rate == SAMPLE_RATE {
-      return Ok(ToHops {
+    if in_rate == out_rate && !adjustable {
+      return Ok(Converter {
         inner: None,
-        in_chunk: 0,
-        in_buf: Vec::new(),
+        chunk,
         out_buf: Vec::new(),
-        pending: Vec::with_capacity(HOP * 4),
-        description: format!("直通（{native_rate} Hz）"),
+        description: format!("直通（{in_rate} Hz）"),
         delay_frames: 0,
       });
     }
-    // 原生 10 ms 块；非 100 整除的采样率（如 22050）取整，输出侧 hop 网格不受影响
-    let in_chunk = ((native_rate as usize) / 100).max(1);
-    let ratio = SAMPLE_RATE as f64 / native_rate as f64;
+    let ratio = out_rate as f64 / in_rate as f64;
     let params = SincInterpolationParameters::new(128, WindowFunction::Blackman2)
       .oversampling_factor(256)
       .interpolation(SincInterpolationType::Quadratic);
-    let rs = Async::<f32>::new_sinc(ratio, 1.1, &params, in_chunk, 1, FixedAsync::Input)
+    let rs = Async::<f32>::new_sinc(ratio, MAX_RELATIVE, &params, chunk, 1, FixedAsync::Input)
       .map_err(|e| format!("创建重采样器失败：{e}"))?;
-    let out_max = rs.output_frames_max();
+    let out_buf = vec![0.0; rs.output_frames_max()];
     let delay_frames = rs.output_delay();
-    Ok(ToHops {
+    Ok(Converter {
       inner: Some(rs),
-      in_chunk,
-      in_buf: Vec::with_capacity(in_chunk * 8),
-      out_buf: vec![0.0; out_max],
-      pending: Vec::with_capacity(HOP * 4),
-      description: format!("rubato sinc {native_rate} → {SAMPLE_RATE} Hz（块 {in_chunk}）"),
+      chunk,
+      out_buf,
+      description: format!("rubato sinc {in_rate} → {out_rate} Hz（块 {chunk}）"),
       delay_frames,
     })
   }
@@ -79,9 +76,71 @@ impl ToHops {
     &self.description
   }
 
-  /// 重采样器引入的延迟（48 kHz 输出帧）。
+  pub fn is_passthrough(&self) -> bool {
+    self.inner.is_none()
+  }
+
+  /// 重采样器引入的延迟（输出帧）。
   pub fn delay_frames(&self) -> usize {
     self.delay_frames
+  }
+
+  /// 单次 process 最多产出的帧数。
+  pub fn output_frames_max(&self) -> usize {
+    match &self.inner {
+      None => self.chunk,
+      Some(rs) => rs.output_frames_max(),
+    }
+  }
+
+  /// 微调比例（相对标称比例）：>1 输出变多，<1 输出变少。
+  pub fn set_relative_ratio(&mut self, rel: f64) -> Result<(), String> {
+    match &mut self.inner {
+      None => Err("直通转换器不能调比例".into()),
+      Some(rs) => rs.set_resample_ratio_relative(rel, true).map_err(|e| format!("调比例失败：{e}")),
+    }
+  }
+
+  /// 处理恰好 `chunk` 帧输入，返回本次输出。
+  pub fn process<'a>(&'a mut self, input: &'a [f32]) -> Result<&'a [f32], String> {
+    debug_assert_eq!(input.len(), self.chunk);
+    match &mut self.inner {
+      None => Ok(input),
+      Some(rs) => {
+        let inp = InterleavedSlice::new(input, 1, self.chunk).map_err(|e| e.to_string())?;
+        let cap = self.out_buf.len();
+        let mut out =
+          InterleavedSlice::new_mut(&mut self.out_buf, 1, cap).map_err(|e| e.to_string())?;
+        let (_, n_out) = rs
+          .process_into_buffer(&inp, &mut out, None)
+          .map_err(|e| format!("重采样失败：{e}"))?;
+        Ok(&self.out_buf[..n_out])
+      }
+    }
+  }
+}
+
+/// 输入侧：原生采样率 → 48 kHz，并切 10 ms hop。原生即 48 kHz 时直通。
+pub struct ToHops {
+  conv: Converter,
+  in_buf: Vec<f32>,
+  pending: Vec<f32>,
+}
+
+impl ToHops {
+  pub fn new(native_rate: u32) -> Result<Self, String> {
+    // 原生 10 ms 块；非 100 整除的采样率（如 22050）取整，输出侧 hop 网格不受影响
+    let chunk = ((native_rate as usize) / 100).max(1);
+    let conv = Converter::new(native_rate, SAMPLE_RATE, chunk, false)?;
+    Ok(ToHops { conv, in_buf: Vec::with_capacity(chunk * 8), pending: Vec::with_capacity(HOP * 4) })
+  }
+
+  pub fn description(&self) -> &str {
+    self.conv.description()
+  }
+
+  pub fn delay_frames(&self) -> usize {
+    self.conv.delay_frames()
   }
 
   /// 已重采样但不足一个 hop 的剩余帧数（恒 < HOP）。
@@ -91,25 +150,18 @@ impl ToHops {
 
   /// 喂入原生采样率单声道样本；每凑满一个 48 kHz hop 回调一次。
   pub fn push(&mut self, input: &[f32], mut on_hop: impl FnMut(&[f32])) -> Result<(), String> {
-    match &mut self.inner {
-      None => self.pending.extend_from_slice(input),
-      Some(rs) => {
-        self.in_buf.extend_from_slice(input);
-        let mut consumed = 0;
-        while self.in_buf.len() - consumed >= self.in_chunk {
-          let chunk = &self.in_buf[consumed..consumed + self.in_chunk];
-          let inp = InterleavedSlice::new(chunk, 1, self.in_chunk).map_err(|e| e.to_string())?;
-          let cap = self.out_buf.len();
-          let mut out =
-            InterleavedSlice::new_mut(&mut self.out_buf, 1, cap).map_err(|e| e.to_string())?;
-          let (n_in, n_out) = rs
-            .process_into_buffer(&inp, &mut out, None)
-            .map_err(|e| format!("重采样失败：{e}"))?;
-          consumed += n_in;
-          self.pending.extend_from_slice(&self.out_buf[..n_out]);
-        }
-        self.in_buf.drain(..consumed);
+    if self.conv.is_passthrough() {
+      self.pending.extend_from_slice(input);
+    } else {
+      self.in_buf.extend_from_slice(input);
+      let chunk = self.conv.chunk;
+      let mut consumed = 0;
+      while self.in_buf.len() - consumed >= chunk {
+        let out = self.conv.process(&self.in_buf[consumed..consumed + chunk])?;
+        self.pending.extend_from_slice(out);
+        consumed += chunk;
       }
+      self.in_buf.drain(..consumed);
     }
     let mut start = 0;
     while self.pending.len() - start >= HOP {

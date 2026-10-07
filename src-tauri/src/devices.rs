@@ -64,6 +64,26 @@ pub struct DeviceList {
 
 static REFRESHING: AtomicBool = AtomicBool::new(false);
 
+/// 按设备 ID 查找设备（输入/输出共用的唯一查找入口），返回设备与显示名。
+pub fn find(device_id: &str, input: bool) -> Result<(cpal::Device, String), String> {
+  for host_id in cpal::available_hosts() {
+    let Ok(host) = cpal::host_from_id(host_id) else { continue };
+    let Ok(devs) = host.devices() else { continue };
+    for d in devs {
+      if d.id().map(|i| i.to_string()).ok().as_deref() != Some(device_id) {
+        continue;
+      }
+      if (input && !d.supports_input()) || (!input && !d.supports_output()) {
+        continue;
+      }
+      let name = d.description().map(|x| x.name().to_string()).unwrap_or_else(|_| d.to_string());
+      return Ok((d, name));
+    }
+  }
+  let dir = if input { "输入" } else { "输出" };
+  Err(format!("找不到{dir}设备 {device_id}（可能已拔出，请刷新设备列表）"))
+}
+
 /// 后台刷新设备列表；已有刷新在进行时直接返回。
 pub fn spawn_refresh(hub: SharedHub) {
   if REFRESHING.swap(true, Ordering::SeqCst) {

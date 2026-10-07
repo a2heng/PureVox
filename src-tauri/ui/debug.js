@@ -111,28 +111,54 @@ const db = (v) => v.toFixed(1).padStart(6) + ' dBFS'
 const hz = (v) => v.toFixed(1).padStart(8) + ' Hz'
 const ms = (v) => v.toFixed(2).padStart(6) + ' ms'
 
-// 每路流卡片里的文本项：[标签, 取值函数]
+const ppm = (v) => (v >= 0 ? '+' : '') + v.toFixed(0).padStart(6) + ' ppm'
+const isOut = (s) => s.direction === 'output'
+// measured_input_rate / measured_output_rate 是「进 / 出本流重采样器」的速率，按方向换算成设备侧 / 引擎侧
+const devRate = (s) => (isOut(s) ? s.measured_output_rate : s.measured_input_rate)
+const engRate = (s) => (isOut(s) ? s.measured_input_rate : s.measured_output_rate)
+
+// 每路流卡片里的文本项：[标签, 取值函数]（两列一行，保持偶数项）
 const STREAM_FIELDS = [
   ['状态', (s) => probeText(s.state, (v) => v)],
-  ['原生格式', (s) => [`${s.sample_rate} Hz ${s.channels} ch ${s.sample_format}`, '']],
+  ['信号源', (s) => [s.source ?? '—（输入流）', '']],
+  ['设备格式', (s) => [`${s.sample_rate} Hz ${s.channels} ch ${s.sample_format}`, '']],
   ['重采样', (s) => [s.resampler, '']],
-  ['实测输入速率', (s) => probeText(s.measured_input_rate, hz)],
-  ['实测输出速率', (s) => probeText(s.measured_output_rate, hz)],
+  ['设备侧速率', (s) => probeText(devRate(s), hz)],
+  ['引擎侧速率（48k）', (s) => probeText(engRate(s), hz)],
+  ['时钟伺服修正', (s) => probeText(s.asrc_adjust_ppm, ppm)],
+  ['重采样延迟', (s) => [ms(s.resampler_delay_ms), '']],
   ['回调块（帧）', (s) => probeText(s.callback_frames, (v) => `最近 ${v.last}  最小 ${v.min}  最大 ${v.max}`)],
   ['回调次数', (s) => [String(s.callbacks), '']],
-  ['输入帧 / 输出帧', (s) => [`${s.frames_in} / ${s.frames_processed}`, '']],
+  [isOutLabel('输入帧 / 输出帧', '48k 消耗帧 / 设备帧'), (s) => [`${s.frames_in} / ${s.frames_processed}`, '']],
   ['hop 数 / 剩余帧', (s) => [`${s.hops} / ${s.pending_frames}`, s.pending_frames < 480 ? '' : 'na']],
   ['峰值 / RMS', (s) => {
     const [p, pc] = probeText(s.peak_dbfs, db)
     const [r] = probeText(s.rms_dbfs, db)
     return [`${p}  /  ${r}`, pc]
   }],
-  ['环形缓冲水位', (s) => [ms(s.buffer_level_ms), '']],
-  ['重采样延迟', (s) => [ms(s.resampler_delay_ms), '']],
+  [isOutLabel('环形缓冲水位', '48k 缓冲 / 设备缓冲'), (s) => {
+    if (!isOut(s)) return [ms(s.buffer_level_ms), '']
+    const [d] = probeText(s.device_buffer_ms, ms)
+    return [`${ms(s.buffer_level_ms)}  /  ${d}`, '']
+  }],
+  ['欠载（补静音样本）', (s) => {
+    const [t, c] = probeText(s.underruns, String)
+    return [t, c || (s.underruns.state === 'ok' && s.underruns.value > 0 ? 'na' : '')]
+  }],
+  ['重同步次数', (s) => {
+    const [t, c] = probeText(s.resyncs, String)
+    return [t, c || (s.resyncs.state === 'ok' && s.resyncs.value > 0 ? 'na' : '')]
+  }],
   ['丢弃样本 / 流错误', (s) => [`${s.overruns} / ${s.stream_errors}${s.last_error ? '  ' + s.last_error : ''}`, s.overruns || s.stream_errors ? 'na' : '']],
   ['端到端延迟', (s) => probeText(s.latency_ms, ms)],
   ['推理耗时', (s) => probeText(s.inference_ms_avg, ms)],
+  ['', () => ['', '']],
 ]
+// 标签随方向变化的项：渲染时按流方向取
+function isOutLabel(inLabel, outLabel) {
+  return { in: inLabel, out: outLabel }
+}
+const labelOf = (l, s) => (typeof l === 'string' ? l : isOut(s) ? l.out : l.in)
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -194,13 +220,13 @@ function drawSpectrum(cv, spec, binHz, nativeRate) {
   g.stroke()
 }
 
-function makeStreamCard() {
+function makeStreamCard(s) {
   const card = document.createElement('div')
   card.className = 'stream'
   card.innerHTML =
     '<h3></h3><table class="kv"><tbody></tbody></table>' +
     '<div class="plots">' +
-    '<figure><figcaption>波形（48 kHz，最近 50 ms）</figcaption><canvas class="wave"></canvas></figure>' +
+    `<figure><figcaption>波形（48 kHz，最近 50 ms${isOut(s) ? '，送入重采样前' : ''}）</figcaption><canvas class="wave"></canvas></figure>` +
     '<figure><figcaption>平均频谱（0 ~ 24 kHz，-140 ~ 0 dBFS）</figcaption><canvas class="spec"></canvas></figure>' +
     '</div>'
   const tbody = card.querySelector('tbody')
@@ -209,7 +235,7 @@ function makeStreamCard() {
     const tr = document.createElement('tr')
     for (let j = i; j < i + 2; j++) {
       const th = document.createElement('th'); const td = document.createElement('td')
-      th.textContent = STREAM_FIELDS[j] ? STREAM_FIELDS[j][0] : ''
+      th.textContent = STREAM_FIELDS[j] ? labelOf(STREAM_FIELDS[j][0], s) : ''
       tr.append(th, td)
     }
     tbody.appendChild(tr)
@@ -227,16 +253,17 @@ function renderAudio(audio) {
   }
   audio.streams.forEach((s, i) => {
     const card = box.children[i]
-    put(card.querySelector('h3'), `输入：${s.device_name}`)
+    put(card.querySelector('h3'), isOut(s) ? `输出：${s.device_name}  ←  ${s.source}` : `输入：${s.device_name}`)
     const tds = card.querySelectorAll('td')
     STREAM_FIELDS.forEach(([, f], j) => { const [t, c] = f(s); put(tds[j], t, c) })
     drawWave(card.querySelector('.wave'), s.waveform)
-    drawSpectrum(card.querySelector('.spec'), s.spectrum_db, s.spectrum_bin_hz, s.sample_rate)
+    // 输出流的频谱测的是送入重采样前的 48k 信号，不标设备奈奎斯特线
+    drawSpectrum(card.querySelector('.spec'), s.spectrum_db, s.spectrum_bin_hz, isOut(s) ? Infinity : s.sample_rate)
   })
 }
 
 let devStamp = null
-function renderDevices(dev) {
+function renderDevices(dev, streams) {
   const tbody = $('dev-table').tBodies[0]
   if (dev.state !== 'ok') {
     putProbe($('dev-state'), dev, () => '')
@@ -244,8 +271,11 @@ function renderDevices(dev) {
   }
   put($('dev-state'), '')
   const v = dev.value
-  // 列表只在重新枚举或打开状态变化后重建
-  const stamp = v.enumerated_at + ':' + v.devices.map((d) => (d.opened ? 1 : 0)).join('')
+  // 输出可选的信号源：测试音 + 正在采集的输入
+  const sources = [['tone', '测试音 1 kHz']].concat(
+    streams.filter((s) => s.direction === 'input').map((s) => [s.device_id, '输入：' + s.device_name]))
+  // 列表只在重新枚举、打开状态或可选信号源变化后重建
+  const stamp = v.enumerated_at + ':' + v.devices.map((d) => (d.opened ? 1 : 0)).join('') + ':' + sources.map((x) => x[0]).join('|')
   if (stamp === devStamp) return
   devStamp = stamp
   put($('dev-meta'), `枚举于 ${clock(v.enumerated_at)}，耗时 ${v.duration_ms} ms，接口 ${v.hosts.join(' / ') || '无'}，共 ${v.devices.length} 项`)
@@ -282,6 +312,26 @@ function renderDevices(dev) {
         }
       })
       act.appendChild(btn)
+    } else {
+      const sel = document.createElement('select')
+      sel.setAttribute('aria-label', '信号源')
+      for (const [id, label] of sources) sel.add(new Option(label, id))
+      sel.disabled = d.opened
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.textContent = d.opened ? '停止' : '播放'
+      btn.addEventListener('click', async () => {
+        btn.disabled = true
+        try {
+          if (d.opened) await invoke('stop_playback', { deviceId: d.id })
+          else await invoke('start_playback', { deviceId: d.id, source: sel.value })
+          put($('dev-action'), '')
+        } catch (e) {
+          put($('dev-action'), `${d.opened ? '停止' : '播放'} ${d.name} 失败：${e}`, 'na')
+          btn.disabled = false
+        }
+      })
+      act.append(sel, btn)
     }
     tr.appendChild(act)
     return tr
@@ -301,7 +351,7 @@ async function tick() {
     renderSystem(s.system)
     renderGpu(s.system.gpu)
     renderAudio(s.audio)
-    renderDevices(s.devices)
+    renderDevices(s.devices, s.audio.streams)
     put($('dbg-status'), '', '')
   } catch (e) {
     put($('dbg-status'), '取快照失败：' + e, 'na')

@@ -15,50 +15,108 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 音频：设备采集、重采样到 48 kHz、10 ms hop 切片。
+//! 音频：设备采集、重采样、10 ms hop、输出（AGENTS.md 第 3 节硬约束）。
 //!
-//! 数据流（AGENTS.md 第 3 节硬约束）：
-//! 设备原生格式 → 回调线程下混单声道写无锁环 → 工作线程 rubato 重采样到 48 kHz
-//! → 按 HOP（480 样本 = 10 ms）切片 → 下游（目前只有调试测量）。
+//! 输入：设备原生格式 → 回调线程下混单声道写无锁环 → 工作线程重采样到 48 kHz → 切 hop → 扇出。
+//! 输出：订阅一个源（输入采集 / 测试音）的 48 kHz hop → 工作线程按时钟伺服微调比例重采样到
+//! 设备采样率写无锁环 → 设备回调（唯一主时钟）取样。
 
 pub mod capture;
+pub mod fanout;
 pub mod meter;
+pub mod playback;
 pub mod resampler;
+pub mod tone;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::JoinHandle;
 
 use crate::debug::SharedHub;
+use fanout::Fanout;
 
 /// 引擎内部采样率。
 pub const SAMPLE_RATE: u32 = 48_000;
 /// 10 ms hop，按时间派生（48 kHz 下 480 样本）。
 pub const HOP: usize = (SAMPLE_RATE / 100) as usize;
 
-/// 采集流管理：按设备 ID 启停，同一设备只开一路。
-pub struct CaptureManager {
-  hub: SharedHub,
-  streams: Mutex<HashMap<String, capture::CaptureHandle>>,
+/// 输出流的信号源 ID：测试音。其余源 ID 为输入设备 ID。
+pub const SOURCE_TONE: &str = "tone";
+
+/// 工作线程句柄：置停止标志并等待线程退出。
+pub struct WorkerHandle {
+  stop: Arc<AtomicBool>,
+  join: Option<JoinHandle<()>>,
 }
 
-impl CaptureManager {
-  pub fn new(hub: SharedHub) -> Self {
-    CaptureManager { hub, streams: Mutex::new(HashMap::new()) }
+impl WorkerHandle {
+  pub fn new(stop: Arc<AtomicBool>, join: JoinHandle<()>) -> Self {
+    WorkerHandle { stop, join: Some(join) }
   }
 
-  /// 打开设备并开始采集（阻塞到设备打开成功或失败，最多数秒；勿在 UI 线程调用）。
-  pub fn start(&self, device_id: &str) -> Result<(), String> {
-    if self.streams.lock().unwrap().contains_key(device_id) {
+  pub fn stop(mut self) {
+    self.stop.store(true, Relaxed);
+    if let Some(j) = self.join.take() {
+      let _ = j.join();
+    }
+  }
+}
+
+/// 音频流管理：按设备 ID 启停输入采集与输出，每个设备每个方向最多一路。
+pub struct AudioManager {
+  hub: SharedHub,
+  captures: Mutex<HashMap<String, (WorkerHandle, Arc<Fanout>)>>,
+  playbacks: Mutex<HashMap<String, WorkerHandle>>,
+  tone: OnceLock<Arc<Fanout>>,
+}
+
+impl AudioManager {
+  pub fn new(hub: SharedHub) -> Self {
+    AudioManager {
+      hub,
+      captures: Mutex::new(HashMap::new()),
+      playbacks: Mutex::new(HashMap::new()),
+      tone: OnceLock::new(),
+    }
+  }
+
+  /// 打开输入设备并开始采集（阻塞到打开成功或失败，最多数秒；勿在 UI 线程调用）。
+  pub fn start_capture(&self, device_id: &str) -> Result<(), String> {
+    if self.captures.lock().unwrap().contains_key(device_id) {
       return Ok(());
     }
-    let handle = capture::spawn(self.hub.clone(), device_id.to_string())?;
-    self.streams.lock().unwrap().insert(device_id.to_string(), handle);
+    let started = capture::spawn(self.hub.clone(), device_id.to_string())?;
+    self.captures.lock().unwrap().insert(device_id.to_string(), started);
     Ok(())
   }
 
-  pub fn stop(&self, device_id: &str) {
-    let handle = self.streams.lock().unwrap().remove(device_id);
-    if let Some(h) = handle {
+  pub fn stop_capture(&self, device_id: &str) {
+    let entry = self.captures.lock().unwrap().remove(device_id);
+    if let Some((h, _)) = entry {
+      h.stop();
+    }
+  }
+
+  /// 在输出设备上播放某个源（`SOURCE_TONE` 或正在采集的输入设备 ID）；已在播放则切换源。
+  pub fn start_playback(&self, device_id: &str, source: &str) -> Result<(), String> {
+    let fanout = if source == SOURCE_TONE {
+      self.tone.get_or_init(tone::spawn).clone()
+    } else {
+      match self.captures.lock().unwrap().get(source) {
+        Some((_, f)) => f.clone(),
+        None => return Err("信号源未运行：请先启动该输入设备的采集".into()),
+      }
+    };
+    self.stop_playback(device_id);
+    let h = playback::spawn(self.hub.clone(), device_id.to_string(), fanout)?;
+    self.playbacks.lock().unwrap().insert(device_id.to_string(), h);
+    Ok(())
+  }
+
+  pub fn stop_playback(&self, device_id: &str) {
+    let h = self.playbacks.lock().unwrap().remove(device_id);
+    if let Some(h) = h {
       h.stop();
     }
   }

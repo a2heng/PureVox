@@ -23,50 +23,81 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{mpsc, Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 use rtrb::{Producer, RingBuffer};
 use serde::Serialize;
 
+use super::fanout::Fanout;
 use super::meter::{Meter, RateMeter, SPECTRUM_BIN_HZ};
 use super::resampler::ToHops;
-use super::{HOP, SAMPLE_RATE};
+use super::{WorkerHandle, HOP, SAMPLE_RATE};
 use crate::debug::{now_ms, Probe, SharedHub, StreamInfo};
 
-const PUBLISH_PERIOD: Duration = Duration::from_millis(200);
+pub(super) const PUBLISH_PERIOD: Duration = Duration::from_millis(200);
 const POLL_PERIOD: Duration = Duration::from_millis(5);
-const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 /// 超过此时长没有回调即判定流已停止（设备拔出、驱动异常等）。
-const STALL_LIMIT: Duration = Duration::from_secs(1);
+pub(super) const STALL_LIMIT: Duration = Duration::from_secs(1);
 
-/// 回调线程写、工作线程读的计数器。
-struct CallbackStats {
-  callbacks: AtomicU64,
-  frames: AtomicU64,
+/// 回调线程写、工作线程读的计数器（输入/输出流共用）。
+pub(super) struct CallbackStats {
+  pub callbacks: AtomicU64,
+  pub frames: AtomicU64,
   last_block: AtomicU32,
   min_block: AtomicU32,
   max_block: AtomicU32,
-  dropped: AtomicU64,
-  errors: AtomicU64,
+  /// 输入：环满丢弃的样本数；输出：环空补静音的样本数（预热完成后才计）
+  pub xruns: AtomicU64,
+  pub errors: AtomicU64,
   /// 错误回调罕见且不在数据回调路径上，加锁可接受
   last_error: Mutex<Option<String>>,
 }
 
 impl CallbackStats {
-  fn new() -> Self {
+  pub fn new() -> Self {
     CallbackStats {
       callbacks: AtomicU64::new(0),
       frames: AtomicU64::new(0),
       last_block: AtomicU32::new(0),
       min_block: AtomicU32::new(u32::MAX),
       max_block: AtomicU32::new(0),
-      dropped: AtomicU64::new(0),
+      xruns: AtomicU64::new(0),
       errors: AtomicU64::new(0),
       last_error: Mutex::new(None),
     }
+  }
+
+  /// 在数据回调开头调用（仅原子操作）。
+  #[inline]
+  pub fn on_block(&self, frames: u32) {
+    self.callbacks.fetch_add(1, Relaxed);
+    self.frames.fetch_add(frames as u64, Relaxed);
+    self.last_block.store(frames, Relaxed);
+    self.min_block.fetch_min(frames, Relaxed);
+    self.max_block.fetch_max(frames, Relaxed);
+  }
+
+  pub fn on_error(&self, e: String) {
+    self.errors.fetch_add(1, Relaxed);
+    *self.last_error.lock().unwrap() = Some(e);
+  }
+
+  pub fn last_error(&self) -> Option<String> {
+    self.last_error.lock().unwrap().clone()
+  }
+
+  pub fn callback_frames(&self) -> Probe<CallbackFrames> {
+    if self.callbacks.load(Relaxed) == 0 {
+      return Probe::Pending;
+    }
+    Probe::ok(CallbackFrames {
+      last: self.last_block.load(Relaxed),
+      min: self.min_block.load(Relaxed),
+      max: self.max_block.load(Relaxed),
+    })
   }
 }
 
@@ -77,32 +108,34 @@ pub struct CallbackFrames {
   pub max: u32,
 }
 
-pub struct CaptureHandle {
-  stop: Arc<AtomicBool>,
-  join: Option<JoinHandle<()>>,
+/// 回调停顿判定：回调计数持续增长即健康。
+pub(super) struct StallWatch {
+  last_callbacks: u64,
+  last_seen: Instant,
 }
 
-impl CaptureHandle {
-  pub fn stop(mut self) {
-    self.stop.store(true, Relaxed);
-    if let Some(j) = self.join.take() {
-      let _ = j.join();
+impl StallWatch {
+  pub fn new() -> Self {
+    StallWatch { last_callbacks: 0, last_seen: Instant::now() }
+  }
+
+  /// 返回已停顿的毫秒数。
+  pub fn update(&mut self, now: Instant, callbacks: u64) -> u128 {
+    if callbacks != self.last_callbacks {
+      self.last_callbacks = callbacks;
+      self.last_seen = now;
     }
+    now.duration_since(self.last_seen).as_millis()
   }
 }
 
-fn find_input(device_id: &str) -> Result<(cpal::Device, String), String> {
-  for host_id in cpal::available_hosts() {
-    let Ok(host) = cpal::host_from_id(host_id) else { continue };
-    let Ok(devs) = host.input_devices() else { continue };
-    for d in devs {
-      if d.id().map(|i| i.to_string()).ok().as_deref() == Some(device_id) {
-        let name = d.description().map(|x| x.name().to_string()).unwrap_or_else(|_| d.to_string());
-        return Ok((d, name));
-      }
-    }
-  }
-  Err(format!("找不到输入设备 {device_id}（可能已拔出，请刷新设备列表）"))
+pub(super) fn stalled_state(stalled_ms: u128, last_error: &Option<String>) -> Option<Probe<String>> {
+  (stalled_ms >= STALL_LIMIT.as_millis()).then(|| {
+    Probe::unavailable(format!(
+      "设备回调已停止 {stalled_ms} ms{}",
+      last_error.as_ref().map(|e| format!("（最近错误：{e}）")).unwrap_or_default()
+    ))
+  })
 }
 
 fn build_stream<T>(
@@ -122,39 +155,31 @@ where
     .build_input_stream::<T, _, _>(
       cfg.clone(),
       move |data: &[T], _info| {
-        let frames = (data.len() / ch) as u32;
-        stats.callbacks.fetch_add(1, Relaxed);
-        stats.frames.fetch_add(frames as u64, Relaxed);
-        stats.last_block.store(frames, Relaxed);
-        stats.min_block.fetch_min(frames, Relaxed);
-        stats.max_block.fetch_max(frames, Relaxed);
+        stats.on_block((data.len() / ch) as u32);
         let mut dropped = 0u64;
         for f in data.chunks_exact(ch) {
           let mut s = 0.0f32;
           for &x in f {
-            s += x.to_sample::<f32>();
+            s += <f32 as FromSample<T>>::from_sample_(x);
           }
           if prod.push(s * inv).is_err() {
             dropped += 1;
           }
         }
         if dropped > 0 {
-          stats.dropped.fetch_add(dropped, Relaxed);
+          stats.xruns.fetch_add(dropped, Relaxed);
         }
       },
-      move |e| {
-        err_stats.errors.fetch_add(1, Relaxed);
-        *err_stats.last_error.lock().unwrap() = Some(e.to_string());
-      },
+      move |e| err_stats.on_error(e.to_string()),
       None,
     )
     .map_err(|e| format!("打开输入流失败：{e}"))
 }
 
-/// 打开设备并启动采集线程；阻塞到打开成功/失败（最多 5 s）。
-pub fn spawn(hub: SharedHub, device_id: String) -> Result<CaptureHandle, String> {
+/// 打开输入设备并启动采集线程；阻塞到打开成功/失败（最多 5 s）。返回句柄与该源的扇出。
+pub fn spawn(hub: SharedHub, device_id: String) -> Result<(WorkerHandle, Arc<Fanout>), String> {
   let stop = Arc::new(AtomicBool::new(false));
-  let (tx, rx) = mpsc::channel::<Result<(), String>>();
+  let (tx, rx) = mpsc::channel::<Result<Arc<Fanout>, String>>();
   let stop2 = stop.clone();
   let short: String = device_id.chars().rev().take(8).collect::<String>().chars().rev().collect();
   let join = std::thread::Builder::new()
@@ -162,7 +187,7 @@ pub fn spawn(hub: SharedHub, device_id: String) -> Result<CaptureHandle, String>
     .spawn(move || run(hub, device_id, stop2, tx))
     .map_err(|e| format!("创建采集线程失败：{e}"))?;
   match rx.recv_timeout(OPEN_TIMEOUT) {
-    Ok(Ok(())) => Ok(CaptureHandle { stop, join: Some(join) }),
+    Ok(Ok(fanout)) => Ok((WorkerHandle::new(stop, join), fanout)),
     Ok(Err(e)) => {
       let _ = join.join();
       Err(e)
@@ -174,12 +199,17 @@ pub fn spawn(hub: SharedHub, device_id: String) -> Result<CaptureHandle, String>
   }
 }
 
-fn run(hub: SharedHub, device_id: String, stop: Arc<AtomicBool>, tx: mpsc::Sender<Result<(), String>>) {
+fn run(
+  hub: SharedHub,
+  device_id: String,
+  stop: Arc<AtomicBool>,
+  tx: mpsc::Sender<Result<Arc<Fanout>, String>>,
+) {
   let stats = Arc::new(CallbackStats::new());
 
   // ---- 打开设备 ----
   let setup = (|| -> Result<_, String> {
-    let (dev, name) = find_input(&device_id)?;
+    let (dev, name) = crate::devices::find(&device_id, true)?;
     let supported = dev.default_input_config().map_err(|e| format!("读取默认格式失败：{e}"))?;
     let cfg = supported.config();
     let fmt = supported.sample_format();
@@ -198,28 +228,26 @@ fn run(hub: SharedHub, device_id: String, stop: Arc<AtomicBool>, tx: mpsc::Sende
   })();
 
   let (stream, mut cons, cfg, fmt, name, mut to_hops) = match setup {
-    Ok(v) => {
-      let _ = tx.send(Ok(()));
-      v
-    }
+    Ok(v) => v,
     Err(e) => {
       let _ = tx.send(Err(e));
       return;
     }
   };
+  let fanout = Arc::new(Fanout::new(format!("输入：{name}")));
+  let _ = tx.send(Ok(fanout.clone()));
 
   // ---- 工作循环 ----
+  let stream_id = format!("input:{device_id}");
   let started_at = now_ms();
   let native_rate = cfg.sample_rate;
   let mut meter = Meter::new();
   let mut in_rate = RateMeter::new();
   let mut out_rate = RateMeter::new();
+  let mut stall = StallWatch::new();
   let mut hops: u64 = 0;
   let mut resample_error: Option<String> = None;
   let mut last_publish = Instant::now() - PUBLISH_PERIOD;
-  // 健康判定：回调持续到达即为运行中；单次流错误（如 WASAPI 不连续标志）只计数
-  let mut last_callbacks = 0u64;
-  let mut last_callback_seen = Instant::now();
 
   while !stop.load(Relaxed) {
     let n = cons.slots();
@@ -230,6 +258,7 @@ fn run(hub: SharedHub, device_id: String, stop: Arc<AtomicBool>, tx: mpsc::Sende
         for part in [a, b] {
           let r = to_hops.push(part, |hop| {
             meter.on_hop(hop);
+            fanout.push_hop(hop);
             hops += 1;
           });
           if let Err(e) = r {
@@ -244,42 +273,25 @@ fn run(hub: SharedHub, device_id: String, stop: Arc<AtomicBool>, tx: mpsc::Sende
     if now.duration_since(last_publish) >= PUBLISH_PERIOD {
       last_publish = now;
       let m = meter.take();
-      let errors = stats.errors.load(Relaxed);
-      let last_error = stats.last_error.lock().unwrap().clone();
+      let last_error = stats.last_error();
       let callbacks = stats.callbacks.load(Relaxed);
-      if callbacks != last_callbacks {
-        last_callbacks = callbacks;
-        last_callback_seen = now;
-      }
-      let stalled_ms = now.duration_since(last_callback_seen).as_millis();
-      let state = if let Some(e) = &resample_error {
-        Probe::unavailable(e.clone())
-      } else if stalled_ms >= STALL_LIMIT.as_millis() {
-        Probe::unavailable(format!(
-          "设备回调已停止 {stalled_ms} ms{}",
-          last_error.as_ref().map(|e| format!("（最近错误：{e}）")).unwrap_or_default()
-        ))
-      } else {
-        Probe::ok("running".to_string())
-      };
-      let callback_frames = if callbacks == 0 {
-        Probe::Pending
-      } else {
-        Probe::ok(CallbackFrames {
-          last: stats.last_block.load(Relaxed),
-          min: stats.min_block.load(Relaxed),
-          max: stats.max_block.load(Relaxed),
-        })
+      let stalled_ms = stall.update(now, callbacks);
+      // 健康判定：回调持续到达即为运行中；单次流错误（如 WASAPI 不连续标志）只计数
+      let state = match (&resample_error, stalled_state(stalled_ms, &last_error)) {
+        (Some(e), _) => Probe::unavailable(e.clone()),
+        (None, Some(s)) => s,
+        (None, None) => Probe::ok("running".to_string()),
       };
       let frames_in = stats.frames.load(Relaxed);
       let frames_out = hops * HOP as u64;
       hub.set_stream(StreamInfo {
-        id: device_id.clone(),
+        id: stream_id.clone(),
         direction: "input",
         device_id: device_id.clone(),
         device_name: name.clone(),
         state,
         started_at,
+        source: None,
         sample_rate: native_rate,
         channels: cfg.channels as u32,
         sample_format: fmt.to_string(),
@@ -288,8 +300,9 @@ fn run(hub: SharedHub, device_id: String, stop: Arc<AtomicBool>, tx: mpsc::Sende
         measured_output_rate: out_rate.push(now, frames_out),
         resampler: to_hops.description().to_string(),
         resampler_delay_ms: to_hops.delay_frames() as f64 * 1000.0 / SAMPLE_RATE as f64,
+        asrc_adjust_ppm: Probe::unavailable("输入流无时钟伺服（重采样比例固定）"),
         callbacks,
-        callback_frames,
+        callback_frames: stats.callback_frames(),
         frames_in,
         frames_processed: frames_out,
         hops,
@@ -297,10 +310,12 @@ fn run(hub: SharedHub, device_id: String, stop: Arc<AtomicBool>, tx: mpsc::Sende
         peak_dbfs: m.peak_dbfs,
         rms_dbfs: m.rms_dbfs,
         underruns: Probe::unavailable("输入流无欠载概念"),
-        overruns: stats.dropped.load(Relaxed),
-        stream_errors: errors,
+        overruns: stats.xruns.load(Relaxed),
+        resyncs: Probe::unavailable("输入流无重同步"),
+        stream_errors: stats.errors.load(Relaxed),
         last_error,
         buffer_level_ms: ring_level_ms,
+        device_buffer_ms: Probe::unavailable("输入流：环形缓冲即设备侧缓冲，见 buffer_level_ms"),
         latency_ms: Probe::unavailable("端到端延迟尚未测量"),
         inference_ms_avg: Probe::unavailable("未接入模型"),
         inference_ms_max: Probe::unavailable("未接入模型"),
@@ -312,6 +327,7 @@ fn run(hub: SharedHub, device_id: String, stop: Arc<AtomicBool>, tx: mpsc::Sende
     std::thread::sleep(POLL_PERIOD);
   }
 
+  fanout.close();
   drop(stream);
-  hub.remove_stream(&device_id);
+  hub.remove_stream(&stream_id);
 }

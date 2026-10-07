@@ -73,18 +73,22 @@ pub struct StreamInfo {
   /// running / 不可用 + 错误原因
   pub state: Probe<String>,
   pub started_at: u64,
+  /// 输出流播放的信号源名称；输入流为 None
+  pub source: Option<String>,
   /// 设备以此原生格式打开
   pub sample_rate: u32,
   pub channels: u32,
   pub sample_format: String,
-  /// 回调实际送达的帧率（3 s 滑动窗口）
+  /// 进入本流重采样器的实测帧率（3 s 滑动窗口）。输入流 = 设备侧；输出流 = 引擎 48k 侧
   pub measured_input_rate: Probe<f64>,
   /// 引擎内部采样率（恒 48000）
   pub output_rate: u32,
-  /// 重采样后实际产出的帧率（3 s 滑动窗口），应≈48000
+  /// 离开本流重采样器的实测帧率（3 s 滑动窗口）。输入流 = 引擎 48k 侧（应≈48000）；输出流 = 设备侧
   pub measured_output_rate: Probe<f64>,
   pub resampler: String,
   pub resampler_delay_ms: f64,
+  /// 输出流时钟伺服对重采样比例的当前修正（ppm，正值 = 消耗更快）
+  pub asrc_adjust_ppm: Probe<f64>,
   pub callbacks: u64,
   /// 设备回调块大小（帧）：最近 / 最小 / 最大
   pub callback_frames: Probe<crate::audio::capture::CallbackFrames>,
@@ -98,13 +102,18 @@ pub struct StreamInfo {
   /// 最近一个发布周期（200 ms）内
   pub peak_dbfs: Probe<f32>,
   pub rms_dbfs: Probe<f32>,
+  /// 输出流：设备回调取不到数据而补静音的样本数（预热完成后才计）
   pub underruns: Probe<u64>,
-  /// 环形缓冲满导致丢弃的样本数
+  /// 输入流：环形缓冲满丢弃的样本数；输出流：48k 缓冲超过封顶丢弃的最旧样本数
   pub overruns: u64,
+  /// 输出流：信号源断流后静音并重新预热的次数
+  pub resyncs: Probe<u64>,
   pub stream_errors: u64,
   pub last_error: Option<String>,
-  /// 回调到工作线程的环形缓冲水位
+  /// 输入流：回调 → 工作线程环形缓冲水位；输出流：48k 源缓冲水位（伺服目标 40 ms）
   pub buffer_level_ms: f32,
+  /// 输出流：工作线程 → 设备回调的设备侧缓冲水位
+  pub device_buffer_ms: Probe<f32>,
   pub latency_ms: Probe<f32>,
   pub inference_ms_avg: Probe<f32>,
   pub inference_ms_max: Probe<f32>,
@@ -201,9 +210,14 @@ impl DebugHub {
     }
     let streams: Vec<StreamInfo> = st.streams.into_values().collect();
     let engine = if streams.is_empty() {
-      Probe::unavailable("音频引擎尚未实现（可在设备表中启动输入采集测试）")
+      Probe::unavailable("没有音频流（可在设备表中启动输入采集 / 输出播放测试）")
     } else {
-      Probe::ok(format!("采集 + 重采样测试：{} 路（未接入模型）", streams.len()))
+      let inputs = streams.iter().filter(|s| s.direction == "input").count();
+      Probe::ok(format!(
+        "音频流 {} 路：输入 {inputs} / 输出 {}（未接入模型）",
+        streams.len(),
+        streams.len() - inputs
+      ))
     };
     DebugSnapshot {
       ts: now_ms(),
