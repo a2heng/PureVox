@@ -18,7 +18,7 @@
 //! 测试音信号源：1 kHz 正弦、-20 dBFS，按系统时钟每 10 ms 产出一个 48 kHz hop。
 //! 与设备时钟不同步——正好检验输出侧时钟伺服。
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::fanout::Fanout;
@@ -27,8 +27,15 @@ use super::{HOP, SAMPLE_RATE};
 pub const TONE_HZ: f64 = 1000.0;
 pub const TONE_AMPLITUDE: f32 = 0.1; // -20 dBFS
 
+static SHARED: OnceLock<Arc<Fanout>> = OnceLock::new();
+
+/// 全局共享的测试音源（线程只启动一次）；计划里的「测试音」输入行订阅它。
+pub fn shared() -> Arc<Fanout> {
+  SHARED.get_or_init(spawn).clone()
+}
+
 /// 启动常驻测试音线程，返回其扇出。
-pub fn spawn() -> Arc<Fanout> {
+fn spawn() -> Arc<Fanout> {
   let fanout = Arc::new(Fanout::new(format!("测试音 {TONE_HZ:.0} Hz -20 dBFS")));
   let out = fanout.clone();
   std::thread::Builder::new()

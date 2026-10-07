@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 
-use super::{HOP, SAMPLE_RATE};
+use crate::audio::{HOP, SAMPLE_RATE};
 use crate::debug::Probe;
 
 const NFFT: usize = 2 * HOP;

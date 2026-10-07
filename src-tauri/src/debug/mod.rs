@@ -140,6 +140,12 @@ pub struct DebugSnapshot {
   pub system: SystemInfo,
   pub audio: AudioInfo,
   pub devices: Probe<DeviceList>,
+  /// 界面自报的最近消息（新在前，最多 50 条；见 `ui_report` 命令）
+  pub ui: Vec<String>,
+  /// TSE 参考录音状态/进度
+  pub recorder: Probe<String>,
+  /// AEC 延时校准状态/结果
+  pub calib: Probe<String>,
 }
 
 #[derive(Clone)]
@@ -147,6 +153,14 @@ struct State {
   system: SystemInfo,
   devices: Probe<DeviceList>,
   http: Probe<String>,
+  /// 列（引擎处理图）的概要，由列工作线程发布
+  column: Probe<String>,
+  /// 界面自报的最近消息（迁移期定位前端问题用；新在前，最多 50 条）
+  ui: Vec<String>,
+  /// TSE 参考录音状态/进度
+  recorder: Probe<String>,
+  /// AEC 延时校准状态/结果
+  calib: Probe<String>,
   streams: BTreeMap<String, StreamInfo>,
 }
 
@@ -172,6 +186,10 @@ impl DebugHub {
         system: SystemInfo::default(),
         devices: Probe::Pending,
         http: Probe::Pending,
+        column: Probe::Pending,
+        ui: Vec::new(),
+        recorder: Probe::Pending,
+        calib: Probe::Pending,
         streams: BTreeMap::new(),
       }),
     })
@@ -193,6 +211,25 @@ impl DebugHub {
     self.state.write().unwrap().http = v;
   }
 
+  pub fn set_column(&self, v: Probe<String>) {
+    self.state.write().unwrap().column = v;
+  }
+
+  pub fn set_recorder(&self, v: Probe<String>) {
+    self.state.write().unwrap().recorder = v;
+  }
+
+  pub fn set_calib(&self, v: Probe<String>) {
+    self.state.write().unwrap().calib = v;
+  }
+
+  /// 追加一条界面自报消息（新在前，最多 50 条）。
+  pub fn push_ui(&self, level: &str, message: String) {
+    let mut st = self.state.write().unwrap();
+    st.ui.insert(0, format!("[{level}] {message}"));
+    st.ui.truncate(50);
+  }
+
   pub fn set_stream(&self, v: StreamInfo) {
     self.state.write().unwrap().streams.insert(v.id.clone(), v);
   }
@@ -210,17 +247,14 @@ impl DebugHub {
         d.opened = st.streams.values().any(|s| s.device_id == d.id && s.direction == d.direction);
       }
     }
-    let streams: Vec<StreamInfo> = st.streams.into_values().collect();
-    let engine = if streams.is_empty() {
-      Probe::unavailable("没有音频流（可在设备表中启动输入采集 / 输出播放测试）")
-    } else {
-      let inputs = streams.iter().filter(|s| s.direction == "input").count();
-      Probe::ok(format!(
-        "音频流 {} 路：输入 {inputs} / 输出 {}（未接入模型）",
-        streams.len(),
-        streams.len() - inputs
-      ))
+    let st_ui = st.ui.clone();
+    let st_recorder = st.recorder.clone();
+    let st_calib = st.calib.clone();
+    let engine = match st.column {
+      Probe::Ok { value } => Probe::ok(value),
+      _ => Probe::unavailable("列未启动"),
     };
+    let streams: Vec<StreamInfo> = st.streams.into_values().collect();
     DebugSnapshot {
       ts: now_ms(),
       uptime_ms: self.uptime_ms(),
@@ -233,6 +267,9 @@ impl DebugHub {
       system: st.system,
       audio: AudioInfo { engine, streams },
       devices,
+      ui: st_ui,
+      recorder: st_recorder,
+      calib: st_calib,
     }
   }
 }

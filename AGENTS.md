@@ -28,7 +28,8 @@ release 构建同样保留（不允许用编译开关剔除）。
 
 ### 1.1 UI 常驻调试面板
 
-- 主界面常驻调试面板，默认展开，可折叠但不可移除；内容与 1.2 节接口**同源同字段**。
+- 主界面调试面板由顶栏「调试面板」开关显隐（状态记忆，**默认收起**，收起时不占列宽度、不挤占横向空间；
+  展开时更宽以免文字省略）；内容与 1.2 节接口**同源同字段**，随时可展开，迁移期不可移除。
 - 数值固定格式、固定行数刷新（不随数值长度跳动布局），刷新频率 1~10 Hz，不得卡 UI。
 - 采集失败的项显示「不可用 + 原因」，**禁止显示伪造的 0**。
 
@@ -45,10 +46,13 @@ release 构建同样保留（不允许用编译开关剔除）。
 | --- | --- |
 | `GET /debug` | 汇总：下列全部端点的合集 |
 | `GET /debug/system` | **CPU**：系统总占用、本进程占用、逻辑核数；**内存**：系统总量/可用、本进程工作集与私有字节；**GPU**：每块 GPU 的名称、占用率、显存总量/已用（含本进程） |
-| `GET /debug/audio` | 每路音频流：方向、设备、**信号源（仅输出）**、状态、**降噪状态（运行中的模型名 / 未启用 / 失败原因）**、设备原生格式、实测**设备侧 / 引擎侧速率**（3 s 窗口）、重采样器与其延迟、**输出流的时钟伺服修正（ppm）**、回调块大小（最近/最小/最大）、帧与 hop 计数、不足一 hop 的剩余帧、峰值/RMS 电平、**输出流欠载补静音样本数与重同步次数**、溢出/丢弃样本、流错误计数、48k 缓冲水位与**设备侧缓冲水位**、端到端延迟、**模型推理耗时（均值/最大）**；最近 50 ms 波形与平均频谱（481 bin，NFFT 960，输入流为降噪后、输出流为重采样前） |
+| `GET /debug/audio` | 每路音频流：方向、设备、**信号源（仅输出）**、状态、降噪状态（字段保留但已废弃：降噪现为列处理行，见 `audio.engine`）、设备原生格式、实测**设备侧 / 引擎侧速率**（3 s 窗口）、重采样器与其延迟、**输出流的时钟伺服修正（ppm）**、回调块大小（最近/最小/最大）、帧与 hop 计数、不足一 hop 的剩余帧、峰值/RMS 电平、**输出流欠载补静音样本数与重同步次数**、溢出/丢弃样本、流错误计数、48k 缓冲水位与**设备侧缓冲水位**、端到端延迟、**模型推理耗时（均值/最大）**；最近 50 ms 波形与平均频谱（481 bin，NFFT 960，输入流为降噪后、输出流为重采样前） |
 | `GET /debug/devices` | 全部枚举到的输入/输出设备：ID、名称、接口、原生采样率/声道、是否默认、是否被选中、是否已打开；以及最近一次枚举的时间与耗时 |
 
 - 字段只增不改名；新增字段同步更新本表。
+- 快照另带 `ui`：界面自报的最近消息数组（新在前，最多 50 条，见 `ui_report` 命令）；
+  `audio.engine`（列概要）含每列 `hop/s` 节拍速率（正常 100，见 DESIGN.md §3.3）；
+  `recorder`（TSE 参考录制进度/结果）与 `calib`（AEC 延时校准进度/结果）。
 
 ### 1.3 实现约束
 
@@ -70,14 +74,30 @@ release 构建同样保留（不允许用编译开关剔除）。
   设备环；**设备回调是唯一主时钟**，回调里只取样、缺数据补静音（不在回调里写任何缓冲策略）。
   工作线程策略：预热到「目标水位 + 设备环」再开声；PI 伺服按 48k 环水位微调重采样比例限幅 **±3%**
   消化源/设备时钟差；源断流则回预热重同步；48k 环超 300 ms 封顶丢最旧。伺服目标水位 40 ms。
-- **启停入口**：面板设备表输入「采集 / 停止」、输出「信号源 + 播放 / 停止」（命令
-  `start_capture` / `stop_capture` / `start_playback` / `stop_playback`）。输出信号源为测试音
-  （1 kHz -20 dBFS）或正在采集的输入设备 ID（任一采集源可同时供多路输出）。
+- **会话入口**：计划（`plan.rs`）+ 配置（`config.rs`，存 `~/.purevox/session.json`）→ 命令
+  `get_plan` / `apply_plan`（结构性变更 → 重建整个会话）。列 UI（`ui/columns.js`）编辑计划：
+  每列两端固定为输入/输出、中间可加/删/移行；输入/输出行选设备，处理行选型号。
+  测试音是输入行的一种（`ptype = tone`，全局共享线程）。
 - **推理链路**（`src-tauri/src/infer/`）：用 `ort`（onnxruntime）流式推理。模型契约统一为
   `*_hop [1,480]`（10 ms 波形）+ `cache_in [1,D]`（扁平流式缓存，首帧零起）→ `enh_hop [1,480]`
   （**滞后 1 hop**）+ `cache_out [1,D]`；缓存维度从模型输入读，不写死；STFT 在模型图内。
-  降噪模型在**采集工作线程内首次启用时惰性加载**（每路一份，只加载一次），处理后的 hop 才进扇出，
-  因此输出自然播放降噪结果；不可热切换模型文件。现役模型常量 `infer::MODEL_DENOISE`。
+  降噪是**列里的处理行**（`engine/components/denoise.rs`，`Stage`），在**列工作线程**内惰性加载
+  （每行一份，只加载一次）；模型文件选择存计划，改型号 = 结构性变更 → 重建会话。
+  现役模型常量 `infer::MODEL_DENOISE`。
+- **AEC 行 / TSE 行**：AEC 是**输入行**（`ptype = echo_cancel`，本行 `device` = 近端 mic，
+  `params.far_device` = 远端参考：`loopback` = 系统默认输出回环、`loopback:<渲染端点ID>` = 指定输出
+  回环（WASAPI loopback，`audio/loopback.rs`，仅 Windows）、其它 = 输入设备；`far_delay_ms` **有符号**
+  （正 = 远端超前、向后取历史；负 = 远端缓冲超前、向前取）。far 历史 2 s 采样网格（`engine/aec.rs`），
+  窗口 = mic 采样序号 − 延时，历史不足先退最近段、再没有就直通 mic）。TSE 是**处理行**
+  （`ptype = tse`，`params.reference` = 参考 WAV，默认 `~/.purevox/tse_reference.wav`，须 48 kHz 单声道；
+  10 s → `enr_tok`；无参考直通）。行状态（对齐计数 / 推理耗时 / 参考状态）经 `Stage::status` 进列概要。
+- **参考录制 / 延时校准**：命令 `record_tse_reference(seconds)` 录「降噪后、TSE 前」的信号（`recorder.rs`，
+  RMS 归一化到 -20 dBFS，峰值不削顶）→ `~/.purevox/tse_reference.wav`；命令 `calibrate_aec_delay()`
+  对第一个 AEC 行采集 1.6 s、向被回环的输出送 800→6000 Hz 扫频探针，FFT 互相关**对称搜索**延时，并
+  **自动配平**（近端/远端各自 RMS 归一到 -24 dBFS → 回填 `mic_gain_db` / `far_gain_db`）。去直流 + 带限
+  （与探针带一致）+ 带内 RMS 归一化（`engine/calib.rs`）。最近一次缓冲落在 `~/.purevox/calib_last_{mic,far}.f32`
+  便于离线排查。进度/结果都在快照里（`recorder` / `calib`），界面据此回填参数并重建会话。
+  AEC 行另有 `bypass`（直通，跳过 AEC）供 A/B 对比。
 - **onnxruntime 会话必须单线程且关闭自旋**（`with_intra_threads(1)` / `with_inter_threads(1)` /
   `with_intra_op_spinning(false)`）：默认按核数建池并忙等，会占满 CPU、和音频回调抢核，
   实测把 1.8 ms 的推理拖到 >100 ms。改这三项前先读 `infer/denoise.rs` 的注释。
@@ -87,7 +107,14 @@ release 构建同样保留（不允许用编译开关剔除）。
   接入 1.2 节对应端点，否则视为未完成。
 - **验证方式**：智能体与脚本验证运行状态一律请求 HTTP 接口（`curl http://127.0.0.1:<端口>/debug`），
   不靠模拟键鼠点界面（Windows 会拦截后台抢焦点，按键会打进别的窗口）。界面交互验证用
-  Windows UI Automation，详见 `TAURI3.md` 3.6 节。
+  Windows UI Automation，详见 `TAURI3.md` 3.6 节。**少截图**，优先用调试接口读数。
+- **测试自收尾**：任何启动进程的 shell 测试必须自己结束（PowerShell 用
+  `try { … } finally { Get-Process purevox -ErrorAction SilentlyContinue | Stop-Process }`），
+  命令一律带超时，后台任务不得残留；**不允许把运行中的 app 留给用户手动关闭**。
+- **前端调试**：`ui/jsdebug.js` 把脚本错误、未处理的 Promise 拒绝、`console.error/warn` 转发到
+  `ui_report`（即快照的 `ui` 数组）；顶栏「开发者工具」打开 WebView2 devtools（Cargo 已开
+  `devtools` 特性，release 保留）。JS 静态检查用项目 `opencode.json` 的 LSP + `ui/jsconfig.json`
+  （`checkJs`，配合 `ui/globals.d.ts`）。
 
 ---
 

@@ -84,6 +84,13 @@ pub fn find(device_id: &str, input: bool) -> Result<(cpal::Device, String), Stri
   Err(format!("找不到{dir}设备 {device_id}（可能已拔出，请刷新设备列表）"))
 }
 
+/// 系统默认输出设备的 ID（cpal 稳定 ID）；找不到返回 None。
+pub fn default_output_id() -> Option<String> {
+  let host = cpal::default_host();
+  let dev = host.default_output_device()?;
+  dev.id().ok().map(|i| i.to_string())
+}
+
 /// 后台刷新设备列表；已有刷新在进行时直接返回。
 pub fn spawn_refresh(hub: SharedHub) {
   if REFRESHING.swap(true, Ordering::SeqCst) {

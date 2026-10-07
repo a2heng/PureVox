@@ -26,7 +26,7 @@ use rubato::{
   WindowFunction,
 };
 
-use super::{HOP, SAMPLE_RATE};
+use crate::audio::{HOP, SAMPLE_RATE};
 
 /// 比例可调范围：允许相对标称比例 ±10%（伺服本身另行限幅到 ±3%）。
 const MAX_RELATIVE: f64 = 1.1;

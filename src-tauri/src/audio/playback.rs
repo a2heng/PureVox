@@ -37,9 +37,9 @@ use rtrb::{Consumer, RingBuffer};
 
 use super::capture::{stalled_state, CallbackStats, StallWatch, OPEN_TIMEOUT, PUBLISH_PERIOD};
 use super::fanout::Fanout;
-use super::meter::{Meter, RateMeter, SPECTRUM_BIN_HZ};
-use super::resampler::Converter;
 use super::{WorkerHandle, HOP, SAMPLE_RATE};
+use crate::dsp::meter::{Meter, RateMeter, SPECTRUM_BIN_HZ};
+use crate::dsp::resampler::Converter;
 use crate::debug::{now_ms, Probe, SharedHub, StreamInfo};
 
 /// 48k 源缓冲目标水位（伺服设定点，也是预热量）。
@@ -105,14 +105,20 @@ where
 }
 
 /// 打开输出设备并开始播放 `source`；阻塞到打开成功/失败（最多 5 s）。
-pub fn spawn(hub: SharedHub, device_id: String, source: Arc<Fanout>) -> Result<WorkerHandle, String> {
+/// `tag`：本流在调试接口里的唯一标识（同一设备可有多个流）。
+pub fn spawn(
+  hub: SharedHub,
+  device_id: String,
+  source: Arc<Fanout>,
+  tag: String,
+) -> Result<WorkerHandle, String> {
   let stop = Arc::new(AtomicBool::new(false));
   let (tx, rx) = mpsc::channel::<Result<(), String>>();
   let stop2 = stop.clone();
   let short: String = device_id.chars().rev().take(8).collect::<String>().chars().rev().collect();
   let join = std::thread::Builder::new()
     .name(format!("playback-{short}"))
-    .spawn(move || run(hub, device_id, source, stop2, tx))
+    .spawn(move || run(hub, device_id, source, tag, stop2, tx))
     .map_err(|e| format!("创建播放线程失败：{e}"))?;
   match rx.recv_timeout(OPEN_TIMEOUT) {
     Ok(Ok(())) => Ok(WorkerHandle::new(stop, join)),
@@ -160,6 +166,7 @@ fn run(
   hub: SharedHub,
   device_id: String,
   source: Arc<Fanout>,
+  tag: String,
   stop: Arc<AtomicBool>,
   tx: mpsc::Sender<Result<(), String>>,
 ) {
@@ -195,7 +202,7 @@ fn run(
   };
   let _ = tx.send(Ok(()));
 
-  let stream_id = format!("output:{device_id}");
+  let stream_id = format!("output:{tag}");
   let mut src = source.subscribe(&stream_id);
 
   // ---- 工作循环 ----
@@ -277,6 +284,9 @@ fn run(
       servo.update(src.slots() as f64 * 1000.0 / SAMPLE_RATE as f64, dt);
       if now.duration_since(last_ratio) >= RATIO_PERIOD {
         last_ratio = now;
+        // adj>0 = 水位高于目标 = 要消耗更快。比例是「输出/输入」，FixedAsync::Input 下每读 1 hop(480)
+        // 产出 ~480*ratio 个设备样本，故 48k 环的消耗速率 = 100/ratio hop/s：
+        // ratio 越大 → 读 hop 越慢 → 48k 环越满。要排水位就得 ratio<1 → 用 (1.0 - adj)。
         if let Err(e) = conv.set_relative_ratio(1.0 - servo.adj) {
           worker_error = Some(e);
         }
