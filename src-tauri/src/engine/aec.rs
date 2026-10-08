@@ -34,6 +34,10 @@ use crate::infer::aec::Aec;
 /// far 历史网格容量（2 s @48 kHz，DESIGN.md §8）。
 pub const FAR_HIST_SAMPLES: usize = 48_000 * 2;
 
+/// 数据驱动网格的**前置余量**（样本）：monitor 到达延迟比 mic 大，先把序号垫到 mic 前面，
+/// 保证列线程取「精确窗口」永远取得到。常量偏移由 far_delay 吸收。
+const FAR_GRID_LEAD: usize = 48_000 * 3 / 10; // 300 ms
+
 /// 48 kHz 采样网格（环形）：按绝对采样序号读写，支持取任意历史窗口。
 pub struct FarHistory {
   buf: Vec<f32>,
@@ -199,6 +203,9 @@ pub fn spawn_far_pump(
   tag: &str,
   epoch: Arc<AtomicU64>,
 ) -> WorkerHandle {
+  // 平台推进策略（`loopback_<平台>.rs`）：Windows WASAPI 回环空闲不回调 → 按实时补零；
+  // Linux monitor 空闲也持续出数据 → 数据驱动（更忠实，但需要前置余量，见下）。
+  let realtime = crate::audio::loopback::FAR_GRID_REALTIME;
   let mut cons = fan.subscribe(&format!("{tag}-far"));
   let stop = Arc::new(AtomicBool::new(false));
   let stop2 = stop.clone();
@@ -218,7 +225,41 @@ pub fn spawn_far_pump(
           written = 0;
           if let Ok(mut h) = hist.lock() {
             h.clear();
+            // 数据驱动网格：monitor 的到达延迟比 mic 大（~100 ms），网格序号会落在 mic 序号
+            // 之后 → 校准取不到「精确窗口」。先垫一段静音余量把序号推到 mic 前面；
+            // 这段常量偏移由 far_delay 吸收（校准测的就是绝对偏移）。
+            if !realtime {
+              h.push(&[0.0f32; FAR_GRID_LEAD]);
+            }
           }
+        }
+        if !realtime {
+          // 数据驱动：有几多写几多，不按实时补零（补零会把网格写歪 → 运行时 ρ=0）
+          let avail = cons.slots();
+          if avail == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+          }
+          if avail > 8 * HOP
+            && let Ok(c) = cons.read_chunk(avail - 2 * HOP)
+          {
+            c.commit_all();
+          }
+          let take = cons.slots().min(HOP);
+          if take == 0 {
+            continue;
+          }
+          if let Ok(c) = cons.read_chunk(take) {
+            let (a, b) = c.as_slices();
+            let n = a.len() + b.len();
+            buf[..a.len()].copy_from_slice(a);
+            buf[a.len()..n].copy_from_slice(b);
+            c.commit_all();
+            if let Ok(mut h) = hist.lock() {
+              h.push(&buf[..n]);
+            }
+          }
+          continue;
         }
         let want = (t0.elapsed().as_secs_f64() * SAMPLE_RATE as f64) as u64;
         let mut need = want.saturating_sub(written);

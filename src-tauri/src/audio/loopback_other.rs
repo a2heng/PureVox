@@ -21,6 +21,9 @@
 use super::capture::Capture;
 use crate::debug::SharedHub;
 
+/// 本平台没有回环采集，这个开关不会被用到（保持与其它平台同签名）。
+pub const FAR_GRID_REALTIME: bool = true;
+
 pub fn spawn(_hub: SharedHub, _output_id: Option<String>, _tag: String) -> Result<Capture, String> {
   Err("AEC 远端回环仅 Windows / Linux 支持；请改用输入设备作远端参考".to_string())
 }

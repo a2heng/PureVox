@@ -29,6 +29,10 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+/// far 网格按**实时**推进（不足补零）：WASAPI 回环在渲染端点空闲时几乎不回调，
+/// 不按实时推进的话 far 序号会越落越后（见 `engine/aec.rs` 的 `spawn_far_pump`）。
+pub const FAR_GRID_REALTIME: bool = true;
+
 use rtrb::RingBuffer;
 use windows::Win32::Media::Audio::{
   AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
