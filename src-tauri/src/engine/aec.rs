@@ -134,7 +134,10 @@ pub fn far_loopback_id(far: &str) -> Option<String> {
   if let Some(id) = far.strip_prefix("loopback:") {
     return Some(id.to_string());
   }
-  if !far.is_empty() && crate::devices::find(far, false).is_ok() {
+  if crate::devices::loopback_accepts_device_id()
+    && !far.is_empty()
+    && crate::devices::find(far, false).is_ok()
+  {
     return Some(far.to_string());
   }
   None

@@ -15,17 +15,10 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 其它平台（非 Windows / 非 Linux）：不精简；无回环目标（AEC 回环不可用）。
+//! 其它平台（非 Windows / 非 Linux）：无平台直送。
 
-use super::{DeviceInfo, LoopbackTarget};
+pub const NATIVE: bool = false;
 
-/// 其它平台：无回环能力 → 也不接受裸设备 ID。
-pub(super) const LOOPBACK_ACCEPTS_DEVICE_ID: bool = false;
-
-pub(super) fn simplify(devices: Vec<DeviceInfo>) -> Vec<DeviceInfo> {
-  devices
-}
-
-pub(super) fn loopback_targets() -> Vec<LoopbackTarget> {
-  Vec::new()
+pub fn play(_pcm: &[f32], _target: Option<&str>) -> Result<(), String> {
+  Err("该平台不支持把探针直送指定 sink".into())
 }

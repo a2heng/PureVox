@@ -1,7 +1,8 @@
 # 缓存预热 —— **全仓库唯一的缓存写入者**，且**只手动触发**（workflow_dispatch）。
 # tests.yml / release.yml 一律 restore-only。GitHub 缓存按触发 ref 分域，让各工作流
-# 各写各的只会堆出没人回读的重复条目（tag 上写入的尤其如此）；集中到一处写，
-# 每个键恒有一份有效条目，写入用 continue-on-error（同键已存在即视为成功）。
+# 各写各的只会堆出没人回读的重复条目（tag 上写入的尤其如此）；集中到一处写。
+# **覆盖语义**：GitHub 缓存 key 不可变（同键已存在的 save 会被拒），所以每次保存前先按 key
+# 删掉旧条目（`gh api DELETE .../actions/caches?key=`），再 save —— 这才真正「新覆盖旧」。
 # 依赖升级（Cargo.lock / Cargo.toml / versions.env 变更）后，从默认分支手动 dispatch
 # 一次本工作流暖桶，之后的分支/ tag 都能回读。
 # warm 用「冷构建 target」（不恢复 target 缓存）→ 保存的快照始终干净、无历史增量垃圾。
@@ -18,6 +19,9 @@ jobs:
   warm:
     name: 预热 · ${{ matrix.os }}（唯一缓存写入者）
     runs-on: ${{ matrix.os }}
+    permissions:
+      actions: write # 删旧缓存（GitHub 缓存 key 不可变，覆盖 = 先删再存）
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -89,6 +93,19 @@ jobs:
       - name: Warm release + installers
         working-directory: src-tauri
         run: cargo tauri build
+
+      - name: Drop stale caches（同键先删，保证新缓存覆盖旧的）
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # GitHub 缓存 key 不可变：同键已存在时 save 会被拒（旧的永远留着）。先按 key 删掉旧的。
+          foreach ($k in @($env:CARGO_CACHE_KEY, $env:TARGET_DEBUG_KEY, $env:TARGET_RELEASE_KEY, $env:TAURI_CLI_KEY)) {
+            if (-not $k) { continue }
+            $n = gh api --method DELETE "repos/${{ github.repository }}/actions/caches?key=$k" 2>$null
+            Write-Host "drop $k -> $n"
+          }
 
       - name: Save cargo registry
         continue-on-error: true

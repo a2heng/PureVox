@@ -89,6 +89,9 @@ release 构建同样保留（不允许用编译开关剔除）。
   monitor（`float32le` 48k 单声道）再喂进与 cpal 采集同一个工作循环（重采样/计量/扇出一致）。`loopback` =
   系统默认输出、`loopback:<sink>` = 指定 PipeWire sink；候选由命令 `list_loopback_targets` 给出
   （Linux = `pactl list sinks`，Windows = cpal 输出设备）。Windows 侧仍是 WASAPI loopback（`audio/loopback.rs`）。
+  **`parec` 必须带 `--latency-msec=100 --process-time-msec=20`**：默认缓冲 ≈ 1.9 s，far 会比 mic 晚近 2 s，
+  校准的 ±1 s 搜索窗够不着 → 一直「相关太弱（0.000）」（Windows WASAPI 回环无此问题）。`pactl` 解析一律
+  `LC_ALL=C`（中文 locale 下输出「名称/描述」，按 `Name:` 会解析出 0 个 sink）。
 - **虚拟驱动页（顶栏「驱动」）**：按平台切同一面板——Linux（`audio/virtual_mic.rs` + `ui/drivers_linux.js`）
   照 legacy 建 `purevox_out` null-sink（`pw-cli create-node adapter`）+ monitor + `pactl module-remap-source`
   真源 `purevox_mic`，移除 = `pactl unload-module` + `pw-cli destroy`；Windows（`ui/drivers_windows.js`）
@@ -98,6 +101,16 @@ release 构建同样保留（不允许用编译开关剔除）。
   `get_plan` / `apply_plan`（结构性变更 → 重建整个会话）。列 UI（`ui/columns.js`）编辑计划：
   每列两端固定为输入/输出、中间可加/删/移行；输入/输出行选设备，处理行选型号。
   测试音是输入行的一种（`ptype = tone`，全局共享线程）。
+- **会话重建 / 设备打开（Linux ALSA 排他）**：同一声卡同一设备**不能被打开两次**，而 cpal 关流
+  是异步的（真正的 `snd_pcm_close` 在它自己的线程上）。所以：① 重建/启动**先停旧会话再建新会话**
+  （`AudioManager::release_session`）；② `start` / `stop` / `apply_plan` 共用一把 `rebuild` 互斥锁，
+  串行化重建（界面连改参数会并发触发 `apply_plan`，两次重建交错打开同一设备会 `temporarily busy`）；
+  ③ 打开设备走 `with_device_retry`（对 `busy` / `not available` / `disconnected` 退避重试 ~3 s）。
+  Windows 的 WASAPI 共享模式容忍并发打开，所以这些在 Windows 上看不出来。
+- **AEC 远端取值**：`far_device` 缺省 = `loopback`（系统默认输出）——AEC 要消除的就是输出设备的声音，
+  界面也不再提供「未选择」。**远端是否接受裸输出设备 ID 按平台**（`devices::loopback_accepts_device_id`）：
+  Windows = WASAPI 端点可以（`loopback:<端点>` 或裸端点 ID），Linux = **只认 `loopback` / `loopback:<Pulse sink>`**
+  （填 ALSA 设备 ID 会拼出 `<id>.monitor` 这种无效 monitor，far 永远取不到）。
 - **网络（手机 ⇄ 电脑）**（`src-tauri/src/net/`，协议见 DESIGN.md §4.1）：一个 axum WebSocket
   服务，端口 **59123**，路径 `/ws`（另有 `/health` 自检）。三条能力共用一条连接：
   `remote_mic` 输入行（手机麦克风→电脑，**不需要虚拟声卡驱动**，直接进引擎可降噪）、
@@ -140,12 +153,18 @@ release 构建同样保留（不允许用编译开关剔除）。
   10 s → `enr_tok`；无参考直通）。行状态（对齐计数 / 推理耗时 / 参考状态）经 `Stage::status` 进列概要。
 - **参考录制 / 延时校准**：命令 `record_tse_reference(seconds)` 录「降噪后、TSE 前」的信号（`recorder.rs`，
   RMS 归一化到 -20 dBFS，峰值不削顶）→ `~/.purevox/tse_reference.wav`；命令 `calibrate_aec_delay()`
-  对第一个 AEC 行采集 1.6 s、向被回环的输出送 800→6000 Hz 扫频探针，FFT 互相关**对称搜索**延时（**从零
+  对第一个 AEC 行采集 1.6 s、向被回环的输出送 500→7000 Hz 单次扫频探针（150 ms、平顶包络、0.98
+  幅度；**峰宽由带宽决定，不是时长**），FFT 互相关**对称搜索**延时（**从零
   重置、固定参考延时、只喂精确窗口 → 测的是绝对延时**，不累加、每次可重复），并
   **自动配平**（近端/远端各自 RMS 归一到 -24 dBFS → 回填 `mic_gain_db` / `far_gain_db`）。去直流 + 带限
   （与探针带一致）+ 带内 RMS 归一化（`engine/calib.rs`）。最近一次缓冲落在 `~/.purevox/calib_last_{mic,far}.f32`
   便于离线排查。进度/结果都在快照里（`recorder` / `calib`），界面据此回填参数并重建会话。
   AEC 行另有 `bypass`（直通，跳过 AEC）供 A/B 对比。
+  校准有三条 Linux 相关约束：① **探针必须送到 far 监听的同一只输出**（Linux 走
+  `audio/probe_linux.rs` 的 `pacat`，cpal 打不开 Pulse sink 名；探针发声的设备 = AEC 要消除的设备），
+  ② **会话必须先「启动」**（未运行直接报错，不静默卡在「采集中」），且采集有**独立看门狗**
+  （列线程不喂数据也会超时结束），③ **探针峰值已接近满刻度（输出侧实测 -1.2 dBFS）**，
+  麦克风收到的响度只由「系统音量 × 声学路 × 麦克风增益」决定——**不允许代改用户音量**。
 - **onnxruntime 会话必须单线程且关闭自旋**（`with_intra_threads(1)` / `with_inter_threads(1)` /
   `with_intra_op_spinning(false)`）：默认按核数建池并忙等，会占满 CPU、和音频回调抢核，
   实测把 1.8 ms 的推理拖到 >100 ms。改这三项前先读 `infer/denoise.rs` 的注释。
@@ -155,7 +174,10 @@ release 构建同样保留（不允许用编译开关剔除）。
   接入 1.2 节对应端点，否则视为未完成。
 - **验证方式**：智能体与脚本验证运行状态一律请求 HTTP 接口（`curl http://127.0.0.1:<端口>/debug`），
   不靠模拟键鼠点界面（Windows 会拦截后台抢焦点，按键会打进别的窗口）。界面交互验证用
-  Windows UI Automation，详见 `TAURI3.md` 3.6 节。**少截图**，优先用调试接口读数。
+  Windows UI Automation（`TAURI3.md` 3.6 节）；**Linux 用 `tools/automation/ui.py`（AT-SPI）**——
+  `list` 列控件、`click <可访问名>` 点按钮/勾选框（要 `DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`），不要求人点。**少截图**，优先用调试接口读数。
+  **不许动系统的音量 / 静音**（只读不写；用户音量不是我们该改的状态）。
 - **测试自收尾**：任何启动进程的 shell 测试必须自己结束（PowerShell 用
   `try { … } finally { Get-Process purevox -ErrorAction SilentlyContinue | Stop-Process }`），
   命令一律带超时，后台任务不得残留；**不允许把运行中的 app 留给用户手动关闭**。
@@ -224,7 +246,8 @@ release 构建同样保留（不允许用编译开关剔除）。
    - **缓存纪律**：`tests.yml` / `release.yml` 只 restore、不写缓存；键为
      `purevox-<RUNNER_OS>-<桶>-<CACHE_GEN>-…`。缓存桶与全部版本（含 `JDK_VER` /
      `ANDROID_PLATFORM` / `ANDROID_BUILD_TOOLS`）的唯一来源 = `tools/automation/versions.env`
-     （其余 workflow 不得硬编码版本或直写缓存）。
+     （其余 workflow 不得硬编码版本或直写缓存）。`warm-cache.yml` 保存前先按 key 删旧条目
+     （**GitHub 缓存 key 不可变**，覆盖 = 先删再存；否则同键 save 被拒、旧缓存永远留着）。
    - **Linux 系统依赖**（本机与 CI 同）：`libwebkit2gtk-4.1-dev libssl-dev libxdo-dev
      librsvg2-dev libgtk-3-dev libasound2-dev pkg-config file rpm`（wry→WebKitGTK、
      cpal→ALSA、rpmbuild→rpm）；运行期还需系统 `libopus0`（缺时网络音频降级，见 §1.2）。

@@ -19,6 +19,9 @@
 
 use super::{DeviceInfo, LoopbackTarget};
 
+/// Windows：回环目标就是 WASAPI 输出端点，`far_device` 可以填裸输出设备 ID。
+pub(super) const LOOPBACK_ACCEPTS_DEVICE_ID: bool = true;
+
 /// Windows 枚举本就干净，原样返回。
 pub(super) fn simplify(devices: Vec<DeviceInfo>) -> Vec<DeviceInfo> {
   devices

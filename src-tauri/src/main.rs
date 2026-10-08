@@ -327,6 +327,26 @@ fn main() {
           let _ = w.hide();
         }
       }
+      // 调试钩子（不设环境变量则完全不生效）：`PUREVOX_AUTOCALIB_MS=<毫秒>` 时自动启动会话，
+      // 并在该延时后跑一次 AEC 延时校准——用于无人点击界面时验证 AEC（结果进 /debug 的 `calib` 与 `ui`）。
+      if let Some(ms) = std::env::var("PUREVOX_AUTOCALIB_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+      {
+        let mgr = app.state::<Arc<AudioManager>>().inner().clone();
+        let hub = app.state::<SharedHub>().inner().clone();
+        std::thread::spawn(move || {
+          if let Err(e) = mgr.start() {
+            hub.push_ui("error", format!("AUTOCALIB 启动会话失败：{e}"));
+            return;
+          }
+          std::thread::sleep(std::time::Duration::from_millis(ms));
+          match mgr.calibrate_aec_delay() {
+            Ok(t) => hub.push_ui("info", format!("AUTOCALIB：{t}")),
+            Err(e) => hub.push_ui("error", format!("AUTOCALIB：{e}")),
+          }
+        });
+      }
       Ok(())
     })
     // 最小化 / 关闭都收到托盘（不退出）

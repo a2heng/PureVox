@@ -21,6 +21,9 @@ use std::collections::HashMap;
 
 use super::{DeviceInfo, LoopbackTarget};
 
+/// Linux 的回环是 Pulse sink 的 monitor：**不接受裸 ALSA 设备 ID**。
+pub(super) const LOOPBACK_ACCEPTS_DEVICE_ID: bool = false;
+
 /// Linux 的 ALSA 枚举会把「插件 PCM」（null / 各种 rate converter / speex / jack / oss /
 /// pipewire / pulse / upmix…）和同一张声卡的多种别名（`hw:` / `plughw:` / `sysdefault:` /
 /// `front:`，外加按**名字**与按**序号**两套 `CARD=`）全列出来——本机一次枚举 108 条，
@@ -81,9 +84,11 @@ pub(super) fn simplify(devices: Vec<DeviceInfo>) -> Vec<DeviceInfo> {
 }
 
 /// 可回环的 PipeWire/Pulse sinks（`pactl list sinks` 的 Name/Description）。
+/// **必须 `LC_ALL=C`**：中文 locale 下 pactl 会输出「名称/描述」，按 `Name:` 解析会得到 0 个。
 pub(super) fn loopback_targets() -> Vec<LoopbackTarget> {
   let mut v = Vec::new();
   if let Ok(out) = std::process::Command::new("pactl")
+    .env("LC_ALL", "C")
     .args(["list", "sinks"])
     .output()
   {

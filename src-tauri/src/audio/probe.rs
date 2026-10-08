@@ -15,17 +15,19 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 其它平台（非 Windows / 非 Linux）：不精简；无回环目标（AEC 回环不可用）。
+//! 校准探针的平台播放。实现按平台分文件（AGENTS.md §4）。
+//!
+//! [`NATIVE`] = 本平台能否把探针**直送指定的输出 sink**（Linux → `probe_linux.rs` 用
+//! `pacat`；Windows 不行，回环探针走 cpal 输出端点）。`play` 只在 `NATIVE` 时有意义。
 
-use super::{DeviceInfo, LoopbackTarget};
+#[cfg(target_os = "linux")]
+#[path = "probe_linux.rs"]
+mod imp;
+#[cfg(windows)]
+#[path = "probe_windows.rs"]
+mod imp;
+#[cfg(not(any(target_os = "linux", windows)))]
+#[path = "probe_other.rs"]
+mod imp;
 
-/// 其它平台：无回环能力 → 也不接受裸设备 ID。
-pub(super) const LOOPBACK_ACCEPTS_DEVICE_ID: bool = false;
-
-pub(super) fn simplify(devices: Vec<DeviceInfo>) -> Vec<DeviceInfo> {
-  devices
-}
-
-pub(super) fn loopback_targets() -> Vec<LoopbackTarget> {
-  Vec::new()
-}
+pub use imp::{NATIVE, play};

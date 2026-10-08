@@ -185,7 +185,7 @@ fn run(
   let primed = Arc::new(AtomicBool::new(false));
 
   // ---- 打开设备 ----
-  let setup = (|| -> Result<_, String> {
+  let setup = crate::audio::with_device_retry(|| -> Result<_, String> {
     let (dev, name) = crate::devices::find(&device_id, false)?;
     let supported = dev
       .default_output_config()
@@ -204,7 +204,7 @@ fn run(
     }?;
     stream.play().map_err(|e| format!("启动输出流失败：{e}"))?;
     Ok((stream, prod, dev_cap, cfg, fmt, name, conv))
-  })();
+  });
 
   let (stream, mut dev_prod, dev_cap, cfg, fmt, name, mut conv) = match setup {
     Ok(v) => v,

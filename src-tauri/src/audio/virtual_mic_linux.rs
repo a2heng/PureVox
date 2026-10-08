@@ -107,6 +107,7 @@ pub fn create() -> Result<Status, String> {
   // 真源：无 pactl 时只保留 monitor 出口（不算失败）。
   if node_id(MIC).is_none() && have("pactl") {
     let out = Command::new("pactl")
+      .env("LC_ALL", "C")
       .args([
         "load-module",
         "module-remap-source",
@@ -140,7 +141,10 @@ pub fn remove() -> Result<Status, String> {
       if line.contains(MIC)
         && let Some(id) = line.split_whitespace().next()
       {
-        let _ = Command::new("pactl").args(["unload-module", id]).output();
+        let _ = Command::new("pactl")
+          .env("LC_ALL", "C")
+          .args(["unload-module", id])
+          .output();
         break;
       }
     }

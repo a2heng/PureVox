@@ -141,11 +141,16 @@ fn pump(
     "回环：系统默认输出".to_string()
   };
   let child = Command::new("parec")
+    .env("LC_ALL", "C")
     .args([
       &format!("--device={monitor}"),
       "--format=float32le",
       &format!("--rate={RATE}"),
       "--channels=1",
+      // **必须压低缓冲**：parec 默认 buffer ≈ 1.9 s，far 会比 mic 晚近 2 s，
+      // 校准的 ±1 s 搜索窗根本够不着（实测「相关太弱（0.000）」就是这么来的）。
+      "--latency-msec=100",
+      "--process-time-msec=20",
     ])
     .stdin(Stdio::null())
     .stdout(Stdio::piped())

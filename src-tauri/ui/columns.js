@@ -147,10 +147,11 @@ function deviceOptions(kind, selectedId) {
 function farOptions(selected) {
   // 远端 = 输出/sink 的监视回环（`loopback` = 系统默认输出，`loopback:<sink>` = 指定），
   // 由后端 `list_loopback_targets` 给出（Linux = PipeWire sinks；Windows = WASAPI 端点）。
-  const opts = [['', T('未选择设备')], ['loopback', T('系统默认输出')]].concat(
+  // 不再提供「未选择」：AEC 的远端就是它要消除的那只输出，缺省 = 系统默认输出。
+  const opts = [['loopback', T('系统默认输出')]].concat(
     loopTargets.map((t) => [t.id, '🔁 ' + t.name]))
   if (selected && !opts.some((o) => o[0] === selected)) {
-    opts.push([selected, selected.startsWith('loopback') ? T('系统默认输出') : T('设备不在')])
+    opts.push([selected, T('设备不在')])
   }
   return opts
 }
@@ -312,7 +313,9 @@ function rowElement(col, ci, row, ri) {
     const d2 = document.createElement('div')
     d2.className = 'detail2'
     d2.appendChild(lbl(T('远端')))
-    d2.appendChild(select(farOptions(row.params.far_device), row.params.far_device ?? '', (v) => {
+    // AEC 远端必选：缺省 = 系统默认输出（输出设备的声音就是 AEC 要消除的回声）
+    if (!row.params.far_device) row.params.far_device = 'loopback'
+    d2.appendChild(select(farOptions(row.params.far_device), row.params.far_device, (v) => {
       row.params.far_device = v
       apply()
     }))

@@ -235,3 +235,10 @@ fn enumerate() -> DeviceList {
 fn simplify(devices: Vec<DeviceInfo>) -> Vec<DeviceInfo> {
   plat::simplify(devices)
 }
+
+/// AEC 远端是否接受「裸输出设备 ID」当回环目标：Windows 的 WASAPI 端点可以直接回环，
+/// 所以 `far_device` 填一个输出设备 ID 就行；Linux 的回环是 Pulse sink 的 monitor，
+/// 只认 `loopback` / `loopback:<sink>`，填 ALSA 设备 ID 会拼出无效的 `<id>.monitor`。
+pub fn loopback_accepts_device_id() -> bool {
+  plat::LOOPBACK_ACCEPTS_DEVICE_ID
+}

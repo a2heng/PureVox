@@ -107,6 +107,30 @@ impl CalibHub {
     self
       .hub
       .set_calib(Probe::ok(format!("采集中 0.0/{seconds:.0} s")));
+    // 看门狗：会话没跑（feed 永不调用）时也要超时结束，绝不永久卡在「采集中」。
+    let state = self.state.clone();
+    let hub = self.hub.clone();
+    std::thread::Builder::new()
+      .name("calib-watchdog".into())
+      .spawn(move || {
+        loop {
+          std::thread::sleep(Duration::from_millis(200));
+          let mut st = state.lock().unwrap();
+          match &*st {
+            State::Collecting { deadline, .. } => {
+              if Instant::now() >= *deadline {
+                *st = State::Failed;
+                hub.set_calib(Probe::unavailable(
+                  "采集超时：近端/远端窗口一直不可用（会话在跑吗？远端在放声音吗？）",
+                ));
+                return;
+              }
+            }
+            _ => return, // 已离开采集中
+          }
+        }
+      })
+      .ok();
     Ok(())
   }
 
@@ -243,8 +267,8 @@ fn peak_window_rms_db(x: &[f32]) -> f64 {
 }
 
 /// 校准探针频带（对数扫频起止）。
-const PROBE_F0: f64 = 800.0;
-const PROBE_F1: f64 = 6000.0;
+const PROBE_F0: f64 = 500.0;
+const PROBE_F1: f64 = 7000.0;
 
 /// FFT 互相关求残余延时（ms）与归一化相关系数。
 /// 去直流 + 频带限幅（与探针带一致，压带外杂波/底噪）+ 带内 RMS 归一化（与电平无关）。
@@ -349,30 +373,59 @@ fn dump_calib(mic: &[f32], far: &[f32]) {
   }
 }
 
-/// 校准探针：单次 800→6000 Hz 对数扫频（150 ms，Hann 包络，0.9 幅度），前后留短静音。
-/// 单次是刻意的（重复 chirp 会产生假峰）；起始频率抬高、时长压短，听感更利落。
+/// 校准探针：单次 500→7000 Hz 对数扫频（150 ms，平顶包络，0.98 幅度），前后留短静音。
+/// 单次是刻意的（重复 chirp 会产生假峰）。**峰宽由带宽决定（≈1/带宽），不是时长**；
+/// 包络用平顶（两端各 15% 升余弦）而不是 Hann：Hann 只有中点一瞬间到顶，听感和能量都偏低。
 pub fn make_probe() -> Vec<f32> {
   const SR: usize = SAMPLE_RATE as usize;
-  let head = SR * 100 / 1000;
+  let head = SR * 80 / 1000;
   let dur = SR * 150 / 1000;
-  let tail = SR * 150 / 1000;
+  let tail = SR * 120 / 1000;
   let mut v = vec![0.0f32; head + dur + tail];
   let (f0, f1) = (PROBE_F0, PROBE_F1);
   let k = (f1 / f0).ln() / (dur as f64 / SR as f64);
+  let taper = (dur as f64 * 0.15).max(1.0) as usize;
   let mut phase = 0.0f64;
   for i in 0..dur {
     let t = i as f64 / SR as f64;
     let f = f0 * (k * t).exp();
     phase += 2.0 * std::f64::consts::PI * f / SR as f64;
-    let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / dur as f64).cos();
-    v[head + i] = (0.9 * w * phase.sin()) as f32;
+    let w = if i < taper {
+      0.5 - 0.5 * (std::f64::consts::PI * i as f64 / taper as f64).cos()
+    } else if i + taper >= dur {
+      0.5 - 0.5 * (std::f64::consts::PI * (dur - 1 - i) as f64 / taper as f64).cos()
+    } else {
+      1.0
+    };
+    v[head + i] = (0.98 * w * phase.sin()) as f32;
   }
   v
 }
 
-/// 把探针送到给定输出设备（临时播放流，放完即停）。让 far 与 mic 都能收到探针。
-pub fn play_probe(hub: SharedHub, devices: Vec<String>) {
+/// 把探针送到「远端监听的那只输出」与给定输出设备（临时播放流，放完即停）。
+///
+/// - `far_sink`：远端回环的目标 sink（Linux 用 `pacat` 直送；`None`/空 = 默认 sink）。
+///   探针必须从这只 sink 发出，far 才收得到（cpal 在 Linux 打不开 Pulse sink 名）。
+/// - `devices`：列计划的输出设备（cpal 路径）；Windows 的回环端点也在此。
+pub fn play_probe(hub: SharedHub, devices: Vec<String>, far_sink: Option<String>) {
   let probe = Arc::new(make_probe());
+  if let Some(sink) = far_sink {
+    let p = probe.clone();
+    let hub2 = hub.clone();
+    std::thread::Builder::new()
+      .name("probe-far".into())
+      .spawn(move || {
+        let target = if sink.is_empty() {
+          None
+        } else {
+          Some(sink.as_str())
+        };
+        if let Err(e) = crate::audio::probe::play(&p, target) {
+          hub2.push_ui("error", format!("校准探针（远端 sink）播放失败：{e}"));
+        }
+      })
+      .ok();
+  }
   for (i, dev) in devices.into_iter().enumerate() {
     let fan = Arc::new(crate::audio::fanout::Fanout::new("校准探针".to_string()));
     let tag = format!("probe{i}");

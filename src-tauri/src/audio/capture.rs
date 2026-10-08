@@ -245,7 +245,7 @@ fn run(
   let stats = Arc::new(CallbackStats::new());
 
   // ---- 打开设备 ----
-  let setup = (|| -> Result<_, String> {
+  let setup = crate::audio::with_device_retry(|| -> Result<_, String> {
     let (dev, name) = crate::devices::find(&device_id, true)?;
     let supported = dev
       .default_input_config()
@@ -263,7 +263,7 @@ fn run(
     }?;
     stream.play().map_err(|e| format!("启动输入流失败：{e}"))?;
     Ok((stream, cons, cfg, fmt, name))
-  })();
+  });
 
   let (stream, cons, cfg, fmt, name) = match setup {
     Ok(v) => v,
