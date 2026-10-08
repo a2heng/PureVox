@@ -1,11 +1,11 @@
-# PureVox 缓存 —— **全仓库唯一的缓存写入者**，且**只手动触发**（workflow_dispatch）。
-# ci.yml / release.yml 一律 restore-only。GitHub 缓存按触发 ref 分域，让各工作流
+# 缓存预热 —— **全仓库唯一的缓存写入者**，且**只手动触发**（workflow_dispatch）。
+# tests.yml / release.yml 一律 restore-only。GitHub 缓存按触发 ref 分域，让各工作流
 # 各写各的只会堆出没人回读的重复条目（tag 上写入的尤其如此）；集中到一处写，
 # 每个键恒有一份有效条目，写入用 continue-on-error（同键已存在即视为成功）。
 # 依赖升级（Cargo.lock / Cargo.toml / versions.env 变更）后，从默认分支手动 dispatch
 # 一次本工作流暖桶，之后的分支/ tag 都能回读。
 # warm 用「冷构建 target」（不恢复 target 缓存）→ 保存的快照始终干净、无历史增量垃圾。
-name: Cache
+name: 缓存预热（手动）
 
 on:
   workflow_dispatch:
@@ -16,12 +16,12 @@ env:
 
 jobs:
   warm:
-    name: Warm · ${{ matrix.os }} (sole cache writer)
+    name: 预热 · ${{ matrix.os }}（唯一缓存写入者）
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-22.04]
+        os: [windows-latest, ubuntu-latest]
     defaults:
       run:
         shell: pwsh

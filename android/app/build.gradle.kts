@@ -31,7 +31,8 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        // 版本名可由 CI 传入（`-PpvVersion=<tag/日期>`，见 tools/automation/version.sh）；本机默认 1.0。
+        versionName = (findProperty("pvVersion") as String?) ?: "1.0"
     }
 
     buildTypes {

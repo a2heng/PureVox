@@ -196,28 +196,32 @@ release 构建同样保留（不允许用编译开关剔除）。
      现役图标是 `src-tauri/icons/`、界面用系统字体（不捆绑字体文件），与旧资产**无重复**。
 6. **发版 tag**：主线 `v<yyyy.MM.dd.HHmm>`。CI 失败、从未生成 release 的 tag 必须删除
    （`git tag -d <tag> && git push origin :refs/tags/<tag>`），否则会截断下一个 release 的提交记录。
+   **应用/包版本号 = 日期**：由 `tools/automation/version.{sh,ps1}` 从 tag（或本机当前 UTC）推导——Tauri
+   的 `version` 必须是 semver，故取 `yyyy.MMdd.HHmm`（如 tag `v2026.10.08.1430` → 版本 `2026.1008.1430`），
+   写入 `src-tauri/.build-version.json` 并由 `cargo tauri build --config` 覆盖（不提交该文件）；窗口标题与
+   调试面板「版本」走 `PUREVOX_BUILD_VERSION`（见 `src/version.rs`）。
 7. **CI 与门禁（多平台：Windows + Linux + Android；测试与打包解耦，无自动触发）**：
-   - **触发纪律**：**没有任何分支推送 / PR 触发**。`ci.yml`（只测试、不打包）只
+   - **触发纪律**：**没有任何分支推送 / PR 触发**。`tests.yml`（只测试、不打包）只
      `workflow_dispatch` 手动触发；`release.yml`（打包发版）由 tag `v*` 触发、也可手动；
      `warm-cache.yml`（唯一缓存写入者）也只手动。日常提交零成本，要验证就手动 dispatch 一次。
    - 门禁唯一实现 = `tools/automation/check.ps1`（**跨平台 PowerShell**：`fmt` /
      `clippy`（`-D warnings`）/ `build` / `test` / `ui`（`tsc` + `i18n_lint`））；
      CI 与本机（Windows 与 Linux）跑同一份，按 `-Gate` 拆 step 便于定位日志。
    - 工作流（`.github/workflows/`）：
-     - `ci.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-22.04`
+     - `tests.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-latest`
        （fmt/clippy/build/test）、`ui` 门禁（`ubuntu-latest`：setup-node → `-Gate ui`）。**不打包**。
      - `warm-cache.yml`：**全仓库唯一缓存写入者**，手动；矩阵 Windows+Linux 冷构建
        target，预热 debug 三门禁 + `cargo tauri build`，再 save 四个桶（cargo registry /
        target-debug / target-release / cargo-tauri binary；`continue-on-error`，同键已存在即成功）。
      - `release.yml`：tag `v*` 或手动 → 三平台并行：
        **Windows**（门禁 + `cargo tauri build` + `assert_bundle.ps1 -Smoke` → MSI/NSIS）；
-       **Linux**（`ubuntu-22.04`：装 WebKitGTK/ALSA/rpm 依赖 + 门禁 + `cargo tauri build` +
+       **Linux**（`ubuntu-latest`：装 WebKitGTK/ALSA/rpm 依赖 + 门禁 + `cargo tauri build` +
        `assert_bundle_linux.sh --smoke` + `test_packages.sh`（deb→ubuntu / rpm→fedora 容器安装验证）→
        deb/rpm/AppImage）；
        **Android**（JDK17 + `install_android_sdk.sh` + `./gradlew assembleDebug` → debug APK）。
        tag 时再 `release_notes.ps1` 生成说明并 `gh release create` 附带全部产物；手动触发只打包、不建 release。
        **没有 Lite 变体**（其遗留资产已收进只读快照 `legacy-v2026.09.30.1944/`，见 §2.5）。
-   - **缓存纪律**：`ci.yml` / `release.yml` 只 restore、不写缓存；键为
+   - **缓存纪律**：`tests.yml` / `release.yml` 只 restore、不写缓存；键为
      `purevox-<RUNNER_OS>-<桶>-<CACHE_GEN>-…`。缓存桶与全部版本（含 `JDK_VER` /
      `ANDROID_PLATFORM` / `ANDROID_BUILD_TOOLS`）的唯一来源 = `tools/automation/versions.env`
      （其余 workflow 不得硬编码版本或直写缓存）。

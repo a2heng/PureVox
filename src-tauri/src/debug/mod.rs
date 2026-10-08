@@ -285,7 +285,7 @@ impl DebugHub {
       uptime_ms: self.uptime_ms(),
       app: AppInfo {
         name: "PureVox",
-        version: env!("CARGO_PKG_VERSION"),
+        version: crate::version::VERSION,
         pid: std::process::id(),
         debug_http: st.http,
       },

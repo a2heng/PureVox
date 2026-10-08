@@ -46,6 +46,7 @@ mod openurl;
 mod openurl;
 mod plan;
 mod recorder;
+mod version;
 mod wav;
 
 use std::sync::{Arc, Mutex};
@@ -308,6 +309,10 @@ fn main() {
         if models.is_dir() {
           infer::set_model_dir(models);
         }
+      }
+      // 窗口标题带版本（与包版本同源，见 `version.rs`）。
+      if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_title(&format!("PureVox {}", version::VERSION));
       }
       setup_tray(app)?;
       start_hotkey(app.handle(), &app.state::<HotkeyHost>());

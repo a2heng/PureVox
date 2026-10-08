@@ -18,7 +18,7 @@
 #
 # 跨发行版「装得上、起得来」验证（环境模拟）：在**目标发行版容器**里真实安装我们的
 # 安装包，断言依赖解析、文件落位、动态库链接、可执行文件存在。
-#   - deb  → ubuntu:22.04（apt）
+#   - deb  → ubuntu:24.04（apt）
 #   - rpm  → fedora:latest（dnf）
 #   - AppImage → 本机 `--appimage-extract` 解包断言（无需容器）
 # 容器运行时用 docker（GitHub runner 自带）；本机也可用 `DOCKER=podman` 覆盖。
@@ -57,12 +57,12 @@ if [ -n "${https_proxy:-}${HTTPS_PROXY:-}${http_proxy:-}${HTTP_PROXY:-}" ]; then
   RUN_ARGS+=(-e http_proxy -e https_proxy -e HTTP_PROXY -e HTTPS_PROXY -e no_proxy -e NO_PROXY)
 fi
 
-# ---- deb → ubuntu:22.04 ----
+# ---- deb → ubuntu:24.04 ----
 deb="$(find "$BUNDLE/deb" -name '*.deb' -type f 2>/dev/null | head -1)"
 if [ -n "$deb" ]; then
-  say "== deb → ubuntu:22.04 =="
+  say "== deb → ubuntu:24.04 =="
   "$DOCKER" run "${RUN_ARGS[@]}" -e EXPECTED="$EXPECTED" -e CHECK="$CHECK" \
-    -v "$BUNDLE/deb:/pkg:ro" ubuntu:22.04 bash -c \
+    -v "$BUNDLE/deb:/pkg:ro" ubuntu:24.04 bash -c \
     'apt-get update -qq &&
      apt-get install -y -qq --no-install-recommends /pkg/*.deb >/dev/null &&
      bash -c "$CHECK"'

@@ -37,8 +37,8 @@ use windows::Win32::System::Performance::{
 };
 use windows::core::{Interface, PCWSTR, w};
 
+use super::GpuAdapter;
 use super::Probe;
-use super::system::GpuAdapter;
 
 const ENGINE_PATH: PCWSTR = w!("\\GPU Engine(*)\\Utilization Percentage");
 const ADAPTER_MEM_PATH: PCWSTR = w!("\\GPU Adapter Memory(*)\\Dedicated Usage");

@@ -23,7 +23,7 @@
   重采样 + PI 时钟伺服（±3%）+ 预热/重同步/封顶。VB-Cable 回环（播放到 CABLE Input、从 CABLE Output
   采集）与真实默认输出（EDIFIER）各测 30 s / 16 s：48k 缓冲稳定在目标 40 ms，欠载 0、重同步 0、
   丢弃 0、流错误 0，伺服修正量约 ±300 ppm 内；回环采回频谱峰值 1000 Hz @ -20 dB。
-- CI 与发版流水线已建立（2026-10-07，见 §3.7）：`ci.yml`（门禁）/ `warm-cache.yml`（唯一缓存写入者）/
+- CI 与发版流水线已建立（2026-10-07，见 §3.7）：`tests.yml`（门禁）/ `warm-cache.yml`（唯一缓存写入者）/
   `release.yml`（tag → 门禁 → 打包 → `assert_bundle -Smoke` 安装冒烟（7 模型布局）→ gh release）；
   门禁与断言脚本集中在 `tools/automation/`，本机与 CI 跑同一份 `check.ps1`。
 - **网络（手机 ⇄ 电脑）已实现**（2026-10-08，DESIGN.md §4.1）：axum WebSocket 服务（端口
@@ -51,7 +51,7 @@
   以及非公开 API `AudioRecord.Builder.setPerformanceMode`（SDK 里根本没有，删除）。
 - UI 字符串统一管理已落地（2026-10-07）：`i18n.js` 单字典 + `T()` 占位符 + `__pvTpl()` Rust 模板表
   + `i18n_lint` 门禁（规则见 AGENTS.md §4）。
-- **Linux 已跑通并出包**（2026-10-08）：本机 Ubuntu 24.04（CI 用 `ubuntu-22.04`）`cargo build` /
+- **Linux 已跑通并出包**（2026-10-08）：本机 Ubuntu 24.04（CI 用 `ubuntu-latest`）`cargo build` /
   `clippy -D warnings` / `test`（40 项全过）/ `cargo tauri build` 均通过，出 deb / rpm / AppImage；
   `tools/automation/check.ps1` 改为跨平台（`$HOME/.cargo/bin`）。Windows 专有功能在其它平台给
   **明确「不可用」**而不静默：全局热键（`RegisterHotKey`）、AEC 远端 WASAPI 回环（改填输入设备作参考）。
@@ -190,7 +190,8 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
   libxdo-dev libssl-dev librsvg2-dev libgtk-3-dev libasound2-dev pkg-config rpm
 ```
 
-CI 用 `ubuntu-22.04`（`libwebkit2gtk-4.1-dev` 在 jammy 已有），debian 兼容面更广。
+CI 用 `ubuntu-latest`（Ubuntu 24.04，glibc 2.39）——`onnxruntime` 预编译包依赖较新的 glibc
+（22.04 链接会报 `__isoc23_strtol` 未定义），因此 Linux 安装包要求 **glibc ≥ 2.39**（Ubuntu 24.04+ / 较新发行版）。
 Fedora / Arch / openSUSE 等发行版的包名见 prerequisites 页对应标签。
 
 实测（Ubuntu 24.04）：`cargo build` / `clippy -D warnings` / `test`（40 项全过）/
@@ -263,24 +264,24 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
 
 纪律（规则正文见 AGENTS.md §2 第 7 条）：
 
-- **触发纪律：没有任何分支推送 / PR 触发**（日常提交零成本）。`ci.yml`（只测试）只
+- **触发纪律：没有任何分支推送 / PR 触发**（日常提交零成本）。`tests.yml`（只测试）只
   `workflow_dispatch`；`release.yml`（打包发版）tag `v*` 或手动；`warm-cache.yml`（唯一缓存写入者）只手动。
 - **门禁唯一实现** `tools/automation/check.ps1`（**跨平台 PowerShell**，Windows 与 Linux 跑同一份）：
   `fmt`（rustfmt --check，缩进见 `src-tauri/rustfmt.toml`）/ `clippy`（`--all-targets -D warnings`）/
   `build` / `test` / `ui`（`tsc -p ui/jsconfig.json --noEmit` + `i18n_lint.js`）。本机跑全量或 `-Gate <项>`。
 - **工作流** `.github/workflows/`：
-  - `ci.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-22.04`；`ui` 门禁在 `ubuntu-latest`。
+  - `tests.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-latest`；`ui` 门禁在 `ubuntu-latest`。
   - `warm-cache.yml`：**全仓库唯一缓存写入者**，手动；矩阵 Windows+Linux **冷构建**（不恢复 target 缓存）
     debug 三门禁 + `cargo tauri build`，再 save 四个桶（`continue-on-error`，同键已存在即视为成功）。
   - `release.yml`：tag `v*` 或手动 → 三平台并行：
     - **Windows**：门禁 → `cargo tauri build` → `assert_bundle.ps1 -Smoke` → MSI/NSIS。
-    - **Linux**（`ubuntu-22.04`）：装 WebKitGTK/ALSA/rpm 依赖 → 门禁 → `cargo tauri build` →
+    - **Linux**（`ubuntu-latest`）：装 WebKitGTK/ALSA/rpm 依赖 → 门禁 → `cargo tauri build` →
       `assert_bundle_linux.sh --smoke` → `test_packages.sh`（deb→ubuntu / rpm→fedora 容器安装验证）→
       deb/rpm/AppImage。
     - **Android**：JDK17 + `install_android_sdk.sh` + `./gradlew assembleDebug` → debug APK。
     - tag 时 `release_notes.ps1`（上一 tag 区间）+ `gh release create` 附带全部产物；手动只打包、不建 release。
   - **没有 Lite 变体**（Lite 已取消；遗留资产已收进只读快照 `legacy-v2026.09.30.1944/`）。
-- **缓存纪律**：`ci.yml` / `release.yml` 全部 `actions/cache/restore`（无 save）；键与版本唯一来源 =
+- **缓存纪律**：`tests.yml` / `release.yml` 全部 `actions/cache/restore`（无 save）；键与版本唯一来源 =
   `tools/automation/versions.env`（`CACHE_GEN` / `RUST_TOOLCHAIN` / `TCLI_VER` / `TS_VER` / `NODE_VER` /
   `LINUX_RUNNER` / `JDK_VER` / `ANDROID_PLATFORM` / `ANDROID_BUILD_TOOLS`），工作流只组合
   `hashFiles('src-tauri/Cargo.lock')`。四个桶按 `purevox-<RUNNER_OS>-…`：
@@ -292,7 +293,7 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
     校验 `models\*.onnx` 7/7 → 启动并轮询 `/debug` 就绪 → 杀进程清残留。
   - Linux `tools/automation/assert_bundle_linux.sh [--smoke]`：deb ≥ 40 MB → `dpkg-deb -x` 解包 →
     校验可执行文件与 `*.onnx` 7/7 → rpm / AppImage 存在性 → `--smoke` 时 xvfb 下启动轮询 `/debug`。
-  - 跨发行版 `tools/automation/test_packages.sh`（环境模拟）：容器里**真实安装**——deb→`ubuntu:22.04`
+  - 跨发行版 `tools/automation/test_packages.sh`（环境模拟）：容器里**真实安装**——deb→`ubuntu:24.04`
     （apt）、rpm→`fedora:latest`（dnf）、AppImage→本机 `--appimage-extract`；断言可执行文件存在、
     模型 7/7、`ldd` 无缺失。容器运行时用 `docker`（GitHub runner 自带）；本机 `DOCKER=podman`。
 - **UI 字符串门禁** `tools/automation/i18n_lint.js`（`-Gate ui` 内）：规则见 AGENTS.md §4。
@@ -309,7 +310,7 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
 - 用 **Tauri 3 alpha**（`3.0.0-alpha.4`）+ **wry**（系统 WebView2，包小）。
 - 音频引擎**用 Rust 原生重写**（设备 I/O + onnxruntime Rust 绑定），不挂 Python sidecar。
 - **Linux 打包依赖**：wry 需 WebKitGTK 4.1、cpal 需 ALSA、rpm 需 rpmbuild，托盘不再需 appindicator
-  （见 §3.2）；debian 兼容面用 `ubuntu-22.04` 出包。
+  （见 §3.2）；Linux 出包用 `ubuntu-latest`（24.04），**要求 glibc ≥ 2.39**（onnxruntime 预编译包所致）。
 - **多平台 CI + 无自动触发**：测试手动、打包 tag 触发，三平台（Windows / Linux / Android），
   无 Lite 变体（见 §3.7）。
 

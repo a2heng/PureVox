@@ -1,4 +1,4 @@
-# PureVox CI —— **代码门禁（只测试，不打包）**，且**只手动触发**（Actions → CI → Run workflow）。
+# 测试（门禁）—— **只测试，不打包**，且**只手动触发**（Actions → 测试 → Run workflow）。
 # 分支推送 / PR **不触发**：日常提交零成本，要验证某分支手动 dispatch 一次即可。
 # 打包与发版见 release.yml（tag `v*` 触发，也可手动）。
 # 纪律（沿袭旧版）：
@@ -6,19 +6,19 @@
 #   - 键与版本的唯一来源是 tools/automation/versions.env（本文件只组合，不硬编码版本）；
 #   - 门禁实现只有一处 tools/automation/check.ps1（跨平台 PowerShell，本机与 CI 同一份）；
 #   - legacy-v*/ 快照不参与 CI（AGENTS.md 维护准则 3）。
-name: CI
+name: 测试（只跑门禁，手动触发）
 
 on:
   workflow_dispatch:
 
 jobs:
   rust:
-    name: Rust · ${{ matrix.os }}
+    name: 测试 · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-22.04]
+        os: [windows-latest, ubuntu-latest]
     defaults:
       run:
         shell: pwsh
@@ -83,7 +83,7 @@ jobs:
         run: ./tools/automation/check.ps1 -Gate test
 
   ui:
-    name: UI (tsc · i18n)
+    name: 界面检查（tsc + i18n）
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -97,12 +97,10 @@ jobs:
             "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
 
-      # cache: false —— 本仓库无 package.json，也不允许 setup-node 偷偷写缓存
-      # （缓存只由 warm-cache.yml 写）。
+      # 本仓库无 package.json，不设 setup-node 的 cache（缓存只由 warm-cache.yml 写）。
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VER }}
-          cache: false
 
       - name: Install TypeScript (版本钉死在 versions.env)
         run: npm install -g "typescript@$env:TS_VER"
