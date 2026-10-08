@@ -42,7 +42,6 @@ jobs:
           $lock = "${{ hashFiles('src-tauri/Cargo.lock') }}"
           "CARGO_CACHE_KEY=purevox-$env:RUNNER_OS-cargo-$($vars['CACHE_GEN'])-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "TARGET_DEBUG_KEY=purevox-$env:RUNNER_OS-target-dbg-$($vars['CACHE_GEN'])-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "TARGET_RELEASE_KEY=purevox-$env:RUNNER_OS-target-rel-$($vars['CACHE_GEN'])-$($vars['TCLI_VER'])-$lock" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "TAURI_CLI_KEY=purevox-$env:RUNNER_OS-tauri-cli-$($vars['TCLI_VER'])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
       # Tauri wry 运行时 (WebKitGTK 4.1) + cpal (ALSA) + 打 rpm 需要 rpmbuild。
@@ -88,12 +87,7 @@ jobs:
           ./tools/automation/check.ps1 -Gate build
           ./tools/automation/check.ps1 -Gate test
 
-      # 冷构建 release + 打安装器：顺带预热 WiX/NSIS（Windows）与 onnxruntime 下载，
-      # 并顺手验证 bundle 配置（模型资源）在该提交上仍可打包。
-      - name: Warm release + installers
-        working-directory: src-tauri
-        run: cargo tauri build
-
+      # 只预热 debug 目标（+ registry + tauri-cli）：release 目标不预热（release.yml 需要时自己冷编）。
       - name: Drop stale caches（同键先删，保证新缓存覆盖旧的）
         continue-on-error: true
         shell: pwsh
@@ -101,7 +95,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # GitHub 缓存 key 不可变：同键已存在时 save 会被拒（旧的永远留着）。先按 key 删掉旧的。
-          foreach ($k in @($env:CARGO_CACHE_KEY, $env:TARGET_DEBUG_KEY, $env:TARGET_RELEASE_KEY, $env:TAURI_CLI_KEY)) {
+          foreach ($k in @($env:CARGO_CACHE_KEY, $env:TARGET_DEBUG_KEY, $env:TAURI_CLI_KEY)) {
             if (-not $k) { continue }
             $n = gh api --method DELETE "repos/${{ github.repository }}/actions/caches?key=$k" 2>$null
             Write-Host "drop $k -> $n"
@@ -122,13 +116,6 @@ jobs:
         with:
           path: src-tauri/target/debug
           key: ${{ env.TARGET_DEBUG_KEY }}
-
-      - name: Save target/release
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: src-tauri/target/release
-          key: ${{ env.TARGET_RELEASE_KEY }}
 
       - name: Save cargo-tauri binary
         continue-on-error: true
