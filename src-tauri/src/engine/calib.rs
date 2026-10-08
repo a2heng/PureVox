@@ -215,6 +215,8 @@ impl CalibHub {
         let delay_ms = (((current_delay_ms + residual_ms) / 10.0).round() * 10.0).clamp(-1000.0, 1000.0);
         let mic_gain = (TARGET_RMS_DB - mic_rms).clamp(-40.0, 40.0);
         let far_gain = (TARGET_RMS_DB - far_rms).clamp(-40.0, 40.0);
+        // 校准的两件事分开报：① 回声路径（far→mic 衰减，延时同侧）② 麦克风电平配平
+        let path_db = far_rms - mic_rms; // 正 = mic 收到的比 far 低多少
         let mut st = state.lock().unwrap();
         if coef < 0.02 {
           *st = State::Failed;
@@ -224,7 +226,7 @@ impl CalibHub {
         } else {
           *st = State::Done;
           hub.set_calib(Probe::ok(format!(
-            "延时 {delay_ms:.1} ms（相关 {coef:.2}）｜近端 {mic_gain:+.0} dB｜远端 {far_gain:+.0} dB"
+            "延时 {delay_ms:.1} ms（相关 {coef:.2}）｜回声路径（far→mic）−{path_db:.0} dB｜近端 {mic_gain:+.0} dB｜远端 {far_gain:+.0} dB"
           )));
         }
       })
