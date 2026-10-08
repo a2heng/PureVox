@@ -90,6 +90,13 @@ static SPECS: &[NodeSpec] = &[
     params: &[],
   },
   NodeSpec {
+    ptype: "remote_mic",
+    label: "手机麦克风",
+    kind: NodeKind::Input,
+    // 无参数：不需要虚拟声卡驱动，网络流直接进引擎；全会话只允许一个
+    params: &[],
+  },
+  NodeSpec {
     ptype: "echo_cancel",
     label: "AEC 回声消除",
     kind: NodeKind::Input,
@@ -199,6 +206,12 @@ static SPECS: &[NodeSpec] = &[
   NodeSpec {
     ptype: "audio_output",
     label: "音频输出",
+    kind: NodeKind::Output,
+    params: &[],
+  },
+  NodeSpec {
+    ptype: "remote_speaker",
+    label: "手机扬声器",
     kind: NodeKind::Output,
     params: &[],
   },

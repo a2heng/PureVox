@@ -26,6 +26,23 @@
 - CI 与发版流水线已建立（2026-10-07，见 §3.7）：`ci.yml`（门禁）/ `warm-cache.yml`（唯一缓存写入者）/
   `release.yml`（tag → 门禁 → 打包 → `assert_bundle -Smoke` 安装冒烟（7 模型布局）→ gh release）；
   门禁与断言脚本集中在 `tools/automation/`，本机与 CI 跑同一份 `check.ps1`。
+- **网络（手机 ⇄ 电脑）已实现**（2026-10-08，DESIGN.md §4.1）：axum WebSocket 服务（端口
+  59123，`/ws` + `/health`）。`remote_mic` 输入行（手机麦克风→电脑，**不需要虚拟声卡驱动**，
+  进引擎全链可降噪）+ `remote_speaker` 输出行（电脑→手机扬声器）+ 远程输入（手机输入法打字
+  `text` 与手机实体键当全尺寸键盘 `key`，**两件事分开**，开关默认关闭）。协议见 DESIGN.md §4.1。
+  - **Opus 零编译链**：不用 `opus` crate（其 `-sys` 要 cmake 编 C 源码），也不用已废弃 5 年的
+    `audiopus`；改为运行时 `LoadLibraryExW` + `GetProcAddress` 加载仓库里**预编译 x64**
+    `server/opus.dll`（`libopus 1.3.1`，AGENTS §2.5 保留的遗留产物，正好复用）。实测
+    10 ms 帧 ≈ 29 kbps、解码每包恰好 480 样本。**坑**：`opus_encoder_get_size` /
+    `opus_decoder_get_size` 是兼容桩**恒返回 0**，一律用 `*_create`（状态由 libopus 内部分配）。
+  - **坑**：出站节拍必须用绝对时刻（`next += 10ms` 再 `sleep_until(next)`）。最初用
+    `tokio::time::interval` 实测只产 **64 包/s**（应 100），改绝对时刻后回 100 —— 与
+    §3.3 里列工作线程那个 sleep 过冲是同一个病。
+  - **坑**：连接收尾若 `writer_task.abort()`，已排队的 `err`（如「协议版本不符」）会被吞掉；
+    要 `drop(out_tx)` 后等写任务自然结束。
+  - 回环测试 `src-tauri/src/net/loopback.rs`（10 项，真实 axum 服务 + 真实 WS 客户端），
+    节拍诊断 `net/diag.rs`。Android 客户端用系统自带 `MediaCodec`（`audio/opus`），
+    **无 JNI / 无 NDK**；明文 `ws://` + `usesCleartextTraffic`。
 - UI 字符串统一管理已落地（2026-10-07）：`i18n.js` 单字典 + `T()` 占位符 + `__pvTpl()` Rust 模板表
   + `i18n_lint` 门禁（规则见 AGENTS.md §4）。
 - Linux 未开始。
@@ -142,6 +159,9 @@ Invoke-WebRequest https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msv
 
 判断 WebView2 是否真的装了：看 `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\` 下有没有版本号目录。
 注册表 `EdgeUpdate\Clients\{F3017226-...}` 键**存在但 `pv` 为空**表示没装，不能只看键在不在。
+
+> **不需要 cmake / Ninja**：网络功能的 Opus 走运行时加载预编译 `opus.dll`（见 §1 进度），
+> `tools/automation/versions.env` 也不含 cmake 项。Android 端同理用系统 `MediaCodec`，无 NDK。
 
 ### 3.2 Linux 工具链（待验证）
 

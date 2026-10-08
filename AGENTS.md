@@ -53,6 +53,12 @@ release 构建同样保留（不允许用编译开关剔除）。
 - 快照另带 `ui`：界面自报的最近消息数组（新在前，最多 50 条，见 `ui_report` 命令）；
   `audio.engine`（列概要）含每列 `hop/s` 节拍速率（正常 100，见 DESIGN.md §3.3）；
   `recorder`（TSE 参考录制进度/结果）与 `calib`（AEC 延时校准进度/结果）。
+- 另有 `net`（手机 ⇄ 电脑，DESIGN.md §4.1）：服务端口、已连接客户端数、订阅音频数、
+  进出包与样本计数、进／出站水位、欠载与丢弃数、已注入按键与字符数、客户端自测 RTT、
+  `remote_input` 开关状态、最近错误原因，以及 `codec`（Opus 版本 + 实际加载到的
+  `opus.dll` 路径；加载不到时为 `unavailable` + 原因）。
+  **注意**：`net` 是用户可见功能，**绑所有网卡的 59123**（手机要能连），
+  与本节「只绑 127.0.0.1」的调试接口是两回事；远程输入另有独立开关且**默认关闭**。
 
 ### 1.3 实现约束
 
@@ -78,6 +84,29 @@ release 构建同样保留（不允许用编译开关剔除）。
   `get_plan` / `apply_plan`（结构性变更 → 重建整个会话）。列 UI（`ui/columns.js`）编辑计划：
   每列两端固定为输入/输出、中间可加/删/移行；输入/输出行选设备，处理行选型号。
   测试音是输入行的一种（`ptype = tone`，全局共享线程）。
+- **网络（手机 ⇄ 电脑）**（`src-tauri/src/net/`，协议见 DESIGN.md §4.1）：一个 axum WebSocket
+  服务，端口 **59123**，路径 `/ws`（另有 `/health` 自检）。三条能力共用一条连接：
+  `remote_mic` 输入行（手机麦克风→电脑，**不需要虚拟声卡驱动**，直接进引擎可降噪）、
+  `remote_speaker` 输出行（电脑→手机扬声器，按位置 tap）、远程输入（`text` 打字 + `key`
+  全尺寸键盘，**两件事分开**，用 `net_set_remote_input` 开关且**默认关闭**）。
+  命令 `net_start` / `net_stop` / `net_status` / `net_set_remote_input`；状态进快照 `net` 段。
+  - **Opus 不引入 C 编译链**：`net/opus_sys.rs` 用 `LoadLibraryExW` + `GetProcAddress`
+    运行时加载预编译 x64 `opus.dll`（`server/opus.dll`，随包分发；`tauri.conf.json` 的
+    resources 已登记）。查找顺序 `<exe 同目录>/opus.dll` → 仓库 `server/opus.dll`。
+    注意 `opus_encoder_get_size` / `opus_decoder_get_size` 是**兼容桩恒返回 0**，
+    一律用 `*_create`（libopus 内部分配）。**帧长不固定**：PC 发 10 ms（= 1 hop），
+    接收端按样本累积后重切 hop（Android 的 opus 常见 20 ms），10 ms 网格不受影响。
+  - **主时钟在引擎侧**：网络任务只把解码后的样本塞进队列（进出各有界：目标 50 ms、
+    硬顶 80 ms，超限丢最旧），由列工作线程按自己的 10 ms 节拍取；欠载补静音。
+  - **出站节拍用绝对时刻**（`next += 10ms` 再 `sleep_until(next)`），不要
+    `sleep(10ms - 本轮已用)`：后者实测只产 ~64 包/s（列工作线程与反馈端同理，§3.3）。
+  - **按键注入**（`net/keys.rs`）：`SendInput` + **Set 1 扫描码**（不是虚拟键码，能走真实
+    键盘布局并区分左右修饰键）；文本用 `KEYEVENTF_UNICODE` 逐 UTF-16 码元注入（中文、emoji
+    都能打，且不经过电脑端输入法）。映射表在 `net/keymap.rs`（105 键，Android 键码常量
+    **从 AOSP `KeyEvent.java` 逐个提取，勿手抄**）。注入后端按平台分：Windows 已实现，
+    其余平台返回明确的不可用原因（Linux 需 uinput/XTEST），不静默失败。
+  - **安全取舍（明确记录）**：局域网同网段可直连、**无鉴权**，因此远程输入默认关闭、
+    界面常驻显示状态、有一键关闭；不要在没有开关保护的前提下默认开启按键注入。
 - **推理链路**（`src-tauri/src/infer/`）：用 `ort`（onnxruntime）流式推理。模型契约统一为
   `*_hop [1,480]`（10 ms 波形）+ `cache_in [1,D]`（扁平流式缓存，首帧零起）→ `enh_hop [1,480]`
   （**滞后 1 hop**）+ `cache_out [1,D]`；缓存维度从模型输入读，不写死；STFT 在模型图内。

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  The built-in AI models are NOT covered by the GPL; they are the
+  property of a2heng and may only be used with PureVox under
+  authorization.  See MODEL-LICENSE.md for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<resources>
+    <!-- 日夜跟随系统（DayNight），亮/暗自动切换。 -->
+    <style name="Theme.PureVox" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/pv_blue</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+    </style>
+
+    <style name="PvSectionTitle">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">14dp</item>
+        <item name="android:layout_marginBottom">4dp</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:letterSpacing">0.08</item>
+        <item name="android:textColor">?android:attr/textColorSecondary</item>
+    </style>
+
+    <style name="PvStatus">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:padding">10dp</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:lineSpacingExtra">2dp</item>
+        <item name="android:textColor">?android:attr/textColorPrimary</item>
+        <item name="android:background">@drawable/bg_panel</item>
+    </style>
+</resources>

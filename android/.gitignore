@@ -1,0 +1,21 @@
+# PureVox — AI 麦克风降噪工具
+# Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+#
+# PureVox is licensed under the GNU General Public License v3.0 or
+# later (GPL-3.0-or-later).  See LICENSE for details.
+#
+# The built-in AI models are NOT covered by the GPL; they are the
+# property of a2heng and may only be used with PureVox under
+# authorization.  See MODEL-LICENSE.md for details.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Gradle / AGP 产物与本机配置（注意：gradle/wrapper/gradle-wrapper.jar 是入库的，不在此忽略）
+.gradle/
+build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.iml
+.idea/

@@ -41,6 +41,10 @@ cpal = "0.18"
 rubato = "5"
 # 实时回调 -> 工作线程的无锁单生产者单消费者环形缓冲
 rtrb = "0.4"
+# 网络：WebSocket 服务（手机 ⇄ 电脑，DESIGN.md §4.1），跨平台
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 # 调试频谱
 rustfft = "6"
 # ONNX 推理（onnxruntime 绑定；构建时下载 onnxruntime 并把 dll 复制到产物旁）
@@ -69,4 +73,10 @@ windows = { version = "0.62", features = [
   "Win32_Media_Audio",
   "Win32_Media_KernelStreaming",
   "Win32_System_Com",
+  # 网络：运行时加载预编译 opus.dll（不引入 C 编译链）
+  "Win32_System_LibraryLoader",
 ] }
+
+[dev-dependencies]
+# 网络回循测试的 WebSocket 客户端（不进产物）
+tokio-tungstenite = "0.24"

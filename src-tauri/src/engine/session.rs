@@ -62,10 +62,14 @@ struct Row {
   input: Option<Consumer<f32>>,
   /// AEC 输入行：mic 读端 + far 历史 + 本行模型状态
   aec: Option<AecRow>,
+  /// `remote_mic` 输入行：网络入站队列（DESIGN.md §4.1）
+  net_input: Option<Arc<crate::net::NetHub>>,
   /// 处理行
   stage: Option<Box<dyn Stage>>,
   /// 输出行：本行扇出（该行的播放线程从这里订阅）
   output: Option<Arc<Fanout>>,
+  /// `remote_speaker` 输出行：推给网络中枢（无扇出、无播放线程）
+  net_output: bool,
 }
 
 struct ColumnRuntime {
@@ -185,6 +189,8 @@ fn build_column(
   let mut rows: Vec<Row> = Vec::new();
   let mut captures = Vec::new();
   let mut playbacks = Vec::new();
+  // `remote_mic` 入站是单队列，全会话只允许一行（SPEC 约束）
+  let mut remote_mic_used = false;
 
   for (ri, r) in spec.rows.iter().enumerate() {
     let mut row = Row {
@@ -197,8 +203,10 @@ fn build_column(
       inf_max_ms: 0.0,
       input: None,
       aec: None,
+      net_input: None,
       stage: None,
       output: None,
+      net_output: false,
     };
     let device = r.device.as_deref().filter(|d| !d.is_empty());
     match r.kind {
@@ -320,6 +328,17 @@ fn build_column(
         row.label = "测试音 1 kHz".into();
         row.input = Some(crate::audio::tone::shared().subscribe(&format!("col{idx}row{ri}")));
       }
+      RowKind::Input if r.ptype == "remote_mic" => {
+        // 手机麦克风：不需要虚拟声卡驱动，网络流直接进引擎（DESIGN.md §4.1）
+        // 允许一个：入站是单队列，多行会互相抢样本
+        if remote_mic_used {
+          row.error = Some("手机麦克风只允许一个输入行".into());
+        } else {
+          remote_mic_used = true;
+          row.label = "手机麦克风（网络）".into();
+          row.net_input = Some(crate::net::hub().clone());
+        }
+      }
       RowKind::Input => match device {
         None => row.unconfigured = true,
         Some(dev) => match crate::devices::find(dev, true) {
@@ -345,6 +364,11 @@ fn build_column(
         }
         Err(e) => row.error = Some(e),
       },
+      RowKind::Output if r.ptype == "remote_speaker" => {
+        // 手机扬声器：按位置 tap 取信号，交给网络中枢广播给订阅客户端
+        row.label = "手机扬声器（网络）".into();
+        row.net_output = true;
+      }
       RowKind::Output => match device {
         None => row.unconfigured = true,
         Some(dev) => match crate::devices::find(dev, false) {
@@ -422,7 +446,10 @@ fn run_column(
       let mut g = rows.lock().unwrap();
       let n_inputs = g
         .iter()
-        .filter(|r| r.kind == RowKind::Input && (r.input.is_some() || r.aec.is_some()))
+        .filter(|r| {
+          r.kind == RowKind::Input
+            && (r.input.is_some() || r.aec.is_some() || r.net_input.is_some())
+        })
         .count();
       let k = 1.0 / n_inputs.max(1) as f32;
       let recording = rec.active();
@@ -512,6 +539,12 @@ fn run_column(
                   }
                 }
               }
+            } else if let Some(net) = r.net_input.as_ref() {
+              // 手机麦克风：按引擎 10 ms 节拍从网络队列取一个 hop（欠载补静音）
+              net.take_rx_hop(&mut tmp);
+              for i in 0..HOP {
+                acc[i] += tmp[i] * k;
+              }
             } else if let Some(cons) = r.input.as_mut()
               && take_hop(cons, &mut tmp)
             {
@@ -547,10 +580,14 @@ fn run_column(
             }
           }
           RowKind::Output => {
-            if r.enabled
-              && let Some(f) = r.output.as_ref()
-            {
-              f.push_hop(&acc);
+            if r.enabled {
+              if let Some(f) = r.output.as_ref() {
+                f.push_hop(&acc);
+              }
+              if r.net_output {
+                // 手机扬声器：位置 tap（放到哪一行就取到哪里的信号）
+                crate::net::hub().push_tx_hop(&acc);
+              }
             }
           }
         }
@@ -561,11 +598,14 @@ fn run_column(
         last_publish = now;
         let n_in = g
           .iter()
-          .filter(|r| r.kind == RowKind::Input && (r.input.is_some() || r.aec.is_some()))
+          .filter(|r| {
+            r.kind == RowKind::Input
+              && (r.input.is_some() || r.aec.is_some() || r.net_input.is_some())
+          })
           .count();
         let n_out = g
           .iter()
-          .filter(|r| r.kind == RowKind::Output && r.output.is_some())
+          .filter(|r| r.kind == RowKind::Output && (r.output.is_some() || r.net_output))
           .count();
         let n_proc = g.iter().filter(|r| r.kind == RowKind::Process).count();
         let unconf = g.iter().filter(|r| r.unconfigured).count();
@@ -601,6 +641,24 @@ fn run_column(
               aec.latest,
               aec.pass,
               aec.delay_samples / 48
+            ));
+          } else if let Some(net) = r.net_input.as_ref() {
+            // 网络行状态：入站水位与欠载，便于判断「手机没在说话」还是「缓冲欠载」
+            let ns = net.stats();
+            notes.push(format!(
+              "{}：入站 {} 包 / {:.0} ms，欠载 {}，已取 {} hop",
+              r.label,
+              ns.rx_packets,
+              ns.rx_level as f64 / crate::audio::SAMPLE_RATE as f64 * 1000.0,
+              ns.rx_underruns,
+              ns.rx_hops
+            ));
+          } else if r.net_output {
+            notes.push(format!(
+              "{}：已发 {} 包，订阅 {}",
+              r.label,
+              crate::net::hub().stats().tx_packets,
+              crate::net::hub().sub_count()
             ));
           }
         }

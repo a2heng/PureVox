@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  The built-in AI models are NOT covered by the GPL; they are the
+  property of a2heng and may only be used with PureVox under
+  authorization.  See MODEL-LICENSE.md for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!--
+  单界面：连接 → 读数 → 三个功能开关（远程输入再分打字/键盘）→ 输入框 → 日志。
+  唯一滚动区域是这一个 ScrollView；布局里不放任何计算逻辑。
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- 标题 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:letterSpacing="0.06"
+            android:text="@string/app_name"
+            android:textColor="?android:attr/textColorPrimary"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:text="@string/subtitle"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="11sp" />
+
+        <!-- 连接 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/etHost"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:autofillHints=""
+                android:hint="@string/hint_host"
+                android:importantForAutofill="no"
+                android:inputType="textUri"
+                android:maxLines="1"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/btnConnect"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:minWidth="92dp"
+                android:text="@string/btn_connect"
+                android:textAllCaps="false" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btnHealth"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/btn_health"
+            android:textAllCaps="false" />
+
+        <!-- 状态读数（固定 7 行 + 自检行 + 错误行） -->
+        <TextView
+            android:id="@+id/tvStatus"
+            style="@style/PvStatus"
+            android:layout_marginTop="8dp" />
+
+        <TextView
+            android:id="@+id/tvHealth"
+            style="@style/PvStatus"
+            android:layout_marginTop="6dp"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/tvErr"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textColor="@color/pv_err"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+        <!-- 功能开关 -->
+        <TextView
+            style="@style/PvSectionTitle"
+            android:text="@string/section_function" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/swMic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="44dp"
+            android:text="@string/sw_mic"
+            android:textSize="14sp" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/swSpeaker"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="44dp"
+            android:text="@string/sw_speaker"
+            android:textSize="14sp" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/swRemote"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="44dp"
+            android:text="@string/sw_remote"
+            android:textSize="14sp" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/swRemoteText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="20dp"
+            android:minHeight="44dp"
+            android:text="@string/sw_remote_text"
+            android:textSize="13sp" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/swRemoteKeys"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="20dp"
+            android:minHeight="44dp"
+            android:text="@string/sw_remote_keys"
+            android:textSize="13sp" />
+
+        <!-- 输入框：承接输入法已组合文本 -->
+        <TextView
+            style="@style/PvSectionTitle"
+            android:text="@string/section_input" />
+
+        <EditText
+            android:id="@+id/etText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:autofillHints=""
+            android:hint="@string/hint_text_local"
+            android:importantForAutofill="no"
+            android:inputType="textMultiLine|textCapSentences"
+            android:maxLines="4"
+            android:minHeight="48dp"
+            android:textSize="14sp" />
+
+        <!-- 日志 -->
+        <TextView
+            style="@style/PvSectionTitle"
+            android:text="@string/section_log" />
+
+        <TextView
+            android:id="@+id/tvLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:fontFamily="monospace"
+            android:lineSpacingExtra="2dp"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="10sp" />
+    </LinearLayout>
+</ScrollView>

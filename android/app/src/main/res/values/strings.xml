@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  The built-in AI models are NOT covered by the GPL; they are the
+  property of a2heng and may only be used with PureVox under
+  authorization.  See MODEL-LICENSE.md for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<resources>
+    <string name="app_name">PureVox</string>
+
+    <!-- 标题区 -->
+    <string name="subtitle">远程麦克风 · 扬声器 · 键盘客户端</string>
+    <string name="hint_host">电脑 IP 或主机名</string>
+    <string name="btn_connect">连接</string>
+    <string name="btn_disconnect">断开</string>
+    <string name="btn_health">自检 GET /health</string>
+
+    <!-- 状态读数（固定行数，与 MainActivity.updateStatus 一一对应） -->
+    <string name="status_conn">连接状态</string>
+    <string name="status_host">电脑地址</string>
+    <string name="status_rtt">RTT</string>
+    <string name="status_up">上行包</string>
+    <string name="status_down">下行包</string>
+    <string name="status_play">播放</string>
+    <string name="status_opus">Opus 探测</string>
+    <string name="status_health">自检　</string>
+
+    <!-- 功能开关 -->
+    <string name="section_function">功能</string>
+    <string name="sw_mic">手机麦克风 → 电脑</string>
+    <string name="sw_speaker">电脑音频 → 手机扬声器</string>
+    <string name="sw_remote">远程输入（电脑端默认关闭）</string>
+    <string name="sw_remote_text">打字同步（输入法文本 → 电脑）</string>
+    <string name="sw_remote_keys">实体键盘（手机按键 → 电脑）</string>
+
+    <!-- 输入框 -->
+    <string name="section_input">输入</string>
+    <string name="hint_text_local">在此输入（仅本机；打开「打字同步」后内容会转发给电脑）</string>
+    <string name="hint_text_synced">在此输入，内容会转发给电脑后清空</string>
+
+    <!-- 日志 -->
+    <string name="section_log">日志</string>
+
+    <!-- 前台服务通知 -->
+    <string name="notif_channel_name">麦克风推流</string>
+    <string name="notif_channel_desc">保持麦克风在后台可用</string>
+    <string name="notif_starting">正在启动麦克风…</string>
+    <string name="notif_default">正在推流</string>
+</resources>

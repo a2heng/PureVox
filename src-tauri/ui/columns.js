@@ -48,6 +48,15 @@ const kindName = (kind) => T(kind === 'input' ? '输入' : kind === 'process' ? 
 const nodesOf = (kind) => NODES.filter((n) => n.kind === kind)
 const specOf = (ptype) => NODES.find((n) => n.ptype === ptype)
 
+/**
+ * 这一行要不要选设备。
+ * 不需要设备的：`tone`（合成的测试音）、`remote_mic` / `remote_speaker`（网络，
+ * 与声卡无关 —— 手机麦克风直接进引擎，不需要虚拟声卡驱动）。
+ */
+const DEVICE_LESS = new Set(['tone', 'remote_mic', 'remote_speaker'])
+const needsDevice = (kind, ptype) =>
+  kind === 'output' ? !DEVICE_LESS.has(ptype) : kind === 'input' ? !DEVICE_LESS.has(ptype) : false
+
 function lbl(text) {
   const s = document.createElement('span')
   s.className = 'lbl'
@@ -207,7 +216,8 @@ function rowElement(col, ci, row, ri) {
   const ptype = select(nodesOf(kind).map((n) => [n.ptype, T(n.label)]), row.ptype, (v) => {
     row.ptype = v
     row.params = {}
-    if (v === 'tone') row.device = null
+    // 无设备的行：测试音（合成）与网络行（手机麦克风 / 手机扬声器）
+    if (!needsDevice(kind, v)) row.device = null
     render()
     apply()
   })
@@ -281,7 +291,7 @@ function rowElement(col, ci, row, ri) {
     })
     by.append(cb, document.createTextNode(T('直通')))
     detail.appendChild(by)
-  } else if ((kind === 'input' && row.ptype !== 'tone') || kind === 'output') {
+  } else if (needsDevice(kind, row.ptype)) {
     detail.appendChild(select(deviceOptions(kind, row.device), row.device ?? '', (v) => {
       row.device = v || null
       apply()

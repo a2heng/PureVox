@@ -145,13 +145,56 @@ pub fn create_stage(ptype: &str, params: &Params) -> Result<Box<dyn Stage>, Stri
 | --- | --- | --- |
 | 输入 | `audio_input` / `loopback` / `remote_mic` / `media` / `echo_cancel` | 源；同列多个混合 |
 | 处理 | `denoise_*` / `eq` / `gain` / `agc` / `compressor` | Stage；就地处理 |
-| 输出 | `audio_output` | 汇；位置 tap，送往设备 |
+| 输出 | `audio_output` / `remote_speaker` | 汇；位置 tap，送往设备或网络 |
 | 可视化 | `vu_meter` / `spectrum` | 只读 tap |
 
 - **AEC 行**：一个输入行 =「一路 mic + 一路 far」，mic 在行内先过 AEC 再进列；
   far 参考只给模型用，**不进信号路径**；历史不足则直通 mic。
 - **媒体行**（音板 / 音乐 / 系统声）：无采集设备，按需生成 hop 的输入行。
-- **网络行**：`remote_mic`，Opus 帧即 480，只允许一个。
+- **网络行**（本轮新增）：
+  - `remote_mic` = 手机麦克风当电脑麦克风。**不需要虚拟声卡驱动**：网络流直接成为引擎的
+    「源」，因此能进降噪 / TSE / AEC 全链。全会话只允许一个（全局单例）。
+  - `remote_speaker` = 手机扬声器当电脑音箱。按 §3.2 位置 tap 取信号，允许多个（都收到同一份）；
+    该信号经 Opus 编码后广播给所有已订阅客户端。
+  - 协议、缓冲与安全边界见 §4.1。
+
+### 4.1 网络协议（手机 ⇄ 电脑）
+
+**传输**：WebSocket（明文 `ws://`，局域网），端口 **59123**（沿用旧实现），路径 `/ws`。
+只绑局域网可达地址；这是**用户可见功能**，与 AGENTS §1.2 的本机调试接口（只绑 127.0.0.1）无关。
+
+**编码**：Opus（`libopus`）。**不引入 C 编译链**：Rust 侧运行时 `LoadLibraryExW` +
+`GetProcAddress` 加载预编译 x64 `opus.dll`（随包分发），Android 侧用系统自带的 `MediaCodec`
+（`audio/opus`）。**帧长不固定**：PC 编码 10 ms（= 1 hop），Android 侧多为 20 ms；接收端按
+**样本数累积**再重切成 480 样本 hop，因此 §2 的 10 ms 网格在引擎侧始终成立。
+
+| 方向 | WebSocket 类型 | 内容 |
+| --- | --- | --- |
+| 手机 → 电脑 | Binary | 一个 Opus 包（解码出 N 个样本，按序累积切 hop） |
+| 电脑 → 手机 | Binary | 同上（PC 侧只发 10 ms 包） |
+| 双向 | Text | JSON 控制消息 |
+
+控制消息（JSON，`t` 判别）：
+
+| `t` | 方向 | 字段 | 含义 |
+| --- | --- | --- | --- |
+| `hello` | 客户端 → 服务端 | `proto` | 握手，`proto = 1` |
+| `sub` | 客户端 → 服务端 | — | 订阅电脑音频（电脑当手机音箱） |
+| `text` | 客户端 → 服务端 | `s` | 手机输入法提交的文本 |
+| `key` | 客户端 → 服务端 | `code`、`down` | 手机实体按键（`code` = Android `KeyEvent.KEYCODE_*`） |
+| `ping` / `pong` | 双向 | `id` | 往返时延测量 |
+| `ready` | 服务端 → 客户端 | `codec`、`rate`、`channels`、`frame_ms`、`clients` | 握手成功 |
+| `err` | 服务端 → 客户端 | `msg` | 原因（协议版本不符 / 远程输入未开启） |
+
+**远程输入（`text` / `key`）**：
+
+- **独立于音频**：走文本帧，不进信号路径。
+- **两件事分开**：`text` = 手机输入法（已组合好的字符串，`KEYEVENTF_UNICODE` 注入，中文与
+  emoji 都能打）；`key` = 手机实体按键当**全尺寸键盘**（Android keycode → Windows Set 1
+  scancode 映射表，含扩展键标记，`SendInput` 注入）。
+- **默认关闭**：须在界面显式开启「远程输入」才接受 `text` / `key`，否则回 `err`。
+- **无鉴权（明确取舍）**：同网段可直接连。代价是局域网内任何人都能向本机注入按键；因此该
+  开关默认关闭、界面常驻显示状态、界面上有一键关闭。
 
 ---
 
@@ -241,7 +284,7 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 | 频谱 / 波形 | `dsp::meter` | 波形 50 ms、频谱 481 bin，固定 |
 | AEC far 历史 | `engine` | 2 s 网格；`far_delay` ≤ 1000 ms |
 | 回环历史 | `engine` | 1.5 s |
-| 网络 acc | 未来 | 目标 50 ms，硬顶 80 ms |
+| 网络 acc | `net/remote_mic` / `net/remote_speaker` | 进出各一环，目标 50 ms，硬顶 80 ms（超限丢最旧）；取不足一个 hop 补静音 |
 | 模型 `cache` | `infer` | 由模型决定（降噪 36506 / AEC 215504 / TSE 513216 f32），**每行一份** |
 
 规则：**音频回调零分配零加锁零日志**；工作线程预分配复用；任何进入数据面的容器都必须有上限与丢弃策略。
@@ -273,7 +316,9 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 | **模型注册表 + 型号选择** | ◑ 降噪/TSE 型号下拉已接入；统一 `ModelDesc` 注册表待做 | §7 |
 | **TSE 目标说话人提取** | ✅ 已实现（参考 10 s → `enr_tok`，3.9 ms/hop；参考可录制=降噪后+音量归一化；无参考直通） | §4 / §7 |
 | **AEC 回声消除** | ✅ 已实现（far 参考采集 + 2 s 网格对齐 + 每行缓存 + 互相关延时校准） | §4 |
-| 回环 / 媒体 / 网络 | ⛔ | §4 |
+| 回环 | ✅ 已实现（`audio/loopback.rs`，WASAPI loopback） | 作为「输入行」的源 |
+| 媒体 | ⛔ | §4 |
+| **网络（手机 ⇄ 电脑）** | ✅ 已实现：`remote_mic` 输入行 + `remote_speaker` 输出行 + Opus（运行时加载预编译 `opus.dll`）+ `text` 打字 / `key` 全尺寸键盘（默认关闭，界面开关） | §4 / §4.1 |
 
 **实施顺序**：
 1. ✅ Stage / Pipeline / 注册表骨架 + 现有降噪包成 Stage。
@@ -282,4 +327,4 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 4. ◑ 列 UI（两端固定、中间加/删/移、增删列已接入；拖动排序待做）。
 5. 刷新按钮 + 行状态展示（含「重新打开」）。
 6. ◑ 模型注册表 + 型号选择（降噪/TSE/AEC 已接入）。
-7. ✅ TSE、✅ AEC（含参考录制、延时校准）；再回环 → 媒体 / 网络。
+7. ✅ TSE、✅ AEC（含参考录制、延时校准）；✅ 回环；✅ 网络（§4.1）；→ 媒体（音板 / 系统声）。

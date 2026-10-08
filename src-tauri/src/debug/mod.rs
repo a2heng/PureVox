@@ -150,6 +150,8 @@ pub struct DebugSnapshot {
   pub recorder: Probe<String>,
   /// AEC 延时校准状态/结果
   pub calib: Probe<String>,
+  /// 网络（手机 ⇄ 电脑，DESIGN.md §4.1）：端口、客户端数、进出计数、远程输入开关、Opus 探测
+  pub net: crate::net::hub::NetStats,
 }
 
 #[derive(Clone)]
@@ -286,6 +288,7 @@ impl DebugHub {
       running: st_running,
       recorder: st_recorder,
       calib: st_calib,
+      net: crate::net::hub().stats(),
     }
   }
 }

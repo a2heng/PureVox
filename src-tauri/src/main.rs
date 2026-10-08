@@ -28,6 +28,7 @@ mod dsp;
 mod engine;
 mod hotkey;
 mod infer;
+mod net;
 mod plan;
 mod recorder;
 mod wav;
@@ -190,6 +191,36 @@ fn calibrate_aec_delay(mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<Strin
   mgr.calibrate_aec_delay()
 }
 
+/// 启动网络服务（手机 ⇄ 电脑，端口 59123）。幂等。
+#[tauri::command]
+fn net_start() -> Result<String, String> {
+  net::start()
+}
+
+/// 停网络服务，并强制关掉远程输入。
+#[tauri::command]
+fn net_stop() -> Result<String, String> {
+  net::stop();
+  Ok("已停止".into())
+}
+
+/// 网络状态（界面展示；明细见 `/debug` 的 `net` 字段）。
+#[tauri::command]
+fn net_status() -> String {
+  net::status()
+}
+
+/// 远程输入总开关：手机输入法打字 + 手机实体键当全尺寸键盘。**默认关**。
+#[tauri::command]
+fn net_set_remote_input(on: bool) -> Result<String, String> {
+  net::hub().set_remote_input(on);
+  Ok(if on {
+    "已开启远程输入：同网段的手机现在可以向这台电脑打字和发按键".to_string()
+  } else {
+    "已关闭远程输入".to_string()
+  })
+}
+
 fn main() {
   let hub = DebugHub::new();
   debug::system::spawn_sampler(hub.clone());
@@ -252,7 +283,11 @@ fn main() {
       list_models,
       list_nodes,
       record_tse_reference,
-      calibrate_aec_delay
+      calibrate_aec_delay,
+      net_start,
+      net_stop,
+      net_status,
+      net_set_remote_input
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

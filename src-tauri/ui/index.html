@@ -109,6 +109,17 @@
             <tr><th data-i18n="延时校准">延时校准</th><td id="audio-calib" colspan="3"></td></tr>
           </table>
           <div id="audio-streams"></div>
+
+          <h3 data-i18n="网络">网络</h3>
+          <table class="kv">
+            <tr><th data-i18n="手机 ⇄ 电脑">手机 ⇄ 电脑</th><td id="net-status" colspan="3"></td></tr>
+          </table>
+          <div class="set-row">
+            <button id="net-start" type="button" data-i18n="启动服务">启动服务</button>
+            <button id="net-stop" type="button" data-i18n="停止服务">停止服务</button>
+            <label class="topcheck"><input id="net-remote-input" type="checkbox" /><span data-i18n="远程输入（打字 + 键盘）">远程输入（打字 + 键盘）</span></label>
+          </div>
+          <p class="note" data-i18n="同网段直连且无鉴权：同一 Wi-Fi 下的任何设备都能连上。">同网段直连且无鉴权：同一 Wi-Fi 下的任何设备都能连上。</p>
         </section>
       </section>
     </main>
@@ -161,6 +172,7 @@
     <script src="i18n.js"></script>
     <script src="jsdebug.js"></script>
     <script src="settings.js"></script>
+    <script src="net.js"></script>
     <script src="columns.js"></script>
     <script src="debug.js"></script>
   </body>
