@@ -270,9 +270,90 @@ fn peak_window_rms_db(x: &[f32]) -> f64 {
 const PROBE_F0: f64 = 500.0;
 const PROBE_F1: f64 = 7000.0;
 
+/// 带通（探针频带）后的时域信号——用于取包络、找探针所在区段。
+fn bandpassed(x: &[f32]) -> Vec<f32> {
+  let n = x.len();
+  if n == 0 {
+    return Vec::new();
+  }
+  let size = (2 * n).next_power_of_two();
+  let mut f = vec![Complex::new(0.0f32, 0.0); size];
+  for (i, &v) in x.iter().enumerate() {
+    f[i] = Complex::new(v, 0.0);
+  }
+  let mut planner = FftPlanner::<f32>::new();
+  let fwd = planner.plan_fft_forward(size);
+  let inv = planner.plan_fft_inverse(size);
+  fwd.process(&mut f);
+  let (lo, hi) = ((PROBE_F0 * 0.85) as f32, (PROBE_F1 * 1.1) as f32);
+  let bin = SAMPLE_RATE as f32 / size as f32;
+  for (k, c) in f.iter_mut().enumerate() {
+    let fr = if k <= size / 2 {
+      k as f32 * bin
+    } else {
+      (size - k) as f32 * bin
+    };
+    if fr < lo || fr > hi {
+      *c = Complex::new(0.0, 0.0);
+    }
+  }
+  inv.process(&mut f);
+  let s = 1.0 / size as f32;
+  f.iter().map(|c| c.re * s).collect()
+}
+
+/// 5 ms 滑动平均幅度包络。
+fn envelope(x: &[f32]) -> Vec<f32> {
+  let w = (SAMPLE_RATE as usize / 200).max(1);
+  let mut out = vec![0.0f32; x.len()];
+  let mut acc = 0.0f32;
+  for i in 0..x.len() {
+    acc += x[i].abs();
+    if i >= w {
+      acc -= x[i - w].abs();
+    }
+    out[i] = acc / w as f32;
+  }
+  out
+}
+
+/// 探针区段：包络过「峰值 10%」门限的跨度，两端各留 `margin` 采样。
+fn probe_span(env: &[f32], margin: usize) -> Option<(usize, usize)> {
+  let peak = env.iter().cloned().fold(0.0f32, f32::max);
+  if peak <= 1e-7 {
+    return None;
+  }
+  let thr = peak * 0.1;
+  let s = env.iter().position(|&v| v >= thr)?;
+  let e = env.iter().rposition(|&v| v >= thr)?;
+  Some((s.saturating_sub(margin), (e + 1 + margin).min(env.len())))
+}
+
 /// FFT 互相关求残余延时（ms）与归一化相关系数。
-/// 去直流 + 频带限幅（与探针带一致，压带外杂波/底噪）+ 带内 RMS 归一化（与电平无关）。
+///
+/// **先按探针区段裁剪再算**：采集窗 1.6 s 里探针只占 ~0.35 s，其余是静音/底噪；
+/// 全窗归一化互相关会被稀释（实测系数只有 0.1~0.3，看着像「相关太弱」其实只是被摊薄）。
+/// 两侧各留 300 ms 容差（真实延时远小于它），带内 RMS 也只在这个窗口里量。
 fn estimate_delay(mic: &[f32], far: &[f32], max_lag: usize) -> (f64, f64, f64, f64) {
+  let n = mic.len().min(far.len());
+  if n == 0 {
+    return (0.0, 0.0, -160.0, -160.0);
+  }
+  let margin = SAMPLE_RATE as usize * 300 / 1000;
+  let span = {
+    let env = envelope(&bandpassed(&far[..n]));
+    probe_span(&env, margin)
+  };
+  let (s, e) = match span {
+    // 裁剪后仍要够长，否则退回全窗（比如整段都有声）
+    Some((s, e)) if e - s >= SAMPLE_RATE as usize / 5 && e <= n => (s, e),
+    _ => (0, n),
+  };
+  estimate_core(&mic[s..e], &far[s..e], max_lag)
+}
+
+/// 互相关主体：去直流 + 频带限幅（与探针带一致）+ 带内 RMS 归一化（与电平无关）。
+fn estimate_core(mic: &[f32], far: &[f32], max_lag: usize) -> (f64, f64, f64, f64) {
   let n = mic.len().min(far.len());
   if n < SAMPLE_RATE as usize / 10 {
     return (0.0, 0.0, -160.0, -160.0);

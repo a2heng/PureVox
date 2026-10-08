@@ -305,6 +305,7 @@ fn build_column(
                               exact: 0,
                               latest: 0,
                               pass: 0,
+                              echo: crate::engine::aec::EchoMetrics::default(),
                             });
                           }
                           Err(e) => row.error = Some(e),
@@ -533,6 +534,7 @@ fn run_column(
                       }
                       match aec.engine.process(&tmp, &far) {
                         Ok(out) => {
+                          aec.echo.push(&tmp, &far, out);
                           for i in 0..HOP {
                             acc[i] += out[i] * k;
                           }
@@ -644,12 +646,14 @@ fn run_column(
             ));
           } else if let Some(aec) = r.aec.as_ref() {
             notes.push(format!(
-              "{}：精确 {}，回退 {}，直通 {}，延时 {} ms",
+              "{}：精确 {}，回退 {}，直通 {}，延时 {} ms ｜ 远端解释度 ρ={:.2}，回声抑制 {:.1} dB",
               r.label,
               aec.exact,
               aec.latest,
               aec.pass,
-              aec.delay_samples / 48
+              aec.delay_samples / 48,
+              aec.echo.rho,
+              aec.echo.supp_db
             ));
           } else if let Some(net) = r.net_input.as_ref() {
             // 网络行状态：入站水位与欠载，便于判断「手机没在说话」还是「缓冲欠载」

@@ -104,6 +104,48 @@ pub enum FarWin {
   None,
 }
 
+/// 回声诊断（滚动 1 s 窗）：
+/// - `rho`：远端窗口对近端的**解释度**（归一化互相关）——判断「参考/对齐对不对」；
+///   对齐好且回声主导时 ρ 应接近 1；ρ 很低说明麦克风里主要是本底噪声（回声太弱）。
+/// - `supp_db`：**回声抑制** = 10log10(Σ近端² / Σ模型输出²)——判断「模型有没有在消」。
+///   两者一起看才能分清「参考没对齐」还是「模型没出力」。
+#[derive(Default)]
+pub struct EchoMetrics {
+  mic_pow: f64,
+  far_pow: f64,
+  cross: f64,
+  out_pow: f64,
+  hops: u32,
+  pub rho: f64,
+  pub supp_db: f64,
+}
+
+impl EchoMetrics {
+  /// 喂一个 hop 的（近端、远端窗口、模型输出）——都用**进模型前**的增益后信号。
+  pub fn push(&mut self, mic: &[f32], far: &[f32], out: &[f32]) {
+    for i in 0..mic.len().min(far.len()) {
+      let (m, f) = (mic[i] as f64, far[i] as f64);
+      self.mic_pow += m * m;
+      self.far_pow += f * f;
+      self.cross += m * f;
+    }
+    for &o in out {
+      self.out_pow += (o as f64) * (o as f64);
+    }
+    self.hops += 1;
+    if self.hops >= 100 {
+      // 100 hop = 1 s：算好一窗再清零，概要里显示的是「最近 1 秒」
+      self.rho = self.cross / (self.mic_pow.sqrt() * self.far_pow.sqrt()).max(1e-12);
+      self.supp_db = 10.0 * (self.mic_pow / self.out_pow.max(1e-12)).log10();
+      self.mic_pow = 0.0;
+      self.far_pow = 0.0;
+      self.cross = 0.0;
+      self.out_pow = 0.0;
+      self.hops = 0;
+    }
+  }
+}
+
 /// 一行的 AEC 运行状态（每行一份模型缓存 + far 网格 + 对齐计数）。
 pub struct AecRow {
   pub engine: Aec,
@@ -118,6 +160,8 @@ pub struct AecRow {
   pub far_gain: f32,
   /// 直通：跳过 AEC，直接过 mic（A/B 对比用）
   pub bypass: bool,
+  /// 回声诊断（滚动 1 s 窗）：远端对近端的解释度与模型抑制量
+  pub echo: EchoMetrics,
   pub exact: u64,
   pub latest: u64,
   pub pass: u64,
