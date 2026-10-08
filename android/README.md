@@ -77,5 +77,4 @@ cd android
 | `AudioRecord` / `AudioTrack` 的 `ENCODING_PCM_FLOAT` | API 23（minSdk 24 覆盖） |
 | `MediaFormat` 的 `opus-frame-duration-us` | API 29；不认这个 key 时自动降级 |
 | `startForeground(…, FOREGROUND_SERVICE_TYPE_MICROPHONE)` | API 29；24~28 用旧的双参重载 |
-| `setPerformanceMode(LOW_LATENCY)` | API 26；更低版本跳过 |
 | `POST_NOTIFICATIONS` 运行时申请 | API 33 |

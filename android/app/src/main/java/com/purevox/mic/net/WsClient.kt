@@ -28,6 +28,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -151,7 +152,7 @@ class WsClient(
         val s = ws ?: return false
         return try {
             val payload = if (len == data.size) data else data.copyOf(len)
-            if (!s.send(ByteString.of(payload))) return false
+            if (!s.send(payload.toByteString())) return false
             txPackets.incrementAndGet()
             true
         } catch (e: Throwable) {

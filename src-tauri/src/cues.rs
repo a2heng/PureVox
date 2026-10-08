@@ -197,20 +197,14 @@ pub fn play(preset: &str, kind: &str) {
   let wav = wav_bytes(preset, kind);
   std::thread::Builder::new()
     .name("cue".into())
-    .spawn(move || {
-      #[cfg(windows)]
-      unsafe {
-        use windows::Win32::Media::Audio::{PlaySoundW, SND_MEMORY};
-        let _ = PlaySoundW(
-          windows::core::PCWSTR(wav.as_ptr() as *const u16),
-          None,
-          SND_MEMORY,
-        );
-      }
-      #[cfg(not(windows))]
-      {
-        let _ = &wav;
-      }
-    })
+    .spawn(move || plat::play_wav(&wav))
     .ok();
 }
+
+// 平台实现分文件（AGENTS.md §4）：Windows 用 `PlaySound`；其它平台无提示音。
+#[cfg(windows)]
+#[path = "cues_windows.rs"]
+mod plat;
+#[cfg(not(windows))]
+#[path = "cues_other.rs"]
+mod plat;

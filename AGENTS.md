@@ -52,7 +52,8 @@ release 构建同样保留（不允许用编译开关剔除）。
 - 字段只增不改名；新增字段同步更新本表。
 - 快照另带 `ui`：界面自报的最近消息数组（新在前，最多 50 条，见 `ui_report` 命令）；
   `audio.engine`（列概要）含每列 `hop/s` 节拍速率（正常 100，见 DESIGN.md §3.3）；
-  `recorder`（TSE 参考录制进度/结果）与 `calib`（AEC 延时校准进度/结果）。
+  `recorder`（TSE 参考录制进度/结果）与 `calib`（AEC 延时校准进度/结果），以及
+  `virtual_mic`（Linux 虚拟驱动状态：sink / 真源是否已创建；非 Linux 为 `unavailable` + 原因）。
 - 另有 `net`（手机 ⇄ 电脑，DESIGN.md §4.1）：服务端口、已连接客户端数、订阅音频数、
   进出包与样本计数、进／出站水位、欠载与丢弃数、已注入按键与字符数、客户端自测 RTT、
   `remote_input` 开关状态、最近错误原因，以及 `codec`（Opus 版本 + 实际加载到的
@@ -80,6 +81,19 @@ release 构建同样保留（不允许用编译开关剔除）。
   设备环；**设备回调是唯一主时钟**，回调里只取样、缺数据补静音（不在回调里写任何缓冲策略）。
   工作线程策略：预热到「目标水位 + 设备环」再开声；PI 伺服按 48k 环水位微调重采样比例限幅 **±3%**
   消化源/设备时钟差；源断流则回预热重同步；48k 环超 300 ms 封顶丢最旧。伺服目标水位 40 ms。
+- **Linux 设备面**：cpal 在 Linux 只有 ALSA，枚举会把插件 PCM 与同一张卡的多别名全列出来（本机 108 条）。
+  `devices::simplify` 精简为「每个去重后的设备名一条」：丢 `null/lavrate/samplerate/speexrate/jack/oss/
+  pipewire/pulse/speex/upmix/vdownmix/dmix/dsnoop/usbstream/iec958/surround*` 等插件，同卡按名去重，
+  优先 `plughw`（自动格式转换）> `hdmi` > `hw` > `sysdefault` > `front`，`default` 保留。其它平台枚举本就干净，不动。
+- **Linux AEC 远端回环**（`audio/loopback_linux.rs`）：cpal 没有「监听某个 sink」，改用 `parec` 监听输出的
+  monitor（`float32le` 48k 单声道）再喂进与 cpal 采集同一个工作循环（重采样/计量/扇出一致）。`loopback` =
+  系统默认输出、`loopback:<sink>` = 指定 PipeWire sink；候选由命令 `list_loopback_targets` 给出
+  （Linux = `pactl list sinks`，Windows = cpal 输出设备）。Windows 侧仍是 WASAPI loopback（`audio/loopback.rs`）。
+- **虚拟驱动页（顶栏「驱动」）**：按平台切同一面板——Linux（`audio/virtual_mic.rs` + `ui/drivers_linux.js`）
+  照 legacy 建 `purevox_out` null-sink（`pw-cli create-node adapter`）+ monitor + `pactl module-remap-source`
+  真源 `purevox_mic`，移除 = `pactl unload-module` + `pw-cli destroy`；Windows（`ui/drivers_windows.js`）
+  是 VB-CABLE 驱动下载 / 视频教程 / 有无检测。两平台实现分文件，外壳 `ui/drivers.js` 按 `get_platform` 切，
+  按钮与面板位置、布局一致。
 - **会话入口**：计划（`plan.rs`）+ 配置（`config.rs`，存 `~/.purevox/session.json`）→ 命令
   `get_plan` / `apply_plan`（结构性变更 → 重建整个会话）。列 UI（`ui/columns.js`）编辑计划：
   每列两端固定为输入/输出、中间可加/删/移行；输入/输出行选设备，处理行选型号。
@@ -90,9 +104,11 @@ release 构建同样保留（不允许用编译开关剔除）。
   `remote_speaker` 输出行（电脑→手机扬声器，按位置 tap）、远程输入（`text` 打字 + `key`
   全尺寸键盘，**两件事分开**，用 `net_set_remote_input` 开关且**默认关闭**）。
   命令 `net_start` / `net_stop` / `net_status` / `net_set_remote_input`；状态进快照 `net` 段。
-  - **Opus 不引入 C 编译链**：`net/opus_sys.rs` 用 `LoadLibraryExW` + `GetProcAddress`
-    运行时加载预编译 x64 `opus.dll`（`server/opus.dll`，随包分发；`tauri.conf.json` 的
-    resources 已登记）。查找顺序 `<exe 同目录>/opus.dll` → 仓库 `server/opus.dll`。
+  - **Opus 不引入 C 编译链**：`net/opus_sys.rs` 运行时动态加载——Windows 用
+    `LoadLibraryExW` + `GetProcAddress` 加载预编译 x64 `opus.dll`（`src-tauri/opus.dll`，
+    随包分发；`tauri.conf.json` 的 resources 已登记；查找 `<exe 同目录>/opus.dll` →
+    仓库 `src-tauri/opus.dll`），Linux 用 `dlopen`/`dlsym` 加载系统 `libopus.so.0`
+    （Debian 包名 `libopus0`；缺失时网络音频降级为明确原因，其余功能正常）。
     注意 `opus_encoder_get_size` / `opus_decoder_get_size` 是**兼容桩恒返回 0**，
     一律用 `*_create`（libopus 内部分配）。**帧长不固定**：PC 发 10 ms（= 1 hop），
     接收端按样本累积后重切 hop（Android 的 opus 常见 20 ms），10 ms 网格不受影响。
@@ -164,26 +180,51 @@ release 构建同样保留（不允许用编译开关剔除）。
 1. **一个功能只有一条实现路径**。有多种做法时只保留一种并写进文档，被替代的实现直接删除，不留备选。
 2. **先扩展，再新建**：先看已有函数/模块能否扩展，确认不能才新建。
 3. **legacy 快照只读冻结**：`legacy-v2026.08.20.1943/`（音频链条化重构前）与
-   `legacy-v2026.09.30.1944/`（Tauri 迁移前最后的 Tk 版本，已剔除二进制）禁止修改、删除，
-   不参与构建、CI、打包、测试及任何批量改动（格式化、换行符归一、重命名等一律绕过）。只读查阅。
+   `legacy-v2026.09.30.1944/`（Tauri 迁移前最后的 Tk 版本；现役实现不再引用的旧二进制也
+   集中收纳在这里，见 §2.5）禁止修改、删除，不参与构建、CI、打包、测试及任何批量改动
+   （格式化、换行符归一、重命名等一律绕过）。只读查阅。
 4. **迁移期不写用户更新日志**：旧的 `about/changelog.md` 已随旧实现归档；迁移进度记在 `TAURI3.md`。
    新版具备用户可见功能后再恢复更新日志，届时在本节写明位置。
-5. **未接入的遗留二进制**：`assets/`（图标、像素字体）、`server/opus.dll`、
-   `html/wasm/libopus-encoder.wasm.min.wasm`、`android/gradle/wrapper/gradle-wrapper.jar`
-   是旧实现留下的二进制，按原路径保留以备复用；新实现决定使用或确定弃用时再移动/删除并在此更新。
+5. **旧实现遗留二进制**（新实现不再引用的一律收进只读快照 `legacy-v2026.09.30.1944/`，
+   现役树里只留仍在用的）：
+   - **现役引用**：`server/opus.dll`（Windows 网络 Opus，运行时加载，见 §1.2）、
+     `android/gradle/wrapper/gradle-wrapper.jar`（Android 客户端构建，**勿替换**）、
+     `assets/icons/audio_icon_base.png`（`cargo tauri icon` 源图）。
+   - **已收进快照**（新实现不引用，现役树里对应文件已删除，只存快照备查）：
+     `assets/icons/{audio_icon.ico, tray_running.ico, tray_stopped.ico, lite_tray.ico, lite_tray.png}`、
+     `assets/fonts/ark-pixel-12px-monospaced-zh_cn.ttf`、`html/wasm/libopus-encoder.wasm.min.wasm`。
+     现役图标是 `src-tauri/icons/`、界面用系统字体（不捆绑字体文件），与旧资产**无重复**。
 6. **发版 tag**：主线 `v<yyyy.MM.dd.HHmm>`。CI 失败、从未生成 release 的 tag 必须删除
    （`git tag -d <tag> && git push origin :refs/tags/<tag>`），否则会截断下一个 release 的提交记录。
-7. **CI 与门禁（Windows 优先，测试与发版解耦）**：
-   - 门禁唯一实现 = `tools/automation/check.ps1`（`fmt` / `clippy`（`-D warnings`）/ `build` /
-     `test` / `ui`（`tsc` + `i18n_lint`））；CI 与本机跑同一份，按 `-Gate` 拆 step 便于定位日志。
-   - 工作流（`.github/workflows/`）：`ci.yml`（分支推送 / PR 跑门禁，不打包）；
-     `warm-cache.yml`（**全仓库唯一缓存写入者**：`Cargo.lock` / `Cargo.toml` / `versions.env`
-     变更的分支推送 + 每周定时 + 手动触发，冷构建 target 预热后保存）；
-     `release.yml`（tag `v*` → 全部门禁 → `cargo tauri build` → `assert_bundle.ps1 -Smoke`
-     → 上传安装包 → `release_notes.ps1` 生成说明并 `gh release create`；手动触发只验证打包、不建 release）。
-   - **缓存纪律**：`ci.yml` / `release.yml` 只 restore、不写缓存；缓存桶与键的唯一来源 =
-     `tools/automation/versions.env`（其余 workflow 不得硬编码版本或直写缓存）。
-   - `legacy-v*/` 快照与 `*.md` 改动不进 CI（`paths-ignore`）。
+7. **CI 与门禁（多平台：Windows + Linux + Android；测试与打包解耦，无自动触发）**：
+   - **触发纪律**：**没有任何分支推送 / PR 触发**。`ci.yml`（只测试、不打包）只
+     `workflow_dispatch` 手动触发；`release.yml`（打包发版）由 tag `v*` 触发、也可手动；
+     `warm-cache.yml`（唯一缓存写入者）也只手动。日常提交零成本，要验证就手动 dispatch 一次。
+   - 门禁唯一实现 = `tools/automation/check.ps1`（**跨平台 PowerShell**：`fmt` /
+     `clippy`（`-D warnings`）/ `build` / `test` / `ui`（`tsc` + `i18n_lint`））；
+     CI 与本机（Windows 与 Linux）跑同一份，按 `-Gate` 拆 step 便于定位日志。
+   - 工作流（`.github/workflows/`）：
+     - `ci.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-22.04`
+       （fmt/clippy/build/test）、`ui` 门禁（`ubuntu-latest`：setup-node → `-Gate ui`）。**不打包**。
+     - `warm-cache.yml`：**全仓库唯一缓存写入者**，手动；矩阵 Windows+Linux 冷构建
+       target，预热 debug 三门禁 + `cargo tauri build`，再 save 四个桶（cargo registry /
+       target-debug / target-release / cargo-tauri binary；`continue-on-error`，同键已存在即成功）。
+     - `release.yml`：tag `v*` 或手动 → 三平台并行：
+       **Windows**（门禁 + `cargo tauri build` + `assert_bundle.ps1 -Smoke` → MSI/NSIS）；
+       **Linux**（`ubuntu-22.04`：装 WebKitGTK/ALSA/rpm 依赖 + 门禁 + `cargo tauri build` +
+       `assert_bundle_linux.sh --smoke` + `test_packages.sh`（deb→ubuntu / rpm→fedora 容器安装验证）→
+       deb/rpm/AppImage）；
+       **Android**（JDK17 + `install_android_sdk.sh` + `./gradlew assembleDebug` → debug APK）。
+       tag 时再 `release_notes.ps1` 生成说明并 `gh release create` 附带全部产物；手动触发只打包、不建 release。
+       **没有 Lite 变体**（其遗留资产已收进只读快照 `legacy-v2026.09.30.1944/`，见 §2.5）。
+   - **缓存纪律**：`ci.yml` / `release.yml` 只 restore、不写缓存；键为
+     `purevox-<RUNNER_OS>-<桶>-<CACHE_GEN>-…`。缓存桶与全部版本（含 `JDK_VER` /
+     `ANDROID_PLATFORM` / `ANDROID_BUILD_TOOLS`）的唯一来源 = `tools/automation/versions.env`
+     （其余 workflow 不得硬编码版本或直写缓存）。
+   - **Linux 系统依赖**（本机与 CI 同）：`libwebkit2gtk-4.1-dev libssl-dev libxdo-dev
+     librsvg2-dev libgtk-3-dev libasound2-dev pkg-config file rpm`（wry→WebKitGTK、
+     cpal→ALSA、rpmbuild→rpm）；运行期还需系统 `libopus0`（缺时网络音频降级，见 §1.2）。
+   - `legacy-*/` 快照与 `*.md` 改动不进 CI。
 
 ---
 
@@ -206,6 +247,13 @@ release 构建同样保留（不允许用编译开关剔除）。
 - 平台/协议强制小写的标识保持小写：用户数据目录 `~/.purevox/`、Tauri `identifier`
   `com.purevox.desktop`、Android 包名 `com.purevox.mic`、模型代号 `purevox9` 等。
 - **代码命名**：Rust snake_case 函数/变量、PascalCase 类型；JS/TS camelCase。
+- **平台特征代码按文件分（`<功能>_<平台>.rs`）**：同一功能有平台差异时，各平台实现放进
+  `<功能>_windows.rs` / `<功能>_linux.rs` / `<功能>_other.rs`（其它平台 = 明确不可用的桩，
+  不静默失败），功能文件本身只保留共享部分 + `#[cfg] #[path = "…_<平台>.rs"]` 的平台分派；
+  **禁止**在一个文件里用 `#[cfg(windows)]` 包住大段平台实现体。现状（全部按此分）：
+  `audio/loopback_{windows,linux,other}.rs`、`audio/virtual_mic*.rs`、`hotkey*.rs`、
+  `autostart*.rs`、`cues*.rs`、`net/keys*.rs`、`net/opus_sys*.rs`、`devices*.rs`、
+  `debug/{mem,gpu}_*.rs`、`openurl_*.rs`。前端同理：`ui/drivers_linux.js` / `ui/drivers_windows.js`。
 - **许可证头**：每个源码文件（`.rs` / `.toml` / `.html` / `.js` / `.ts` / `.css` 等）顶部必须带 GPL-3.0 版权头 +
   模型声明 + `SPDX-License-Identifier: GPL-3.0-or-later`，照抄 `src-tauri/src/main.rs` 顶部并按注释风格替换。
   JSON 无注释语法，豁免。

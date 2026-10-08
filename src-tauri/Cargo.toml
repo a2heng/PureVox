@@ -77,6 +77,11 @@ windows = { version = "0.62", features = [
   "Win32_System_LibraryLoader",
 ] }
 
+[target.'cfg(unix)'.dependencies]
+# 网络：运行时 dlopen 系统 libopus（`libopus.so.0`，Debian 包名 `libopus0`），
+# 与 Windows 加载 opus.dll 同一契约（不引入 C 编译链）。
+libc = "0.2"
+
 [dev-dependencies]
 # 网络回循测试的 WebSocket 客户端（不进产物）
 tokio-tungstenite = "0.24"

@@ -108,7 +108,7 @@ class OpusDecoder {
         }
         val buf = c.getInputBuffer(idx)
         if (buf == null) {
-            c.queueInputBuffer(idx, 0, 0, 0)
+            c.queueInputBuffer(idx, 0, 0, 0L, 0)
             return
         }
         buf.clear()
@@ -118,7 +118,7 @@ class OpusDecoder {
         // 引入漂移，也让解码器按 PTS 做抖动缓冲时行为不可预期。
         val ptsUs = n.toLong() * 1_000_000L / OpusEncoder.SAMPLE_RATE
         pts += ptsUs
-        c.queueInputBuffer(idx, 0, n, 0, pts)
+        c.queueInputBuffer(idx, 0, n, pts, 0)
         drainOutput(c)
     }
 

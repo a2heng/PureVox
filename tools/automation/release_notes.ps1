@@ -38,10 +38,13 @@ try {
   $body += ''
   $body += $subjects
   $body += ''
-  $body += '## 产物（Windows x64）'
-  $body += '- `PureVox_x64-setup.exe`（NSIS，静默参数 `/S`）'
-  $body += '- `PureVox_x64_en-US.msi`（MSI）'
-  $body += '- 两者均内置现役 ONNX 模型，模型授权见 `MODEL-LICENSE.md`'
+  $body += '## 产物'
+  $body += ''
+  $body += '- **Windows x64**：`*_x64-setup.exe`（NSIS，静默参数 `/S`）、`*_x64_en-US.msi`（MSI）'
+  $body += '- **Linux x64**：`.deb`、`.rpm`、`.AppImage`（系统缺 `libopus0` 时网络音频降级，其余功能正常）'
+  $body += '- **Android arm64**：`PureVox-Android-arm64-*-debug.apk`（手机 ⇄ 电脑客户端，debug 签名）'
+  $body += ''
+  $body += '桌面端均内置现役 ONNX 模型，模型授权见 `MODEL-LICENSE.md`。'
   Set-Content -Path $OutFile -Value $body -Encoding utf8
   Write-Host "release notes -> $OutFile（$($subjects.Count) 条提交）"
 } finally { Pop-Location }

@@ -19,7 +19,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+#[cfg(windows)]
+#[path = "autostart_windows.rs"]
 mod autostart;
+#[cfg(not(windows))]
+#[path = "autostart_other.rs"]
+mod autostart;
+// 打开链接的平台实现分文件（AGENTS.md §4）。
 mod config;
 mod cues;
 mod debug;
@@ -29,6 +35,15 @@ mod engine;
 mod hotkey;
 mod infer;
 mod net;
+#[cfg(windows)]
+#[path = "openurl_windows.rs"]
+mod openurl;
+#[cfg(target_os = "linux")]
+#[path = "openurl_linux.rs"]
+mod openurl;
+#[cfg(not(any(windows, target_os = "linux")))]
+#[path = "openurl_other.rs"]
+mod openurl;
 mod plan;
 mod recorder;
 mod wav;
@@ -221,6 +236,53 @@ fn net_set_remote_input(on: bool) -> Result<String, String> {
   })
 }
 
+/// Linux 虚拟麦克风（PipeWire）当前状态；非 Linux / 不可用时带原因。
+#[tauri::command]
+fn virtual_mic_status() -> debug::Probe<audio::virtual_mic::Status> {
+  audio::virtual_mic::status_probe()
+}
+
+/// 创建 Linux 虚拟麦克风（幂等），返回创建后的状态。
+#[tauri::command]
+fn virtual_mic_create(
+  hub: tauri::State<'_, SharedHub>,
+) -> Result<audio::virtual_mic::Status, String> {
+  let s = audio::virtual_mic::create()?;
+  hub.set_virtual_mic(debug::Probe::ok(s.clone()));
+  Ok(s)
+}
+
+/// 移除 Linux 虚拟麦克风（幂等），返回移除后的状态。
+#[tauri::command]
+fn virtual_mic_remove(
+  hub: tauri::State<'_, SharedHub>,
+) -> Result<audio::virtual_mic::Status, String> {
+  let s = audio::virtual_mic::remove()?;
+  hub.set_virtual_mic(debug::Probe::ok(s.clone()));
+  Ok(s)
+}
+
+/// AEC 远端可选的回环目标（某个输出/sink 的 monitor；「系统默认输出」由界面加）。
+#[tauri::command]
+fn list_loopback_targets() -> Vec<devices::LoopbackTarget> {
+  devices::loopback_targets()
+}
+
+/// 当前平台标识（界面「驱动」页据此切换平台实现）：`linux` / `windows` / `macos`。
+#[tauri::command]
+fn get_platform() -> String {
+  std::env::consts::OS.to_string()
+}
+
+/// 用系统默认浏览器打开链接（驱动下载 / 教程）。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+  if !(url.starts_with("https://") || url.starts_with("http://")) {
+    return Err("只允许打开 http(s) 链接".into());
+  }
+  openurl::open(&url)
+}
+
 fn main() {
   let hub = DebugHub::new();
   debug::system::spawn_sampler(hub.clone());
@@ -239,6 +301,14 @@ fn main() {
     .manage(audio)
     .manage(hotkey_host)
     .setup(|app| {
+      // 打包后模型位于 Tauri 资源目录（Windows：安装目录/models；Linux deb：/usr/lib/<productName>/models），
+      // 注册给模型查找（开发态该目录不存在，走仓库 models/）。
+      if let Ok(res) = app.path().resource_dir() {
+        let models = res.join("models");
+        if models.is_dir() {
+          infer::set_model_dir(models);
+        }
+      }
       setup_tray(app)?;
       start_hotkey(app.handle(), &app.state::<HotkeyHost>());
       // 初始状态同步窗口图标
@@ -287,7 +357,13 @@ fn main() {
       net_start,
       net_stop,
       net_status,
-      net_set_remote_input
+      net_set_remote_input,
+      virtual_mic_status,
+      virtual_mic_create,
+      virtual_mic_remove,
+      list_loopback_targets,
+      get_platform,
+      open_url
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

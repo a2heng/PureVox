@@ -20,8 +20,6 @@
 //! UI 面板（Tauri 命令 `debug_snapshot`）与本机 HTTP 接口序列化的都是
 //! [`DebugHub::snapshot`] 返回的同一个 [`DebugSnapshot`]，禁止另算一套。
 
-#[cfg(windows)]
-mod gpu_win;
 pub mod http;
 pub mod system;
 
@@ -152,6 +150,8 @@ pub struct DebugSnapshot {
   pub calib: Probe<String>,
   /// 网络（手机 ⇄ 电脑，DESIGN.md §4.1）：端口、客户端数、进出计数、远程输入开关、Opus 探测
   pub net: crate::net::hub::NetStats,
+  /// Linux 虚拟麦克风（PipeWire）状态；非 Linux 或不可用时为 unavailable + 原因
+  pub virtual_mic: Probe<crate::audio::virtual_mic::Status>,
 }
 
 #[derive(Clone)]
@@ -169,6 +169,8 @@ struct State {
   recorder: Probe<String>,
   /// AEC 延时校准状态/结果
   calib: Probe<String>,
+  /// Linux 虚拟麦克风状态
+  virtual_mic: Probe<crate::audio::virtual_mic::Status>,
   streams: BTreeMap<String, StreamInfo>,
 }
 
@@ -199,6 +201,7 @@ impl DebugHub {
         running: false,
         recorder: Probe::Pending,
         calib: Probe::Pending,
+        virtual_mic: Probe::Pending,
         streams: BTreeMap::new(),
       }),
     })
@@ -230,6 +233,10 @@ impl DebugHub {
 
   pub fn set_calib(&self, v: Probe<String>) {
     self.state.write().unwrap().calib = v;
+  }
+
+  pub fn set_virtual_mic(&self, v: Probe<crate::audio::virtual_mic::Status>) {
+    self.state.write().unwrap().virtual_mic = v;
   }
 
   pub fn set_running(&self, v: bool) {
@@ -266,6 +273,7 @@ impl DebugHub {
     let st_ui = st.ui.clone();
     let st_recorder = st.recorder.clone();
     let st_calib = st.calib.clone();
+    let st_virtual_mic = st.virtual_mic.clone();
     let st_running = st.running;
     let engine = match st.column {
       Probe::Ok { value } => Probe::ok(value),
@@ -289,6 +297,7 @@ impl DebugHub {
       recorder: st_recorder,
       calib: st_calib,
       net: crate::net::hub().stats(),
+      virtual_mic: st_virtual_mic,
     }
   }
 }

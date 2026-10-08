@@ -26,7 +26,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $tauri = Join-Path $root 'src-tauri'
-$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+# 跨平台：Windows 与 Linux/macOS 的 cargo 都在 $HOME/.cargo/bin（PowerShell 的 $HOME
+# 在 Windows 上等于 USERPROFILE）。用 PathSeparator 拼，不能写死 ';'。
+$env:Path = "$(Join-Path $HOME '.cargo/bin')$([IO.Path]::PathSeparator)$env:Path"
 
 function Invoke-Gate([string]$name, [scriptblock]$body) {
   Write-Host "==> $name" -ForegroundColor Cyan

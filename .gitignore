@@ -6,9 +6,9 @@
 **/__pycache__/
 *.pyc
 
-# 预编译动态库默认不入库；server/opus.dll 是旧实现遗留的预编译 libopus，按原路径保留
+# 预编译动态库默认不入库；src-tauri/opus.dll 是预编译 libopus（Windows 网络音频运行时加载）
 *.dll
-!server/opus.dll
+!src-tauri/opus.dll
 
 # IDE
 .vs/

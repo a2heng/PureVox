@@ -3187,6 +3187,7 @@ dependencies = [
  "axum",
  "cpal",
  "futures-util",
+ "libc",
  "ort",
  "rtrb",
  "rubato",

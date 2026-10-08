@@ -25,7 +25,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use crate::debug::SharedHub;
 
@@ -33,7 +32,6 @@ const MOD_ALT: u32 = 0x0001;
 const MOD_CONTROL: u32 = 0x0002;
 const MOD_SHIFT: u32 = 0x0004;
 const MOD_WIN: u32 = 0x0008;
-const MOD_NOREPEAT: u32 = 0x4000;
 
 /// 修饰键名（顺序固定）与位。
 const MODS: &[(&str, u32)] = &[
@@ -191,39 +189,18 @@ impl Hotkeys {
     if spec.is_empty() {
       return Hotkeys { stop, join: None };
     }
-    let parsed = parse_spec(&spec);
-    let Some((bits, vk)) = parsed else {
+    let Some((bits, vk)) = parse_spec(&spec) else {
       hub.push_ui("error", format!("热键键位无效：{spec}"));
       return Hotkeys { stop, join: None };
     };
-    let stop2 = stop.clone();
-    let hub2 = hub.clone();
-    let spec2 = spec.clone();
-    let join = std::thread::Builder::new()
-      .name("hotkey".into())
-      .spawn(move || unsafe {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{
-          HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
-        };
-        use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, WM_HOTKEY};
-        const ID: i32 = 0x5056;
-        if RegisterHotKey(None, ID, HOT_KEY_MODIFIERS(bits | MOD_NOREPEAT), vk).is_err() {
-          hub2.push_ui("error", format!("热键注册失败（可能被占用）：{spec2}"));
-          return;
-        }
-        hub2.push_ui("info", format!("热键已注册：{spec2}"));
-        let mut msg = MSG::default();
-        while !stop2.load(Relaxed) {
-          while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-            if msg.message == WM_HOTKEY && msg.wParam.0 as i32 == ID {
-              on_trigger();
-            }
-          }
-          std::thread::sleep(Duration::from_millis(20));
-        }
-        let _ = UnregisterHotKey(None, ID);
-      })
-      .ok();
+    let join = imp::spawn(
+      bits,
+      vk,
+      spec.clone(),
+      hub.clone(),
+      stop.clone(),
+      on_trigger,
+    );
     Hotkeys { stop, join }
   }
 
@@ -234,3 +211,11 @@ impl Hotkeys {
     }
   }
 }
+
+// 平台实现分文件（AGENTS.md §4）：Windows 用 `RegisterHotKey`，其它平台明确不可用。
+#[cfg(windows)]
+#[path = "hotkey_windows.rs"]
+mod imp;
+#[cfg(not(windows))]
+#[path = "hotkey_other.rs"]
+mod imp;

@@ -144,7 +144,7 @@ object OpusSupport {
                 setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                 setInteger(MediaFormat.KEY_PCM_ENCODING, pcmEncoding)
             }
-            info.isFormatSupported(format)
+            info.getCapabilitiesForType(MIME).isFormatSupported(format)
         } catch (e: Throwable) {
             false
         }

@@ -15,16 +15,14 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 开机自启：写/删 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `PureVox`
-//! 值（当前可执行文件路径），只影响当前用户，不需要管理员。
+//! Windows 开机自启：写/删 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的
+//! `PureVox` 值（当前可执行文件路径），只影响当前用户，不需要管理员。
 
-#[cfg(windows)]
-const RUN_KEY: windows::core::PCWSTR =
-  windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-#[cfg(windows)]
-const VALUE_NAME: windows::core::PCWSTR = windows::core::w!("PureVox");
+use windows::core::PCWSTR;
 
-#[cfg(windows)]
+const RUN_KEY: PCWSTR = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+const VALUE_NAME: PCWSTR = windows::core::w!("PureVox");
+
 pub fn set(on: bool) -> Result<(), String> {
   use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW, RegOpenKeyExW,
@@ -54,7 +52,6 @@ pub fn set(on: bool) -> Result<(), String> {
   }
 }
 
-#[cfg(windows)]
 pub fn get() -> bool {
   use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
@@ -69,14 +66,4 @@ pub fn get() -> bool {
     let _ = RegCloseKey(hkey);
     code == 0
   }
-}
-
-#[cfg(not(windows))]
-pub fn set(_on: bool) -> Result<(), String> {
-  Err("开机自启仅支持 Windows".into())
-}
-
-#[cfg(not(windows))]
-pub fn get() -> bool {
-  false
 }

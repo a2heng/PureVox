@@ -43,9 +43,25 @@
   - 回环测试 `src-tauri/src/net/loopback.rs`（10 项，真实 axum 服务 + 真实 WS 客户端），
     节拍诊断 `net/diag.rs`。Android 客户端用系统自带 `MediaCodec`（`audio/opus`），
     **无 JNI / 无 NDK**；明文 `ws://` + `usesCleartextTraffic`。
+- Android 客户端已能构建并运行（2026-10-08）：`./gradlew assembleDebug`（JDK17 + SDK 34）出
+  `app-debug.apk`，`adb install` + 启动成功。修掉了一批从未编译过的 Kotlin 错误：
+  `MediaCodec.queueInputBuffer` 少传 `flags`、`AudioRecord.read(float[])` 少传 `readMode`、
+  `MediaCodecInfo` 上不存在的 `isFormatSupported`（应取 `getCapabilitiesForType(MIME)`）、
+  `View.layoutHeight`（应为 `height`）、okio `ByteString.of(ByteArray)` 已废弃（改用 `toByteString()`）、
+  以及非公开 API `AudioRecord.Builder.setPerformanceMode`（SDK 里根本没有，删除）。
 - UI 字符串统一管理已落地（2026-10-07）：`i18n.js` 单字典 + `T()` 占位符 + `__pvTpl()` Rust 模板表
   + `i18n_lint` 门禁（规则见 AGENTS.md §4）。
-- Linux 未开始。
+- **Linux 已跑通并出包**（2026-10-08）：本机 Ubuntu 24.04（CI 用 `ubuntu-22.04`）`cargo build` /
+  `clippy -D warnings` / `test`（40 项全过）/ `cargo tauri build` 均通过，出 deb / rpm / AppImage；
+  `tools/automation/check.ps1` 改为跨平台（`$HOME/.cargo/bin`）。Windows 专有功能在其它平台给
+  **明确「不可用」**而不静默：全局热键（`RegisterHotKey`）、AEC 远端 WASAPI 回环（改填输入设备作参考）。
+  Opus 改为运行时动态加载：Windows 载随包 `opus.dll`，Linux `dlopen` 系统 `libopus.so.0`
+  （缺库时只有网络音频降级，其余正常）。
+- Linux 设备面与虚拟驱动（2026-10-08）：ALSA 枚举 108 条 → **精简到 18 条**（丢插件、同卡按名去重、
+  优先 `plughw`；`devices::simplify`）。顶栏新增「驱动」页，按平台切（外壳 `ui/drivers.js`）：
+  Linux = 虚拟驱动（`audio/virtual_mic.rs`，照 legacy 建 `purevox_out`+monitor+`purevox_mic`，创建/移除），
+  Windows = VB-CABLE 下载/教程/检测（`ui/drivers_windows.js`）。AEC 远端在 Linux 走 `parec` 监听 monitor
+  （`audio/loopback_linux.rs`），候选由 `list_loopback_targets` 给出。
 
 > 信息收集日期：2026-10-07。Tauri 3 处于 alpha，版本号、API 和文档都可能变化，
 > 引用任何结论前先核对下文「版本锚点」是否仍是最新。
@@ -163,18 +179,23 @@ Invoke-WebRequest https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msv
 > **不需要 cmake / Ninja**：网络功能的 Opus 走运行时加载预编译 `opus.dll`（见 §1 进度），
 > `tools/automation/versions.env` 也不含 cmake 项。Android 端同理用系统 `MediaCodec`，无 NDK。
 
-### 3.2 Linux 工具链（待验证）
+### 3.2 Linux 工具链（2026-10-08 本机 Ubuntu 24.04 已实测跑通）
 
-wry 运行时在 Linux 上依赖 WebKitGTK 4.1。官方 prerequisites 的 Debian 列表如下；
+wry 运行时在 Linux 上依赖 WebKitGTK 4.1；`cpal` 依赖 ALSA；打 rpm 需要 `rpmbuild`。
 其中 `libayatana-appindicator3-dev` 在 Tauri 3 中**已不需要**（托盘默认改用 ksni），
-文档页还没更新：
+官方 prerequisites 文档页还没更新：
 
 ```sh
 sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
-  libxdo-dev libssl-dev librsvg2-dev
+  libxdo-dev libssl-dev librsvg2-dev libgtk-3-dev libasound2-dev pkg-config rpm
 ```
 
+CI 用 `ubuntu-22.04`（`libwebkit2gtk-4.1-dev` 在 jammy 已有），debian 兼容面更广。
 Fedora / Arch / openSUSE 等发行版的包名见 prerequisites 页对应标签。
+
+实测（Ubuntu 24.04）：`cargo build` / `clippy -D warnings` / `test`（40 项全过）/
+`cargo tauri build` 均通过，出 `deb (69 MB)` / `rpm (57 MB)` / `AppImage (141 MB)`。
+运行期还需系统 `libopus0`（网络音频用，见 §1 与 AGENTS §1.2；缺失时降级、不崩）。
 
 ### 3.3 安装 Tauri 3 CLI（Windows 已实测）
 
@@ -238,34 +259,43 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
   - 从智能体 shell 启动的程序窗口是**最小化**的，先 `ShowWindow(hwnd, 4)`（`SW_SHOWNOACTIVATE`，不抢焦点）再截。
   - `Process.MainWindowHandle` 可能指向 26×26 的辅助窗口，要用 `EnumWindows` 按标题 `PureVox` 找主窗口。
 
-### 3.7 CI 与发版（2026-10-07 起，Windows 优先）
+### 3.7 CI 与发版（2026-10-08 起，多平台：Windows + Linux + Android）
 
-纪律（沿袭旧实现，规则正文见 AGENTS.md §2.6 第 7 条）：
+纪律（规则正文见 AGENTS.md §2 第 7 条）：
 
-- **门禁唯一实现** `tools/automation/check.ps1`：`fmt`（rustfmt --check，缩进见 `src-tauri/rustfmt.toml`）/
-  `clippy`（`--all-targets -D warnings`）/ `build` / `test` / `ui`（`tsc -p ui/jsconfig.json --noEmit` +
-  `i18n_lint.js`）。本机跑全量或 `-Gate <项>`；CI 按 step 拆开跑同一脚本，日志好定位。
-- **工作流** `.github/workflows/`（`paths-ignore` 排除 `legacy-*/**` 与 `**/*.md`）：
-  - `ci.yml`：分支推送 / PR → rust job（fmt/clippy/build/test）+ ui job（setup-node → `-Gate ui`）。
-  - `warm-cache.yml`：**全仓库唯一缓存写入者**。触发 = `Cargo.toml`/`Cargo.lock`/`versions.env`
-    变更的 `main`/`tauri-3` 推送 + 每周一定时（防淘汰）+ 手动；**冷构建**（不恢复 target 缓存）
-    debug 三门禁 + `cargo tauri build`（顺带预热 WiX/NSIS 与 onnxruntime 下载），再 save 四个桶
-    （`continue-on-error`，同键已存在即视为成功）。
-  - `release.yml`：tag `v*` → 全部门禁 → `cargo tauri build` → `assert_bundle.ps1 -Smoke`
-    → 上传 MSI/NSIS → ubuntu job `release_notes.ps1`（上一 tag 区间）+ `gh release create`；
-    手动 dispatch 只验证打包、不建 release。
-- **缓存纪律**：`ci.yml` / `release.yml` 全部 `actions/cache/restore`（save 一步都没有）；
-  键与版本的唯一来源 = `tools/automation/versions.env`（`CACHE_GEN` / `RUST_TOOLCHAIN` /
-  `TCLI_VER` / `TS_VER` / `NODE_VER`），工作流只组合 `hashFiles('src-tauri/Cargo.lock')`。
-  四个键：`purevox-win-cargo-…`（registry+git）、`purevox-win-target-dbg-…`、
-  `purevox-win-target-rel-…`（含 `%LOCALAPPDATA%\tauri` 的 WiX/NSIS 与 `%LOCALAPPDATA%\ort.pyke.io`）、
-  `purevox-win-tauri-cli-<ver>`（`cargo-tauri.exe`，未命中才 `cargo install tauri-cli --version 钉死`）。
+- **触发纪律：没有任何分支推送 / PR 触发**（日常提交零成本）。`ci.yml`（只测试）只
+  `workflow_dispatch`；`release.yml`（打包发版）tag `v*` 或手动；`warm-cache.yml`（唯一缓存写入者）只手动。
+- **门禁唯一实现** `tools/automation/check.ps1`（**跨平台 PowerShell**，Windows 与 Linux 跑同一份）：
+  `fmt`（rustfmt --check，缩进见 `src-tauri/rustfmt.toml`）/ `clippy`（`--all-targets -D warnings`）/
+  `build` / `test` / `ui`（`tsc -p ui/jsconfig.json --noEmit` + `i18n_lint.js`）。本机跑全量或 `-Gate <项>`。
+- **工作流** `.github/workflows/`：
+  - `ci.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-22.04`；`ui` 门禁在 `ubuntu-latest`。
+  - `warm-cache.yml`：**全仓库唯一缓存写入者**，手动；矩阵 Windows+Linux **冷构建**（不恢复 target 缓存）
+    debug 三门禁 + `cargo tauri build`，再 save 四个桶（`continue-on-error`，同键已存在即视为成功）。
+  - `release.yml`：tag `v*` 或手动 → 三平台并行：
+    - **Windows**：门禁 → `cargo tauri build` → `assert_bundle.ps1 -Smoke` → MSI/NSIS。
+    - **Linux**（`ubuntu-22.04`）：装 WebKitGTK/ALSA/rpm 依赖 → 门禁 → `cargo tauri build` →
+      `assert_bundle_linux.sh --smoke` → `test_packages.sh`（deb→ubuntu / rpm→fedora 容器安装验证）→
+      deb/rpm/AppImage。
+    - **Android**：JDK17 + `install_android_sdk.sh` + `./gradlew assembleDebug` → debug APK。
+    - tag 时 `release_notes.ps1`（上一 tag 区间）+ `gh release create` 附带全部产物；手动只打包、不建 release。
+  - **没有 Lite 变体**（Lite 已取消；遗留资产已收进只读快照 `legacy-v2026.09.30.1944/`）。
+- **缓存纪律**：`ci.yml` / `release.yml` 全部 `actions/cache/restore`（无 save）；键与版本唯一来源 =
+  `tools/automation/versions.env`（`CACHE_GEN` / `RUST_TOOLCHAIN` / `TCLI_VER` / `TS_VER` / `NODE_VER` /
+  `LINUX_RUNNER` / `JDK_VER` / `ANDROID_PLATFORM` / `ANDROID_BUILD_TOOLS`），工作流只组合
+  `hashFiles('src-tauri/Cargo.lock')`。四个桶按 `purevox-<RUNNER_OS>-…`：
+  `…-cargo-…`（registry+git）、`…-target-dbg-…`、`…-target-rel-…`、`…-tauri-cli-<ver>`
+  （`cargo-tauri`，未命中才 `cargo install tauri-cli --version 钉死`）。
   为什么集中写：GitHub 缓存按触发 ref 分域，各工作流各写各的只会堆出没人回读的重复条目（tag 上尤甚）。
-- **产物断言** `tools/automation/assert_bundle.ps1 -Smoke`：安装包 ≥ 40 MB（模型在包内的兜底）→
-  NSIS `/S /D=` 静默安装 → 校验安装目录 `models\*.onnx` 7/7 → 启动并轮询 `http://127.0.0.1:47821/debug`
-  就绪 → 杀进程清残留。
-- **UI 字符串门禁** `tools/automation/i18n_lint.js`（`-Gate ui` 内）：裸中文上屏 / 缺键 / 占位符奇偶 /
-  孤儿键等，规则见 AGENTS.md §4「UI 字符串（i18n）」。
+- **产物断言**：
+  - Windows `tools/automation/assert_bundle.ps1 -Smoke`：安装包 ≥ 40 MB → NSIS `/S /D=` 静默安装 →
+    校验 `models\*.onnx` 7/7 → 启动并轮询 `/debug` 就绪 → 杀进程清残留。
+  - Linux `tools/automation/assert_bundle_linux.sh [--smoke]`：deb ≥ 40 MB → `dpkg-deb -x` 解包 →
+    校验可执行文件与 `*.onnx` 7/7 → rpm / AppImage 存在性 → `--smoke` 时 xvfb 下启动轮询 `/debug`。
+  - 跨发行版 `tools/automation/test_packages.sh`（环境模拟）：容器里**真实安装**——deb→`ubuntu:22.04`
+    （apt）、rpm→`fedora:latest`（dnf）、AppImage→本机 `--appimage-extract`；断言可执行文件存在、
+    模型 7/7、`ldd` 无缺失。容器运行时用 `docker`（GitHub runner 自带）；本机 `DOCKER=podman`。
+- **UI 字符串门禁** `tools/automation/i18n_lint.js`（`-Gate ui` 内）：规则见 AGENTS.md §4。
 
 ---
 
@@ -273,11 +303,14 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
 
 以下问题需要先讨论再动手，决定后写回本文并删掉对应条目：
 
-1. **Linux 打包依赖变化**：wry 需要 WebKitGTK 4.1；托盘不再需要 appindicator。
-   旧的 deb Depends / rpm Requires 清单见 `legacy-v2026.09.30.1944/` 内的打包脚本。
+（暂无）
 
 已决（写回 §1/§3）：
 - 用 **Tauri 3 alpha**（`3.0.0-alpha.4`）+ **wry**（系统 WebView2，包小）。
 - 音频引擎**用 Rust 原生重写**（设备 I/O + onnxruntime Rust 绑定），不挂 Python sidecar。
+- **Linux 打包依赖**：wry 需 WebKitGTK 4.1、cpal 需 ALSA、rpm 需 rpmbuild，托盘不再需 appindicator
+  （见 §3.2）；debian 兼容面用 `ubuntu-22.04` 出包。
+- **多平台 CI + 无自动触发**：测试手动、打包 tag 触发，三平台（Windows / Linux / Android），
+  无 Lite 变体（见 §3.7）。
 
 已决定：Tk 桌面 UI 与全部旧 Python 代码已从主线删除（2026-10-07），只保留归档快照。

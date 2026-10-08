@@ -21,9 +21,22 @@
 
 pub mod capture;
 pub mod fanout;
+/// AEC 远端参考的输出回环采集（远端扬声器 → far 参考）。**实现按平台分文件**：
+/// `loopback_windows.rs`（WASAPI loopback）/ `loopback_linux.rs`（PipeWire monitor，`parec`）/
+/// `loopback_other.rs`（明确不可用）。
+#[cfg(windows)]
+#[path = "loopback_windows.rs"]
+pub mod loopback;
+#[cfg(target_os = "linux")]
+#[path = "loopback_linux.rs"]
+pub mod loopback;
+#[cfg(not(any(windows, target_os = "linux")))]
+#[path = "loopback_other.rs"]
 pub mod loopback;
 pub mod playback;
 pub mod tone;
+/// Linux 虚拟麦克风（PipeWire）的创建 / 移除（「驱动」页面）。
+pub mod virtual_mic;
 
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};

@@ -25,7 +25,6 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.purevox.mic.Proto
@@ -182,9 +181,6 @@ class MicUplink(
                     .setAudioSource(MediaRecorder.AudioSource.MIC)
                     .setAudioFormat(format)
                     .setBufferSizeInBytes(bufBytes)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    builder.setPerformanceMode(AudioRecord.PERFORMANCE_MODE_LOW_LATENCY)
-                }
                 builder.build()
             } catch (e: Throwable) {
                 lastReason = "${OpusSupport.pcmName(enc)}：${e.message ?: e.javaClass.simpleName}"
@@ -210,7 +206,7 @@ class MicUplink(
         val useFloat = recordEncoding == AudioFormat.ENCODING_PCM_FLOAT
         while (running) {
             val got = try {
-                if (useFloat) rec.read(floats, 0, READ_SAMPLES) else rec.read(shorts, 0, READ_SAMPLES)
+                if (useFloat) rec.read(floats, 0, READ_SAMPLES, AudioRecord.READ_BLOCKING) else rec.read(shorts, 0, READ_SAMPLES)
             } catch (e: Throwable) {
                 AudioRecord.ERROR_INVALID_OPERATION
             }

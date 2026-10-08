@@ -80,48 +80,21 @@ impl Default for SystemInfo {
   }
 }
 
+// 平台实现分文件（AGENTS.md §4）：私有字节 / GPU 采样。
 #[cfg(windows)]
-fn process_private_bytes() -> Probe<u64> {
-  use windows::Win32::System::ProcessStatus::{
-    GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
-  };
-  use windows::Win32::System::Threading::GetCurrentProcess;
-  let mut pmc = PROCESS_MEMORY_COUNTERS_EX {
-    cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
-    ..Default::default()
-  };
-  let r = unsafe {
-    GetProcessMemoryInfo(
-      GetCurrentProcess(),
-      &mut pmc as *mut _ as *mut PROCESS_MEMORY_COUNTERS,
-      pmc.cb,
-    )
-  };
-  match r {
-    Ok(()) => Probe::ok(pmc.PrivateUsage as u64),
-    Err(e) => Probe::unavailable(format!("GetProcessMemoryInfo 失败：{e}")),
-  }
-}
-
+#[path = "gpu_windows.rs"]
+mod gpu;
 #[cfg(not(windows))]
-fn process_private_bytes() -> Probe<u64> {
-  Probe::unavailable("私有字节目前只实现了 Windows")
-}
-
+#[path = "gpu_other.rs"]
+mod gpu;
 #[cfg(windows)]
-type GpuSampler = super::gpu_win::GpuSampler;
+#[path = "mem_windows.rs"]
+mod mem;
+#[cfg(not(windows))]
+#[path = "mem_other.rs"]
+mod mem;
 
-#[cfg(not(windows))]
-struct GpuSampler;
-#[cfg(not(windows))]
-impl GpuSampler {
-  fn new() -> Self {
-    GpuSampler
-  }
-  fn sample(&mut self) -> Probe<Vec<GpuAdapter>> {
-    Probe::unavailable("GPU 指标目前只实现了 Windows")
-  }
-}
+use gpu::GpuSampler;
 
 pub fn spawn_sampler(hub: SharedHub) {
   std::thread::Builder::new()
@@ -131,6 +104,7 @@ pub fn spawn_sampler(hub: SharedHub) {
       let pid = sysinfo::get_current_pid();
       let mut gpu = GpuSampler::new();
       let mut first = true;
+      let mut tick: u64 = 0;
       loop {
         sys.refresh_cpu_usage();
         sys.refresh_memory();
@@ -161,7 +135,7 @@ pub fn spawn_sampler(hub: SharedHub) {
             system_total: sys.total_memory(),
             system_available: sys.available_memory(),
             process_working_set: p.memory(),
-            process_private: process_private_bytes(),
+            process_private: mem::private_bytes(),
           }),
         };
 
@@ -171,6 +145,11 @@ pub fn spawn_sampler(hub: SharedHub) {
           memory,
           gpu: gpu.sample(),
         });
+        // 虚拟麦克风状态（Linux 才有）：不必每 tick 都跑 pw-cli 子进程，2 s 一次即可。
+        if first || tick.is_multiple_of(2) {
+          hub.set_virtual_mic(crate::audio::virtual_mic::status_probe());
+        }
+        tick += 1;
         first = false;
         std::thread::sleep(SAMPLE_PERIOD);
       }

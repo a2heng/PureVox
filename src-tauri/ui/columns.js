@@ -30,6 +30,8 @@ let NODES = []
 /** ptype → 可选模型列表（每个处理节点类型各自一份） */
 let MODELS = {}
 let devices = { inputs: [], outputs: [] }
+/** AEC 远端可回环的目标（默认输出 + 各输出/sink 的 monitor），由 `list_loopback_targets` 填充 */
+let loopTargets = []
 let deviceStamp = null
 let lastRec = ''
 let lastCalib = ''
@@ -143,12 +145,12 @@ function deviceOptions(kind, selectedId) {
 }
 
 function farOptions(selected) {
-  // 远端 = 扬声器（输出设备）→ 自动回环它；值就是输出设备 ID
-  const opts = [['', T('未选择设备')]].concat(
-    devices.outputs.map((d) => [d.id, (d.is_default ? '★ ' : '') + '🔁 ' + d.name]))
+  // 远端 = 输出/sink 的监视回环（`loopback` = 系统默认输出，`loopback:<sink>` = 指定），
+  // 由后端 `list_loopback_targets` 给出（Linux = PipeWire sinks；Windows = WASAPI 端点）。
+  const opts = [['', T('未选择设备')], ['loopback', T('系统默认输出')]].concat(
+    loopTargets.map((t) => [t.id, '🔁 ' + t.name]))
   if (selected && !opts.some((o) => o[0] === selected)) {
-    // 兼容旧的 loopback / 输入设备取值
-    opts.push([selected, selected.startsWith('loopback') ? T('输出回环默认输出') : T('设备不在')])
+    opts.push([selected, selected.startsWith('loopback') ? T('系统默认输出') : T('设备不在')])
   }
   return opts
 }
@@ -541,6 +543,7 @@ async function init() {
       MODELS[n.ptype] = await invoke('list_models', { ptype: n.ptype })
     }
     plan = await invoke('get_plan')
+    loopTargets = await invoke('list_loopback_targets')
     if (!plan || !plan.columns) plan = { columns: [defaultColumn()] }
     render()
     setStatus([])

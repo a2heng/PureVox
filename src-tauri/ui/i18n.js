@@ -194,6 +194,37 @@
     电子: 'Blip',
     木鱼: 'Wood',
     风铃: 'Chime',
+    // 驱动（按平台切换：Linux 虚拟驱动 / Windows VB-CABLE）
+    驱动: 'Drivers',
+    'Linux 虚拟驱动': 'Linux virtual driver',
+    'VB-CABLE 驱动': 'VB-CABLE driver',
+    '把 PureVox 的降噪输出送到虚拟声卡，其它软件（OBS / 浏览器 / Audacity）就能把它当麦克风用。':
+      'Routes PureVox denoised output into a virtual sink so other apps (OBS / browsers / Audacity) can use it as a microphone.',
+    '写入口（虚拟声卡）': 'Write-in (virtual sink)',
+    '真源（PureVox mic）': 'Real source (PureVox mic)',
+    '链路': 'Signal path',
+    '麦克风 → PureVox → CABLE In → CABLE Out → 其它软件':
+      'Mic → PureVox → CABLE In → CABLE Out → other apps',
+    'Windows 需要 VB-CABLE 虚拟声卡驱动：PureVox 把降噪输出送到 CABLE Input，其它软件从 CABLE Output 当麦克风取。':
+      'Windows needs the VB-CABLE virtual audio driver: PureVox sends denoised output to CABLE Input; other apps take CABLE Output as a microphone.',
+    '未检测到 VB-CABLE：点「驱动下载」安装后，点顶栏「刷新设备」重新检测。':
+      'VB-CABLE not detected: click "Download driver", install it, then click "Refresh devices" in the top bar.',
+    '驱动下载': 'Download driver',
+    '视频教程': 'Video tutorial',
+    '检测中…': 'Checking…',
+    已安装: 'Installed',
+    未安装: 'Not installed',
+    创建: 'Create',
+    移除: 'Remove',
+    刷新: 'Refresh',
+    已创建: 'Created',
+    未创建: 'Not created',
+    '正在处理…': 'Working…',
+    '创建后，在其它软件里把「PureVox out」或「PureVox mic」设为麦克风即可。':
+      'After creating, pick "PureVox out" or "PureVox mic" as the microphone in other apps.',
+    不可用: 'Unavailable',
+    正常: 'OK',
+    系统默认输出: 'System default output',
   }
 
   // Rust 中文模板串表：zh = Rust format! 产出的字面骨架（{占位} 即捕获组），en = 同构

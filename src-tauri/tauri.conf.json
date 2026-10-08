@@ -32,7 +32,7 @@
     ],
     "resources": {
       "../models/*.onnx": "models/",
-      "../server/opus.dll": "opus.dll"
+      "opus.dll": "opus.dll"
     }
   }
 }

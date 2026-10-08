@@ -30,6 +30,7 @@
       <button id="btn-settings" type="button" data-i18n="设置">设置</button>
       <button id="btn-run" type="button" class="run-start" data-i18n="启动">启动</button>
       <button id="btn-refresh" type="button" data-i18n="刷新设备">刷新设备</button>
+      <button id="btn-drivers" type="button" data-i18n="驱动">驱动</button>
       <button id="btn-debug" type="button" data-i18n="调试面板">调试面板</button>
       <button id="btn-devtools" type="button" data-i18n="开发者工具">开发者工具</button>
       <span id="plan-status" class="mono"></span>
@@ -169,8 +170,53 @@
       </div>
     </div>
 
+    <!-- 驱动面板：按平台切换实现（Linux 虚拟驱动 / Windows VB-CABLE），位置与 UI 一致 -->
+    <div id="drivers" class="panel hidden">
+      <div class="panel-box">
+        <h3 id="drivers-title" data-i18n="驱动">驱动</h3>
+        <div id="drivers-body"></div>
+        <div class="set-foot">
+          <button id="drv-close" type="button" data-i18n="关闭">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Linux 虚拟驱动（PipeWire 虚拟麦克风）：创建 / 移除 -->
+    <template id="drv-linux-tpl">
+      <table class="kv">
+        <tr><th data-i18n="写入口（虚拟声卡）">写入口（虚拟声卡）</th><td id="drv-sink" colspan="3"></td></tr>
+        <tr><th data-i18n="真源（PureVox mic）">真源（PureVox mic）</th><td id="drv-source" colspan="3"></td></tr>
+        <tr><th data-i18n="状态">状态</th><td id="drv-state" colspan="3"></td></tr>
+      </table>
+      <p class="note" data-i18n="把 PureVox 的降噪输出送到虚拟声卡，其它软件（OBS / 浏览器 / Audacity）就能把它当麦克风用。">把 PureVox 的降噪输出送到虚拟声卡，其它软件（OBS / 浏览器 / Audacity）就能把它当麦克风用。</p>
+      <div class="set-row">
+        <button id="drv-create" type="button" data-i18n="创建">创建</button>
+        <button id="drv-remove" type="button" data-i18n="移除">移除</button>
+        <button id="drv-refresh" type="button" data-i18n="刷新">刷新</button>
+      </div>
+      <p class="note" data-i18n="创建后，在其它软件里把「PureVox out」或「PureVox mic」设为麦克风即可。">创建后，在其它软件里把「PureVox out」或「PureVox mic」设为麦克风即可。</p>
+    </template>
+
+    <!-- Windows VB-CABLE 虚拟声卡驱动：下载 / 教程 / 有无检测 -->
+    <template id="drv-windows-tpl">
+      <table class="kv">
+        <tr><th data-i18n="状态">状态</th><td id="vb-state" colspan="3"></td></tr>
+        <tr><th data-i18n="链路">链路</th><td id="vb-flow" colspan="3"></td></tr>
+      </table>
+      <p class="note" data-i18n="Windows 需要 VB-CABLE 虚拟声卡驱动：PureVox 把降噪输出送到 CABLE Input，其它软件从 CABLE Output 当麦克风取。">Windows 需要 VB-CABLE 虚拟声卡驱动：PureVox 把降噪输出送到 CABLE Input，其它软件从 CABLE Output 当麦克风取。</p>
+      <div class="set-row">
+        <button id="vb-download" type="button" data-i18n="驱动下载">驱动下载</button>
+        <button id="vb-tutorial" type="button" data-i18n="视频教程">视频教程</button>
+        <button id="vb-refresh" type="button" data-i18n="刷新">刷新</button>
+      </div>
+      <p class="note" id="vb-guide" data-i18n="未检测到 VB-CABLE：点「驱动下载」安装后，点顶栏「刷新设备」重新检测。">未检测到 VB-CABLE：点「驱动下载」安装后，点顶栏「刷新设备」重新检测。</p>
+    </template>
+
     <script src="i18n.js"></script>
     <script src="jsdebug.js"></script>
+    <script src="drivers_linux.js"></script>
+    <script src="drivers_windows.js"></script>
+    <script src="drivers.js"></script>
     <script src="settings.js"></script>
     <script src="net.js"></script>
     <script src="columns.js"></script>

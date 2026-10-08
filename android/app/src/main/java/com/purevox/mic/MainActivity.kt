@@ -592,7 +592,7 @@ class MainActivity : AppCompatActivity() {
             if (lines.size > MAX_LOG_LINES) {
                 tvLog.text = lines.subList(lines.size - MAX_LOG_LINES, lines.size).joinToString("\n")
             }
-            tvLog.post { tvLog.scrollTo(0, tvLog.layoutHeight) }
+            tvLog.post { tvLog.scrollTo(0, tvLog.height) }
         }
     }
 

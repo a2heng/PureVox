@@ -36,7 +36,22 @@ interface Window {
   __pvTpl?: (raw: string) => { id: string; vars: Record<string, string>; text: string } | null
   __pvLang?: () => string
   __pvSetLang?: (lang: string) => void
+  /** 驱动面板平台实现（drivers_linux.js / drivers_windows.js 注册，drivers.js 按平台取用） */
+  __pvDriversLinux?: PvDriversImpl
+  __pvDriversWindows?: PvDriversImpl
   // 语言切换后各模块重渲染：在 document 上监听 'pv-langchange'（i18n.js 派发）
+}
+
+/** 「驱动」面板的平台实现（见 ui/drivers.js 外壳）。 */
+interface PvDriversImpl {
+  /** 内容模板 id（index.html 里的 <template>） */
+  template: string
+  /** 面板标题（已本地化） */
+  title(): string
+  /** 把模板挂进指定容器并接线 */
+  mount(body: HTMLElement): void
+  /** 重新拉取状态并重绘 */
+  refresh(): void
 }
 
 /** 调试快照（结构见 Rust `DebugSnapshot`；前端只做宽松声明，字段按需取用）。 */

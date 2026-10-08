@@ -200,7 +200,7 @@ class OpusEncoder {
         val n = fifoLen.coerceAtMost(CHUNK_SAMPLES)
         val buf = c.getInputBuffer(idx)
         if (buf == null) {
-            c.queueInputBuffer(idx, 0, 0, 0)
+            c.queueInputBuffer(idx, 0, 0, 0L, 0)
             return
         }
         val bytes = writeSamples(buf, n)
@@ -208,7 +208,7 @@ class OpusEncoder {
         // 墙钟 PTS 会漂移，也让对端任何按 PTS 的处理变得不可预期。
         val ptsUs = n.toLong() * 1_000_000L / SAMPLE_RATE
         pts += ptsUs
-        c.queueInputBuffer(idx, 0, bytes, 0, pts)
+        c.queueInputBuffer(idx, 0, bytes, pts, 0)
         consumeFifo(n)
     }
 

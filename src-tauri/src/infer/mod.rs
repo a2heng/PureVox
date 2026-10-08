@@ -25,8 +25,18 @@ pub mod denoise;
 pub mod tse;
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use ort::session::Session;
+
+/// 打包后 Tauri 资源目录下的模型目录（由 `main` 在 setup 里 [`set_model_dir`] 写入）。
+/// 开发态不设，`model_path` 靠仓库 `models/` 兜底。
+static MODEL_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// 注册打包资源目录（`resource_dir()/models`）。只第一次生效；目录不存在时调用方不应调用。
+pub fn set_model_dir(dir: PathBuf) {
+  let _ = MODEL_DIR.set(dir);
+}
 
 /// 统一 ONNX 会话：单线程推理 + 关闭自旋等待。
 ///
@@ -76,6 +86,11 @@ pub fn denoise_models() -> &'static [(&'static str, &'static str)] {
 pub fn model_path(file: &str) -> Result<PathBuf, String> {
   let mut tried = Vec::new();
   let mut candidates: Vec<PathBuf> = Vec::new();
+  // 打包后优先用 Tauri 注册的资源目录（Linux deb 落在 /usr/lib/<productName>/models，
+  // 与可执行文件不同级，仅靠 exe 相邻目录找不到）。
+  if let Some(dir) = MODEL_DIR.get() {
+    candidates.push(dir.join(file));
+  }
   if let Ok(dir) = std::env::var("PUREVOX_MODEL_DIR") {
     candidates.push(PathBuf::from(dir).join(file));
   }

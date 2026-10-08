@@ -26,6 +26,17 @@ use serde::Serialize;
 
 use crate::debug::{Probe, SharedHub, now_ms};
 
+// 平台设备面实现分文件（AGENTS.md §4）。
+#[cfg(windows)]
+#[path = "devices_windows.rs"]
+mod plat;
+#[cfg(target_os = "linux")]
+#[path = "devices_linux.rs"]
+mod plat;
+#[cfg(not(any(windows, target_os = "linux")))]
+#[path = "devices_other.rs"]
+mod plat;
+
 #[derive(Clone, Debug, Serialize)]
 pub struct DeviceInfo {
   /// cpal 稳定设备 ID（`<host>:<后端 ID>`）
@@ -60,6 +71,22 @@ pub struct DeviceList {
   pub devices: Vec<DeviceInfo>,
   /// 枚举过程中跳过的设备/接口及原因
   pub errors: Vec<String>,
+}
+
+/// AEC 远端可选的「回环目标」：某个输出设备/sink 的 monitor。
+/// `id` 形如 `loopback:<sink>`，与 `engine::aec::far_loopback_id` 的约定一致。
+#[derive(Clone, Debug, Serialize)]
+pub struct LoopbackTarget {
+  pub id: String,
+  pub name: String,
+}
+
+/// 列出可回环的输出（不含「系统默认输出」那条，默认项由界面加并翻译）。
+///   - Linux：PipeWire/Pulse 的 sinks（`pactl list sinks` 的 Name/Description）；
+///   - Windows：cpal 的输出设备（`loopback:<wasapi 端点 ID>`）；
+///   - 其它平台：空（AEC 回环不可用）。
+pub fn loopback_targets() -> Vec<LoopbackTarget> {
+  plat::loopback_targets()
 }
 
 static REFRESHING: AtomicBool = AtomicBool::new(false);
@@ -199,7 +226,12 @@ fn enumerate() -> DeviceList {
     enumerated_at: now_ms(),
     duration_ms: t0.elapsed().as_millis() as u64,
     hosts,
-    devices,
+    devices: simplify(devices),
     errors,
   }
+}
+
+/// 平台设备面精简（实现见 `devices_linux.rs` / `devices_windows.rs` / `devices_other.rs`）。
+fn simplify(devices: Vec<DeviceInfo>) -> Vec<DeviceInfo> {
+  plat::simplify(devices)
 }

@@ -17,9 +17,11 @@
 
 //! Opus 编解码（DESIGN.md §4.1）。
 //!
-//! **不引入 C 编译链**：`libopus` 以预编译 x64 `opus.dll` 随包分发，运行时用
-//! `LoadLibraryExW` + `GetProcAddress` 加载（与旧实现 `opuslib` 同一路子）。
-//! 好处：构建不依赖 cmake 与 libopus 源码；debug / release / CI 走同一条路径。
+//! **不引入 C 编译链**：`libopus` 在运行时动态加载（与旧实现 `opuslib` 同一路子）——
+//! Windows 加载随包的预编译 x64 `opus.dll`（`LoadLibraryExW` + `GetProcAddress`），
+//! Linux 加载系统 `libopus.so`（`dlopen` + `dlsym`，Debian 包名 `libopus0`）。
+//! 好处：构建不依赖 cmake 与 libopus 源码；debug / release / CI 走同一条路径；
+//! 找不到库时按 AGENTS.md 上报明确原因，不静默降级。
 //!
 //! 帧长：PC 侧固定 10 ms（`rate/100` 样本 @48 kHz = 480，正好一个 hop）；接收端允许
 //! 任意帧长（2.5~60 ms），按**样本数累积**后由 [`Decoder::take_hop`] 切回 hop，
@@ -31,15 +33,23 @@
 
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_float, c_int, c_void};
-use std::os::windows::ffi::OsStrExt as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::{FreeLibrary, HMODULE};
-use windows::Win32::System::LibraryLoader::{
-  GetProcAddress, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LoadLibraryExW,
-};
-use windows::core::{PCSTR, PCWSTR};
+// 平台加载实现分文件（AGENTS.md §4）：Windows = `opus_sys_windows.rs`（LoadLibraryExW +
+// 随包 `opus.dll`），Linux = `opus_sys_linux.rs`（dlopen 系统 `libopus.so`），
+// 其它平台 = `opus_sys_other.rs`（明确不可用）。
+#[cfg(windows)]
+#[path = "opus_sys_windows.rs"]
+mod plat;
+#[cfg(target_os = "linux")]
+#[path = "opus_sys_linux.rs"]
+mod plat;
+#[cfg(not(any(windows, target_os = "linux")))]
+#[path = "opus_sys_other.rs"]
+mod plat;
+
+use plat::LibHandle;
 
 /// 加载失败或符号缺失时的原因（直接进调试接口，不伪造可用）。
 type Api = Result<OpusApi, String>;
@@ -94,76 +104,49 @@ fn api() -> Result<&'static OpusApi, String> {
   }
 }
 
-/// 查找 `opus.dll`：先 `<exe 同目录>/opus.dll`（安装包与开发版产物旁），再退到仓库里的
-/// `server/opus.dll`（旧实现遗留的预编译 x64 产物，按原路径保留以备复用）。
+/// 动态库候选列表（平台定义，按顺序试）。
 pub fn dll_search_paths() -> Vec<PathBuf> {
-  let mut v = Vec::new();
-  if let Ok(exe) = std::env::current_exe()
-    && let Some(dir) = exe.parent()
-  {
-    v.push(dir.join("opus.dll"));
-  }
-  let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-  v.push(root.join("server/opus.dll"));
-  v.push(root.join("src-tauri/opus.dll"));
-  v
+  plat::dll_search_paths()
 }
 
 fn load() -> Api {
   let mut tried = Vec::new();
+  let mut last: Option<String> = None;
   for path in dll_search_paths() {
     tried.push(path.display().to_string());
-    if !path.is_file() {
-      continue;
-    }
-    let wide: Vec<u16> = path
-      .as_os_str()
-      .encode_wide()
-      .chain(std::iter::once(0))
-      .collect();
-    // SAFETY: 路径来自上面的固定候选列表；DEFAULT_DIRS 限定依赖按标准顺序（含 dll 同目录）查找。
-    let lib = match unsafe {
-      LoadLibraryExW(
-        PCWSTR(wide.as_ptr()),
-        None,
-        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
-      )
-    } {
-      Ok(h) => h,
-      Err(e) => return Err(format!("加载 {} 失败：{e}", path.display())),
-    };
-    match bind(lib) {
-      Ok(api) => {
-        let _ = DLL_LOADED.set(path.display().to_string());
-        return Ok(api);
-      }
-      Err(e) => {
-        // SAFETY: `lib` 是上面 LoadLibraryExW 成功返回的句柄。
-        unsafe {
-          let _ = FreeLibrary(lib);
+    // SAFETY: 路径/库名来自平台固定候选列表。
+    match unsafe { plat::open_lib(&path) } {
+      Ok(lib) => match bind(lib) {
+        Ok(api) => {
+          let _ = DLL_LOADED.set(path.display().to_string());
+          return Ok(api);
         }
-        return Err(format!("{}：{e}", path.display()));
-      }
+        Err(e) => {
+          // SAFETY: `lib` 是刚打开、尚未交给他人的句柄。
+          unsafe { plat::close_lib(lib) };
+          return Err(format!("{}：{e}", path.display()));
+        }
+      },
+      Err(e) => last = Some(format!("{}：{e}", path.display())),
     }
   }
-  Err(format!("找不到 opus.dll（已试：{}）", tried.join("、")))
+  Err(last.unwrap_or_else(|| format!("找不到 Opus 动态库（已试：{}）", tried.join("、"))))
 }
 
 macro_rules! sym {
   ($lib:expr, $name:literal, $t:ty) => {{
     let cname = CString::new($name).expect("符号名无 NUL");
-    // SAFETY: `$name` 是字面量且以 NUL 结尾；`$t` 与 libopus 导出签名逐字对应（见文件头）。
-    let p = unsafe { GetProcAddress($lib, PCSTR(cname.as_ptr() as *const u8)) };
-    match p {
-      Some(f) => unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, $t>(f) },
+    // SAFETY: `$name` 是字面量；`$t` 与 libopus 导出签名逐字对应（见文件头）。
+    match unsafe { plat::sym_ptr($lib, &cname) } {
+      Some(p) => unsafe { std::mem::transmute::<*mut c_void, $t>(p) },
       None => return Err(format!("缺少符号 {}", $name)),
     }
   }};
 }
 
-fn bind(lib: HMODULE) -> Result<OpusApi, String> {
+fn bind(lib: LibHandle) -> Result<OpusApi, String> {
   Ok(OpusApi {
-    lib: lib.0 as usize,
+    lib: plat::lib_raw(lib),
     encoder_create: sym!(
       lib,
       "opus_encoder_create",
@@ -237,9 +220,9 @@ fn errstr(a: &OpusApi, code: c_int) -> String {
 
 impl Drop for OpusApi {
   fn drop(&mut self) {
-    // SAFETY: 句柄来自 LoadLibraryExW（存成整数只为能进 static）；此时所有编解码器均已销毁。
+    // SAFETY: 句柄来自 LoadLibraryExW / dlopen（存成整数只为能进 static）；此时所有编解码器均已销毁。
     unsafe {
-      let _ = FreeLibrary(HMODULE(self.lib as *mut c_void));
+      plat::close_lib(plat::lib_from_raw(self.lib));
     }
   }
 }
