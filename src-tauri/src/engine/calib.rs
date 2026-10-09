@@ -107,30 +107,6 @@ impl CalibHub {
     self
       .hub
       .set_calib(Probe::ok(format!("采集中 0.0/{seconds:.0} s")));
-    // 看门狗：会话没跑（feed 永不调用）时也要超时结束，绝不永久卡在「采集中」。
-    let state = self.state.clone();
-    let hub = self.hub.clone();
-    std::thread::Builder::new()
-      .name("calib-watchdog".into())
-      .spawn(move || {
-        loop {
-          std::thread::sleep(Duration::from_millis(200));
-          let mut st = state.lock().unwrap();
-          match &*st {
-            State::Collecting { deadline, .. } => {
-              if Instant::now() >= *deadline {
-                *st = State::Failed;
-                hub.set_calib(Probe::unavailable(
-                  "采集超时：近端/远端窗口一直不可用（会话在跑吗？远端在放声音吗？）",
-                ));
-                return;
-              }
-            }
-            _ => return, // 已离开采集中
-          }
-        }
-      })
-      .ok();
     Ok(())
   }
 
@@ -215,8 +191,6 @@ impl CalibHub {
         let delay_ms = (((current_delay_ms + residual_ms) / 10.0).round() * 10.0).clamp(-1000.0, 1000.0);
         let mic_gain = (TARGET_RMS_DB - mic_rms).clamp(-40.0, 40.0);
         let far_gain = (TARGET_RMS_DB - far_rms).clamp(-40.0, 40.0);
-        // 校准的两件事分开报：① 回声路径（far→mic 衰减，延时同侧）② 麦克风电平配平
-        let path_db = far_rms - mic_rms; // 正 = mic 收到的比 far 低多少
         let mut st = state.lock().unwrap();
         if coef < 0.02 {
           *st = State::Failed;
@@ -226,7 +200,7 @@ impl CalibHub {
         } else {
           *st = State::Done;
           hub.set_calib(Probe::ok(format!(
-            "延时 {delay_ms:.1} ms（相关 {coef:.2}）｜回声路径（far→mic）−{path_db:.0} dB｜近端 {mic_gain:+.0} dB｜远端 {far_gain:+.0} dB"
+            "延时 {delay_ms:.1} ms（相关 {coef:.2}）｜近端 {mic_gain:+.0} dB｜远端 {far_gain:+.0} dB"
           )));
         }
       })
@@ -269,93 +243,12 @@ fn peak_window_rms_db(x: &[f32]) -> f64 {
 }
 
 /// 校准探针频带（对数扫频起止）。
-const PROBE_F0: f64 = 500.0;
-const PROBE_F1: f64 = 7000.0;
-
-/// 带通（探针频带）后的时域信号——用于取包络、找探针所在区段。
-fn bandpassed(x: &[f32]) -> Vec<f32> {
-  let n = x.len();
-  if n == 0 {
-    return Vec::new();
-  }
-  let size = (2 * n).next_power_of_two();
-  let mut f = vec![Complex::new(0.0f32, 0.0); size];
-  for (i, &v) in x.iter().enumerate() {
-    f[i] = Complex::new(v, 0.0);
-  }
-  let mut planner = FftPlanner::<f32>::new();
-  let fwd = planner.plan_fft_forward(size);
-  let inv = planner.plan_fft_inverse(size);
-  fwd.process(&mut f);
-  let (lo, hi) = ((PROBE_F0 * 0.85) as f32, (PROBE_F1 * 1.1) as f32);
-  let bin = SAMPLE_RATE as f32 / size as f32;
-  for (k, c) in f.iter_mut().enumerate() {
-    let fr = if k <= size / 2 {
-      k as f32 * bin
-    } else {
-      (size - k) as f32 * bin
-    };
-    if fr < lo || fr > hi {
-      *c = Complex::new(0.0, 0.0);
-    }
-  }
-  inv.process(&mut f);
-  let s = 1.0 / size as f32;
-  f.iter().map(|c| c.re * s).collect()
-}
-
-/// 5 ms 滑动平均幅度包络。
-fn envelope(x: &[f32]) -> Vec<f32> {
-  let w = (SAMPLE_RATE as usize / 200).max(1);
-  let mut out = vec![0.0f32; x.len()];
-  let mut acc = 0.0f32;
-  for i in 0..x.len() {
-    acc += x[i].abs();
-    if i >= w {
-      acc -= x[i - w].abs();
-    }
-    out[i] = acc / w as f32;
-  }
-  out
-}
-
-/// 探针区段：包络过「峰值 10%」门限的跨度，两端各留 `margin` 采样。
-fn probe_span(env: &[f32], margin: usize) -> Option<(usize, usize)> {
-  let peak = env.iter().cloned().fold(0.0f32, f32::max);
-  if peak <= 1e-7 {
-    return None;
-  }
-  let thr = peak * 0.1;
-  let s = env.iter().position(|&v| v >= thr)?;
-  let e = env.iter().rposition(|&v| v >= thr)?;
-  Some((s.saturating_sub(margin), (e + 1 + margin).min(env.len())))
-}
+const PROBE_F0: f64 = 800.0;
+const PROBE_F1: f64 = 6000.0;
 
 /// FFT 互相关求残余延时（ms）与归一化相关系数。
-///
-/// **先按探针区段裁剪再算**：采集窗 1.6 s 里探针只占 ~0.35 s，其余是静音/底噪；
-/// 全窗归一化互相关会被稀释（实测系数只有 0.1~0.3，看着像「相关太弱」其实只是被摊薄）。
-/// 两侧各留 300 ms 容差（真实延时远小于它），带内 RMS 也只在这个窗口里量。
+/// 去直流 + 频带限幅（与探针带一致，压带外杂波/底噪）+ 带内 RMS 归一化（与电平无关）。
 fn estimate_delay(mic: &[f32], far: &[f32], max_lag: usize) -> (f64, f64, f64, f64) {
-  let n = mic.len().min(far.len());
-  if n == 0 {
-    return (0.0, 0.0, -160.0, -160.0);
-  }
-  let margin = SAMPLE_RATE as usize * 300 / 1000;
-  let span = {
-    let env = envelope(&bandpassed(&far[..n]));
-    probe_span(&env, margin)
-  };
-  let (s, e) = match span {
-    // 裁剪后仍要够长，否则退回全窗（比如整段都有声）
-    Some((s, e)) if e - s >= SAMPLE_RATE as usize / 5 && e <= n => (s, e),
-    _ => (0, n),
-  };
-  estimate_core(&mic[s..e], &far[s..e], max_lag)
-}
-
-/// 互相关主体：去直流 + 频带限幅（与探针带一致）+ 带内 RMS 归一化（与电平无关）。
-fn estimate_core(mic: &[f32], far: &[f32], max_lag: usize) -> (f64, f64, f64, f64) {
   let n = mic.len().min(far.len());
   if n < SAMPLE_RATE as usize / 10 {
     return (0.0, 0.0, -160.0, -160.0);
@@ -455,32 +348,23 @@ fn dump_calib(mic: &[f32], far: &[f32]) {
     let _ = std::fs::write(dir.join("calib_last_far.f32"), bytes(far));
   }
 }
-
-/// 校准探针：单次 500→7000 Hz 对数扫频（150 ms，平顶包络，0.98 幅度），前后留短静音。
-/// 单次是刻意的（重复 chirp 会产生假峰）。**峰宽由带宽决定（≈1/带宽），不是时长**；
-/// 包络用平顶（两端各 15% 升余弦）而不是 Hann：Hann 只有中点一瞬间到顶，听感和能量都偏低。
+/// 校准探针：单次 800→6000 Hz 对数扫频（150 ms，Hann 包络，0.9 幅度），前后留短静音。
+/// 单次是刻意的（重复 chirp 会产生假峰）；起始频率抬高、时长压短，听感更利落
 pub fn make_probe() -> Vec<f32> {
   const SR: usize = SAMPLE_RATE as usize;
-  let head = SR * 80 / 1000;
+  let head = SR * 100 / 1000;
   let dur = SR * 150 / 1000;
-  let tail = SR * 120 / 1000;
+  let tail = SR * 150 / 1000;
   let mut v = vec![0.0f32; head + dur + tail];
   let (f0, f1) = (PROBE_F0, PROBE_F1);
   let k = (f1 / f0).ln() / (dur as f64 / SR as f64);
-  let taper = (dur as f64 * 0.15).max(1.0) as usize;
   let mut phase = 0.0f64;
   for i in 0..dur {
     let t = i as f64 / SR as f64;
     let f = f0 * (k * t).exp();
     phase += 2.0 * std::f64::consts::PI * f / SR as f64;
-    let w = if i < taper {
-      0.5 - 0.5 * (std::f64::consts::PI * i as f64 / taper as f64).cos()
-    } else if i + taper >= dur {
-      0.5 - 0.5 * (std::f64::consts::PI * (dur - 1 - i) as f64 / taper as f64).cos()
-    } else {
-      1.0
-    };
-    v[head + i] = (0.98 * w * phase.sin()) as f32;
+    let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / dur as f64).cos();
+    v[head + i] = (0.9 * w * phase.sin()) as f32;
   }
   v
 }

@@ -22,7 +22,7 @@
 //! 结构性变更（增删/排序行、换设备、改型号、增删列）由上层重建整个 Session。
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -212,13 +212,7 @@ fn build_column(
     match r.kind {
       RowKind::Input if r.ptype == "echo_cancel" => {
         // AEC 输入行：本行 device = mic，params.far_device = 远端参考（回环或另一路输入）。
-        // 远端缺省 = 系统默认输出回环（AEC 要消除的就是输出设备的声音）；界面不再提供「未选择」。
-        let far = r
-          .params
-          .get("far_device")
-          .cloned()
-          .filter(|s| !s.trim().is_empty())
-          .unwrap_or_else(|| "loopback".to_string());
+        let far = r.params.get("far_device").cloned().unwrap_or_default();
         let delay_ms: f64 = r
           .params
           .get("far_delay_ms")
@@ -261,6 +255,8 @@ fn build_column(
                     .unwrap_or_else(|_| "输出回环".to_string()),
                 )
               }
+            } else if far.is_empty() {
+              Err("未选择远端设备".to_string())
             } else {
               crate::devices::find(&far, true).map(|(_, n)| n)
             };
@@ -283,13 +279,11 @@ fn build_column(
                     match far_cap {
                       Ok(far_cap) => {
                         let hist = Arc::new(Mutex::new(FarHistory::new(FAR_HIST_SAMPLES)));
-                        let mic_clock = Arc::new(AtomicU64::new(0));
                         let pump = spawn_far_pump(
                           &far_cap.fanout,
                           hist.clone(),
                           &format!("c{idx}r{ri}"),
                           calib.epoch(),
-                          mic_clock.clone(),
                         );
                         match Aec::load(&model) {
                           Ok(engine) => {
@@ -304,7 +298,6 @@ fn build_column(
                               mic_gain,
                               far_gain,
                               bypass,
-                              mic_clock,
                               exact: 0,
                               latest: 0,
                               pass: 0,
@@ -478,14 +471,10 @@ fn run_column(
                 let e = calib_epoch.load(Relaxed);
                 if e != epoch_seen {
                   epoch_seen = e;
+                  aec.mic_hops = 0;
                 }
                 let hop_idx = aec.mic_hops;
                 aec.mic_hops += 1;
-                // 把 mic 序号发布给 far 泵当网格时钟（Linux）
-                aec.mic_clock.store(
-                  aec.mic_hops * HOP as u64,
-                  std::sync::atomic::Ordering::Relaxed,
-                );
                 if aec.bypass {
                   // 直通：跳过 AEC，直接过 mic（仍应用近端增益）
                   if aec.mic_gain != 1.0 {
