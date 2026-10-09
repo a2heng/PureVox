@@ -22,7 +22,7 @@
 //! 结构性变更（增删/排序行、换设备、改型号、增删列）由上层重建整个 Session。
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -283,11 +283,13 @@ fn build_column(
                     match far_cap {
                       Ok(far_cap) => {
                         let hist = Arc::new(Mutex::new(FarHistory::new(FAR_HIST_SAMPLES)));
+                        let mic_clock = Arc::new(AtomicU64::new(0));
                         let pump = spawn_far_pump(
                           &far_cap.fanout,
                           hist.clone(),
                           &format!("c{idx}r{ri}"),
                           calib.epoch(),
+                          mic_clock.clone(),
                         );
                         match Aec::load(&model) {
                           Ok(engine) => {
@@ -302,6 +304,7 @@ fn build_column(
                               mic_gain,
                               far_gain,
                               bypass,
+                              mic_clock,
                               exact: 0,
                               latest: 0,
                               pass: 0,
@@ -475,10 +478,14 @@ fn run_column(
                 let e = calib_epoch.load(Relaxed);
                 if e != epoch_seen {
                   epoch_seen = e;
-                  aec.mic_hops = 0;
                 }
                 let hop_idx = aec.mic_hops;
                 aec.mic_hops += 1;
+                // 把 mic 序号发布给 far 泵当网格时钟（Linux）
+                aec.mic_clock.store(
+                  aec.mic_hops * HOP as u64,
+                  std::sync::atomic::Ordering::Relaxed,
+                );
                 if aec.bypass {
                   // 直通：跳过 AEC，直接过 mic（仍应用近端增益）
                   if aec.mic_gain != 1.0 {
@@ -645,15 +652,20 @@ fn run_column(
               r.label, r.inf_ms, r.inf_max_ms
             ));
           } else if let Some(aec) = r.aec.as_ref() {
+            let ftotal = aec.hist.lock().map(|h| h.total()).unwrap_or(0);
+            let mic_idx = aec.mic_hops * crate::audio::HOP as u64;
             notes.push(format!(
-              "{}：精确 {}，回退 {}，直通 {}，延时 {} ms ｜ 远端解释度 ρ={:.2}，回声抑制 {:.1} dB",
+              "{}：精确 {}，回退 {}，直通 {}，延时 {} ms ｜ 远端解释度 ρ={:.2}，回声抑制 {:.1} dB ｜ 网格 far={} mic={}（差 {}）",
               r.label,
               aec.exact,
               aec.latest,
               aec.pass,
               aec.delay_samples / 48,
               aec.echo.rho,
-              aec.echo.supp_db
+              aec.echo.supp_db,
+              ftotal,
+              mic_idx,
+              mic_idx as i64 - ftotal as i64
             ));
           } else if let Some(net) = r.net_input.as_ref() {
             // 网络行状态：入站水位与欠载，便于判断「手机没在说话」还是「缓冲欠载」

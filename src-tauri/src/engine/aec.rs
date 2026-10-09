@@ -34,8 +34,8 @@ use crate::infer::aec::Aec;
 /// far 历史网格容量（2 s @48 kHz，DESIGN.md §8）。
 pub const FAR_HIST_SAMPLES: usize = 48_000 * 2;
 
-/// 数据驱动网格的**前置余量**（样本）：monitor 到达延迟比 mic 大，先把序号垫到 mic 前面，
-/// 保证列线程取「精确窗口」永远取得到。常量偏移由 far_delay 吸收。
+/// Linux far 网格的**前置余量**（样本）：网格序号 = mic 序号 + 余量，保证列线程取「精确窗口」
+/// 永远取得到（否则窗口会落在网格末尾之外 → 全变「回退」）。常量偏移由 far_delay 吸收。
 const FAR_GRID_LEAD: usize = 48_000 * 3 / 10; // 300 ms
 
 /// 48 kHz 采样网格（环形）：按绝对采样序号读写，支持取任意历史窗口。
@@ -94,10 +94,9 @@ impl FarHistory {
     FarWin::None
   }
 
-  /// 清空网格并把序号归零（校准重置 / 会话起步用：far 与 mic 从同一原点重新计时）。
-  pub fn clear(&mut self) {
-    self.buf.fill(0.0);
-    self.total = 0;
+  /// 当前网格序号（= 已写入样本数），诊断用。
+  pub fn total(&self) -> u64 {
+    self.total
   }
 }
 
@@ -164,6 +163,8 @@ pub struct AecRow {
   pub far_gain: f32,
   /// 直通：跳过 AEC，直接过 mic（A/B 对比用）
   pub bypass: bool,
+  /// mic 序号时钟（采样）：列线程每 hop 更新，far 泵用它当网格时钟（Linux）
+  pub mic_clock: Arc<AtomicU64>,
   /// 回声诊断（滚动 1 s 窗）：远端对近端的解释度与模型抑制量
   pub echo: EchoMetrics,
   pub exact: u64,
@@ -201,10 +202,13 @@ pub fn spawn_far_pump(
   fan: &Arc<Fanout>,
   hist: Arc<Mutex<FarHistory>>,
   tag: &str,
-  epoch: Arc<AtomicU64>,
+  _epoch: Arc<AtomicU64>,
+  mic_clock: Arc<AtomicU64>,
 ) -> WorkerHandle {
-  // 平台推进策略（`loopback_<平台>.rs`）：Windows WASAPI 回环空闲不回调 → 按实时补零；
-  // Linux monitor 空闲也持续出数据 → 数据驱动（更忠实，但需要前置余量，见下）。
+  // 平台推进策略（`loopback_<平台>.rs`）：
+  // - Windows：用**系统时钟**推进（WASAPI 回环空闲不回调，必须按实时补零）；
+  // - Linux：用 **mic 的序号**当网格时钟——两边是独立时钟，用系统时钟会让 mic 序号
+  //   越跑越前（实测 20 s 后窗口全取不到 → 校准超时）；以 mic 为钟则永远跟得上。
   let realtime = crate::audio::loopback::FAR_GRID_REALTIME;
   let mut cons = fan.subscribe(&format!("{tag}-far"));
   let stop = Arc::new(AtomicBool::new(false));
@@ -212,56 +216,19 @@ pub fn spawn_far_pump(
   let join = std::thread::Builder::new()
     .name(format!("aec-far-{tag}"))
     .spawn(move || {
-      let mut last_epoch = epoch.load(Relaxed);
-      let mut t0 = Instant::now();
+      let t0 = Instant::now();
       let mut written: u64 = 0;
       let mut buf = [0.0f32; HOP];
       while !stop2.load(Relaxed) {
-        // 重置（会话起步 / 校准开始）：网格与时钟一起归零，far 与 mic 序号从同一原点计时
-        let e = epoch.load(Relaxed);
-        if e != last_epoch {
-          last_epoch = e;
-          t0 = Instant::now();
-          written = 0;
-          if let Ok(mut h) = hist.lock() {
-            h.clear();
-            // 数据驱动网格：monitor 的到达延迟比 mic 大（~100 ms），网格序号会落在 mic 序号
-            // 之后 → 校准取不到「精确窗口」。先垫一段静音余量把序号推到 mic 前面；
-            // 这段常量偏移由 far_delay 吸收（校准测的就是绝对偏移）。
-            if !realtime {
-              h.push(&[0.0f32; FAR_GRID_LEAD]);
-            }
-          }
-        }
-        if !realtime {
-          // 数据驱动：有几多写几多，不按实时补零（补零会把网格写歪 → 运行时 ρ=0）
-          let avail = cons.slots();
-          if avail == 0 {
-            std::thread::sleep(Duration::from_millis(1));
-            continue;
-          }
-          if avail > 8 * HOP
-            && let Ok(c) = cons.read_chunk(avail - 2 * HOP)
-          {
-            c.commit_all();
-          }
-          let take = cons.slots().min(HOP);
-          if take == 0 {
-            continue;
-          }
-          if let Ok(c) = cons.read_chunk(take) {
-            let (a, b) = c.as_slices();
-            let n = a.len() + b.len();
-            buf[..a.len()].copy_from_slice(a);
-            buf[a.len()..n].copy_from_slice(b);
-            c.commit_all();
-            if let Ok(mut h) = hist.lock() {
-              h.push(&buf[..n]);
-            }
-          }
-          continue;
-        }
-        let want = (t0.elapsed().as_secs_f64() * SAMPLE_RATE as f64) as u64;
+        // 网格时钟：Windows 用系统时钟；Linux 用 mic 序号 + 前置余量
+        // （余量保证「精确窗口」永远取得到；常量偏移由 far_delay 吸收）。
+        // 两边都**单调推进、不重置**：序号一旦重置，far 泵与列线程的重置顺序会打架
+        // （泵按旧的大序号写一大段 → 窗口全取不到 → 校准超时）。
+        let want = if realtime {
+          (t0.elapsed().as_secs_f64() * SAMPLE_RATE as f64) as u64
+        } else {
+          mic_clock.load(Relaxed) + FAR_GRID_LEAD as u64
+        };
         let mut need = want.saturating_sub(written);
         if need == 0 {
           std::thread::sleep(Duration::from_millis(1));

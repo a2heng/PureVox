@@ -40,12 +40,12 @@ use super::capture::{self, CallbackStats, Capture, OPEN_TIMEOUT, SourceInfo};
 use super::fanout::Fanout;
 use crate::debug::SharedHub;
 
-/// far 网格是否按**实时**推进（不足补零）。
+/// far 网格是否用**系统时钟**推进（不足补零）。
 ///
-/// - Windows WASAPI 回环：渲染端点空闲时几乎不回调 → 必须按实时推进，否则 far 序号越落越后；
-/// - Linux PipeWire monitor（`parec`）：**空闲也持续出数据**（静音）→ 用**数据驱动**网格更准。
-///   按实时推进时，`parec` 的到达延迟会抖动，补零会把 far 网格写歪（运行时「远端解释度 ρ=0」，
-///   AEC 拿到错位的参考 → 消不掉）。
+/// - Windows WASAPI 回环：渲染端点空闲时几乎不回调 → 用系统时钟推进，否则 far 序号越落越后；
+/// - Linux PipeWire monitor（`parec`）：改用 **mic 的序号**当网格时钟（见 `engine/aec.rs`
+///   的 `spawn_far_pump`）。两边是独立时钟，用系统时钟会让 mic 序号越跑越前 → 20 s 后窗口
+///   全取不到（校准超时）。
 pub const FAR_GRID_REALTIME: bool = false;
 
 /// 采集采样率/格式（parec 直接给 48 kHz 单声道 f32，与引擎内部格式一致）。
