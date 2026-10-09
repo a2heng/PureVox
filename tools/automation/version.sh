@@ -39,10 +39,12 @@ esac
 if [ -n "$tag" ]; then
   # v2026.10.08.1430 → 2026.1008.1430
   IFS='.' read -r y mo d hm <<<"$tag"
-  ver="${y}.${mo}${d}.${hm}"
 else
-  ver="$(date -u +%Y.%m%d.%H%M)"
+  IFS='.' read -r y mo d hm <<<"$(date -u +%Y.%m.%d.%H%M)"
 fi
+# semver 不允许前导零（`2026.1009.0005` 会被 Tauri 拒），所以「月日」「时分」按十进制数写：
+# 月日 1009 / 0109 → 1009 / 109；时分 0005 / 1430 → 5 / 1430（仍是「每天每分」唯一）。
+ver="${y}.$((10#${mo}${d})).$((10#${hm}))"
 stamp="${ver//./-}"
 
 printf '{"version":"%s"}\n' "$ver" >"$ROOT/src-tauri/.build-version.json"

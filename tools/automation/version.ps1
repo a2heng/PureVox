@@ -25,10 +25,13 @@ $ref = $env:GITHUB_REF_NAME
 if ($ref -and $ref.StartsWith('v')) {
   # v2026.10.08.1430 → 2026.1008.1430
   $p = $ref.Substring(1).Split('.')
-  $ver = "$($p[0]).$($p[1])$($p[2]).$($p[3])"
+  $y = $p[0]; $mo = $p[1]; $d = $p[2]; $hm = $p[3]
 } else {
-  $ver = (Get-Date).ToUniversalTime().ToString('yyyy.MMdd.HHmm')
+  $t = (Get-Date).ToUniversalTime()
+  $y = $t.ToString('yyyy'); $mo = $t.ToString('MM'); $d = $t.ToString('dd'); $hm = $t.ToString('HHmm')
 }
+# semver 不允许前导零（`2026.1009.0005` 会被 Tauri 拒），所以「月日」「时分」按十进制数写。
+$ver = "$y.$([int]"$mo$d").$([int]$hm)"
 $stamp = $ver -replace '\.', '-'
 
 $cfg = Join-Path $root 'src-tauri/.build-version.json'
