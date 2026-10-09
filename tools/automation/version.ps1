@@ -1,4 +1,4 @@
-# PureVox — AI 麦克风降噪工具
+﻿# PureVox — AI 麦克风降噪工具
 # Copyright (C) 2024-2026 a2heng <752848283@qq.com>
 #
 # PureVox is licensed under the GNU General Public License v3.0 or
@@ -16,22 +16,25 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # 构建版本解析（Windows / pwsh 用；与 version.sh 同一契约，见其文件头）：
-#   tag v<yyyy.MM.dd.HHmm> → VERSION = `yyyy.MMdd.HHmm`（semver，Tauri 要求）；
-#   否则当前 UTC 日期时间。同时写 `src-tauri/.build-version.json`（Tauri `--config`，不提交）。
+#   tag v<yyyy.MM.dd.HHmm> 或当前 UTC → VERSION = `yy.M.<日×1440+时分>`（semver 三段）。
+#   三段都有硬上限（MSI ProductVersion：major≤255、minor≤255、build≤65535），日期不能直译：
+#     major = 年 - 2000 → 26；minor = 月 → 1..12；build = 日×1440 + 时分 → 1..47059，
+#     按时间全序且每分钟唯一。tag 本身仍是完整时间戳 v2026.10.08.1430。
+#   同时写 `src-tauri/.build-version.json`（Tauri `--config`，不提交）。
 # 用法：CI `./tools/automation/version.ps1 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8`
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $ref = $env:GITHUB_REF_NAME
 if ($ref -and $ref.StartsWith('v')) {
-  # v2026.10.08.1430 → 2026.1008.1430
-  $p = $ref.Substring(1).Split('.')
+  $p = $ref.Substring(1).Split('.')   # v2026.10.08.1430 → y=2026 mo=10 d=08 hm=1430
   $y = $p[0]; $mo = $p[1]; $d = $p[2]; $hm = $p[3]
 } else {
   $t = (Get-Date).ToUniversalTime()
   $y = $t.ToString('yyyy'); $mo = $t.ToString('MM'); $d = $t.ToString('dd'); $hm = $t.ToString('HHmm')
 }
-# semver 不允许前导零（`2026.1009.0005` 会被 Tauri 拒），所以「月日」「时分」按十进制数写。
-$ver = "$y.$([int]"$mo$d").$([int]$hm)"
+# 三段映射（[int] 去掉前导零：'09'→9、'0629'→629）：
+#   major = 年 - 2000、minor = 月、build = 日×1440 + 时分（上限 47059 < 65535）
+$ver = "$([int]$y % 100).$([int]$mo).$([int]$d * 1440 + [int]$hm)"
 $stamp = $ver -replace '\.', '-'
 
 $cfg = Join-Path $root 'src-tauri/.build-version.json'

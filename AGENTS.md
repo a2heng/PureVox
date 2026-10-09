@@ -224,10 +224,14 @@ release 构建同样保留（不允许用编译开关剔除）。
      现役图标是 `src-tauri/icons/`、界面用系统字体（不捆绑字体文件），与旧资产**无重复**。
 6. **发版 tag**：主线 `v<yyyy.MM.dd.HHmm>`。CI 失败、从未生成 release 的 tag 必须删除
    （`git tag -d <tag> && git push origin :refs/tags/<tag>`），否则会截断下一个 release 的提交记录。
-   **应用/包版本号 = 日期**：由 `tools/automation/version.{sh,ps1}` 从 tag（或本机当前 UTC）推导——Tauri
-   的 `version` 必须是 semver，故取 `yyyy.MMdd.HHmm`（如 tag `v2026.10.08.1430` → 版本 `2026.1008.1430`；**月日/时分按十进制数写、去前导零**：`2026.01.09.0005` → `2026.109.5`，否则 `0005` 会被 semver 拒），
-   写入 `src-tauri/.build-version.json` 并由 `cargo tauri build --config` 覆盖（不提交该文件）；窗口标题与
-   调试面板「版本」走 `PUREVOX_BUILD_VERSION`（见 `src/version.rs`）。
+   **应用/包版本号 = 日期**：由 `tools/automation/version.{sh,ps1}` 从 tag（或本机当前 UTC）推导，取
+   `yy.M.<日×1440+时分>`（如 tag `v2026.10.08.1430` → 版本 `26.10.12950`）。三段都有硬上限，
+   日期**不能直译**：Tauri 要 semver 三段，而 MSI 的 ProductVersion 限 major≤255 / minor≤255 /
+   build≤65535（`2026.1008.1430` 会报 `major number cannot be greater than 255`，`26.1008.1430`
+   则卡在 minor）。故映射为 **major = 年-2000、minor = 月、build = 日×1440+时分**（上限 47059），
+   按时间全序且每分钟唯一；可读的完整时间戳由 tag（`v2026.10.08.1430`）承担。
+   版本写入 `src-tauri/.build-version.json` 并由 `cargo tauri build --config` 覆盖（不提交该文件）；
+   窗口标题与调试面板「版本」走 `PUREVOX_BUILD_VERSION`（见 `src/version.rs`）。
 7. **CI 与门禁（多平台：Windows + Linux + Android；测试与打包解耦，无自动触发）**：
    - **触发纪律**：**没有任何分支推送 / PR 触发**。`tests.yml`（只测试、不打包）只
      `workflow_dispatch` 手动触发；`release.yml`（打包发版）由 tag `v*` 触发、也可手动；
