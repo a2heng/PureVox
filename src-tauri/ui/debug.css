@@ -37,7 +37,7 @@
   --accent: #0a58ca;
   --topbar-h: 40px;
   --col-w: 400px;
-  --dbg-w: 640px;
+  --dbg-w: 1000px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -122,7 +122,8 @@ body {
   align-items: stretch;
 }
 #audio-columns {
-  flex: 1 1 auto;
+  /* flex-basis:0 —— 音频区只吃「调试列之外剩下的」；用 auto 时它先按内容宽参与分配。 */
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   align-items: flex-start;
@@ -140,7 +141,10 @@ body {
 /* 调试列：默认隐藏（不挤占列宽度），顶栏「调试面板」开关切换；展开时更宽不省略 */
 #debug { display: none; }
 body.debug-on #debug { display: block; }
-.column.debug { flex: 0 0 var(--dbg-w); min-height: 0; overflow-y: auto; }
+/* 调试列：固定宽。显式 min-width:0 —— flex item 默认 min-width:auto（= min-content），
+   列内 nowrap 的长文本（设备名、说明）会把下限顶大、让 flex-basis 失效。
+   overflow-x:hidden：overflow-y 非 visible 时 x 会算成 auto，横向会冒出滚动条。 */
+.column.debug { flex: 0 0 var(--dbg-w); min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 
 /* ---------- 列头 / 列脚（固定高，按钮常驻） ---------- */
 .col-head {
@@ -263,11 +267,21 @@ td { padding: 2px 8px 2px 0; overflow: hidden; text-overflow: ellipsis; }
 .c-mem { width: 15em; }
 
 .stream { border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; margin: 6px 0; }
-.stream .kv th { width: 11em; }
-.plots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
-.plots figure { margin: 0; }
-.plots figcaption { color: var(--muted); font-size: 12px; }
-.plots canvas { width: 100%; height: 120px; display: block; background: var(--bg); border-radius: 3px; }
+/* 设备条带四列，比例 2:2:3:3 —— 两个窄参数列（标签+数值）在左，两张宽图列在右。
+   HTML 里四个子项必须与四列一一对应（两张参数表各自是直接子项，别再套容器，
+   套了会空出整列）。用 minmax(0,Nfr) 而不是裸 fr：裸 fr 的最小尺寸是 min-content，
+   nowrap 的标签/数值会把参数列顶宽、图列被挤变形。 */
+.stream-body { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(0, 3fr) minmax(0, 3fr); gap: 10px; align-items: start; }
+/* 参数表内标签:数值 = 2:3（table-layout:fixed 下按百分比切）；数值右对齐，
+   是扫读重点，过长省略（put() 已写 title，悬停看全文）。 */
+.stream .kv { font-size: 10px; line-height: 1.3; border-collapse: collapse; width: 100%; table-layout: fixed; }
+.stream .kv th { font-weight: 400; color: var(--muted); text-align: left; padding: 0 6px 0 0; width: 40%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stream .kv td { font-family: Consolas, monospace; text-align: right; padding: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stream-body figure { margin: 0; min-width: 0; }
+.stream-body figcaption { color: var(--muted); font-size: 11px; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 图宽靠调试列加宽（--dbg-w），高度用固定 px：canvas 若用 height:auto，
+   fitCanvas 改内建尺寸会反过来改布局高度，容易来回抖 */
+.stream-body canvas { width: 100%; max-width: 100%; min-width: 0; height: 210px; display: block; background: var(--bg); border-radius: 3px; }
 
 .na { color: var(--warn); }
 .pending { color: var(--muted); }

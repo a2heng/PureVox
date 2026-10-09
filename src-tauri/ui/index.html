@@ -47,6 +47,10 @@
       <section id="debug" class="column debug">
         <h2><span data-i18n="调试">调试</span> <span id="dbg-status" class="mono"></span></h2>
 
+        <!-- 设备条带放在调试面板最上面：调试时最常看的就是每路流，不用往下翻过
+             应用/系统/GPU。JS 与 CSS 不变，只是把渲染容器提前。 -->
+        <div id="audio-streams"></div>
+
         <section>
           <h3 data-i18n="应用">应用</h3>
           <table class="kv">
@@ -109,7 +113,6 @@
             <tr><th data-i18n="参考录制">参考录制</th><td id="audio-recorder" colspan="3"></td></tr>
             <tr><th data-i18n="延时校准">延时校准</th><td id="audio-calib" colspan="3"></td></tr>
           </table>
-          <div id="audio-streams"></div>
 
           <h3 data-i18n="网络">网络</h3>
           <table class="kv">

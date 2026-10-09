@@ -130,31 +130,31 @@ const labelOf = (l, s) => {
 const STREAM_FIELDS = [
   ['状态', (s) => probeText(s.state, (v) => v)],
   ['设备', (s) => [s.device_name, '']],
-  ['设备格式', (s) => [`${s.sample_rate} Hz ${s.channels} ch ${s.sample_format}`, '']],
+  ['格式', (s) => [`${s.sample_rate} Hz ${s.channels} ch ${s.sample_format}`, '']],
   ['重采样', (s) => [s.resampler, '']],
   ['设备侧速率', (s) => probeText(devRate(s), hz)],
-  ['引擎侧速率（48k）', (s) => probeText(engRate(s), hz)],
-  ['时钟伺服修正', (s) => probeText(s.asrc_adjust_ppm, ppm)],
+  ['引擎侧速率', (s) => probeText(engRate(s), hz)],
+  ['伺服修正', (s) => probeText(s.asrc_adjust_ppm, ppm)],
   ['重采样延迟', (s) => [ms(s.resampler_delay_ms), '']],
-  ['回调块（帧）', (s) => probeText(s.callback_frames, (v) => T('最近 {last}  最小 {min}  最大 {max}', { last: v.last, min: v.min, max: v.max }))],
+  ['回调块', (s) => probeText(s.callback_frames, (v) => T('最近 {last}  最小 {min}  最大 {max}', { last: v.last, min: v.min, max: v.max }))],
   ['回调次数', (s) => [String(s.callbacks), '']],
-  [isOutLabel('输入帧 / 输出帧', '48k 消耗帧 / 设备帧'), (s) => [`${s.frames_in} / ${s.frames_processed}`, '']],
-  ['hop 数 / 剩余帧', (s) => [`${s.hops} / ${s.pending_frames}`, s.pending_frames < 480 ? '' : 'na']],
+  [isOutLabel('输入/输出帧', '消耗/设备帧'), (s) => [`${s.frames_in} / ${s.frames_processed}`, '']],
+  ['hop/剩余', (s) => [`${s.hops} / ${s.pending_frames}`, s.pending_frames < 480 ? '' : 'na']],
   ['峰值 / RMS', (s) => {
     const [p, pc] = probeText(s.peak_dbfs, db)
     const [r] = probeText(s.rms_dbfs, db)
     return [`${p}  /  ${r}`, pc]
   }],
-  [isOutLabel('环形缓冲水位', '48k 缓冲 / 设备缓冲'), (s) => {
+  [isOutLabel('环形缓冲水位', '缓冲/设备'), (s) => {
     if (!isOut(s)) return [ms(s.buffer_level_ms), '']
     const [d] = probeText(s.device_buffer_ms, ms)
     return [`${ms(s.buffer_level_ms)}  /  ${d}`, '']
   }],
-  ['欠载（补静音样本）', (s) => probeText(s.underruns, String)],
-  ['重同步次数', (s) => probeText(s.resyncs, String)],
-  ['丢弃样本 / 流错误', (s) => [`${s.overruns} / ${s.stream_errors}${s.last_error ? '  ' + s.last_error : ''}`, s.overruns || s.stream_errors ? 'na' : '']],
+  ['欠载', (s) => probeText(s.underruns, String)],
+  ['重同步', (s) => probeText(s.resyncs, String)],
+  ['丢弃/错误', (s) => [`${s.overruns} / ${s.stream_errors}${s.last_error ? '  ' + s.last_error : ''}`, s.overruns || s.stream_errors ? 'na' : '']],
   ['端到端延迟', (s) => probeText(s.latency_ms, ms)],
-  ['推理耗时 均值 / 最大', (s) => {
+  ['推理 均/最大', (s) => {
     const [a, c] = probeText(s.inference_ms_avg, ms)
     const [b] = probeText(s.inference_ms_max, ms)
     return [`${a}  /  ${b}`, c]
@@ -268,21 +268,24 @@ function makeStreamCard(s) {
   const card = document.createElement('div')
   card.className = 'stream'
   card.innerHTML =
-    '<h4></h4><table class="kv"><tbody></tbody></table>' +
-    '<div class="plots">' +
+    '<h4></h4><div class="stream-body">' +
+    // 四个直接子项 = 四列（比例 2:2:3:3）：两张参数表（各一套标签+数值）在左，波形、频谱在右。
+    // 参数表不要再套一层容器：套了之后 .stream-body 只有 3 个子项，第二列会整列空着。
+    '<table class="kv"><tbody></tbody></table>' +
+    '<table class="kv"><tbody></tbody></table>' +
     `<figure><figcaption>${T(isOut(s) ? '波形（48 kHz，最近 50 ms，送入重采样前）' : '波形（48 kHz，最近 50 ms）')}</figcaption><canvas class="wave"></canvas></figure>` +
     `<figure><figcaption>${T('平均频谱（0 ~ 24 kHz，-140 ~ 0 dBFS）')}</figcaption><canvas class="spec"></canvas></figure>` +
     '</div>'
-  const tbody = card.querySelector('tbody')
-  for (let i = 0; i < STREAM_FIELDS.length; i += 2) {
-    const tr = document.createElement('tr')
-    for (let j = i; j < i + 2; j++) {
+  const half = Math.ceil(STREAM_FIELDS.length / 2)
+  card.querySelectorAll('tbody').forEach((tb, col) => {
+    for (let i = col * half; i < Math.min(STREAM_FIELDS.length, (col + 1) * half); i++) {
+      const tr = document.createElement('tr')
       const th = document.createElement('th'); const td = document.createElement('td')
-      th.textContent = STREAM_FIELDS[j] ? labelOf(STREAM_FIELDS[j][0], s) : ''
+      th.textContent = labelOf(STREAM_FIELDS[i][0], s)
       tr.append(th, td)
+      tb.appendChild(tr)
     }
-    tbody.appendChild(tr)
-  }
+  })
   return card
 }
 
@@ -297,7 +300,7 @@ function renderAudio(audio) {
   audio.streams.forEach((s, i) => {
     const card = box.children[i]
     put(card.querySelector('h4'), isOut(s) ? T('输出：{name}', { name: s.device_name }) : T('输入：{name}', { name: s.device_name }))
-    const tds = card.querySelectorAll('td')
+    const tds = card.querySelectorAll('td')   // 两张参数表按列顺序依次排列，顺序与 makeStreamCard 一致
     STREAM_FIELDS.forEach(([, f], j) => { const [t, c] = f(s); put(tds[j], t, c) })
     drawWave(card.querySelector('.wave'), s.waveform)
     drawSpectrum(card.querySelector('.spec'), s.spectrum_db, s.spectrum_bin_hz, isOut(s) ? Infinity : s.sample_rate)
