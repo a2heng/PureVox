@@ -28,13 +28,13 @@
 
 use std::path::Path;
 
-use ort::session::Session;
-use ort::value::Tensor;
+use ort::value::TensorRef;
 
 use crate::audio::HOP;
 
 pub struct Denoise {
-  session: Session,
+  /// 从模型池借来的会话（Drop 归还；同一模型多行/多次重建不重复加载）
+  model: crate::infer::LeasedSession,
   dim: usize,
   cache: Vec<f32>,
   out: Vec<f32>,
@@ -42,10 +42,10 @@ pub struct Denoise {
 
 impl Denoise {
   pub fn load(path: &Path) -> Result<Self, String> {
-    let session = super::build_session(path)?;
-    let dim = super::cache_dim(&session, "cache_in")?;
+    let model = crate::infer::checkout(path)?;
+    let dim = crate::infer::cache_dim(&model.lock(), "cache_in")?;
     Ok(Denoise {
-      session,
+      model,
       dim,
       cache: vec![0.0; dim],
       out: vec![0.0; HOP],
@@ -53,21 +53,32 @@ impl Denoise {
   }
 
   /// 处理一个 480 样本 hop，返回增强后的 hop（借用内部缓冲）。
+  ///
+  /// **零分配**：输入张量借用 `hop` / `cache`（`TensorRef::from_array_view`），
+  /// cache 输出拷回预分配缓冲；不再每跳 `to_vec()` + 重新分配 36506 个 f32。
   pub fn process(&mut self, hop: &[f32]) -> Result<&[f32], String> {
     debug_assert_eq!(hop.len(), HOP);
-    let mix = Tensor::from_array(([1i64, HOP as i64], hop.to_vec()))
-      .map_err(|e| format!("构造 mix_hop 失败：{e}"))?;
-    let cache_in = std::mem::take(&mut self.cache);
-    let cache = Tensor::from_array(([1i64, self.dim as i64], cache_in))
-      .map_err(|e| format!("构造 cache_in 失败：{e}"))?;
+    let Self {
+      model,
+      dim,
+      cache,
+      out,
+    } = self;
+    let dim = *dim;
+    let mut guard = model.lock();
+    let session = &mut *guard;
 
-    let outputs = match self
-      .session
-      .run(ort::inputs!["mix_hop" => mix, "cache_in" => cache])
-    {
+    let run = {
+      let mix = TensorRef::from_array_view(([1i64, HOP as i64], hop))
+        .map_err(|e| format!("构造 mix_hop 失败：{e}"))?;
+      let cache_in = TensorRef::from_array_view(([1i64, dim as i64], cache.as_slice()))
+        .map_err(|e| format!("构造 cache_in 失败：{e}"))?;
+      session.run(ort::inputs!["mix_hop" => mix, "cache_in" => cache_in])
+    };
+    let outputs = match run {
       Ok(o) => o,
       Err(e) => {
-        self.cache = vec![0.0; self.dim];
+        cache.fill(0.0);
         return Err(format!("推理失败：{e}"));
       }
     };
@@ -77,11 +88,15 @@ impl Denoise {
     let (_, cache_out) = outputs["cache_out"]
       .try_extract_tensor::<f32>()
       .map_err(|e| format!("读取 cache_out 失败：{e}"))?;
-
-    self.out.clear();
-    self.out.extend_from_slice(&enh[..HOP]);
-    self.cache.clear();
-    self.cache.extend_from_slice(cache_out);
-    Ok(&self.out)
+    if enh.len() < HOP || cache_out.len() != dim {
+      return Err(format!(
+        "模型输出维度异常：enh_hop={}，cache_out={}（期望 {HOP} / {dim}）",
+        enh.len(),
+        cache_out.len()
+      ));
+    }
+    out.copy_from_slice(&enh[..HOP]);
+    cache.copy_from_slice(cache_out);
+    Ok(out)
   }
 }

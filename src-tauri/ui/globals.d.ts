@@ -40,11 +40,44 @@ interface Window {
   __pvDriversLinux?: PvDriversImpl
   __pvDriversWindows?: PvDriversImpl
   /** 媒体处理行界面（media.js 注册，columns.js 调用） */
+  __pvTse?: {
+    attach(
+      el: HTMLElement,
+      ci: number,
+      ri: number,
+      row: any,
+      ctx: { apply: () => void; running: () => boolean },
+    ): boolean
+    onSnapshot(snapshot: any): void
+    reset(): void
+  }
+
   __pvMedia?: PvMediaImpl
   /** 二维码（qrcode.js = 内嵌的第三方库 qrcode-generator v1.4.4，MIT）。
    *  库里那份是上游老式写法、过不了 checkJs，已在 jsconfig.json 里 exclude，
    *  所以这里的类型是手写的。 */
   __pvQr?: PvQrImpl
+  /** 应用外壳（shell.js）：状态栏/侧栏/Toast/快捷键 */
+  __pvShell?: {
+    onSnapshot(snapshot: any): void
+    onPlan(plan: any): void
+    showProblems(list: string[]): void
+    toast(text: string, level?: 'info' | 'ok' | 'warn' | 'error', ms?: number): void
+  }
+  /** 统一提示（shell.js 注册；任何模块都能调用） */
+  __pvToast?: (text: string, level?: 'info' | 'ok' | 'warn' | 'error', ms?: number) => void
+  /** TSE 参考卡片（tse.js 注册，columns.js 调用）：状态 / 10 秒录音 / 进度 */
+  __pvTse?: {
+    attach(
+      el: HTMLElement,
+      ci: number,
+      ri: number,
+      row: any,
+      hooks?: { apply?: () => void; running?: () => boolean }
+    ): boolean
+    onSnapshot(snapshot: any): void
+    reset(): void
+  }
   /** 网络行卡片（netrow.js 注册，columns.js 调用）：状态灯 / 启停重启 / 地址 / 二维码 / AEC 段 */
   __pvNetRow?: {
     attach(

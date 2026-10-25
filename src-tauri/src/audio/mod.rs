@@ -94,6 +94,11 @@ pub(crate) fn with_device_retry<T>(mut f: impl FnMut() -> Result<T, String>) -> 
       }
     }
   }
+  if last.contains("busy") || last.contains("Busy") || last.contains("占用") {
+    return Err(format!(
+      "{last}（设备被其它程序独占：Linux 输入已走 PipeWire 共享；输出仍走 ALSA，可改用「系统默认输出（PipeWire 共享）」或先关闭占用它的程序）"
+    ));
+  }
   Err(last)
 }
 
@@ -151,6 +156,8 @@ impl AudioManager {
     let plan = config::load_plan();
     let rec = Arc::new(RecorderHub::new(hub.clone()));
     let calib = Arc::new(CalibHub::new(hub.clone()));
+    hub.set_plan(plan.clone());
+    hub.set_engine_stopped();
     AudioManager {
       hub,
       rec,
@@ -195,23 +202,31 @@ impl AudioManager {
     let _rebuild = self.rebuild.lock().unwrap();
     let plan = self.plan();
     let old = self.state.lock().unwrap().session.take();
-    let (session, problems) = Session::build(
+    let generation = self.state.lock().unwrap().epoch + 1;
+    let outcome = Session::build(
       self.hub.clone(),
       &plan,
       self.rec.clone(),
       self.calib.clone(),
+      generation,
     );
     let mut g = self.state.lock().unwrap();
-    g.session = Some(session);
+    g.session = Some(outcome.session);
     g.running = true;
-    g.epoch += 1;
+    g.epoch = generation;
     drop(g);
+    // 提交媒体槽位：旧代次的（已删/已换位置的媒体行）在这里清掉
+    if let Some(s) = self.state.lock().unwrap().session.as_ref() {
+      crate::engine::media::hub().commit(s.media_gen);
+    }
+    self.hub.set_engine_running(generation);
+    self.hub.set_plan(plan);
     // 旧会话在这里才停：池的引用计数只在「真没人用」时才关设备
     if let Some(mut s) = old {
       s.stop();
     }
     self.hub.set_running(true);
-    Ok(problems)
+    Ok(outcome.problems)
   }
 
   /// 停止：停会话、释放设备。
@@ -225,17 +240,37 @@ impl AudioManager {
     g.epoch += 1;
     drop(g);
     self.hub.set_running(false);
-    // 清掉列概要，界面显示「列未启动」
-    self
-      .hub
-      .set_column(crate::debug::Probe::unavailable("列未启动".to_string()));
+    // 显式停引擎才清媒体槽位与列概要（`Session::stop` 自己不清：先建后停时会误伤新会话）
+    crate::engine::media::hub().clear();
+    self.hub.set_engine_stopped();
   }
 
   /// 录制 TSE 参考（降噪后、音量归一化，48 kHz 单声道）；返回目标文件路径。
+  ///
+  /// **必须引擎在跑**：参考取自列线程的实时链路，没跑就没有样本（legacy 也是这个语义，
+  /// 并明确提示「请先启动音频处理」）。同时挂看门狗：10 秒内收不到音频就明确失败，
+  /// 不会永远停在「录制中 0.0/10 s」。
   pub fn record_reference(&self, seconds: f64) -> Result<String, String> {
+    if !self.is_running() {
+      return Err("请先启动音频处理，再录制参考（TSE 参考取自运行中的链路）".into());
+    }
     let plan = self.plan();
-    let path = config::default_tse_reference();
-    self.rec.start(&plan, seconds, path.clone())?;
+    let path = config::tse_reference_path(&plan);
+    let token = self.rec.start(&plan, seconds, path.clone())?;
+    let rec = self.rec.clone();
+    let secs = seconds.max(1.0);
+    std::thread::Builder::new()
+      .name("tse-rec-watchdog".into())
+      .spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs_f64(secs + 2.0));
+        rec.timeout_if_recording(
+          token,
+          format!(
+            "录制失败：{secs:.0} 秒内没有收到音频（确认引擎已启动、TSE 行已启用、麦克风有输入）"
+          ),
+        );
+      })
+      .ok();
     Ok(path.display().to_string())
   }
 
@@ -370,31 +405,74 @@ impl AudioManager {
   }
 
   /// 应用新计划：保存配置；运行中则重建会话（结构性变更），停止时只存计划。
-  /// 返回构建过程中的问题（非致命，逐行展示）。应在阻塞线程调用（会打开/关闭设备）。
+  ///
+  /// **事务性**：运行中先构建新会话；只要有**关键失败**（启用的行拿不到设备/模型），
+  /// 就停掉新会话、保留旧会话与旧计划，返回错误——绝不让一次坏改动把正在工作的链路停掉。
+  /// 成功才提交媒体槽位、停旧会话、落盘。返回构建过程中的问题（非致命，逐行展示）。
   pub fn apply_plan(&self, plan: Plan) -> Result<Vec<String>, String> {
     let _rebuild = self.rebuild.lock().unwrap();
-    let _ = config::save_plan(&plan);
     let running = self.state.lock().unwrap().running;
     if !running {
-      self.state.lock().unwrap().plan = plan;
+      self.state.lock().unwrap().plan = plan.clone();
+      let _ = config::save_plan(&plan);
+      self.hub.set_plan(plan);
       return Ok(vec![]);
     }
-    // 先建后停（差异重启）：没变的设备复用同一条流，见 `start` 的说明
     let old = self.state.lock().unwrap().session.take();
-    let (new_session, problems) = Session::build(
+    let old_generation = self.state.lock().unwrap().epoch;
+    let generation = old_generation + 1;
+    let outcome = Session::build(
       self.hub.clone(),
       &plan,
       self.rec.clone(),
       self.calib.clone(),
+      generation,
     );
-    let mut g = self.state.lock().unwrap();
-    g.session = Some(new_session);
-    g.plan = plan;
-    drop(g);
+    if !outcome.critical.is_empty() {
+      // 回滚：新会话从未提交。它的列线程已经起来，先停干净；媒体槽位只删自己这一代。
+      let mut new_session = outcome.session;
+      crate::engine::media::hub().abort(new_session.media_gen);
+      new_session.stop();
+      {
+        let mut g = self.state.lock().unwrap();
+        g.session = old;
+        g.running = true;
+        // 代次不变：这次改动没有生效
+        g.epoch = old_generation;
+      }
+      self.hub.set_engine_running(old_generation);
+      self.hub.clear_columns();
+      self.hub.set_plan(self.plan());
+      let msg = format!(
+        "新计划未应用（旧会话保持运行）：{}",
+        outcome.critical.join("；")
+      );
+      crate::debug::events::log("error", "engine", msg.clone());
+      return Err(msg);
+    }
+    let media_gen = outcome.session.media_gen;
+    {
+      let mut g = self.state.lock().unwrap();
+      g.session = Some(outcome.session);
+      g.plan = plan.clone();
+      g.epoch = generation;
+    }
+    crate::engine::media::hub().commit(media_gen);
+    self.hub.set_engine_running(generation);
+    self.hub.set_plan(plan.clone());
+    let _ = config::save_plan(&plan);
     if let Some(mut s) = old {
       s.stop();
     }
-    Ok(problems)
+    crate::debug::events::log(
+      "info",
+      "engine",
+      format!(
+        "计划已应用：第 {generation} 代，{} 个提醒",
+        outcome.problems.len()
+      ),
+    );
+    Ok(outcome.problems)
   }
 
   /// 运行中改一个**热参数**（与模型无关的标量：`gain` 行的 `gain_db`、`loopback` 行的
@@ -452,23 +530,32 @@ impl AudioManager {
       r.params.insert(key.to_string(), value.trim().to_string());
     }
     let plan = g.plan.clone();
-    let _ = config::save_plan(&plan);
-    match g.session.as_ref() {
-      // 运行中：写单元格（**不重建**）。会话里没登记这个热参数 = 内部不一致，说清楚。
+    let running = g.session.is_some();
+    // 运行中：写单元格（**不重建**）。会话里没登记这个热参数 = 内部不一致，说清楚。
+    let result = match g.session.as_ref() {
       Some(s) => s
         .set_hot_param(col, row, key, db)
         .ok_or_else(|| format!("第 {} 列第 {} 行没有登记热参数 {key}", col + 1, row + 1)),
-      // 没在跑：只落盘，下次启动生效
       None => Ok(()),
+    };
+    drop(g);
+    // 运行中合并落盘（拖动滑杆时每 10 ms 一次 fsync 会把命令线程堵死）；
+    // 未运行没有实时性要求，直接写，保证 `get_plan` 立刻能读到。
+    if running {
+      config::save_plan_debounced(plan);
+    } else {
+      let _ = config::save_plan(&plan);
     }
+    result
   }
 
   /// 热参数落盘（**不重建会话**，DESIGN.md §5）：音量 / 续播位置等改动用它。
   /// 同时更新内存计划，保证 `get_plan` 与运行中实例一致。
   pub fn persist_plan(&self, plan: Plan) -> Result<(), String> {
     let _rebuild = self.rebuild.lock().unwrap();
-    let _ = config::save_plan(&plan);
-    self.state.lock().unwrap().plan = plan;
+    self.state.lock().unwrap().plan = plan.clone();
+    drop(_rebuild);
+    config::save_plan_debounced(plan);
     Ok(())
   }
 }

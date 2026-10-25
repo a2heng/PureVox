@@ -20,8 +20,12 @@
 //! UI 面板（Tauri 命令 `debug_snapshot`）与本机 HTTP 接口序列化的都是
 //! [`DebugHub::snapshot`] 返回的同一个 [`DebugSnapshot`]，禁止另算一套。
 
+pub mod events;
 pub mod http;
+pub mod metrics;
+pub mod screenshot;
 pub mod system;
+pub mod threads;
 
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -29,6 +33,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::devices::DeviceList;
+use crate::plan::Plan;
 use system::SystemInfo;
 
 /// 本机 HTTP 调试接口端口（只绑 127.0.0.1）。改动须同步 AGENTS.md 1.2 节。
@@ -80,6 +85,72 @@ impl Health {
       text: text.into(),
     }
   }
+}
+
+/// 一行（输入 / 处理 / 输出）的结构化状态。
+///
+/// 这是「异常 N」的替代品：界面与脚本不用再解析中文概要串，直接按
+/// `columns[].rows[].health` 上色、按 `state` 定位（AGENTS §1.3 单一数据源）。
+#[derive(Clone, Debug, Serialize)]
+pub struct RowInfo {
+  pub index: usize,
+  /// `input` / `process` / `output`
+  pub kind: String,
+  pub ptype: String,
+  pub label: String,
+  pub enabled: bool,
+  /// `ok("running")` / `ok("disabled")` / `unavailable(原因)`
+  pub state: Probe<String>,
+  pub device: Option<String>,
+  /// 这一行自己的环水位（ms）：输入行 = 行输入环 / AEC mic / 网络入站；输出行 = 混音源环
+  pub buffer_ms: Option<f32>,
+  pub dropped: u64,
+  pub dropped_per_s: Probe<f64>,
+  pub inference_ms_avg: Probe<f32>,
+  pub inference_ms_max: Probe<f32>,
+  /// 超过一跳预算（`TICK_MS * 0.8`）的次数与速率
+  pub inference_over: u64,
+  pub inference_over_per_s: Probe<f64>,
+  /// 人话细节（AEC 对齐/ρ、网络水位等）；与 `health` 不重复
+  pub detail: String,
+  pub health: Probe<Health>,
+}
+
+/// 一列的结构化状态（含节拍质量）。
+#[derive(Clone, Debug, Serialize)]
+pub struct ColumnInfo {
+  pub index: usize,
+  pub enabled: bool,
+  /// `running` / `degraded` / `stopped`
+  pub state: String,
+  /// 实测 hop/s（正常 100）
+  pub hop_rate: f64,
+  pub ticks: u64,
+  /// 本轮会话累计的「开始处理时已经晚于 10 ms 网格」次数
+  pub tick_overruns: u64,
+  pub tick_overrun_per_s: Probe<f64>,
+  /// 最近 / 最大节拍迟到（ms）
+  pub last_late_ms: f32,
+  pub max_late_ms: f32,
+  /// 单拍处理耗时最大值（ms）：模型/解码一慢，这里先炸
+  pub max_work_ms: f32,
+  pub rows: Vec<RowInfo>,
+  /// 人话概要（仍给旧面板/日志用；由结构派生）
+  pub text: String,
+}
+
+/// 引擎整体（所有列 + 线程存活 + 模型池）。`/debug/audio` 的 `engine` 文本是它的派生。
+#[derive(Clone, Debug, Serialize, Default)]
+pub struct EngineInfo {
+  pub generation: u64,
+  /// `running` / `degraded` / `stopped`
+  pub state: String,
+  pub started_at: u64,
+  pub columns: Vec<ColumnInfo>,
+  pub threads: Vec<threads::ThreadInfo>,
+  pub models: Vec<crate::infer::ModelStat>,
+  /// 派生文本：`列 1：… ｜ 列 2：…`
+  pub text: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -167,7 +238,10 @@ pub struct StreamInfo {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AudioInfo {
+  /// 兼容字段：全部列的人话概要（由 `engine_info` 派生，字段只增不改名）
   pub engine: Probe<String>,
+  /// 结构化引擎状态（列 / 行 / 节拍 / 线程 / 模型）——新代码应读这里
+  pub engine_info: EngineInfo,
   /// 全部流的汇总结论（最坏优先）：一眼看出「整个音频链路现在有没有问题」
   pub verdict: Probe<Health>,
   pub streams: Vec<StreamInfo>,
@@ -183,6 +257,10 @@ pub struct DebugSnapshot {
   pub devices: Probe<DeviceList>,
   /// 界面自报的最近消息（新在前，最多 50 条；见 `ui_report` 命令）
   pub ui: Vec<String>,
+  /// 进程内事件日志（时间正序，最多 200 条；完整日志见 `/debug/logs`）
+  pub events: Vec<events::Event>,
+  /// 当前会话计划（含校验现场；见 `AudioManager` 的 `set_plan`）
+  pub plan: Probe<Plan>,
   /// 音频引擎是否运行中（启动/停止状态）
   pub running: bool,
   /// 设备刷新状态（正在刷 / 上次成功于 / 上次耗时 / 上次失败原因）
@@ -204,8 +282,14 @@ struct State {
   system: SystemInfo,
   devices: Probe<DeviceList>,
   http: Probe<String>,
-  /// 列（引擎处理图）的概要，由列工作线程发布
-  column: Probe<String>,
+  /// 列（引擎处理图）的结构化状态，由列工作线程发布；索引 → 列
+  columns: BTreeMap<usize, ColumnInfo>,
+  /// 引擎代次 / 状态 / 起步时刻（`Session` 构建与监督线程维护）
+  engine_generation: u64,
+  engine_state: String,
+  engine_started_at: u64,
+  /// 当前会话计划（`AudioManager` 每次加载/应用/回滚都同步过来）
+  plan: Probe<Plan>,
   /// 界面自报的最近消息（迁移期定位前端问题用；新在前，最多 50 条）
   ui: Vec<String>,
   /// 音频引擎是否运行中
@@ -241,7 +325,11 @@ impl DebugHub {
         system: SystemInfo::default(),
         devices: Probe::Pending,
         http: Probe::Pending,
-        column: Probe::Pending,
+        columns: BTreeMap::new(),
+        engine_generation: 0,
+        engine_state: "stopped".to_string(),
+        engine_started_at: 0,
+        plan: Probe::Pending,
         ui: Vec::new(),
         running: false,
         recorder: Probe::Pending,
@@ -268,8 +356,45 @@ impl DebugHub {
     self.state.write().unwrap().http = v;
   }
 
-  pub fn set_column(&self, v: Probe<String>) {
-    self.state.write().unwrap().column = v;
+  /// 新的会话开始：代次 +1，状态置 `running`。旧会话随后停止时**不许**覆盖它
+  /// （`Session::stop` 不再清列；只有 `AudioManager::stop` 显式停引擎才清）。
+  pub fn set_engine_running(&self, generation: u64) {
+    let mut st = self.state.write().unwrap();
+    st.engine_generation = generation;
+    st.engine_state = "running".to_string();
+    st.engine_started_at = now_ms();
+  }
+
+  /// 引擎降级（线程死亡 / 关键行失败）。保留 `generation`，便于区分是哪一代出的问题。
+  pub fn set_engine_degraded(&self, reason: impl Into<String>) {
+    let reason = reason.into();
+    let mut st = self.state.write().unwrap();
+    if st.engine_state != "stopped" {
+      st.engine_state = format!("degraded：{reason}");
+    }
+    drop(st);
+    events::log("error", "engine", format!("引擎降级：{reason}"));
+  }
+
+  pub fn set_engine_stopped(&self) {
+    let mut st = self.state.write().unwrap();
+    st.engine_state = "stopped".to_string();
+    st.engine_started_at = 0;
+    st.columns.clear();
+  }
+
+  /// 列工作线程发布（200 ms 一次）。索引相同的后写覆盖。
+  pub fn set_column_info(&self, info: ColumnInfo) {
+    self.state.write().unwrap().columns.insert(info.index, info);
+  }
+
+  /// 清掉列概要（回滚/停引擎）：旧会话的列线程会在下一拍重新发布。
+  pub fn clear_columns(&self) {
+    self.state.write().unwrap().columns.clear();
+  }
+
+  pub fn set_plan(&self, plan: Plan) {
+    self.state.write().unwrap().plan = Probe::ok(plan);
   }
 
   pub fn set_recorder(&self, v: Probe<String>) {
@@ -293,6 +418,8 @@ impl DebugHub {
     let mut st = self.state.write().unwrap();
     st.ui.insert(0, format!("[{level}] {message}"));
     st.ui.truncate(50);
+    drop(st);
+    events::log("ui", "ui", message);
   }
 
   pub fn set_stream(&self, v: StreamInfo) {
@@ -301,6 +428,76 @@ impl DebugHub {
 
   pub fn remove_stream(&self, id: &str) {
     self.state.write().unwrap().streams.remove(id);
+  }
+
+  /// 1 Hz 指标采样（由 `debug::system` 的采样线程调用）：把关键标量写进短历史。
+  pub fn record_metrics(&self) {
+    let Ok(st) = self.state.read() else {
+      return;
+    };
+    fn rec(name: String, v: f64) {
+      metrics::record(name, v);
+    }
+    fn probe_f64(name: String, p: &Probe<f64>) {
+      if let Probe::Ok { value } = p {
+        metrics::record(name, *value);
+      }
+    }
+    fn probe_f32(name: String, p: &Probe<f32>) {
+      if let Probe::Ok { value } = p {
+        metrics::record(name, *value as f64);
+      }
+    }
+
+    for s in st.streams.values() {
+      let id = s.id.replace(':', "_");
+      rec(format!("stream.{id}.buffer_ms"), s.buffer_level_ms as f64);
+      probe_f32(format!("stream.{id}.device_buffer_ms"), &s.device_buffer_ms);
+      probe_f64(format!("stream.{id}.underrun_per_s"), &s.underrun_per_s);
+      probe_f64(format!("stream.{id}.resync_per_s"), &s.resync_per_s);
+      probe_f64(format!("stream.{id}.overrun_per_s"), &s.overrun_per_s);
+      probe_f64(
+        format!("stream.{id}.stream_error_per_s"),
+        &s.stream_error_per_s,
+      );
+      probe_f64(
+        format!("stream.{id}.measured_input_rate"),
+        &s.measured_input_rate,
+      );
+      probe_f64(
+        format!("stream.{id}.measured_output_rate"),
+        &s.measured_output_rate,
+      );
+      probe_f32(format!("stream.{id}.peak_dbfs"), &s.peak_dbfs);
+    }
+    for (i, c) in st.columns.iter() {
+      rec(format!("column.{i}.hop_rate"), c.hop_rate);
+      rec(format!("column.{i}.tick_overruns"), c.tick_overruns as f64);
+      probe_f64(
+        format!("column.{i}.tick_overrun_per_s"),
+        &c.tick_overrun_per_s,
+      );
+      rec(format!("column.{i}.max_late_ms"), c.max_late_ms as f64);
+      rec(format!("column.{i}.max_work_ms"), c.max_work_ms as f64);
+      for r in &c.rows {
+        let rid = format!("{i}.{}", r.index);
+        if let Some(v) = r.buffer_ms {
+          rec(format!("row.{rid}.buffer_ms"), v as f64);
+        }
+        probe_f32(format!("row.{rid}.inference_ms_avg"), &r.inference_ms_avg);
+        probe_f64(format!("row.{rid}.dropped_per_s"), &r.dropped_per_s);
+        probe_f64(
+          format!("row.{rid}.inference_over_per_s"),
+          &r.inference_over_per_s,
+        );
+      }
+    }
+    for t in threads::snapshot() {
+      rec(
+        format!("thread.{}.age_ms", t.name.replace(' ', "_")),
+        t.age_ms as f64,
+      );
+    }
   }
 
   pub fn snapshot(&self) -> DebugSnapshot {
@@ -324,12 +521,33 @@ impl DebugHub {
     let st_calib = st.calib.clone();
     let st_virtual_mic = st.virtual_mic.clone();
     let st_running = st.running;
-    let engine = match st.column {
-      Probe::Ok { value } => Probe::ok(value),
-      _ => Probe::unavailable("列未启动"),
+    let st_plan = st.plan.clone();
+    let columns: Vec<ColumnInfo> = st.columns.into_values().collect();
+    let text = columns
+      .iter()
+      .map(|c| c.text.clone())
+      .collect::<Vec<_>>()
+      .join(" ｜ ");
+    let engine_info = EngineInfo {
+      generation: st.engine_generation,
+      state: st.engine_state.clone(),
+      started_at: st.engine_started_at,
+      columns,
+      threads: threads::snapshot(),
+      models: crate::infer::models_stats(),
+      text: text.clone(),
+    };
+    let engine = if st.engine_state == "stopped" || text.is_empty() {
+      Probe::unavailable(if st.engine_state == "stopped" {
+        "列未启动".to_string()
+      } else {
+        "列还没有发布状态".to_string()
+      })
+    } else {
+      Probe::ok(text)
     };
     let streams: Vec<StreamInfo> = st.streams.into_values().collect();
-    let verdict = crate::audio::health::overall(&streams);
+    let verdict = crate::audio::health::overall(&streams, &engine_info);
     DebugSnapshot {
       ts: now_ms(),
       uptime_ms: self.uptime_ms(),
@@ -342,11 +560,14 @@ impl DebugHub {
       system: st.system,
       audio: AudioInfo {
         engine,
+        engine_info,
         verdict,
         streams,
       },
       devices,
       ui: st_ui,
+      events: events::recent(200),
+      plan: st_plan,
       running: st_running,
       device_refresh: crate::devices::refresh_state(),
       recorder: st_recorder,

@@ -191,7 +191,9 @@ fn run(
 
   // ---- 打开设备 ----
   let setup = crate::audio::with_device_retry(|| -> Result<_, String> {
-    let (dev, name) = crate::devices::find(&device_id, false)?;
+    let (dev, raw_name) = crate::devices::find(&device_id, false)?;
+    // 调试面板/流名字用枚举缓存里的系统名（Pulse 的 Description），不要 cpal 的裸名。
+    let name = crate::devices::display_name(&device_id, false).unwrap_or(raw_name);
     let supported = dev
       .default_output_config()
       .map_err(|e| format!("读取默认格式失败：{e}"))?;
@@ -222,6 +224,7 @@ fn run(
 
   let stream_id = format!("output:{tag}");
   let mut src = source.subscribe(&stream_id);
+  let token = crate::debug::threads::ThreadToken::new(format!("playback:{tag}"));
 
   // ---- 工作循环 ----
   let started_at = now_ms();
@@ -252,6 +255,7 @@ fn run(
   let mut last_publish = Instant::now() - PUBLISH_PERIOD;
 
   while !stop.load(Relaxed) {
+    token.beat();
     // 封顶：丢最旧
     let fill = src.slots();
     if fill > cap {

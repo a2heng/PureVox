@@ -17,7 +17,10 @@
 
 //! 配置持久化：会话计划存 `~/.purevox/session.json`（DESIGN.md §5、§6.2 的目录约定）。
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, mpsc};
+use std::time::Duration;
 
 use crate::plan::Plan;
 
@@ -77,6 +80,27 @@ pub fn expand_path(p: &str) -> PathBuf {
     return home.join(rest);
   }
   PathBuf::from(p)
+}
+
+/// TSE 参考路径：计划里第一个 TSE 行的 `reference`（非空）优先，否则默认路径。
+/// 与 `TseStage::load` / 录音命令共用，避免「录到默认路径、TSE 读自定义路径」的错位。
+pub fn tse_reference_path(plan: &Plan) -> PathBuf {
+  for c in &plan.columns {
+    for r in &c.rows {
+      if r.ptype == "tse" {
+        if let Some(p) = r
+          .params
+          .get("reference")
+          .map(|s| s.trim())
+          .filter(|s| !s.is_empty())
+        {
+          return expand_path(p);
+        }
+        return default_tse_reference();
+      }
+    }
+  }
+  default_tse_reference()
 }
 
 /// TSE 参考录音默认路径（`~/.purevox/tse_reference.wav`）。
@@ -169,37 +193,202 @@ fn settings_path() -> Result<PathBuf, String> {
   Ok(config_dir()?.join("settings.json"))
 }
 
+/// 原子写：先写 `<名>.tmp` + `fsync`，再把旧文件备份成 `<名>.bak`，最后 `rename` 覆盖。
+///
+/// **不许直接 `std::fs::write`**：写到一半断电/被杀就是一个半截 JSON，下一次启动
+/// `load_*` 解析失败 → 用户的计划/设置被默认值顶掉。rename 在同一目录内是原子的。
+fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+  let name = path
+    .file_name()
+    .map(|s| s.to_string_lossy().to_string())
+    .ok_or_else(|| format!("非法配置路径：{}", path.display()))?;
+  let dir = path.parent().unwrap_or_else(|| Path::new("."));
+  std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败：{e}"))?;
+  let tmp = dir.join(format!("{name}.tmp"));
+  {
+    let mut f = std::fs::File::create(&tmp).map_err(|e| format!("写临时文件失败：{e}"))?;
+    f.write_all(text.as_bytes())
+      .map_err(|e| format!("写临时文件失败：{e}"))?;
+    f.sync_all().map_err(|e| format!("刷盘失败：{e}"))?;
+  }
+  if path.is_file() {
+    let bak = dir.join(format!("{name}.bak"));
+    let _ = std::fs::copy(path, &bak);
+  }
+  std::fs::rename(&tmp, path).map_err(|e| format!("替换配置文件失败：{e}"))
+}
+
+/// 解析失败时把坏文件改名留档（不覆盖、不静默丢弃），并写事件日志。
+fn quarantine(path: &Path, reason: &str) {
+  let stamp = crate::debug::now_ms();
+  let name = path
+    .file_name()
+    .map(|s| s.to_string_lossy().to_string())
+    .unwrap_or_else(|| "config".into());
+  let bad = path.with_file_name(format!("{name}.corrupt-{stamp}"));
+  let moved = std::fs::rename(path, &bad);
+  crate::debug::events::log(
+    "error",
+    "config",
+    match &moved {
+      Ok(()) => format!(
+        "配置 {} 解析失败（{reason}），原文件已保留为 {}，本次使用默认值",
+        path.display(),
+        bad.display()
+      ),
+      Err(e) => format!(
+        "配置 {} 解析失败（{reason}），且无法改名留档（{e}）；本次使用默认值",
+        path.display()
+      ),
+    },
+  );
+}
+
 pub fn load_settings() -> AppSettings {
   let Ok(path) = settings_path() else {
     return AppSettings::default();
   };
-  let Ok(text) = std::fs::read_to_string(&path) else {
-    return AppSettings::default();
+  let text = match std::fs::read_to_string(&path) {
+    Ok(t) => t,
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AppSettings::default(),
+    Err(e) => {
+      crate::debug::events::log(
+        "error",
+        "config",
+        format!("读取设置失败（{}）：{e}；本次使用默认值", path.display()),
+      );
+      return AppSettings::default();
+    }
   };
-  serde_json::from_str(&text).unwrap_or_default()
+  match serde_json::from_str(&text) {
+    Ok(s) => s,
+    Err(e) => {
+      quarantine(&path, &e.to_string());
+      AppSettings::default()
+    }
+  }
 }
 
 pub fn save_settings(s: &AppSettings) -> Result<(), String> {
-  let dir = config_dir()?;
-  std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败：{e}"))?;
   let text = serde_json::to_string_pretty(s).map_err(|e| format!("序列化失败：{e}"))?;
-  std::fs::write(settings_path()?, text).map_err(|e| format!("写设置失败：{e}"))
+  write_atomic(&settings_path()?, &text)
 }
 
-/// 读取已保存的计划；无文件或解析失败则返回默认计划。
+/// 读取已保存的计划；无文件返回默认计划。
+///
+/// 解析失败：**保留原文件**（改名为 `.corrupt-<ts>`）并写事件日志，再返回默认计划。
+/// 这样下一次保存默认计划不会把用户的配置永久覆盖掉。
 pub fn load_plan() -> Plan {
   let Ok(path) = session_path() else {
     return Plan::default();
   };
-  let Ok(text) = std::fs::read_to_string(&path) else {
-    return Plan::default();
+  let text = match std::fs::read_to_string(&path) {
+    Ok(t) => t,
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Plan::default(),
+    Err(e) => {
+      crate::debug::events::log(
+        "error",
+        "config",
+        format!(
+          "读取会话计划失败（{}）：{e}；本次使用默认计划",
+          path.display()
+        ),
+      );
+      return Plan::default();
+    }
   };
-  serde_json::from_str(&text).unwrap_or_else(|_| Plan::default())
+  match serde_json::from_str(&text) {
+    Ok(p) => p,
+    Err(e) => {
+      quarantine(&path, &e.to_string());
+      Plan::default()
+    }
+  }
 }
 
 pub fn save_plan(plan: &Plan) -> Result<(), String> {
-  let dir = config_dir()?;
-  std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败：{e}"))?;
   let text = serde_json::to_string_pretty(plan).map_err(|e| format!("序列化失败：{e}"))?;
-  std::fs::write(session_path()?, text).map_err(|e| format!("写配置失败：{e}"))
+  write_atomic(&session_path()?, &text)
+}
+
+// ---------------------------------------------------------------------------
+// 热参数落盘：合并连续写入（滑杆一次拖动几十个事件，不该几十次 fsync）
+// ---------------------------------------------------------------------------
+
+static SAVER: OnceLock<mpsc::Sender<Plan>> = OnceLock::new();
+
+fn saver() -> &'static mpsc::Sender<Plan> {
+  SAVER.get_or_init(|| {
+    let (tx, rx) = mpsc::channel::<Plan>();
+    std::thread::Builder::new()
+      .name("config-saver".into())
+      .spawn(move || {
+        let mut pending: Option<Plan> = None;
+        loop {
+          match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(p) => pending = Some(p),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+              if let Some(p) = pending.take()
+                && let Err(e) = save_plan(&p)
+              {
+                crate::debug::events::log("error", "config", format!("保存会话计划失败：{e}"));
+              }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+              if let Some(p) = pending.take() {
+                let _ = save_plan(&p);
+              }
+              break;
+            }
+          }
+        }
+      })
+      .ok();
+    tx
+  })
+}
+
+/// 请求落盘（合并 250 ms 内的连续改动）。结构性变更仍走 [`save_plan`] 立即写。
+pub fn save_plan_debounced(plan: Plan) {
+  if let Err(e) = saver().send(plan) {
+    crate::debug::events::log("error", "config", format!("投递保存请求失败：{e}"));
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn save_plan_is_atomic_and_keeps_backup() {
+    save_plan(&Plan::default()).expect("第一次保存");
+    save_plan(&Plan::default()).expect("第二次保存");
+    let path = session_path().expect("测试配置路径");
+    assert!(path.is_file(), "正式文件必须存在");
+    let bak = path.with_file_name("session.json.bak");
+    assert!(bak.is_file(), "覆盖前应留下 .bak");
+    let tmp = path.with_file_name("session.json.tmp");
+    assert!(!tmp.exists(), "临时文件必须被 rename 掉，不能残留");
+  }
+
+  /// 解析失败必须**保留原文件**（改名留档），而不是静默返回默认值然后被下一次保存覆盖。
+  #[test]
+  fn corrupt_plan_is_quarantined_not_lost() {
+    let path = session_path().expect("测试配置路径");
+    std::fs::create_dir_all(path.parent().unwrap()).expect("建测试目录");
+    std::fs::write(&path, "{ 这不是 JSON").expect("写坏配置");
+    let p = load_plan();
+    assert!(!p.columns.is_empty(), "回退到默认计划");
+    assert!(!path.exists(), "坏文件应被改名留档，而不是留在原处");
+    let dir = path.parent().unwrap();
+    let quarantined = std::fs::read_dir(dir)
+      .expect("读测试目录")
+      .filter_map(|e| e.ok())
+      .any(|e| {
+        e.file_name()
+          .to_string_lossy()
+          .contains("session.json.corrupt-")
+      });
+    assert!(quarantined, "必须能在目录里找到 .corrupt-* 留档");
+  }
 }

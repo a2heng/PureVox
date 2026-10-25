@@ -3497,6 +3497,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "cairo-rs",
  "cpal",
  "futures-util",
  "hyper-util",
@@ -3520,6 +3521,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite 0.24.0",
+ "webkit2gtk",
  "windows",
 ]
 

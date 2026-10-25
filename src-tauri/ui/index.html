@@ -25,28 +25,49 @@
     <link rel="stylesheet" href="debug.css" />
   </head>
   <body>
-    <header id="topbar">
-      <span class="brand">PureVox</span>
-      <button id="btn-settings" type="button" data-i18n="设置">设置</button>
-      <button id="btn-run" type="button" class="run-start" data-i18n="启动">启动</button>
-      <button id="btn-refresh" type="button" data-i18n="刷新设备">刷新设备</button>
-      <button id="btn-update" type="button" data-i18n="更新">更新</button>
-      <button id="btn-drivers" type="button" data-i18n="驱动">驱动</button>
-      <button id="btn-debug" type="button" data-i18n="调试面板">调试面板</button>
-      <button id="btn-devtools" type="button" data-i18n="开发者工具">开发者工具</button>
-      <span id="plan-status" class="mono"></span>
-      <span id="rec-status" class="mono"></span>
-      <span id="calib-status" class="mono"></span>
-      <button id="btn-lang" type="button" title="Language">EN</button>
-    </header>
+    <div id="shell">
+      <!-- 左侧：品牌 / 主操作 / 会话 / 工具。所有原有按钮 ID 保留，JS 不用改。 -->
+      <aside id="sidebar" aria-label="PureVox">
+        <div class="brand">
+          <img class="brand-logo" src="app-icon.png" alt="" />
+          <span class="brand-text">
+            <b>PureVox</b>
+            <small data-i18n="AI 麦克风降噪">AI 麦克风降噪</small>
+          </span>
+        </div>
 
-    <main id="columns">
-      <!-- 音频列：由 columns.js 渲染（默认一列，可增加；每列两端固定为输入/输出） -->
-      <div id="audio-columns"></div>
+        <div class="side-engine">
+          <button id="btn-run" type="button" class="run-start" data-i18n="启动" aria-label="启动">启动</button>
+        </div>
 
-      <!-- 调试列：最后一列，迁移期常驻（顶栏开关显隐） -->
-      <section id="debug" class="column debug">
-        <h2><span data-i18n="调试">调试</span> <span id="dbg-status" class="mono"></span></h2>
+        <nav class="side-nav" aria-label="Tools">
+          <button id="btn-refresh" type="button" data-i18n="刷新设备">刷新设备</button>
+          <button id="btn-drivers" type="button" data-i18n="驱动">驱动</button>
+          <button id="btn-update" type="button" data-i18n="更新">更新</button>
+          <button id="btn-settings" type="button" data-i18n="设置">设置</button>
+          <button id="btn-debug" type="button" data-i18n="调试面板">调试面板</button>
+          <button id="btn-devtools" type="button" data-i18n="开发者工具">开发者工具</button>
+        </nav>
+
+        <div class="side-foot">
+          <span id="side-version" class="mono"></span>
+          <button id="btn-lang" type="button" title="Language">EN</button>
+        </div>
+      </aside>
+
+      <!-- 主工作区：页头只放“这一页是什么 + 当前状态”，操作按层级放。 -->
+      <main id="workspace">
+  
+        <!-- 音频列：由 columns.js 渲染（默认一列，可增加；每列两端固定为输入/输出） -->
+        <section id="columns">
+          <div id="audio-columns"></div>
+        </section>
+      </main>
+
+      <!-- 调试列：抽屉，不再占工作区宽度（顶栏开关显隐） -->
+      <section id="debug" class="column debug" aria-label="Debug">
+
+        <h2><span data-i18n="调试">调试</span> <span id="dbg-status" class="mono"></span><button id="btn-shot" class="drawer-close" type="button" data-i18n="截屏">截屏</button><button id="dbg-close" class="drawer-close" type="button" data-i18n="关闭">关闭</button></h2>
 
         <!-- 设备条带放在调试面板最上面：调试时最常看的就是每路流，不用往下翻过
              应用/系统/GPU。JS 与 CSS 不变，只是把渲染容器提前。 -->
@@ -125,8 +146,39 @@
           </table>
         </section>
       </section>
-    </main>
+    </div>
 
+    <div id="drawer-backdrop" hidden></div>
+
+    <footer id="statusbar" aria-live="polite">
+      <span class="sb-item"><span id="sb-dot" class="dot idle" aria-hidden="true"></span><span id="sb-run" data-i18n="已停止">已停止</span></span>
+      <span id="plan-status" class="mono status-chip"></span>
+      <span id="rec-status" class="mono status-line"></span>
+      <span id="calib-status" class="mono status-line"></span>
+      <span class="sb-item mono" id="sb-columns">—</span>
+      <span class="sb-item mono" id="sb-devices">—</span>
+      <span class="sb-item mono" id="sb-health">—</span>
+      <span class="sb-spacer"></span>
+      <span class="sb-item mono" id="sb-http"></span>
+      <span class="sb-item mono" id="sb-version"></span>
+    </footer>
+
+    <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+
+    <!-- 应用计划问题：从顶部「N 个问题」点开；右上关闭、右下复制 -->
+    <div id="problems" class="panel floating hidden">
+      <div class="panel-box problems-box">
+        <div class="problems-head">
+          <h3 data-i18n="应用问题">应用问题</h3>
+          <button id="prob-close" type="button" class="icon" title="Close" aria-label="Close">✕</button>
+        </div>
+        <pre id="prob-text" class="problems-text mono"></pre>
+        <div class="problems-foot">
+          <button id="prob-copy" type="button" class="primary" data-i18n="复制">复制</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 更新面板：查 GitHub Releases → 下载 → 安装（见 update.js / src/update/） -->
     <div id="update" class="panel hidden">
@@ -247,6 +299,8 @@
     <script src="qrcode.js"></script>
     <script src="netrow.js"></script>
     <script src="media.js"></script>
+    <script src="tse.js"></script>
+    <script src="shell.js"></script>
     <script src="columns.js"></script>
     <script src="debug.js"></script>
   </body>

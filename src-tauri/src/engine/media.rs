@@ -23,6 +23,7 @@
 //! 与 [`crate::net::NetHub`] 同款全局单例；会话构建时注册、停止时清空。
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// 媒体行的运行时命令（界面 → Stage）。serde 派生供 Tauri 命令反序列化。
@@ -125,34 +126,85 @@ impl MediaSlot {
 }
 
 /// 全局媒体中枢：(列, 行) → 槽位。
+///
+/// **代次（generation）**：`Session::build` 先 `begin()` 拿一个新代次，注册时带上；
+/// 构建成功才 `commit(gen)`（清掉旧代次），失败/回滚则 `abort(gen)`（只删自己注册的）。
+/// 这样「先建后停」时旧会话的 `Session::stop` 不会把新会话的槽位清掉
+/// （从前 `stop` 里的 `clear()` 正是这个 bug：重建后音效板/播放器失灵）。
+/// (代次, 槽位)：同一 (列,行) 可能同时存在旧会话与新构建的槽位。
+type SlotEntry = (u64, Arc<MediaSlot>);
+type SlotMap = HashMap<(usize, usize), Vec<SlotEntry>>;
+
 pub struct MediaHub {
-  slots: Mutex<HashMap<(usize, usize), Arc<MediaSlot>>>,
+  /// 每个 (列,行) 保留**多代**槽位：构建中的新槽位与旧会话的槽位并存。
+  /// `slot()` 取最新代（构建期间界面已能操作新行），回滚删掉新代后旧槽位还在。
+  slots: Mutex<SlotMap>,
+  generation: AtomicU64,
 }
 
 impl Default for MediaHub {
   fn default() -> Self {
     MediaHub {
       slots: Mutex::new(HashMap::new()),
+      generation: AtomicU64::new(0),
     }
   }
 }
 
 impl MediaHub {
-  /// 会话构建时注册（同一 (列,行) 重复注册 = 覆盖旧槽位）。
-  pub fn register(&self, col: usize, row: usize, kind: &'static str) -> Arc<MediaSlot> {
+  /// 开始一次会话构建：返回新代次。
+  pub fn begin(&self) -> u64 {
+    self.generation.fetch_add(1, Ordering::Relaxed) + 1
+  }
+
+  /// 会话构建时注册。同一代重复注册覆盖；不同代并存（构建中/回滚可见）。
+  pub fn register(
+    &self,
+    generation: u64,
+    col: usize,
+    row: usize,
+    kind: &'static str,
+  ) -> Arc<MediaSlot> {
     let slot = Arc::new(MediaSlot::new(kind));
-    self.slots.lock().unwrap().insert((col, row), slot.clone());
+    let mut g = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+    let list = g.entry((col, row)).or_default();
+    list.retain(|(g, _)| *g != generation);
+    list.push((generation, slot.clone()));
+    list.sort_by_key(|(g, _)| *g);
     slot
   }
 
-  /// 清空（会话停止 / 重建前）。
-  pub fn clear(&self) {
-    self.slots.lock().unwrap().clear();
+  /// 提交一代：清掉所有更旧的槽位（旧会话的媒体行被删除/换位置时不会留下僵尸）。
+  pub fn commit(&self, generation: u64) {
+    let mut g = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+    g.retain(|_, list| {
+      list.retain(|(g, _)| *g >= generation);
+      !list.is_empty()
+    });
   }
 
-  /// 界面侧按 (列,行) 取槽位；未注册（未运行/该行不是媒体行）返回 None。
+  /// 放弃一代（构建失败 / 回滚）：只删这一代注册的槽位，旧会话的槽位保持可用。
+  pub fn abort(&self, generation: u64) {
+    let mut g = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+    g.retain(|_, list| {
+      list.retain(|(g, _)| *g != generation);
+      !list.is_empty()
+    });
+  }
+
+  /// 硬清空（引擎停止）。
+  pub fn clear(&self) {
+    self.slots.lock().unwrap_or_else(|e| e.into_inner()).clear();
+  }
+
+  /// 界面侧按 (列,行) 取槽位：取**最新代**（构建中也能操作新行）；未注册返回 None。
   pub fn slot(&self, col: usize, row: usize) -> Option<Arc<MediaSlot>> {
-    self.slots.lock().unwrap().get(&(col, row)).cloned()
+    self
+      .slots
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .get(&(col, row))
+      .and_then(|list| list.last().map(|(_, s)| s.clone()))
   }
 }
 
@@ -170,7 +222,8 @@ mod tests {
   #[test]
   fn register_send_drain_roundtrip() {
     let h = MediaHub::default();
-    let slot = h.register(1, 2, "soundpad");
+    let g1 = h.begin();
+    let slot = h.register(g1, 1, 2, "soundpad");
     assert!(h.slot(1, 2).is_some());
     assert!(h.slot(0, 0).is_none());
     slot.send(MediaCmd::SoundpadPlay(0));
@@ -178,8 +231,40 @@ mod tests {
     let cmds = slot.drain();
     assert_eq!(cmds.len(), 2);
     assert!(slot.drain().is_empty(), "drain 后应取空");
+    h.commit(g1);
+    assert!(h.slot(1, 2).is_some(), "提交后本代槽位应保留");
     h.clear();
     assert!(h.slot(1, 2).is_none());
+  }
+
+  /// 重建时的代次语义：新会话注册后、提交前，旧会话的槽位仍然可用；
+  /// 旧会话 `stop()` 不再清空新会话（旧实现正是这里把槽位清掉）。
+  #[test]
+  fn generation_commit_keeps_new_slots_and_abort_keeps_old() {
+    let h = MediaHub::default();
+    let old = h.begin();
+    let _old_slot = h.register(old, 0, 1, "soundpad");
+    h.commit(old);
+
+    // 新会话构建中：旧槽位必须仍然可用
+    let new = h.begin();
+    let _new_slot = h.register(new, 0, 1, "soundpad");
+    assert!(h.slot(0, 1).is_some(), "构建期间旧槽位不该消失");
+    h.commit(new);
+    assert!(h.slot(0, 1).is_some(), "提交后新槽位仍在");
+
+    // 回滚：只删自己这一代，旧会话的槽位保留
+    let failed = h.begin();
+    let _ = h.register(failed, 1, 0, "player");
+    h.abort(failed);
+    assert!(h.slot(1, 0).is_none(), "回滚必须删掉失败的一代");
+    assert!(h.slot(0, 1).is_some(), "回滚不该影响已提交的会话");
+
+    // 同一 (列,行) 构建新行后回滚：旧槽位必须回来（否则媒体控制会永久失灵）
+    let failed2 = h.begin();
+    let _ = h.register(failed2, 0, 1, "soundpad");
+    h.abort(failed2);
+    assert!(h.slot(0, 1).is_some(), "同键回滚后旧会话的槽位必须仍然可用");
   }
 
   #[test]

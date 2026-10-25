@@ -26,6 +26,10 @@ const $ = (id) => document.getElementById(id)
 const T = (s, vars) => (window.__pvT ? window.__pvT(s, vars) : s)
 
 let plan = null
+/** 上一次**成功应用**的计划（失败回滚用；否则界面显示新设备、引擎还在旧设备）。 */
+let appliedPlan = null
+const clonePlan = (p) =>
+  typeof structuredClone === 'function' ? structuredClone(p) : JSON.parse(JSON.stringify(p))
 let NODES = []
 /** ptype → 可选模型列表（每个处理节点类型各自一份） */
 let MODELS = {}
@@ -42,12 +46,22 @@ function renderRunButton() {
   if (!b) return
   // 按「动作」上色：显示「启动」= 绿，显示「停止」= 红
   b.textContent = running ? T('停止') : T('启动')
-  b.className = running ? 'run-stop' : 'run-start'
+  b.setAttribute('aria-label', running ? T('停止') : T('启动'))
+  b.className = 'sidebar-run ' + (running ? 'run-stop' : 'run-start')
 }
 
 /** 行类型名（msgids 必须内联在 T() 里，i18n_lint 才能查缺键） */
 const kindName = (kind) => T(kind === 'input' ? '输入' : kind === 'process' ? '处理' : '输出')
-const nodesOf = (kind) => NODES.filter((n) => n.kind === kind)
+const PROCESS_ORDER = ['denoise', 'tse', 'gain', 'noise_gate', 'compressor', 'limiter', 'expander', 'upward_compressor', 'eq3', 'invert']
+const nodesOf = (kind) => {
+  const list = NODES.filter((n) => n.kind === kind)
+  if (kind !== 'process') return list
+  return list.slice().sort((a, b) => {
+    const ia = PROCESS_ORDER.indexOf(a.ptype)
+    const ib = PROCESS_ORDER.indexOf(b.ptype)
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+  })
+}
 const specOf = (ptype) => NODES.find((n) => n.ptype === ptype)
 
 /**
@@ -103,27 +117,83 @@ function defaultColumn() {
 // 状态串是动态写入的（非 data-i18n 静态元素）：记录最近一次结果，切语言时按当前
 // 语言重放（paintStatus 由 pv-langchange 调用）；null = 尚未 apply 过（保持空 span）。
 let lastProblems = null
-function setStatus(problems) {
+/** 这次状态是「信息」而不是「应用问题」：设备刷新/正在应用等不要显示成「N 个问题」。 */
+let lastStatusInfo = false
+function setStatus(problems, info = false) {
   lastProblems = problems
+  lastStatusInfo = info
   paintStatus()
 }
 function paintStatus() {
   if (lastProblems === null) return
   const el = $('plan-status')
+  if (lastProblems && lastProblems.length && lastStatusInfo) {
+    el.textContent = lastProblems.join('；')
+    el.title = ''
+    el.className = 'mono status-chip'
+    el.onclick = null
+    el.onkeydown = null
+    el.removeAttribute('role')
+    el.removeAttribute('tabindex')
+    el.style.cursor = ''
+    return
+  }
   if (!lastProblems || lastProblems.length === 0) {
     el.textContent = T('已应用')
-    el.className = 'mono ok'
+    el.title = ''
+    el.className = 'mono status-chip ok'
+    el.onclick = null
+    el.onkeydown = null
+    el.removeAttribute('role')
+    el.removeAttribute('tabindex')
+    el.style.cursor = ''
   } else {
-    el.textContent = lastProblems.join('；')
-    el.className = 'mono na'
+    // 顶部只放一个短标签：完整的模型/设备错误动辄几百字，塞进页头会把标题挤成
+    // 竖排（2026-10-25 切换输出设备时实测）。全文进 title + 点击后的 Toast。
+    el.textContent = lastProblems.length === 1 ? T('1 个问题') : T('{n} 个问题', { n: lastProblems.length })
+    el.title = lastProblems.join('\n')
+    el.className = 'mono status-chip na'
+    el.style.cursor = 'pointer'
+    el.setAttribute('role', 'button')
+    el.tabIndex = 0
+    el.onclick = () => window.__pvShell?.showProblems?.(lastProblems)
+    el.onkeydown = (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault()
+        window.__pvShell?.showProblems?.(lastProblems)
+      }
+    }
   }
 }
 
 function apply() {
   invoke('apply_plan', { plan })
-    .then((problems) => setStatus(problems))
-    .catch((e) => {
+    .then((/** @type {string[]} */ problems) => {
+      appliedPlan = clonePlan(plan)
+      setStatus(problems)
+      if (problems && problems.length) {
+        window.__pvToast?.(problems.join('；'), 'warn')
+        window.__pvDebug?.('应用计划有问题：' + problems.join('；'))
+      }
+    })
+    .catch(async (e) => {
+      // 关键失败时 Rust **保留旧会话**；界面必须回到引擎真正在用的计划，
+      // 否则会显示 R20、调试面板却还是 USB Audio（2026-10-25 用户实测）。
+      try {
+        const actual = /** @type {any} */ (await invoke('get_plan'))
+        if (actual && actual.columns) {
+          plan = actual
+          appliedPlan = clonePlan(actual)
+          render()
+        }
+      } catch (_) {
+        if (appliedPlan) {
+          plan = clonePlan(appliedPlan)
+          render()
+        }
+      }
       setStatus([String(e)])
+      window.__pvToast?.(T('应用计划失败：') + e, 'error', 7000)
       window.__pvDebug?.('应用计划失败：' + e)
     })
 }
@@ -186,57 +256,107 @@ function farOptions(selected) {
 // **不重建会话**（重建要关掉全部设备再重开，Linux 上几百毫秒起步）。其余的仍然走
 // `apply_plan` 全量重建 —— 哪些算热参数由后端注册表说了算（`registry::is_hot`），
 // 界面不自己判。
+/** OBS 参数单位（与 OBS 的 suffix 对齐；标签里已经带单位的就不重复）。 */
+function paramUnit(key, label) {
+  if (/dB|ms|Hz|:1/.test(label)) return ''
+  if (['threshold', 'open_threshold', 'close_threshold', 'output_gain', 'gain_db', 'volume_db', 'low', 'mid', 'high', 'knee'].includes(key)) return 'dB'
+  if (key.endsWith('_time') || key.endsWith('_ms')) return 'ms'
+  if (key === 'ratio') return ':1'
+  return ''
+}
+
 function paramControls(row, ci, ri, keys) {
   const spec = specOf(row.ptype)
   const box = document.createElement('span')
   box.className = 'params'
   if (!spec) return box
+
+  /** 写参数：hot 参数下一拍生效，其它参数抬手（change）时重建会话。 */
+  const commit = (p, value, hot) => {
+    row.params[p.key] = value
+    if (hot) {
+      invoke('set_row_param', { col: ci, row: ri, key: p.key, value }).catch((e) => {
+        setStatus([String(e)])
+        window.__pvDebug?.('热参数失败：' + e)
+      })
+    } else {
+      apply()
+    }
+  }
+
   for (const p of spec.params) {
     if (keys && !keys.includes(p.key)) continue
+    const item = document.createElement('span')
+    item.className = 'param'
+    if (p.key === 'model' || p.key === 'reference' || p.key === 'path' || p.key === 'pads' || p.kind === 'choice') {
+      item.classList.add('wide')
+    }
     const label = document.createElement('span')
     label.className = 'plabel'
     label.textContent = T(p.label)
-    box.appendChild(label)
-    if (p.key === 'model') {
+    item.appendChild(label)
+
+    if (p.kind === 'choice') {
+      const opts = (p.options || []).map(([v, l]) => [v, T(l)])
+      item.appendChild(select(opts, row.params[p.key] ?? p.default, (v) => commit(p, v, false)))
+    } else if (p.key === 'model') {
       const opts = (MODELS[row.ptype] ?? []).map((m) => [m.file, T(m.label)])
-      box.appendChild(select(opts, row.params.model ?? p.default, (v) => {
-        row.params.model = v
-        apply()
-      }))
-    } else if (p.kind === 'number') {
-      const input = document.createElement('input')
-      input.type = 'number'
-      if (p.min != null) input.min = String(p.min)
-      if (p.max != null) input.max = String(p.max)
-      if (p.step != null) input.step = String(p.step)
-      input.value = row.params[p.key] ?? p.default
-      if (p.hot) {
-        input.addEventListener('input', () => {
-          row.params[p.key] = input.value
-          invoke('set_row_param', { col: ci, row: ri, key: p.key, value: input.value }).catch((e) => {
-            setStatus([String(e)])
-            window.__pvDebug?.('热参数失败：' + e)
-          })
-        })
-      } else {
-        input.addEventListener('change', () => {
-          row.params[p.key] = input.value
-          apply()
-        })
+      item.appendChild(select(opts, row.params.model ?? p.default, (v) => commit(p, v, false)))
+    } else if (p.kind === 'number' && p.min != null && p.max != null) {
+      const value = Number(row.params[p.key] ?? p.default)
+      const range = document.createElement('input')
+      range.type = 'range'
+      range.min = String(p.min)
+      range.max = String(p.max)
+      range.step = String(p.step ?? 1)
+      range.value = Number.isFinite(value) ? String(value) : String(p.default)
+      const num = document.createElement('input')
+      num.type = 'number'
+      num.min = String(p.min)
+      num.max = String(p.max)
+      num.step = String(p.step ?? 1)
+      num.value = range.value
+      const sync = () => {
+        num.value = range.value
+        row.params[p.key] = range.value
+        if (p.hot) commit(p, range.value, true)
       }
-      box.appendChild(input)
+      range.addEventListener('input', sync)
+      range.addEventListener('change', () => {
+        if (!p.hot) apply()
+      })
+      num.addEventListener('change', () => {
+        let v = Number(num.value)
+        if (!Number.isFinite(v)) v = Number(p.default)
+        v = Math.min(Number(p.max), Math.max(Number(p.min), v))
+        num.value = String(v)
+        range.value = String(v)
+        commit(p, String(v), p.hot)
+      })
+      item.append(range, num)
+      const unit = paramUnit(p.key, label.textContent || '')
+      if (unit) {
+        const u = document.createElement('span')
+        u.className = 'unit'
+        u.textContent = unit
+        item.appendChild(u)
+      }
+    } else if (p.kind === 'bool') {
+      const cb = document.createElement('input')
+      cb.type = 'checkbox'
+      cb.checked = String(row.params[p.key] ?? p.default) === 'true'
+      cb.addEventListener('change', () => commit(p, cb.checked ? 'true' : 'false', false))
+      item.appendChild(cb)
     } else {
       const input = document.createElement('input')
       input.type = 'text'
       input.value = row.params[p.key] ?? p.default
       input.placeholder =
-    p.key === 'reference' ? T('默认 {path}', { path: '~/.purevox/tse_reference.wav' }) : ''
-      input.addEventListener('change', () => {
-        row.params[p.key] = input.value
-        apply()
-      })
-      box.appendChild(input)
+        p.key === 'reference' ? T('默认 {path}', { path: '~/.purevox/tse_reference.wav' }) : ''
+      input.addEventListener('change', () => commit(p, input.value, false))
+      item.appendChild(input)
     }
+    box.appendChild(item)
   }
   return box
 }
@@ -245,6 +365,8 @@ function paramControls(row, ci, ri, keys) {
 function rowElement(col, ci, row, ri) {
   const el = document.createElement('div')
   el.className = `row ${row.kind}`
+  el.dataset.ci = String(ci)
+  el.dataset.ri = String(ri)
   if (!row.enabled) el.classList.add('disabled')
   const last = col.rows.length - 1
   const fixed = ri === 0 || ri === last
@@ -254,6 +376,11 @@ function rowElement(col, ci, row, ri) {
   // 下面的内容条数随便加——**高度由内容决定**（debug.css「布局铁律」）。
   const head = document.createElement('div')
   head.className = 'row-head'
+
+  // 健康点：快照到达后由 shell.js 按 engine_info 上色（前端不判定，AGENTS §1.3）
+  const health = document.createElement('span')
+  health.className = 'row-dot pending'
+  head.appendChild(health)
 
   const badge = document.createElement('span')
   badge.className = 'badge'
@@ -276,7 +403,9 @@ function rowElement(col, ci, row, ri) {
   if (fixed) {
     const tag = document.createElement('span')
     tag.className = 'fixed-tag'
-    tag.textContent = T('固定')
+    tag.title = T('固定行（不可移动 / 删除）')
+    tag.innerHTML =
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>'
     head.appendChild(tag)
   } else {
     const acts = document.createElement('span')
@@ -324,7 +453,9 @@ function rowElement(col, ci, row, ri) {
       row.enabled = cb.checked
       apply()
     })
-    lab.append(cb, document.createTextNode(T('启用')))
+    cb.title = T('启用这一行')
+    cb.setAttribute('aria-label', T('启用这一行'))
+    lab.append(cb)
     detail.appendChild(lab)
     detail.appendChild(paramControls(row, ci, ri, row.ptype === 'tse' ? ['model'] : undefined))
   } else if (kind === 'input' && row.ptype === 'echo_cancel') {
@@ -436,22 +567,15 @@ function rowElement(col, ci, row, ri) {
     el.appendChild(note)
   }
 
-  // TSE 行的第 3 条：参考语音路径 + 录制按钮（录「降噪后」信号，音量归一化）
+  // TSE 行：参考路径 + 卡片（当前参考 / 10 秒录音 / 进度 / 完成或失败）
   if (kind === 'process' && row.ptype === 'tse') {
     const d2 = document.createElement('div')
     d2.className = 'detail2'
     d2.appendChild(paramControls(row, ci, ri, ['reference']))
-    const rec = document.createElement('button')
-    rec.type = 'button'
-    rec.textContent = T('录制参考')
-    rec.title = T('录制 10 s「降噪后」的信号作为 TSE 参考（音量归一化）')
-    rec.addEventListener('click', () => {
-      invoke('record_tse_reference', { seconds: 10 })
-        .then((p) => window.__pvDebug?.('开始录制参考：' + p))
-        .catch((e) => window.__pvDebug?.('录制参考失败：' + e))
-    })
-    d2.appendChild(rec)
     el.appendChild(d2)
+    if (window.__pvTse?.attach(el, ci, ri, row, { apply, running: () => running })) {
+      el.classList.add('tse-row')
+    }
   }
 
   // 网络行（网络麦克风 / 网络扬声器）：整张卡片交给 `netrow.js`——状态灯、启停重启、
@@ -472,9 +596,14 @@ function rowElement(col, ci, row, ri) {
 function columnElement(col, ci) {
   const el = document.createElement('div')
   el.className = 'column audio'
+  el.dataset.ci = String(ci)
 
   const head = document.createElement('div')
   head.className = 'col-head'
+  const colDot = document.createElement('span')
+  colDot.className = 'col-dot idle'
+  colDot.title = T('列状态')
+  head.appendChild(colDot)
   const title = document.createElement('span')
   title.textContent = T('列 {n}', { n: ci + 1 })
   head.appendChild(title)
@@ -490,7 +619,9 @@ function columnElement(col, ci) {
     col.enabled = on.checked
     apply()
   })
-  onLabel.append(on, document.createTextNode(T('启用')))
+  on.title = col.enabled === false ? T('启用这一列') : T('停用这一列（保留配置，放掉设备引用）')
+  on.setAttribute('aria-label', T('启用 / 停用这一列'))
+  onLabel.append(on)
   head.appendChild(onLabel)
   // 常驻（仅一列时禁用），避免按钮出现/消失
   const del = document.createElement('button')
@@ -534,6 +665,7 @@ function render() {
   // 整表重渲染：先让 media.js 丢掉对旧 DOM 的引用（2 Hz 状态轮询按挂载表走）
   window.__pvMedia?.reset()
   window.__pvNetRow?.reset()
+  window.__pvTse?.reset()
   host.replaceChildren(...plan.columns.map((c, i) => columnElement(c, i)))
 
   const add = document.createElement('button')
@@ -545,6 +677,7 @@ function render() {
     render(); apply()
   })
   host.appendChild(add)
+  window.__pvShell?.onPlan(plan)
 }
 
 /**
@@ -594,17 +727,19 @@ function paintRecCal() {
   const r = $('rec-status')
   if (r) {
     r.textContent = probeShow(recSnap, T('录制失败：'))
-    r.className = 'mono ' + (recSnap.state === 'ok' ? 'ok' : 'na')
+    r.className = 'mono status-line ' + (recSnap.state === 'ok' ? 'ok' : 'na')
   }
   const c = $('calib-status')
   if (c) {
     c.textContent = probeShow(calSnap, T('校准失败：'))
-    c.className = 'mono ' + (calSnap.state === 'ok' ? 'ok' : 'na')
+    c.className = 'mono status-line ' + (calSnap.state === 'ok' ? 'ok' : 'na')
   }
 }
 
 // ---------- 快照回调（设备列表来自调试快照） ----------
 window.__pvOnSnapshot = (s) => {
+  // TSE 卡片的录音进度（与顶栏同源快照；本模块只渲染）
+  window.__pvTse?.onSnapshot(s)
   // 运行状态：顶栏启动/停止按钮
   if (typeof s.running === 'boolean') {
     running = s.running
@@ -660,10 +795,13 @@ window.__pvOnSnapshot = (s) => {
       setStatus([T('设备已更新（{a} 入 / {b} 出）', {
         a: devices.inputs.length,
         b: devices.outputs.length,
-      })])
+      })], true)
       window.__pvDebug?.(`设备列表已更新：输入 ${devices.inputs.length} / 输出 ${devices.outputs.length}`)
     }
   }
+
+  // 外壳（侧栏 / 状态栏 / 行健康点）与顶栏读同一份快照
+  window.__pvShell?.onSnapshot(s)
 }
 
 // ---------- 启动 ----------
@@ -673,14 +811,15 @@ window.__pvOnSnapshot = (s) => {
 $('btn-refresh').addEventListener('click', () => {
   const b = /** @type {HTMLButtonElement} */ ($('btn-refresh'))
   b.disabled = true
-  setStatus([T('正在刷新设备')])
+  setStatus([T('正在刷新设备')], true)
   invoke('refresh_devices')
     .then((msg) => {
-      setStatus([msg])
+      setStatus([msg], true)
       window.__pvDebug?.(T('刷新设备：') + msg)
     })
     .catch((e) => {
       setStatus([T('刷新设备失败：') + e])
+      window.__pvToast?.(T('刷新设备失败：') + e, 'error')
       window.__pvDebug?.(T('刷新设备失败：') + e)
     })
     .finally(() => {
@@ -697,31 +836,60 @@ document.addEventListener('pv-langchange', () => {
 })
 
 $('btn-run').addEventListener('click', () => {
-  invoke('set_running', { on: !running }).catch((e) => window.__pvDebug?.('启动/停止失败：' + e))
+  invoke('set_running', { on: !running })
+    .catch((e) => {
+      window.__pvToast?.(T('启动/停止失败：') + e, 'error')
+      window.__pvDebug?.('启动/停止失败：' + e)
+    })
 })
 
 async function init() {
+  // 首屏只需要两件快事：节点表（静态）与计划（读一个小 JSON）。
+  // **不要** await 模型列表 / 回环目标 / 设备枚举：后三者会碰磁盘、pactl 或 cpal，
+  // 任一慢住就会让第一列永远不出现（用户看到「只有菜单栏和外框」，系统弹等待/强制退出）。
   try {
     NODES = await invoke('list_nodes')
-    MODELS = {}
-    for (const n of NODES.filter((n) => n.kind === 'process')) {
-      MODELS[n.ptype] = await invoke('list_models', { ptype: n.ptype })
-    }
     plan = await invoke('get_plan')
-    loopTargets = await invoke('list_loopback_targets')
     if (!plan || !plan.columns) plan = { columns: [defaultColumn()] }
-    // 老配置的回环值可能缺 `loopback:` 前缀 → 补上并落盘一次，之后界面与后端同一形态
-    const migrated = migrateLoopbackIds(plan)
+    appliedPlan = clonePlan(plan)
     render()
-    if (migrated) apply()
     setStatus([])
-    window.__pvDebug?.('界面就绪')
+    window.__pvDebug?.('界面就绪（首屏）')
   } catch (e) {
-    // 带 stack 上报：只报 message 的话前端报错没法定位（迁移期可诊断性优先）
     const st = e && e.stack ? String(e.stack).split('\n').slice(0, 5).join(' ⏎ ') : ''
     setStatus([T('初始化失败：') + e])
     window.__pvDebug?.('界面初始化失败：' + e + (st ? ' ⏎ ' + st : ''))
+    return
   }
+
+  // 辅助数据：后台加载，拿到什么就补什么；任何一项失败都不影响已经出现的列。
+  ;(async () => {
+    try {
+      const pairs = await Promise.all(
+        NODES.filter((n) => n.kind === 'process').map(async (n) => [
+          n.ptype,
+          await invoke('list_models', { ptype: n.ptype }),
+        ]),
+      )
+      MODELS = Object.fromEntries(pairs)
+      if (plan) render()
+    } catch (e) {
+      window.__pvDebug?.('加载模型列表失败：' + e)
+    }
+  })()
+  ;(async () => {
+    try {
+      loopTargets = await invoke('list_loopback_targets')
+      if (plan) {
+        // 老配置的回环值可能缺 `loopback:` 前缀 → 补上并落盘一次
+        const migrated = migrateLoopbackIds(plan)
+        render()
+        if (migrated) apply()
+      }
+    } catch (e) {
+      window.__pvDebug?.('加载回环目标失败：' + e)
+    }
+  })()
 }
 
 init()

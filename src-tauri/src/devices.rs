@@ -66,7 +66,7 @@ pub struct NativeFormat {
   pub sample_format: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Default)]
 pub struct DeviceList {
   pub enumerated_at: u64,
   pub duration_ms: u64,
@@ -114,26 +114,27 @@ static REFRESH: std::sync::Mutex<RefreshState> = std::sync::Mutex::new(RefreshSt
 /// **完整枚举**，等于同一时刻两条枚举在抢驱动。
 static ENUM_CACHE: std::sync::Mutex<Option<DeviceList>> = std::sync::Mutex::new(None);
 
-/// 缓存的新鲜期：这段时间内直接复用，不重新枚举。
-const CACHE_TTL_MS: u64 = 1_000;
-
 /// 当前刷新状态（界面与快照同源）。
 pub fn refresh_state() -> RefreshState {
   REFRESH.lock().unwrap().clone()
 }
 
-/// 拿一份设备列表：优先用新鲜缓存，否则**同步**枚举一次并回填。
-/// 供 `loopback_targets()` 这类「只要列表、不发起异步刷新」的调用方使用。
+/// 拿一份设备列表：**绝不在调用线程里枚举**。
+///
+/// 这条以前是 `else { enumerate() }` —— 而 `loopback_targets()` 在界面初始化时被同步
+/// 命令调用，于是整条 UI 主线程会替我们跑一遍完整 cpal 枚举（Linux 108 条 ALSA、
+/// Windows WASAPI 都能到秒级）。用户看到的就是「只有菜单栏、第一列迟迟不出来」，
+/// 系统还会弹「程序无响应：等待 / 强制退出」。
+///
+/// 现在的语义：有缓存就用（哪怕略旧），没有就返回空列表；真正的枚举只发生在
+/// `spawn_refresh` 的后台线程里。界面拿到空列表会先渲染，刷新完成后再补。
 fn cached_enumerate() -> DeviceList {
   if let Ok(g) = ENUM_CACHE.lock()
     && let Some(list) = g.as_ref()
-    && now_ms().saturating_sub(list.enumerated_at) <= CACHE_TTL_MS
   {
     return list.clone();
   }
-  let list = enumerate();
-  *ENUM_CACHE.lock().unwrap() = Some(list.clone());
-  list
+  DeviceList::default()
 }
 
 /// 列出可回环的输出（不含「系统默认输出」那条，默认项由界面加并翻译）。
@@ -142,6 +143,34 @@ fn cached_enumerate() -> DeviceList {
 ///   - 其它平台：空（AEC 回环不可用）。
 pub fn loopback_targets() -> Vec<LoopbackTarget> {
   plat::loopback_targets(&cached_enumerate())
+}
+
+/// 解析设备显示名：优先用缓存里的枚举结果（Linux 的 Pulse 列表包含 `pulse:` 设备），
+/// 缓存没有才回退 cpal `find`（会枚举 ALSA，但这一步在后台线程，不在 UI）。
+pub fn display_name(device_id: &str, input: bool) -> Result<String, String> {
+  if let Some(name) = device_id.strip_prefix("pulse:") {
+    // parec 直接认 Pulse source 名；显示名从缓存拿不到时退回源名
+    if let Ok(g) = ENUM_CACHE.lock()
+      && let Some(list) = g.as_ref()
+      && let Some(d) = list
+        .devices
+        .iter()
+        .find(|d| d.id == device_id && d.direction == if input { "input" } else { "output" })
+    {
+      return Ok(d.name.clone());
+    }
+    return Ok(name.to_string());
+  }
+  if let Ok(g) = ENUM_CACHE.lock()
+    && let Some(list) = g.as_ref()
+    && let Some(d) = list
+      .devices
+      .iter()
+      .find(|d| d.id == device_id && d.direction == if input { "input" } else { "output" })
+  {
+    return Ok(d.name.clone());
+  }
+  find(device_id, input).map(|(_, n)| n)
 }
 
 /// 按设备 ID 查找设备（输入/输出共用的唯一查找入口），返回设备与显示名。
@@ -202,11 +231,14 @@ pub fn spawn_refresh(hub: SharedHub) -> String {
     g.refreshing = true;
     g.last_error.clear();
   }
-  let _busy = BusyGuard;
   let hub2 = hub.clone();
   let r = std::thread::Builder::new()
     .name("device-enum".into())
     .spawn(move || {
+      // 守卫必须在**线程内**：放在 spawn 外层时，`spawn_refresh` 一返回就会把
+      // `refreshing` 置回 false（从前的 bug：刷新状态永远显示「没在刷」，
+      // 而且第二次刷新会和第一条枚举并发抢驱动）。
+      let _busy = BusyGuard;
       let t0 = Instant::now();
       // catch_unwind：枚举要碰到用户机器的驱动状态，任何 panic 都不该带走整个程序，
       // 更不该把刷新锁死——记原因、报不可用，界面照常显示。
@@ -215,7 +247,10 @@ pub fn spawn_refresh(hub: SharedHub) -> String {
           let ms = t0.elapsed().as_millis() as u64;
           hub2.set_devices(Probe::ok(list.clone()));
           *ENUM_CACHE.lock().unwrap() = Some(list);
-          REFRESH.lock().unwrap().last_ms = ms;
+          let mut g = REFRESH.lock().unwrap();
+          g.last_ms = ms;
+          g.last_ok_ms = now_ms();
+          g.last_error.clear();
         }
         Err(_) => {
           hub2.set_devices(Probe::unavailable(
@@ -247,7 +282,17 @@ fn native_of(r: Result<cpal::SupportedStreamConfig, cpal::Error>) -> Probe<Nativ
   }
 }
 
+/// 枚举入口：Linux 优先用 PulseAudio/PipeWire 的设备面（OBS 同款），失败才回退 cpal/ALSA。
 fn enumerate() -> DeviceList {
+  #[cfg(target_os = "linux")]
+  if let Some(list) = plat::enumerate_pulse() {
+    return list;
+  }
+  enumerate_cpal()
+}
+
+/// cpal 兜底枚举（Linux 上会把 ALSA 插件 PCM 全列出来，**只在 pactl 不可用时**用）。
+fn enumerate_cpal() -> DeviceList {
   let t0 = Instant::now();
   let mut hosts = Vec::new();
   let mut devices = Vec::new();

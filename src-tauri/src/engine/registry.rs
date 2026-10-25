@@ -59,6 +59,11 @@ pub enum ParamKind {
   Bool {
     default: bool,
   },
+  /// 下拉选项（OBS 的 detector 等）：值为稳定 id，label 上屏走 i18n。
+  Choice {
+    default: &'static str,
+    options: &'static [(&'static str, &'static str)],
+  },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -226,13 +231,339 @@ static SPECS: &[NodeSpec] = &[
       key: "gain_db",
       label: "增益(dB)",
       kind: ParamKind::Number {
-        lo: -40.0,
-        hi: 40.0,
+        lo: -30.0,
+        hi: 30.0,
         default: 0.0,
-        step: 1.0,
+        step: 0.1,
       },
     }],
   },
+  // ---- OBS 音频滤镜（参数默认值/范围/步进照 obs-filters） ----
+  NodeSpec {
+    ptype: "noise_gate",
+    label: "噪声门",
+    kind: NodeKind::Process,
+    params: &[
+      ParamSpec {
+        key: "close_threshold",
+        label: "关闭阈值",
+        kind: ParamKind::Number {
+          lo: -96.0,
+          hi: 0.0,
+          default: -32.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "open_threshold",
+        label: "打开阈值",
+        kind: ParamKind::Number {
+          lo: -96.0,
+          hi: 0.0,
+          default: -26.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "attack_time",
+        label: "启动时间",
+        kind: ParamKind::Number {
+          lo: 0.0,
+          hi: 10000.0,
+          default: 25.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "hold_time",
+        label: "保持时间",
+        kind: ParamKind::Number {
+          lo: 0.0,
+          hi: 10000.0,
+          default: 200.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "release_time",
+        label: "释放时间",
+        kind: ParamKind::Number {
+          lo: 0.0,
+          hi: 10000.0,
+          default: 150.0,
+          step: 1.0,
+        },
+      },
+    ],
+  },
+  NodeSpec {
+    ptype: "compressor",
+    label: "压缩器",
+    kind: NodeKind::Process,
+    params: &[
+      ParamSpec {
+        key: "ratio",
+        label: "比率",
+        kind: ParamKind::Number {
+          lo: 1.0,
+          hi: 32.0,
+          default: 10.0,
+          step: 0.5,
+        },
+      },
+      ParamSpec {
+        key: "threshold",
+        label: "阈值",
+        kind: ParamKind::Number {
+          lo: -60.0,
+          hi: 0.0,
+          default: -18.0,
+          step: 0.1,
+        },
+      },
+      ParamSpec {
+        key: "attack_time",
+        label: "启动时间",
+        kind: ParamKind::Number {
+          lo: 1.0,
+          hi: 500.0,
+          default: 6.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "release_time",
+        label: "释放时间",
+        kind: ParamKind::Number {
+          lo: 1.0,
+          hi: 1000.0,
+          default: 60.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "output_gain",
+        label: "输出增益",
+        kind: ParamKind::Number {
+          lo: -32.0,
+          hi: 32.0,
+          default: 0.0,
+          step: 0.1,
+        },
+      },
+    ],
+  },
+  NodeSpec {
+    ptype: "limiter",
+    label: "限制器",
+    kind: NodeKind::Process,
+    params: &[
+      ParamSpec {
+        key: "threshold",
+        label: "阈值",
+        kind: ParamKind::Number {
+          lo: -60.0,
+          hi: 0.0,
+          default: -6.0,
+          step: 0.1,
+        },
+      },
+      ParamSpec {
+        key: "release_time",
+        label: "释放时间",
+        kind: ParamKind::Number {
+          lo: 1.0,
+          hi: 1000.0,
+          default: 60.0,
+          step: 1.0,
+        },
+      },
+    ],
+  },
+  NodeSpec {
+    ptype: "expander",
+    label: "扩展器",
+    kind: NodeKind::Process,
+    params: &[
+      ParamSpec {
+        key: "ratio",
+        label: "比率",
+        kind: ParamKind::Number {
+          lo: 1.0,
+          hi: 20.0,
+          default: 2.0,
+          step: 0.1,
+        },
+      },
+      ParamSpec {
+        key: "threshold",
+        label: "阈值",
+        kind: ParamKind::Number {
+          lo: -60.0,
+          hi: 0.0,
+          default: -40.0,
+          step: 0.1,
+        },
+      },
+      ParamSpec {
+        key: "attack_time",
+        label: "启动时间",
+        kind: ParamKind::Number {
+          lo: 1.0,
+          hi: 100.0,
+          default: 10.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "release_time",
+        label: "释放时间",
+        kind: ParamKind::Number {
+          lo: 1.0,
+          hi: 1000.0,
+          default: 50.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "output_gain",
+        label: "输出增益",
+        kind: ParamKind::Number {
+          lo: -32.0,
+          hi: 32.0,
+          default: 0.0,
+          step: 0.1,
+        },
+      },
+      ParamSpec {
+        key: "detector",
+        label: "检测器",
+        kind: ParamKind::Choice {
+          default: "RMS",
+          options: &[("RMS", "RMS"), ("peak", "峰值")],
+        },
+      },
+    ],
+  },
+  NodeSpec {
+    ptype: "upward_compressor",
+    label: "向上压缩器",
+    kind: NodeKind::Process,
+    params: &[
+      ParamSpec {
+        key: "ratio",
+        label: "比率",
+        kind: ParamKind::Number {
+          lo: 0.0,
+          hi: 1.0,
+          default: 0.5,
+          step: 0.1,
+        },
+      },
+      ParamSpec {
+        key: "threshold",
+        label: "阈值",
+        kind: ParamKind::Number {
+          lo: -60.0,
+          hi: 0.0,
+          default: -20.0,
+          step: 0.1,
+        },
+      },
+      ParamSpec {
+        key: "attack_time",
+        label: "启动时间",
+        kind: ParamKind::Number {
+          lo: 1.0,
+          hi: 100.0,
+          default: 10.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "release_time",
+        label: "释放时间",
+        kind: ParamKind::Number {
+          lo: 1.0,
+          hi: 1000.0,
+          default: 50.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "output_gain",
+        label: "输出增益",
+        kind: ParamKind::Number {
+          lo: -32.0,
+          hi: 32.0,
+          default: 0.0,
+          step: 0.1,
+        },
+      },
+      ParamSpec {
+        key: "detector",
+        label: "检测器",
+        kind: ParamKind::Choice {
+          default: "RMS",
+          options: &[("RMS", "RMS"), ("peak", "峰值")],
+        },
+      },
+      ParamSpec {
+        key: "knee",
+        label: "拐点",
+        kind: ParamKind::Number {
+          lo: 0.0,
+          hi: 20.0,
+          default: 10.0,
+          step: 1.0,
+        },
+      },
+    ],
+  },
+  NodeSpec {
+    ptype: "eq3",
+    label: "3 段均衡器",
+    kind: NodeKind::Process,
+    params: &[
+      ParamSpec {
+        key: "low",
+        label: "低频",
+        kind: ParamKind::Number {
+          lo: -20.0,
+          hi: 20.0,
+          default: 0.0,
+          step: 0.1,
+        },
+      },
+      ParamSpec {
+        key: "mid",
+        label: "中频",
+        kind: ParamKind::Number {
+          lo: -20.0,
+          hi: 20.0,
+          default: 0.0,
+          step: 0.1,
+        },
+      },
+      ParamSpec {
+        key: "high",
+        label: "高频",
+        kind: ParamKind::Number {
+          lo: -20.0,
+          hi: 20.0,
+          default: 0.0,
+          step: 0.1,
+        },
+      },
+    ],
+  },
+  NodeSpec {
+    ptype: "invert",
+    label: "极性反转",
+    kind: NodeKind::Process,
+    params: &[],
+  },
+  // ---- OBS 音频滤镜（参数默认值 / 范围 / 步进与 ~/obs-studio/plugins/obs-filters 对齐） ----
   NodeSpec {
     ptype: "tse",
     label: "目标说话人 TSE",
@@ -331,6 +662,7 @@ impl ParamSpec {
       ParamKind::Number { .. } => "number",
       ParamKind::Text { .. } => "text",
       ParamKind::Bool { .. } => "bool",
+      ParamKind::Choice { .. } => "choice",
     }
   }
 
@@ -339,6 +671,7 @@ impl ParamSpec {
       ParamKind::Text { default } => default.to_string(),
       ParamKind::Number { default, .. } => default.to_string(),
       ParamKind::Bool { default } => default.to_string(),
+      ParamKind::Choice { default, .. } => default.to_string(),
     }
   }
 }
@@ -371,6 +704,8 @@ pub fn create_stage(
         &model,
       )?))
     }
+    "noise_gate" | "compressor" | "limiter" | "expander" | "upward_compressor" | "eq3"
+    | "invert" => super::components::obs_dsp::stage(spec.ptype, params),
     "tse" => {
       let model = match params.get("model") {
         Some(ParamValue::Text(t)) => t.clone(),

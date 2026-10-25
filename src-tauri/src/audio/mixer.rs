@@ -49,10 +49,12 @@ use crate::dsp::resampler::Converter;
 
 /// 一拍（与列工作线程同一套 10 ms 网格）。
 const GRID: Duration = Duration::from_millis(10);
-/// 每个源的环目标水位（ms）：超过就按 2× 回收（与采集侧同一条纪律）。
-const SRC_TARGET_MS: usize = 40;
+/// 每个源的环目标水位（ms）：源时钟与设备时钟的粗对齐点。
+/// 三格：吸收列线程与混音线程的相位差（两边都是 10 ms 定时器，谁先谁后不固定），
+/// 又不会把延迟攒起来。
+const SRC_TARGET_MS: usize = 30;
 /// 每源环硬顶（ms）：超过丢最旧到目标 —— 源停摆 / 某列卡住时不让水位无限涨。
-const SRC_CAP_MS: usize = 300;
+const SRC_CAP_MS: usize = 100;
 /// 累计器目标水位（ms）：转换器比例要维持的小数级余量（约一格，够吸收一次调度抖动）。
 const ACC_TARGET_MS: f64 = 10.0;
 /// 累计器硬顶（样本）：超过丢最旧（同样是「过时的样本」）。
@@ -134,7 +136,10 @@ struct Source {
   ring: Consumer<f32>,
   conv: Converter,
   acc: VecDeque<f32>,
+  /// 内环：累计器水位 → 转换器比例（保持约一格小数余量）
   servo: Servo,
+  /// 小数格预算（Bresenham）：让「偶尔吃两格」平滑发生，而不是 2× 猛拉
+  pull_budget: f64,
   stats: Arc<SourceStats>,
   last_ratio: Instant,
 }
@@ -142,24 +147,44 @@ struct Source {
 impl Source {
   /// 一拍：源环 → 转换器 → 累计器 → 相加进 `mixed`。
   fn pull(&mut self, mixed: &mut [f32; HOP], dt_s: f64) {
-    // 源环超硬顶：丢最旧（过时样本），与其它环同一条纪律
+    // ① 源环硬顶：超过就丢最旧到目标（过时样本不慢慢放出去 —— DESIGN.md §8.3）
     let cap = ms_to_samples(SRC_CAP_MS);
+    let target = ms_to_samples(SRC_TARGET_MS);
     let lv = self.ring.slots();
-    if lv > cap
-      && let Ok(c) = self.ring.read_chunk(lv - ms_to_samples(SRC_TARGET_MS))
-    {
-      c.commit_all();
-      self
-        .stats
-        .dropped
-        .fetch_add((lv - ms_to_samples(SRC_TARGET_MS)) as u64, Relaxed);
+    if lv > cap {
+      let drop = lv - target;
+      if let Ok(c) = self.ring.read_chunk(drop) {
+        c.commit_all();
+        self.stats.dropped.fetch_add(drop as u64, Relaxed);
+      }
+    } else if lv > target + 2 * HOP {
+      // ② 中等积压（> 目标 + 2 格）：跳到目标附近，但只按整 hop 丢，保持相位。
+      let drop = (lv - target) / HOP * HOP;
+      if drop > 0
+        && let Ok(c) = self.ring.read_chunk(drop)
+      {
+        c.commit_all();
+        self.stats.dropped.fetch_add(drop as u64, Relaxed);
+      }
     }
-    // 一拍吃一格；超过目标水位吃两格（2× 回收，不再往上攒）
-    let hops = if self.ring.slots() > ms_to_samples(SRC_TARGET_MS) {
-      2
+
+    // ③ 外环：源环水位 → 每拍吃几格（1.0 = 实时；只在 ±3% 内微调）。
+    //    **不是**「超过目标就 2× 猛拉」：那会把积压搬进累计器，延迟换了个地方存。
+    //    带 1 格死区：列线程与混音线程都是 10 ms 定时器，相位不固定，水位在
+    //    「目标 ± 1 格」内是正常抖动，不许因此把速率压到 0.97 造成周期欠载。
+    let level_ms = self.ring.slots() as f64 * 1000.0 / SAMPLE_RATE as f64;
+    let err_ms = level_ms - SRC_TARGET_MS as f64;
+    let corr = if err_ms.abs() <= 10.0 {
+      0.0
     } else {
-      1
+      (err_ms / 100.0).clamp(-0.03, 0.03)
     };
+    self.pull_budget = (self.pull_budget + 1.0 + corr).clamp(0.0, 2.5);
+    let mut hops = self.pull_budget.floor() as usize;
+    if hops > 2 {
+      hops = 2;
+    }
+    self.pull_budget -= hops as f64;
     for _ in 0..hops {
       if self.ring.slots() < HOP {
         // 这一拍源没喂上：不喂转换器（零输入只是空转），累计器自然被抽空 → 下一拍补零
@@ -204,9 +229,9 @@ impl Source {
       -120.0
     };
     self.stats.peak(db);
-    // 伺服：按**累计器**水位调这一路的比例（累计器才是小数样本的积分器）
+    // ④ 内环：按**累计器**水位调这一路的比例（累计器才是小数样本的积分器）
     let acc_ms = self.acc.len() as f64 * 1000.0 / SAMPLE_RATE as f64;
-    self.servo.update(acc_ms, dt_s);
+    self.servo.update(acc_ms, dt_s.max(1e-4));
     if self.last_ratio.elapsed() >= Duration::from_millis(50) {
       self.last_ratio = Instant::now();
       let _ = self.conv.set_relative_ratio(1.0 - self.servo.adj);
@@ -231,10 +256,12 @@ impl Mixer {
     let join = std::thread::Builder::new()
       .name(format!("mix-{tag}"))
       .spawn(move || {
+        let token = crate::debug::threads::ThreadToken::new(format!("mix:{tag}"));
         let mut mixed = [0.0f32; HOP];
         let mut next = Instant::now();
         let mut last = Instant::now();
         while !i2.stop.load(Relaxed) {
+          token.beat();
           // 绝对时刻对齐 10 ms 网格（AGENTS：别用 `sleep(10ms - 已用)`，那只会跑到 ~64 拍/s）
           next += GRID;
           let now = Instant::now();
@@ -274,6 +301,7 @@ impl Mixer {
         conv,
         acc: VecDeque::with_capacity(4096),
         servo: Servo::new(ACC_TARGET_MS),
+        pull_budget: 1.0,
         stats: Arc::new(SourceStats::default()),
         last_ratio: Instant::now(),
       });
@@ -332,6 +360,7 @@ mod tests {
         conv: Converter::new(SAMPLE_RATE, SAMPLE_RATE, HOP, true).unwrap(),
         acc: VecDeque::new(),
         servo: Servo::new(ACC_TARGET_MS),
+        pull_budget: 1.0,
         stats: Arc::new(SourceStats::default()),
         last_ratio: Instant::now(),
       },

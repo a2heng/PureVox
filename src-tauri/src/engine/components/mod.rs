@@ -19,6 +19,7 @@
 
 pub mod denoise;
 pub mod gain;
+pub mod obs_dsp;
 pub mod player;
 pub mod soundpad;
 pub mod tse;

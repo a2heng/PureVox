@@ -249,6 +249,12 @@ where
 /// 打开输入设备并启动采集线程；阻塞到打开成功/失败（最多 5 s）。
 /// `tag`：本流在调试接口里的唯一标识（同一设备可有多个流，如出现在多列中）。
 pub fn spawn(hub: SharedHub, device_id: String, tag: String) -> Result<Capture, String> {
+  // Linux 的 Pulse 设备（`pulse:<source>`）走 parec（OBS 同源思路：用系统混音器的设备，
+  // 而不是把 ALSA 插件 PCM 全列出来）；其余平台/ID 继续用 cpal。
+  #[cfg(target_os = "linux")]
+  if let Some(source) = device_id.strip_prefix("pulse:") {
+    return super::loopback::spawn_source(hub, source.to_string(), tag);
+  }
   let stop = Arc::new(AtomicBool::new(false));
   let (tx, rx) = mpsc::channel::<Result<Arc<Fanout>, String>>();
   let stop2 = stop.clone();
@@ -291,7 +297,8 @@ fn run(
 
   // ---- 打开设备 ----
   let setup = crate::audio::with_device_retry(|| -> Result<_, String> {
-    let (dev, name) = crate::devices::find(&device_id, true)?;
+    let (dev, raw_name) = crate::devices::find(&device_id, true)?;
+    let name = crate::devices::display_name(&device_id, true).unwrap_or(raw_name);
     let supported = dev
       .default_input_config()
       .map_err(|e| format!("读取默认格式失败：{e}"))?;
@@ -405,6 +412,7 @@ pub(super) fn worker<K>(
 
   let stream_id = format!("input:{tag}");
   let started_at = now_ms();
+  let token = crate::debug::threads::ThreadToken::new(format!("capture:{tag}"));
   let native_rate = info.native_rate;
   let mut meter = Meter::new();
   let mut in_rate = RateMeter::new();
@@ -423,6 +431,7 @@ pub(super) fn worker<K>(
   let mut clamped: u64 = 0;
 
   while !stop.load(Relaxed) {
+    token.beat();
     let now = Instant::now();
     // ---- 延迟封顶：设备环超硬顶就丢最旧 ----
     // 超硬顶的是**已经过时的音频**（流刚打开时设备预填的一大块、会话重建期间的积压、

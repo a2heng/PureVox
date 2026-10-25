@@ -80,7 +80,7 @@ ort = { version = "2.0.0-rc.13", default-features = false, features = [
   "download-binaries",
   "copy-dylibs",
   "tls-native",
-  "api-27",
+  "api-23",
 ] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
@@ -113,6 +113,11 @@ windows = { version = "0.62", features = [
   "Win32_NetworkManagement_Ndis",
   "Win32_Networking_WinSock",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# 内置 UI 截屏（开发/报障用）：WebKitGTK 自带的 webview snapshot，不依赖桌面截图协议。
+webkit2gtk = "2.0"
+cairo-rs = { version = "0.18", features = ["png"] }
 
 [target.'cfg(unix)'.dependencies]
 # 网络：运行时 dlopen 系统 libopus（`libopus.so.0`，Debian 包名 `libopus0`），

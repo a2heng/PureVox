@@ -132,21 +132,27 @@ async fn apply_plan(
 /// 改一个**行级热参数**（与模型无关的标量：增益 / 音量）：**不重建会话**，下一 hop 生效。
 /// 界面按注册表的 `is_hot` 决定走这条路还是 `apply_plan`（见 `engine/hot.rs` 的说明）。
 #[tauri::command]
-fn set_row_param(
+async fn set_row_param(
   col: usize,
   row: usize,
   key: String,
   value: String,
   mgr: tauri::State<'_, Arc<AudioManager>>,
 ) -> Result<(), String> {
-  mgr.set_row_param(col, row, &key, &value)
+  let mgr = mgr.inner().clone();
+  tauri::async_runtime::spawn_blocking(move || mgr.set_row_param(col, row, &key, &value))
+    .await
+    .map_err(|e| format!("热参数写入异常：{e}"))?
 }
 
 /// 热参数落盘（不重建会话）：音量 / 续播位置等改动用它 + 对应的媒体运行时命令
 /// （DESIGN.md §5：热参数下发给运行中的实例，不重启）。
 #[tauri::command]
-fn persist_plan(plan: Plan, mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<(), String> {
-  mgr.persist_plan(plan)
+async fn persist_plan(plan: Plan, mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<(), String> {
+  let mgr = mgr.inner().clone();
+  tauri::async_runtime::spawn_blocking(move || mgr.persist_plan(plan))
+    .await
+    .map_err(|e| format!("计划落盘异常：{e}"))?
 }
 
 #[derive(serde::Serialize)]
@@ -162,38 +168,54 @@ struct ImportedInfo {
 /// 走 base64 文本而非字节数组：`<input type=file>` 给的是 `Uint8Array`，逐字节过
 /// JSON 会让一个 10 MB 的曲子变成几千万个数字，编码成一个字符串小一个量级。
 #[tauri::command]
-fn media_import(data_b64: String, name: String, kind: String) -> Result<ImportedInfo, String> {
-  use base64::Engine;
-  let kind = match kind.as_str() {
-    "soundpad" => media::MediaKind::Soundpad,
-    "music" => media::MediaKind::Music,
-    other => return Err(format!("未知媒体类型 {other}")),
-  };
-  let bytes = base64::engine::general_purpose::STANDARD
-    .decode(data_b64.as_bytes())
-    .map_err(|e| format!("文件内容解码失败：{e}"))?;
-  let im = media::import(&bytes, &name, kind)?;
-  Ok(ImportedInfo {
-    path: im.path.to_string_lossy().into_owned(),
-    name: im.name,
-    reused: im.reused,
+async fn media_import(
+  data_b64: String,
+  name: String,
+  kind: String,
+) -> Result<ImportedInfo, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    use base64::Engine;
+    let kind = match kind.as_str() {
+      "soundpad" => media::MediaKind::Soundpad,
+      "music" => media::MediaKind::Music,
+      other => return Err(format!("未知媒体类型 {other}")),
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+      .decode(data_b64.as_bytes())
+      .map_err(|e| format!("文件内容解码失败：{e}"))?;
+    let im = media::import(&bytes, &name, kind)?;
+    Ok(ImportedInfo {
+      path: im.path.to_string_lossy().into_owned(),
+      name: im.name,
+      reused: im.reused,
+    })
   })
+  .await
+  .map_err(|e| format!("媒体导入异常：{e}"))?
 }
 
 /// 移除库内媒体文件。双重护栏：只删媒体库内路径；仍被计划引用（任一行的参数里
 /// 出现过该路径）则拒绝——同一文件可被多个音效引用。
 #[tauri::command]
-fn media_discard(path: String, mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<(), String> {
-  let plan = mgr.plan();
-  let referenced = plan
-    .columns
-    .iter()
-    .flat_map(|c| c.rows.iter())
-    .any(|r| r.params.values().any(|v| v.contains(&path)));
-  if referenced {
-    return Err("该文件仍被计划引用，不能删除".into());
-  }
-  media::discard(&path)
+async fn media_discard(
+  path: String,
+  mgr: tauri::State<'_, Arc<AudioManager>>,
+) -> Result<(), String> {
+  let mgr = mgr.inner().clone();
+  tauri::async_runtime::spawn_blocking(move || {
+    let plan = mgr.plan();
+    let referenced = plan
+      .columns
+      .iter()
+      .flat_map(|c| c.rows.iter())
+      .any(|r| r.params.values().any(|v| v.contains(&path)));
+    if referenced {
+      return Err("该文件仍被计划引用，不能删除".into());
+    }
+    media::discard(&path)
+  })
+  .await
+  .map_err(|e| format!("媒体删除异常：{e}"))?
 }
 
 /// 媒体行运行时命令（音效板 / 播放器）。(col, row) 寻址；会话未运行时静默忽略
@@ -246,6 +268,9 @@ struct ParamInfo {
   max: Option<f64>,
   #[serde(skip_serializing_if = "Option::is_none")]
   step: Option<f64>,
+  /// Choice 参数的选项（value, label）；其它类型为空。
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  options: Vec<(String, String)>,
   /// 是否**热参数**（改它不重建会话，见 `engine/hot.rs`）：界面照它选
   /// `set_row_param` 还是 `apply_plan`。
   hot: bool,
@@ -278,6 +303,13 @@ fn list_nodes() -> Vec<NodeInfo> {
             }
             _ => (None, None, None),
           };
+          let options = match p.kind {
+            engine::registry::ParamKind::Choice { options, .. } => options
+              .iter()
+              .map(|(v, l)| ((*v).to_string(), (*l).to_string()))
+              .collect(),
+            _ => Vec::new(),
+          };
           ParamInfo {
             key: p.key.into(),
             label: p.label.into(),
@@ -286,6 +318,7 @@ fn list_nodes() -> Vec<NodeInfo> {
             min,
             max,
             step,
+            options,
             hot: engine::registry::is_hot(s.ptype, p.key),
           }
         })
@@ -297,11 +330,70 @@ fn list_nodes() -> Vec<NodeInfo> {
 /// 录制 TSE 参考：录「降噪后、TSE 前」的信号 `seconds` 秒，做音量归一化后写
 /// `~/.purevox/tse_reference.wav`；进度见 `/debug` 的 `recorder` 字段。
 #[tauri::command]
-fn record_tse_reference(
+async fn record_tse_reference(
   seconds: f64,
   mgr: tauri::State<'_, Arc<AudioManager>>,
 ) -> Result<String, String> {
-  mgr.record_reference(seconds)
+  let mgr = mgr.inner().clone();
+  tauri::async_runtime::spawn_blocking(move || mgr.record_reference(seconds))
+    .await
+    .map_err(|e| format!("录制异常：{e}"))?
+}
+
+/// TSE 参考文件的当前状态（界面卡片显示：文件名 / 大小 / 修改时间 / 时长）。
+#[derive(serde::Serialize)]
+struct TseRefInfo {
+  path: String,
+  exists: bool,
+  size: u64,
+  modified_ms: u64,
+  duration_s: Option<f64>,
+  is_default: bool,
+}
+
+/// 读 TSE 参考状态。`reference` 为空时按计划里第一个 TSE 行的路径（与录音/加载一致）。
+#[tauri::command]
+async fn tse_reference_info(
+  reference: Option<String>,
+  mgr: tauri::State<'_, Arc<AudioManager>>,
+) -> Result<TseRefInfo, String> {
+  let plan = mgr.plan();
+  let default = config::default_tse_reference();
+  let path = match reference
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+  {
+    Some(p) => config::expand_path(&p),
+    None => config::tse_reference_path(&plan),
+  };
+  tauri::async_runtime::spawn_blocking(move || {
+    let meta = std::fs::metadata(&path).ok();
+    let exists = meta.is_some();
+    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let modified_ms = meta
+      .as_ref()
+      .and_then(|m| m.modified().ok())
+      .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+      .map(|d| d.as_millis() as u64)
+      .unwrap_or(0);
+    let duration_s = if exists {
+      crate::wav::read_mono(&path)
+        .ok()
+        .map(|(s, r)| s.len() as f64 / r.max(1) as f64)
+    } else {
+      None
+    };
+    Ok(TseRefInfo {
+      path: path.display().to_string(),
+      exists,
+      size,
+      modified_ms,
+      duration_s,
+      is_default: path == default,
+    })
+  })
+  .await
+  .map_err(|e| format!("读取参考信息异常：{e}"))?
 }
 
 /// 测 AEC 延时：采集 1.6 s（最大搜索 1000 ms），结果见 `/debug` 的 `calib` 字段。
@@ -309,9 +401,12 @@ fn record_tse_reference(
 /// **不必先手动启动**：会话未运行时自动临时启动一个，测完（含失败 / 超时）由看门狗线程
 /// 停回原状；期间用户自己启停过就不动他的会话（`AudioManager::finish_temp_session`）。
 #[tauri::command]
-fn calibrate_aec_delay(mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<String, String> {
+async fn calibrate_aec_delay(mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<String, String> {
   let mgr = mgr.inner().clone();
-  let (msg, temp_epoch) = mgr.calibrate_aec_delay()?;
+  let mgr2 = mgr.clone();
+  let (msg, temp_epoch) = tauri::async_runtime::spawn_blocking(move || mgr2.calibrate_aec_delay())
+    .await
+    .map_err(|e| format!("校准异常：{e}"))??;
   if temp_epoch.is_some() {
     spawn_calib_watchdog(mgr, temp_epoch);
   }
@@ -337,21 +432,29 @@ fn spawn_calib_watchdog(mgr: Arc<AudioManager>, temp_epoch: Option<u64>) {
 
 /// 启动网络服务（手机 ⇄ 电脑，端口 59123）。幂等。
 #[tauri::command]
-fn net_start() -> Result<String, String> {
-  net::start()
+async fn net_start() -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(net::start)
+    .await
+    .map_err(|e| format!("启动网络服务异常：{e}"))?
 }
 
 /// 停网络服务，并强制关掉远程输入。
 #[tauri::command]
-fn net_stop() -> Result<String, String> {
-  net::stop();
-  Ok("已停止".into())
+async fn net_stop() -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(|| {
+    net::stop();
+    Ok::<_, String>("已停止".into())
+  })
+  .await
+  .map_err(|e| format!("停止网络服务异常：{e}"))?
 }
 
 /// 重启网络服务：先真的停（abort 监听）再起。改端口后、连不上、或服务假死都靠它。
 #[tauri::command]
-fn net_restart() -> Result<String, String> {
-  net::restart()
+async fn net_restart() -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(net::restart)
+    .await
+    .map_err(|e| format!("重启网络服务异常：{e}"))?
 }
 
 /// 网络状态（界面展示；明细见 `/debug` 的 `net` 字段）。
@@ -499,28 +602,42 @@ fn virtual_mic_status() -> debug::Probe<audio::virtual_mic::Status> {
 
 /// 创建 Linux 虚拟麦克风（幂等），返回创建后的状态。
 #[tauri::command]
-fn virtual_mic_create(
+async fn virtual_mic_create(
   hub: tauri::State<'_, SharedHub>,
 ) -> Result<audio::virtual_mic::Status, String> {
-  let s = audio::virtual_mic::create()?;
-  hub.set_virtual_mic(debug::Probe::ok(s.clone()));
-  Ok(s)
+  let hub = hub.inner().clone();
+  tauri::async_runtime::spawn_blocking(move || {
+    let s = audio::virtual_mic::create()?;
+    hub.set_virtual_mic(debug::Probe::ok(s.clone()));
+    Ok(s)
+  })
+  .await
+  .map_err(|e| format!("创建虚拟麦克风异常：{e}"))?
 }
 
 /// 移除 Linux 虚拟麦克风（幂等），返回移除后的状态。
 #[tauri::command]
-fn virtual_mic_remove(
+async fn virtual_mic_remove(
   hub: tauri::State<'_, SharedHub>,
 ) -> Result<audio::virtual_mic::Status, String> {
-  let s = audio::virtual_mic::remove()?;
-  hub.set_virtual_mic(debug::Probe::ok(s.clone()));
-  Ok(s)
+  let hub = hub.inner().clone();
+  tauri::async_runtime::spawn_blocking(move || {
+    let s = audio::virtual_mic::remove()?;
+    hub.set_virtual_mic(debug::Probe::ok(s.clone()));
+    Ok(s)
+  })
+  .await
+  .map_err(|e| format!("移除虚拟麦克风异常：{e}"))?
 }
 
 /// AEC 远端可选的回环目标（某个输出/sink 的 monitor；「系统默认输出」由界面加）。
 #[tauri::command]
-fn list_loopback_targets() -> Vec<devices::LoopbackTarget> {
-  devices::loopback_targets()
+async fn list_loopback_targets() -> Vec<devices::LoopbackTarget> {
+  // 可能会碰 pactl / cpal（Windows），绝不能在主线程做：放到阻塞线程，
+  // 界面首屏不再等它（见 `ui/columns.js` 的 init）。
+  tauri::async_runtime::spawn_blocking(devices::loopback_targets)
+    .await
+    .unwrap_or_default()
 }
 
 /// 当前平台标识（界面「驱动」页据此切换平台实现）：`linux` / `windows` / `macos`。
@@ -580,6 +697,19 @@ fn update_open_page(url: String) -> Result<(), String> {
   openurl::open(&url)
 }
 
+/// 内置 UI 截屏（开发/诊断）：把当前 WebView 渲染成 PNG 落盘，返回路径。
+///
+/// 走阻塞线程：截屏要等 GTK 主循环回调，不能在 async 运行时线程上干等。
+#[tauri::command]
+async fn capture_ui() -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(|| {
+    let path = debug::screenshot::capture()?;
+    Ok(path.display().to_string())
+  })
+  .await
+  .map_err(|e| format!("截屏任务中断：{e}"))?
+}
+
 /// 用系统默认浏览器打开链接（驱动下载 / 教程）。
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -590,6 +720,8 @@ fn open_url(url: String) -> Result<(), String> {
 }
 
 fn main() {
+  // panic 也进事件日志：release 没有控制台，后台线程 panic 不能「只消失不报」。
+  debug::events::install_panic_hook();
   let hub = DebugHub::new();
   debug::system::spawn_sampler(hub.clone());
   debug::http::spawn(hub.clone());
@@ -603,6 +735,8 @@ fn main() {
     .manage(audio)
     .manage(hotkey_host)
     .setup(|app| {
+      // 内置 UI 截屏（开发/诊断）：登记 AppHandle，HTTP/命令稍后从主线程取 WebView。
+      debug::screenshot::init(app.handle().clone());
       // 打包后模型位于 Tauri 资源目录（Windows：安装目录/models；Linux deb：/usr/lib/<productName>/models），
       // 注册给模型查找（开发态该目录不存在，走仓库 models/）。
       if let Ok(res) = app.path().resource_dir() {
@@ -611,6 +745,8 @@ fn main() {
           infer::set_model_dir(models);
         }
       }
+      // 模型预热（后台）：开销不计，换来首次启动/重建不用等磁盘与 ORT 初始化。
+      infer::preload_all();
       // 窗口标题带版本（与包版本同源，见 `version.rs`）。
       if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_title(&format!("PureVox {}", version::VERSION));
@@ -689,6 +825,7 @@ fn main() {
       refresh_devices,
       device_refresh_state,
       ui_report,
+      capture_ui,
       open_devtools,
       set_autostart,
       get_autostart,
@@ -709,6 +846,7 @@ fn main() {
       list_models,
       list_nodes,
       record_tse_reference,
+      tse_reference_info,
       calibrate_aec_delay,
       net_start,
       net_stop,

@@ -29,8 +29,7 @@
 //! 参考语音：10 s 48 kHz 单声道 → 平铺/截断到 480000 → 双端零 pad 480 → 1001 帧 × 960
 //! sqrt-Hann → rfft → ref_spec。无参考时 [`Tse::process`] 直通（不进模型、不动缓存）。
 
-use ort::session::Session;
-use ort::value::Tensor;
+use ort::value::{Tensor, TensorRef};
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 
@@ -61,7 +60,7 @@ pub fn ref_encoder_file(model_file: &str) -> String {
 }
 
 pub struct Tse {
-  session: Session,
+  model: crate::infer::LeasedSession,
   dim: usize,
   cache: Vec<f32>,
   out: Vec<f32>,
@@ -72,10 +71,10 @@ pub struct Tse {
 impl Tse {
   pub fn load(model_file: &str) -> Result<Self, String> {
     let path = crate::infer::model_path(model_file)?;
-    let session = crate::infer::build_session(&path)?;
-    let dim = crate::infer::cache_dim(&session, "cache_in")?;
+    let model = crate::infer::checkout(&path)?;
+    let dim = crate::infer::cache_dim(&model.lock(), "cache_in")?;
     Ok(Tse {
-      session,
+      model,
       dim,
       cache: vec![0.0; dim],
       out: vec![0.0; HOP],
@@ -93,28 +92,40 @@ impl Tse {
   }
 
   /// 处理一个 480 样本 hop。无参考时直通（借用内部缓冲）。
+  ///
+  /// **零分配**：`enr_tok`（1.44 MB）不再每跳 clone，cache 输出拷回预分配缓冲。
   pub fn process(&mut self, hop: &[f32]) -> Result<&[f32], String> {
     debug_assert_eq!(hop.len(), HOP);
-    let Some((enr, shape)) = self.enr_tok.as_ref() else {
-      self.out.clear();
-      self.out.extend_from_slice(hop);
-      return Ok(&self.out);
+    let Self {
+      model,
+      dim,
+      cache,
+      out,
+      enr_tok,
+    } = self;
+    let Some((enr, shape)) = enr_tok.as_ref() else {
+      out.copy_from_slice(hop);
+      return Ok(out);
     };
+    let dim = *dim;
+    let mut guard = model.lock();
+    let session = &mut *guard;
 
-    let mix = Tensor::from_array(([1i64, HOP as i64], hop.to_vec()))
-      .map_err(|e| format!("构造 mix_hop 失败：{e}"))?;
-    let enr_tok =
-      Tensor::from_array((*shape, enr.clone())).map_err(|e| format!("构造 enr_tok 失败：{e}"))?;
-    let cache_in = std::mem::take(&mut self.cache);
-    let cache = Tensor::from_array(([1i64, self.dim as i64], cache_in))
-      .map_err(|e| format!("构造 cache_in 失败：{e}"))?;
-
-    let outputs = match self.session.run(ort::inputs![
-      "mix_hop" => mix, "enr_tok" => enr_tok, "cache_in" => cache
-    ]) {
+    let run = {
+      let mix = TensorRef::from_array_view(([1i64, HOP as i64], hop))
+        .map_err(|e| format!("构造 mix_hop 失败：{e}"))?;
+      let tok = TensorRef::from_array_view((*shape, enr.as_slice()))
+        .map_err(|e| format!("构造 enr_tok 失败：{e}"))?;
+      let cache_in = TensorRef::from_array_view(([1i64, dim as i64], cache.as_slice()))
+        .map_err(|e| format!("构造 cache_in 失败：{e}"))?;
+      session.run(ort::inputs![
+        "mix_hop" => mix, "enr_tok" => tok, "cache_in" => cache_in
+      ])
+    };
+    let outputs = match run {
       Ok(o) => o,
       Err(e) => {
-        self.cache = vec![0.0; self.dim];
+        cache.fill(0.0);
         return Err(format!("TSE 推理失败：{e}"));
       }
     };
@@ -124,19 +135,24 @@ impl Tse {
     let (_, cache_out) = outputs["cache_out"]
       .try_extract_tensor::<f32>()
       .map_err(|e| format!("读取 cache_out 失败：{e}"))?;
-
-    self.out.clear();
-    self.out.extend_from_slice(&enh[..HOP]);
-    self.cache.clear();
-    self.cache.extend_from_slice(cache_out);
-    Ok(&self.out)
+    if enh.len() < HOP || cache_out.len() != dim {
+      return Err(format!(
+        "TSE 输出维度异常：enh_hop={}，cache_out={}（期望 {HOP} / {dim}）",
+        enh.len(),
+        cache_out.len()
+      ));
+    }
+    out.copy_from_slice(&enh[..HOP]);
+    cache.copy_from_slice(cache_out);
+    Ok(out)
   }
 }
 
-/// 参考语音 → `enr_tok`（走 `*_ref_encoder.onnx`）。
+/// 参考语音 → `enr_tok`（走 `*_ref_encoder.onnx`，同样复用模型池）。
 fn compute_enr_tok(model_file: &str, ref_samples: &[f32]) -> Result<(Vec<f32>, [i64; 4]), String> {
   let path = crate::infer::model_path(&ref_encoder_file(model_file))?;
-  let mut session = crate::infer::build_session(&path)?;
+  let model = crate::infer::checkout(&path)?;
+  let mut session = model.lock();
 
   // 10 s 归一（不足平铺），双端零 pad 一个 hop
   let n = ref_samples.len();

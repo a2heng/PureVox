@@ -309,7 +309,9 @@ mod tests {
   use crate::engine::media::MediaHub;
 
   fn stage_with(pads: Vec<PadCfg>) -> SoundpadStage {
-    let slot = MediaHub::default().register(0, 0, "soundpad");
+    let h = MediaHub::default();
+    let g = h.begin();
+    let slot = h.register(g, 0, 0, "soundpad");
     let json = serde_json::to_string(&pads).unwrap();
     SoundpadStage::load(&json, slot).unwrap()
   }

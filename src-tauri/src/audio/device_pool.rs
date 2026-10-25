@@ -170,6 +170,8 @@ pub struct PoolStat {
   pub refs: usize,
   /// 输出设备：逐源（这一路有没有在出声、有没有在丢）
   pub sources: Vec<SourceStat>,
+  /// 输入设备：逐订阅者（哪一列没在取数据、丢了多少）
+  pub subscribers: Vec<super::fanout::FanoutStat>,
 }
 
 impl Pool {
@@ -290,12 +292,14 @@ impl Pool {
       return PoolStat {
         refs: e.refs,
         sources: Vec::new(),
+        subscribers: e.cap.fanout.stats(),
       };
     }
     if let Some(e) = self.inner.outputs.lock().unwrap().get(device_id) {
       return PoolStat {
         refs: e.refs,
         sources: e.mixer.stats(),
+        subscribers: Vec::new(),
       };
     }
     PoolStat::default()

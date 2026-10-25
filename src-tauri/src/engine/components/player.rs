@@ -462,7 +462,9 @@ mod tests {
   use crate::engine::media::MediaHub;
 
   fn slot() -> Arc<MediaSlot> {
-    MediaHub::default().register(9, 9, "player")
+    let h = MediaHub::default();
+    let g = h.begin();
+    h.register(g, 9, 9, "player")
   }
 
   fn write_lib_wav(name: &str, secs: f32, hz: f32) -> String {

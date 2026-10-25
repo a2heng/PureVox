@@ -26,8 +26,7 @@
 //!
 //! far 的对齐/延时由 [`crate::engine::aec::AecRow`] 负责；本文件只做无状态会话 + 每行缓存。
 
-use ort::session::Session;
-use ort::value::Tensor;
+use ort::value::TensorRef;
 
 use crate::audio::HOP;
 
@@ -40,7 +39,7 @@ pub fn aec_models() -> &'static [(&'static str, &'static str)] {
 }
 
 pub struct Aec {
-  session: Session,
+  model: crate::infer::LeasedSession,
   dim: usize,
   cache: Vec<f32>,
   out: Vec<f32>,
@@ -49,10 +48,10 @@ pub struct Aec {
 impl Aec {
   pub fn load(model_file: &str) -> Result<Self, String> {
     let path = crate::infer::model_path(model_file)?;
-    let session = crate::infer::build_session(&path)?;
-    let dim = crate::infer::cache_dim(&session, "cache_in")?;
+    let model = crate::infer::checkout(&path)?;
+    let dim = crate::infer::cache_dim(&model.lock(), "cache_in")?;
     Ok(Aec {
-      session,
+      model,
       dim,
       cache: vec![0.0; dim],
       out: vec![0.0; HOP],
@@ -60,23 +59,36 @@ impl Aec {
   }
 
   /// 处理一对对齐好的 hop（mic + far），返回增强后的 hop（借用内部缓冲）。
+  ///
+  /// **零分配**：mic/far/cache 都是借用张量，cache 输出拷回预分配缓冲。
   pub fn process(&mut self, mic: &[f32], far: &[f32]) -> Result<&[f32], String> {
     debug_assert_eq!(mic.len(), HOP);
     debug_assert_eq!(far.len(), HOP);
-    let mic = Tensor::from_array(([1i64, HOP as i64], mic.to_vec()))
-      .map_err(|e| format!("构造 mic_hop 失败：{e}"))?;
-    let far = Tensor::from_array(([1i64, HOP as i64], far.to_vec()))
-      .map_err(|e| format!("构造 far_hop 失败：{e}"))?;
-    let cache_in = std::mem::take(&mut self.cache);
-    let cache = Tensor::from_array(([1i64, self.dim as i64], cache_in))
-      .map_err(|e| format!("构造 cache_in 失败：{e}"))?;
+    let Self {
+      model,
+      dim,
+      cache,
+      out,
+    } = self;
+    let dim = *dim;
+    let mut guard = model.lock();
+    let session = &mut *guard;
 
-    let outputs = match self.session.run(ort::inputs![
-      "mic_hop" => mic, "far_hop" => far, "cache_in" => cache
-    ]) {
+    let run = {
+      let mic_t = TensorRef::from_array_view(([1i64, HOP as i64], mic))
+        .map_err(|e| format!("构造 mic_hop 失败：{e}"))?;
+      let far_t = TensorRef::from_array_view(([1i64, HOP as i64], far))
+        .map_err(|e| format!("构造 far_hop 失败：{e}"))?;
+      let cache_in = TensorRef::from_array_view(([1i64, dim as i64], cache.as_slice()))
+        .map_err(|e| format!("构造 cache_in 失败：{e}"))?;
+      session.run(ort::inputs![
+        "mic_hop" => mic_t, "far_hop" => far_t, "cache_in" => cache_in
+      ])
+    };
+    let outputs = match run {
       Ok(o) => o,
       Err(e) => {
-        self.cache = vec![0.0; self.dim];
+        cache.fill(0.0);
         return Err(format!("AEC 推理失败：{e}"));
       }
     };
@@ -86,11 +98,15 @@ impl Aec {
     let (_, cache_out) = outputs["cache_out"]
       .try_extract_tensor::<f32>()
       .map_err(|e| format!("读取 cache_out 失败：{e}"))?;
-
-    self.out.clear();
-    self.out.extend_from_slice(&enh[..HOP]);
-    self.cache.clear();
-    self.cache.extend_from_slice(cache_out);
-    Ok(&self.out)
+    if enh.len() < HOP || cache_out.len() != dim {
+      return Err(format!(
+        "AEC 输出维度异常：enh_hop={}，cache_out={}（期望 {HOP} / {dim}）",
+        enh.len(),
+        cache_out.len()
+      ));
+    }
+    out.copy_from_slice(&enh[..HOP]);
+    cache.copy_from_slice(cache_out);
+    Ok(out)
   }
 }

@@ -144,10 +144,15 @@ pub fn create_stage(ptype: &str, params: &Params) -> Result<Box<dyn Stage>, Stri
 | 类别 | ptype（示例） | 说明 |
 | --- | --- | --- |
 | 输入 | `audio_input` / `loopback` / `remote_mic` / `echo_cancel` | 源；同列多个混合 |
-| 处理 | `denoise_*` / `eq` / `gain` / `agc` / `compressor` / `soundpad` / `player` | Stage；就地处理 |
+| 处理 | `denoise_*` / `gain` / `noise_gate` / `compressor` / `limiter` / `expander` / `upward_compressor` / `eq3` / `invert` / `soundpad` / `player` | Stage；就地处理 |
 | 输出 | `audio_output` / `remote_speaker` | 汇；位置 tap，送往设备或网络 |
 | 可视化 | `vu_meter` / `spectrum` | 只读 tap |
 
+- **OBS 音频滤镜（2026-10-25，参考 `~/obs-studio/plugins/obs-filters`）**：已实现
+  Audio Gain / Noise Gate / Compressor / Limiter / Expander / Upward Compressor / 3-Band EQ /
+  Invert Polarity；参数默认值、范围、步进与 OBS 一致（`registry.rs` + `components/obs_dsp.rs`）。
+  不包含 Noise Suppression（由 AI 降噪替代）、VST 2.x（需要 VST 宿主，未引入）、以及 Audio
+  Monitor / Pan / Sync Offset（它们是 OBS 的源属性/路由；PureVox 的输出行承担监听）。
 - **AEC 行**：一个输入行 =「一路 mic + 一路 far」，mic 在行内先过 AEC 再进列；
   far 参考只给模型用，**不进信号路径**；历史不足则直通 mic。
 - **桌面声音（`loopback` 输入行）**：捕获某只输出设备正在播放的系统混音作为源

@@ -48,8 +48,14 @@ release 构建同样保留（不允许用编译开关剔除）。
 | `GET /debug/system` | **CPU**：系统总占用、本进程占用、逻辑核数；**内存**：系统总量/可用、本进程工作集与私有字节；**GPU**：每块 GPU 的名称、占用率、显存总量/已用（含本进程） |
 | `GET /debug/audio` | 每路音频流：**结论（`health`，Rust 侧统一判定的健康度 `{level, text}`，阈值集中在 `audio/health.rs`，面板只渲染不算，见 1.3）**、方向、设备、**信号源（仅输出）**、状态、降噪状态（字段保留但已废弃：降噪现为列处理行，见 `audio.engine`）、设备原生格式、实测**设备侧 / 引擎侧速率**（3 s 窗口）、重采样器与其延迟、**输出流的时钟伺服修正（ppm）**、回调块大小（最近/最小/最大）与**回调间隔（最近/最大 ms，音频回调里锁-free 实测：只看回调次数看不出「卡了 2 秒又继续」）**、帧与 hop 计数、不足一 hop 的剩余帧、峰值/RMS 电平、**输出流欠载补静音样本数与重同步次数**、溢出/丢弃样本、流错误计数、**上述事件的实测每秒速率（`underrun_per_s` / `resync_per_s` / `overrun_per_s` / `stream_error_per_s`，3 s 窗口；累计计数只涨不降，速率才看得出现在还在不在发生）**、48k 缓冲水位与**设备侧缓冲水位**、端到端延迟、**模型推理耗时（均值/最大）**；另有汇总结论 `audio.verdict`（全部流的整体判断）；最近 50 ms 波形与平均频谱（481 bin，NFFT 960，输入流为降噪后、输出流为重采样前） |
 | `GET /debug/devices` | 全部枚举到的输入/输出设备：ID、名称、接口、原生采样率/声道、是否默认、是否被选中、是否已打开；以及最近一次枚举的时间与耗时 |
+| `GET /debug/screenshot` | 截取当前界面（WebView 渲染结果）写到 `~/.purevox/screenshots/ui.png`，返回 `{path, png}`；失败带原因 |
+| `GET /debug/ui.png` | 同上，但直接返回 `image/png` 实体（唯一非 JSON 端点；给脚本/视觉回归直接 `curl -o`） |
 
 - 字段只增不改名；新增字段同步更新本表。
+- **内置截屏**（`debug/screenshot.rs`）：Linux 走 WebKitGTK 的 `webkit_web_view_get_snapshot`
+  （Wayland/GNOME 50 禁掉了 `Shell.Screenshot`，`wlr-screencopy` 也不可用）；窗口标题栏不在图内。
+  调试面板标题旁的「截屏」按钮调同一实现，截图固定落 `~/.purevox/screenshots/ui.png`（覆盖），
+  其它平台明确不可用。它是开发/报障工具，不属于音频链路。
 - 快照另带 `ui`：界面自报的最近消息数组（新在前，最多 50 条，见 `ui_report` 命令）；
   `audio.engine`（列概要）含每列 `hop/s` 节拍速率（正常 100，见 DESIGN.md §3.3）；AEC 行另带
   **回声诊断**（滚动 1 s 窗）：`远端解释度 ρ`（远端窗口对近端的归一化互相关，判断参考/对齐对不对）
@@ -108,10 +114,14 @@ release 构建同样保留（不允许用编译开关剔除）。
   设备环；**设备回调是唯一主时钟**，回调里只取样、缺数据补静音（不在回调里写任何缓冲策略）。
   工作线程策略：预热到「目标水位 + 设备环」再开声；PI 伺服按 48k 环水位微调重采样比例限幅 **±3%**
   消化源/设备时钟差；源断流则回预热重同步；48k 环超 300 ms 封顶丢最旧。伺服目标水位 40 ms。
-- **Linux 设备面**：cpal 在 Linux 只有 ALSA，枚举会把插件 PCM 与同一张卡的多别名全列出来（本机 108 条）。
-  `devices::simplify` 精简为「每个去重后的设备名一条」：丢 `null/lavrate/samplerate/speexrate/jack/oss/
-  pipewire/pulse/speex/upmix/vdownmix/dmix/dsnoop/usbstream/iec958/surround*` 等插件，同卡按名去重，
-  优先 `plughw`（自动格式转换）> `hdmi` > `hw` > `sysdefault` > `front`，`default` 保留。其它平台枚举本就干净，不动。
+- **Linux 设备面（Pulse/PipeWire，OBS + 系统声音设置同源）**：不再遍历 ALSA 插件 PCM（本机曾有 108 条）。
+  用 `pactl -f json list sources/sinks` 取每台设备一条；**输入一律用 `pulse:<source>`**（`parec` 采集，
+  PipeWire 混音，浏览器/OBS/PureVox 可同时用麦克风，不再因 ALSA `plughw` 排他而 busy）；输出暂时仍映射到
+  `alsa:plughw:CARD=…,DEV=…`（输出要设备时钟伺服；PipeWire 输出通路待做）。
+  **设备名必须取系统同一份**：`pactl -f json` 的 `description` 在 PipeWire 上常是 `(null)`，改用
+  `pactl list sources|sinks` 文本的 `Description:`（`pa_source_info.description`），并用 `pw-dump` 的
+  `node.description` 兜底——否则会出现三只「USB Audio」。非 ALSA 输出（蓝牙/虚拟 sink）当前明确跳过，
+  不伪装成可打开的设备。
 - **Linux AEC 远端回环**（`audio/loopback_linux.rs`）：cpal 没有「监听某个 sink」，改用 `parec` 监听输出的
   monitor（`float32le` 48k 单声道）再喂进与 cpal 采集同一个工作循环（重采样/计量/扇出一致）。`loopback` =
   系统默认输出、`loopback:<sink>` = 指定 PipeWire sink；候选由命令 `list_loopback_targets` 给出
@@ -293,6 +303,11 @@ release 构建同样保留（不允许用编译开关剔除）。
     与 `NetHub` 同款单例）按 (列, 行) 寻址下发；音量属**热参数**——拖动实时生效、抬手
     `persist_plan` 落盘，**不重建会话**；增删音效 / 改热键 / 换曲 = 结构性变更 → 重建。
     行状态（在播音效数 / 播放位置）经 `Stage::status` 进列概要，`/debug` 可见。
+- **OBS 音频滤镜**（2026-10-25，参考 `~/obs-studio/plugins/obs-filters`）：处理行新增
+  `noise_gate` / `compressor` / `limiter` / `expander` / `upward_compressor` / `eq3` / `invert`，
+  参数默认值、范围、步进与 OBS 一致（滑块 + 数字输入）；DSP 在 `components/obs_dsp.rs`。
+  不包含 Noise Suppression（AI 降噪替代）、VST 2.x（需要 VST 宿主）、Audio Monitor /
+  Pan / Sync Offset（OBS 的源属性/路由；PureVox 输出行承担监听）。
 - **桌面声音输入（`loopback` 输入行）**：`device` = `loopback`（系统默认输出）或
   `loopback:<渲染端点ID｜sink 名>`（按平台，同 AEC 远端取值规则），复用 AEC 的回环采集
   （`audio/loopback.rs`）；行内增益 `volume_db`（-30~6 dB，默认 -6 dB，系统混音偏响）。
@@ -653,9 +668,11 @@ release 构建同样保留（不允许用编译开关剔除）。
     `/root/.cargo/config.toml` 的 `[env]` 注入 `ORT_LIB_LOCATION` / `ORT_SKIP_DOWNLOAD` /
     `ORT_PREFER_DYNAMIC_LINK`：**24.04 用 `/opt/ort` 下官方 release 的 `.so`**
     （走 gh-proxy.com 下载，已校验 SHA256；只含 `.so`、没有 `.a`，所以必须动态链），
-    26.04 用 apt 的 `libonnxruntime1.23` + `libonnxruntime-dev`（**CPU-only**，与 `ort`
-    的 `api-27` 对应）。**这些都是本机配置，不进仓库**，Windows 与 CI 仍走
-    `download-binaries`（CI 静态链 `ort`）。
+    26.04 用 apt 的 `libonnxruntime1.23` + `libonnxruntime-dev`（**CPU-only**）。
+    **`ort` 的 C API 必须与运行库匹配**：现为 `api-23`（本机 1.23.2 只支持到 API 23；
+    之前写 `api-27` 会报 `The requested API version [27] is not available`，之后所有
+    模型错误都变成 `Mutex poisoned`）。**这些都是本机配置，不进仓库**，Windows 与 CI
+    仍走 `download-binaries`。
   - 跑门禁：`python3 tools/automation/check.py -Gate fmt|clippy|build|test|ui|version|bundle`，
     七道已实测全绿（92 个单测通过）。
 - **构建产物位置**（找东西时别找错盘）：Windows 走 `src-tauri/target/`（D 盘，

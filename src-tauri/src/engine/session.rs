@@ -22,6 +22,7 @@
 //! 结构性变更（增删/排序行、换设备、改型号、增删列）由上层重建整个 Session。
 
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -35,8 +36,9 @@ use super::media::{self, MediaCmd, MediaSlot};
 use super::registry::{self, ParamValue, Params};
 use super::stage::{FrameContext, Stage, StageError};
 use crate::audio::fanout::Fanout;
+use crate::audio::health;
 use crate::audio::{HOP, WorkerHandle, capture, loopback};
-use crate::debug::SharedHub;
+use crate::debug::{ColumnInfo, Probe, RowInfo, SharedHub, events, metrics, threads};
 use crate::dsp::meter::RateMeter;
 use crate::infer::aec::Aec;
 use crate::plan::{ColumnSpec, Plan, RowKind};
@@ -49,9 +51,17 @@ const PUBLISH: Duration = Duration::from_millis(200);
 /// 行输入环水位：目标 2 hop，超过 4 hop 丢最旧（DESIGN.md §8）。
 const ROW_TARGET: usize = 2 * HOP;
 const ROW_CAP: usize = 4 * HOP;
+/// 运行期重新打开设备的退避下限 / 上限（**绝不在音频 tick 里直接开设备**）。
+/// 第一次失败后 1 s 重试，连续失败翻倍，最长 30 s；成功后清零。
+const REOPEN_BACKOFF_MIN: Duration = Duration::from_secs(1);
+const REOPEN_BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// 单拍处理耗时超过「一跳预算 - 2 ms」即计入节拍超时（留 2 ms 给调度）。
+const TICK_LATE_WARN: Duration = Duration::from_millis(2);
 
 struct Row {
   kind: RowKind,
+  /// 注册表类型（`audio_input` / `denoise` / …）：调试接口按它识别行
+  ptype: String,
   label: String,
   enabled: bool,
   /// 上一次的 enabled（列工作线程据此把开关翻转转发给媒体行）
@@ -59,9 +69,16 @@ struct Row {
   error: Option<String>,
   /// 未配置（如未选择设备）：不是错误，只是还没配好
   unconfigured: bool,
+  /// 这一行是否是**配置好的输入源**（与当前租约是否拿到无关）。
+  /// 列内混合系数用它计数，而不是用「活着的租约数」——否则一个设备打不开，
+  /// 其余输入会突然 +6 dB（DESIGN.md §3.2 明确要求按配置的输入数）。
+  source: bool,
   /// 处理行：本行推理耗时 EMA / 最大（ms），进调试概要
   inf_ms: f32,
   inf_max_ms: f32,
+  /// 推理耗时超过一跳预算的次数（累计 + 速率）
+  inf_over: u64,
+  inf_over_rate: RateMeter,
   /// 输入行：本行源的 48k hop 读端
   input: Option<Consumer<f32>>,
   /// 输入行：行输入环累计丢弃的样本数（水位超 `ROW_CAP` 丢最旧）。
@@ -84,6 +101,16 @@ struct Row {
   in_lease: Option<crate::audio::device_pool::InputLease>,
   /// 输出行的设备租约（内含该设备唯一那条混音的这一路源）
   out_lease: Option<crate::audio::device_pool::OutputLease>,
+  /// 运行期重新打开（**后台线程**，绝不阻塞 10 ms tick）：
+  /// 正在尝试时是接收端；失败后按指数退避，`*_retry_at` 之前不重试。
+  in_pending:
+    Option<std::sync::mpsc::Receiver<Result<crate::audio::device_pool::InputLease, String>>>,
+  in_retry_at: Option<Instant>,
+  in_failures: u32,
+  out_pending:
+    Option<std::sync::mpsc::Receiver<Result<crate::audio::device_pool::OutputLease, String>>>,
+  out_retry_at: Option<Instant>,
+  out_failures: u32,
   /// AEC 输入行：mic 读端 + far 历史 + 本行模型状态
   aec: Option<AecRow>,
   /// `remote_mic` 输入行：网络入站队列（DESIGN.md §4.1）
@@ -99,12 +126,12 @@ struct Row {
 }
 
 struct ColumnRuntime {
-  summary: Arc<Mutex<String>>,
   stop: Arc<AtomicBool>,
   join: Option<JoinHandle<()>>,
-  /// 本列拥有的流：Session 停止时一并关闭
+  /// 本列拥有的流：Session 停止时一并关闭（池化设备不在这里）
   captures: Vec<WorkerHandle>,
-  playbacks: Vec<WorkerHandle>,
+  /// 线程是否还活着（由列线程的 guard 置 false；监督线程据此报 degraded）
+  alive: Arc<AtomicBool>,
 }
 
 /// 一个已构建并正在运行的会话。
@@ -115,19 +142,37 @@ pub struct Session {
   /// 热参数单元格：`(列, 行, 参数名) → 值`。`set_hot_param` 写它，行工作线程下一 hop 生效
   /// （见 `engine/hot.rs`：热参数**不重建会话**）。
   hot: std::collections::HashMap<(usize, usize, String), Arc<crate::engine::hot::HotGain>>,
+  /// 本次构建的媒体槽位代次（提交/回滚由 `AudioManager` 决定）
+  pub media_gen: u64,
+  /// 本次构建的引擎代次（进调试快照）
+  pub generation: u64,
+}
+
+/// 一次构建的结果。
+pub struct BuildOutcome {
+  pub session: Session,
+  /// 非致命问题（未配置的行、可恢复的失败……）：界面逐行显示
+  pub problems: Vec<String>,
+  /// 关键失败（启用的行拿不到设备/模型/参考）：`apply_plan` 据此**回滚**，保留旧会话
+  pub critical: Vec<String>,
 }
 
 impl Session {
-  /// 按计划构建并启动；返回构建过程中收集到的问题（非致命）。不修改计划本身。
+  /// 按计划构建并启动；返回构建结果（不修改计划本身）。
+  ///
+  /// `generation`：本次会话的代次（`AudioManager` 的运行代号），进调试快照。
   pub fn build(
     hub: SharedHub,
     plan: &Plan,
     rec: Arc<RecorderHub>,
     calib: Arc<CalibHub>,
-  ) -> (Session, Vec<String>) {
+    generation: u64,
+  ) -> BuildOutcome {
     let mut problems = crate::plan::validate(plan);
-    // 媒体槽位按 (列,行) 重建：先清空旧会话的注册，避免行被删后残留
-    media::hub().clear();
+    let mut critical = Vec::new();
+    // 媒体槽位按代次注册：构建成功由 `AudioManager` 提交，失败/回滚只删自己这一代。
+    // **绝不在这里 clear()**：先建后停期间旧会话的媒体控件必须仍然可用。
+    let media_gen = media::hub().begin();
     let mut columns = Vec::new();
     let mut hot = std::collections::HashMap::new();
     for (i, spec) in plan.columns.iter().enumerate() {
@@ -136,39 +181,67 @@ impl Session {
         i,
         spec,
         &mut problems,
+        &mut critical,
         &rec,
         &calib,
         &mut hot,
+        media_gen,
       ));
     }
 
-    // 汇总各列概要，定期发布到调试接口
-    let summaries: Vec<Arc<Mutex<String>>> = columns.iter().map(|c| c.summary.clone()).collect();
+    // 监督线程：列线程死了（panic / 意外退出）必须在一秒内变成 `degraded`，
+    // 而不是让快照继续显示最后一帧「100 hop/s」。
+    let watches: Vec<(usize, Arc<AtomicBool>, Arc<AtomicBool>)> = columns
+      .iter()
+      .enumerate()
+      .map(|(i, c)| (i, c.alive.clone(), c.stop.clone()))
+      .collect();
     let publisher_stop = Arc::new(AtomicBool::new(false));
     let (ps, hub2) = (publisher_stop.clone(), hub.clone());
     let publisher = std::thread::Builder::new()
-      .name("session-publish".into())
+      .name("session-supervisor".into())
       .spawn(move || {
+        let token = threads::ThreadToken::new("session-supervisor");
+        let mut reported = vec![false; watches.len()];
         while !ps.load(Relaxed) {
-          let parts: Vec<String> = summaries
-            .iter()
-            .map(|s| s.lock().unwrap().clone())
-            .collect();
-          hub2.set_column(crate::debug::Probe::ok(parts.join(" ｜ ")));
-          std::thread::sleep(Duration::from_millis(200));
+          for (i, alive, stop) in &watches {
+            if !alive.load(Relaxed) && !stop.load(Relaxed) && !reported[*i] {
+              reported[*i] = true;
+              let reason = format!("第 {} 列的列工作线程意外退出（panic 或内部错误）", i + 1);
+              hub2.set_engine_degraded(reason.clone());
+              metrics::record("engine.column_dead", 1.0);
+            }
+          }
+          token.beat();
+          std::thread::sleep(PUBLISH);
         }
       })
       .ok();
 
-    (
-      Session {
+    // 引擎状态与计划由 `AudioManager` 在**提交**时写入（回滚时不能把新计划写进快照）。
+    events::log(
+      "info",
+      "engine",
+      format!(
+        "会话构建完成：第 {generation} 代，{} 列，{} 个问题，{} 个关键失败",
+        plan.columns.len(),
+        problems.len(),
+        critical.len()
+      ),
+    );
+
+    BuildOutcome {
+      session: Session {
         columns,
         publisher_stop,
         publisher,
         hot,
+        media_gen,
+        generation,
       },
       problems,
-    )
+      critical,
+    }
   }
 
   /// 运行中改一个热参数（见 `engine/hot.rs`）：写单元格，行工作线程**下一 hop**生效。
@@ -189,16 +262,19 @@ impl Session {
       if let Some(j) = c.join.take() {
         let _ = j.join();
       }
-      for h in c.playbacks.drain(..) {
-        h.stop();
-      }
       for h in c.captures.drain(..) {
         h.stop();
       }
     }
     self.columns.clear();
-    // 媒体槽位随会话释放（界面再发命令只会得到「未运行」）
-    media::hub().clear();
+    // **不要在这里清媒体槽位 / 列概要**：先建后停时，旧会话的 stop 可能晚于新会话构建，
+    // 清掉就会把新会话的音效板/播放器/状态一起清掉（2026-10-25 的确定性 bug）。
+    // 只有用户显式停引擎（`AudioManager::stop`）才清。
+    events::log(
+      "info",
+      "engine",
+      format!("第 {} 代会话已停止", self.generation),
+    );
   }
 }
 
@@ -408,10 +484,7 @@ fn take_hop(cons: &mut Consumer<f32>, out: &mut [f32; HOP]) -> (bool, usize) {
   (false, dropped)
 }
 
-/// 输入行的设备租约：启用就按需取回、停用就放掉（**一处实现**，建会话与运行中开关共用）。
-///
-/// 这就是「列/行开关 = 订阅与引用的挂摘」（DESIGN.md §6.5）：停用不删行、保留设备选择，
-/// 只放掉这一份引用；引用归零时池才真关设备（异步真关，`WorkerHandle::stop` 会 join）。
+/// 输入行的设备租约（**构建期**，同步）：只试一次；失败交给运行期 `poll_input_lease` 退避重试。
 fn apply_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize) {
   if !r.pooled_input {
     return;
@@ -419,24 +492,117 @@ fn apply_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize) {
   let Some(dev) = r.device.clone() else {
     return;
   };
-  if r.enabled {
-    if r.in_lease.is_none() {
-      match crate::audio::device_pool::hub().acquire_input(hub.clone(), &dev) {
-        Ok(lease) => {
-          r.input = Some(lease.subscribe(&format!("col{idx}row{ri}")));
-          r.in_lease = Some(lease);
-          r.error = None;
-        }
-        Err(e) => r.error = Some(e),
-      }
-    }
-  } else if r.in_lease.is_some() {
+  if !r.enabled {
     r.in_lease = None;
     r.input = None;
+    return;
+  }
+  if r.in_lease.is_some() {
+    return;
+  }
+  match crate::audio::device_pool::hub().acquire_input(hub.clone(), &dev) {
+    Ok(lease) => {
+      r.input = Some(lease.subscribe(&format!("col{idx}row{ri}")));
+      r.in_lease = Some(lease);
+      r.error = None;
+      r.in_failures = 0;
+      events::log("info", "engine", format!("输入设备已打开：{dev}"));
+    }
+    Err(e) => {
+      r.error = Some(e.clone());
+      r.in_failures = 1;
+      r.in_retry_at = Some(Instant::now() + backoff(1));
+      events::log("error", "engine", format!("输入设备打开失败：{dev}：{e}"));
+    }
   }
 }
 
-/// 输出行的设备租约（同上；顺带把这一列接进该设备**唯一**那条混音）。
+/// 运行期输入租约（**永不阻塞 tick**）：启动后台打开线程 → 下一拍非阻塞收结果；
+/// 失败按指数退避（1 s → 30 s），绝不每 10 ms 去枚举设备/重试打开。
+fn poll_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: Instant) {
+  if !r.pooled_input {
+    return;
+  }
+  let Some(dev) = r.device.clone() else {
+    return;
+  };
+  if !r.enabled {
+    if r.in_lease.is_some() {
+      r.in_lease = None;
+      r.input = None;
+      events::log(
+        "info",
+        "engine",
+        format!("输入行已停用，放掉设备引用：{dev}"),
+      );
+    }
+    r.in_pending = None;
+    r.in_retry_at = None;
+    return;
+  }
+  if r.in_lease.is_some() {
+    return;
+  }
+  if let Some(rx) = r.in_pending.as_ref() {
+    match rx.try_recv() {
+      Ok(Ok(lease)) => {
+        r.input = Some(lease.subscribe(&format!("col{idx}row{ri}")));
+        r.in_lease = Some(lease);
+        r.in_pending = None;
+        r.in_retry_at = None;
+        r.in_failures = 0;
+        r.error = None;
+        events::log("info", "engine", format!("输入设备已恢复：{dev}"));
+      }
+      Ok(Err(e)) => {
+        r.in_pending = None;
+        r.in_failures = r.in_failures.saturating_add(1);
+        r.in_retry_at = Some(now + backoff(r.in_failures));
+        r.error = Some(e.clone());
+        events::log(
+          "error",
+          "engine",
+          format!(
+            "输入设备打开失败（第 {} 次，{} s 后重试）：{dev}：{e}",
+            r.in_failures,
+            backoff(r.in_failures).as_secs()
+          ),
+        );
+      }
+      Err(std::sync::mpsc::TryRecvError::Empty) => {}
+      Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+        r.in_pending = None;
+        r.in_failures = r.in_failures.saturating_add(1);
+        r.in_retry_at = Some(now + backoff(r.in_failures));
+      }
+    }
+    return;
+  }
+  if let Some(at) = r.in_retry_at
+    && now < at
+  {
+    return;
+  }
+  // 起一个一次性打开线程：设备打开可能几百毫秒到几秒，绝不能占住 10 ms tick。
+  let (tx, rx) = std::sync::mpsc::channel();
+  let h = hub.clone();
+  let d = dev.clone();
+  let name = format!("open-in-{idx}-{ri}");
+  let spawned = std::thread::Builder::new().name(name).spawn(move || {
+    let r = crate::audio::device_pool::hub().acquire_input(h, &d);
+    let _ = tx.send(r);
+  });
+  match spawned {
+    Ok(_) => r.in_pending = Some(rx),
+    Err(e) => {
+      r.in_failures = r.in_failures.saturating_add(1);
+      r.in_retry_at = Some(now + backoff(r.in_failures));
+      r.error = Some(format!("起设备打开线程失败：{e}"));
+    }
+  }
+}
+
+/// 输出行的设备租约（**构建期**，同步）；与输入侧同一条纪律。
 fn apply_output_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize) {
   if !r.pooled_output {
     return;
@@ -444,36 +610,136 @@ fn apply_output_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize) {
   let Some(dev) = r.device.clone() else {
     return;
   };
-  if r.enabled {
-    if r.out_lease.is_none() {
-      match crate::audio::device_pool::hub().acquire_output(hub.clone(), &dev) {
-        Ok(lease) => {
-          r.output = Some(lease.out.clone());
-          r.out_lease = Some(lease);
-          r.error = None;
-        }
-        Err(e) => r.error = Some(e),
-      }
-    }
-  } else if r.out_lease.is_some() {
+  if !r.enabled {
     r.out_lease = None;
     r.output = None;
+    return;
+  }
+  if r.out_lease.is_some() {
+    return;
+  }
+  match crate::audio::device_pool::hub().acquire_output(hub.clone(), &dev) {
+    Ok(lease) => {
+      r.output = Some(lease.out.clone());
+      r.out_lease = Some(lease);
+      r.error = None;
+      r.out_failures = 0;
+      events::log("info", "engine", format!("输出设备已打开：{dev}"));
+    }
+    Err(e) => {
+      r.error = Some(e.clone());
+      r.out_failures = 1;
+      r.out_retry_at = Some(Instant::now() + backoff(1));
+      events::log("error", "engine", format!("输出设备打开失败：{dev}：{e}"));
+    }
   }
   let _ = (idx, ri);
 }
 
+/// 运行期输出租约：同输入侧，后台打开 + 指数退避。
+fn poll_output_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: Instant) {
+  if !r.pooled_output {
+    return;
+  }
+  let Some(dev) = r.device.clone() else {
+    return;
+  };
+  if !r.enabled {
+    if r.out_lease.is_some() {
+      r.out_lease = None;
+      r.output = None;
+      events::log(
+        "info",
+        "engine",
+        format!("输出行已停用，放掉设备引用：{dev}"),
+      );
+    }
+    r.out_pending = None;
+    r.out_retry_at = None;
+    return;
+  }
+  if r.out_lease.is_some() {
+    return;
+  }
+  if let Some(rx) = r.out_pending.as_ref() {
+    match rx.try_recv() {
+      Ok(Ok(lease)) => {
+        r.output = Some(lease.out.clone());
+        r.out_lease = Some(lease);
+        r.out_pending = None;
+        r.out_retry_at = None;
+        r.out_failures = 0;
+        r.error = None;
+        events::log("info", "engine", format!("输出设备已恢复：{dev}"));
+      }
+      Ok(Err(e)) => {
+        r.out_pending = None;
+        r.out_failures = r.out_failures.saturating_add(1);
+        r.out_retry_at = Some(now + backoff(r.out_failures));
+        r.error = Some(e.clone());
+        events::log(
+          "error",
+          "engine",
+          format!(
+            "输出设备打开失败（第 {} 次，{} s 后重试）：{dev}：{e}",
+            r.out_failures,
+            backoff(r.out_failures).as_secs()
+          ),
+        );
+      }
+      Err(std::sync::mpsc::TryRecvError::Empty) => {}
+      Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+        r.out_pending = None;
+        r.out_failures = r.out_failures.saturating_add(1);
+        r.out_retry_at = Some(now + backoff(r.out_failures));
+      }
+    }
+    return;
+  }
+  if let Some(at) = r.out_retry_at
+    && now < at
+  {
+    return;
+  }
+  let (tx, rx) = std::sync::mpsc::channel();
+  let h = hub.clone();
+  let d = dev.clone();
+  let name = format!("open-out-{idx}-{ri}");
+  let spawned = std::thread::Builder::new().name(name).spawn(move || {
+    let r = crate::audio::device_pool::hub().acquire_output(h, &d);
+    let _ = tx.send(r);
+  });
+  match spawned {
+    Ok(_) => r.out_pending = Some(rx),
+    Err(e) => {
+      r.out_failures = r.out_failures.saturating_add(1);
+      r.out_retry_at = Some(now + backoff(r.out_failures));
+      r.error = Some(format!("起设备打开线程失败：{e}"));
+    }
+  }
+}
+
+/// 指数退避：1、2、4、8、16、30、30… 秒。
+fn backoff(failures: u32) -> Duration {
+  let exp = failures.saturating_sub(1).min(5);
+  let secs = (1u64 << exp).min(REOPEN_BACKOFF_MAX.as_secs());
+  Duration::from_secs(secs.max(REOPEN_BACKOFF_MIN.as_secs()))
+}
+
+#[allow(clippy::too_many_arguments)] // 构建期一次性传参；拆结构只会把同一件事分散到多处
 fn build_column(
   hub: &SharedHub,
   idx: usize,
   spec: &ColumnSpec,
   problems: &mut Vec<String>,
+  critical: &mut Vec<String>,
   rec: &Arc<RecorderHub>,
   calib: &Arc<CalibHub>,
   hot: &mut std::collections::HashMap<(usize, usize, String), Arc<crate::engine::hot::HotGain>>,
+  media_gen: u64,
 ) -> ColumnRuntime {
   let mut rows: Vec<Row> = Vec::new();
   let mut captures = Vec::new();
-  let playbacks = Vec::new();
   // `remote_mic` 入站是单队列，全会话只允许一行（SPEC 约束）
   let mut remote_mic_used = false;
 
@@ -484,13 +750,17 @@ fn build_column(
     let mut sink = crate::engine::hot::HotSink::new();
     let mut row = Row {
       kind: r.kind,
+      ptype: r.ptype.clone(),
       label: r.ptype.clone(),
       enabled: r.enabled && column_on,
       enabled_prev: r.enabled,
       error: None,
       unconfigured: false,
+      source: false,
       inf_ms: 0.0,
       inf_max_ms: 0.0,
+      inf_over: 0,
+      inf_over_rate: RateMeter::new(),
       input: None,
       gain: None,
       device: None,
@@ -498,6 +768,12 @@ fn build_column(
       pooled_output: false,
       in_lease: None,
       out_lease: None,
+      in_pending: None,
+      in_retry_at: None,
+      in_failures: 0,
+      out_pending: None,
+      out_retry_at: None,
+      out_failures: 0,
       aec: None,
       net_input: None,
       ring_dropped: 0,
@@ -541,9 +817,10 @@ fn build_column(
         match device {
           None => row.unconfigured = true,
           Some(mic_dev) => {
+            row.source = true;
             // 远端：扬声器（输出设备）→ 自动 WASAPI 回环；也可填输入设备当参考
             let far_loop = crate::engine::aec::far_loopback_id(&far);
-            let mic = crate::devices::find(mic_dev, true);
+            let mic = crate::devices::display_name(mic_dev, true);
             let far_ok: Result<String, String> = if let Some(id) = &far_loop {
               if id.is_empty() {
                 Ok("默认输出回环".to_string())
@@ -557,10 +834,10 @@ fn build_column(
             } else if far.is_empty() {
               Err("未选择远端设备".to_string())
             } else {
-              crate::devices::find(&far, true).map(|(_, n)| n)
+              crate::devices::display_name(&far, true)
             };
             match (mic, far_ok) {
-              (Ok((_, mic_name)), Ok(far_name)) => {
+              (Ok(mic_name), Ok(far_name)) => {
                 match capture::spawn(hub.clone(), mic_dev.to_string(), format!("c{idx}r{ri}m")) {
                   Ok(mic_cap) => {
                     let far_cap = match &far_loop {
@@ -626,6 +903,7 @@ fn build_column(
       RowKind::Input if r.ptype == "tone" => {
         // 测试音源（全局共享线程），无需设备
         row.label = "测试音 1 kHz".into();
+        row.source = true;
         row.input = Some(crate::audio::tone::shared().subscribe(&format!("col{idx}row{ri}")));
       }
       RowKind::Input if r.ptype == "remote_mic" => {
@@ -640,6 +918,7 @@ fn build_column(
           row.error = Some("网络麦克风只允许一个输入行".into());
         } else {
           remote_mic_used = true;
+          row.source = true;
           if r.params.get("aec").map(|v| v == "1").unwrap_or(false) {
             build_net_aec_row(
               &mut row,
@@ -676,6 +955,7 @@ fn build_column(
             .unwrap_or_else(|_| id.clone()),
         };
         row.label = format!("电脑播放音频（{name}）");
+        row.source = true;
         match loopback::spawn(hub.clone(), target, format!("c{idx}r{ri}")) {
           Ok(cap) => {
             row.input = Some(cap.fanout.subscribe(&format!("col{idx}row{ri}")));
@@ -686,10 +966,11 @@ fn build_column(
       }
       RowKind::Input => match device {
         None => row.unconfigured = true,
-        Some(dev) => match crate::devices::find(dev, true) {
+        Some(dev) => match crate::devices::display_name(dev, true) {
           Err(e) => row.error = Some(e),
-          Ok((_, name)) => {
+          Ok(name) => {
             row.label = name;
+            row.source = true;
             // 设备由**池**持有（同一设备多列共用一条采集流），行只拿租约（DESIGN.md §6.5）
             row.device = Some(dev.to_string());
             row.pooled_input = true;
@@ -700,8 +981,8 @@ fn build_column(
       RowKind::Process => {
         // 媒体行（音效板 / 播放器）：注册 (列,行) 槽位，供界面投递运行时命令
         let slot = match r.ptype.as_str() {
-          "soundpad" => Some(media::hub().register(idx, ri, "soundpad")),
-          "player" => Some(media::hub().register(idx, ri, "player")),
+          "soundpad" => Some(media::hub().register(media_gen, idx, ri, "soundpad")),
+          "player" => Some(media::hub().register(media_gen, idx, ri, "player")),
           _ => None,
         };
         row.media_slot = slot.clone();
@@ -736,6 +1017,22 @@ fn build_column(
     }
     if let Some(e) = &row.error {
       problems.push(format!("第 {} 列第 {} 行：{e}", idx + 1, ri + 1));
+      // 关键失败：这一行是启用状态、已经配置了设备/模型，却打不开 —— 新会话不能提交。
+      // 未配置（还没选设备）与停用行不算（那是用户的正常中间态）。
+      //
+      // **模型类处理行例外**：denoise / TSE 的 `.onnx` 初始化失败时，这一行没有 Stage，
+      // 链路按直通继续（声音还在，行状态红色）。不让它回滚整个计划 —— 否则用户只是
+      // 想切换输出设备，也会因为模型版本不对被拒绝，界面显示新设备、引擎却还在旧设备
+      // （2026-10-25 实测：切到 R20 后调试面板仍是 USB Audio，R20 没声音）。
+      let model_optional = matches!(row.ptype.as_str(), "denoise" | "tse");
+      if row.enabled && !row.unconfigured && !model_optional {
+        critical.push(format!(
+          "第 {} 列第 {} 行「{}」：{e}",
+          idx + 1,
+          ri + 1,
+          row.label
+        ));
+      }
     }
     // 热参数单元格收进会话（(列,行,参数名) 寻址；见 `engine/hot.rs`）
     for (key, cell) in sink.take() {
@@ -745,34 +1042,65 @@ fn build_column(
   }
 
   let rows = Arc::new(Mutex::new(rows));
-  let summary = Arc::new(Mutex::new(format!("列 {}：构建中", idx + 1)));
   let stop = Arc::new(AtomicBool::new(false));
-  let (rows2, sum2, stop2) = (rows.clone(), summary.clone(), stop.clone());
+  let alive = Arc::new(AtomicBool::new(true));
+  let (rows2, stop2, alive2) = (rows.clone(), stop.clone(), alive.clone());
   let rec2 = rec.clone();
   let calib2 = calib.clone();
   let hub3 = hub.clone();
-  let join = std::thread::Builder::new()
+  let join = match std::thread::Builder::new()
     .name(format!("column-{}", idx + 1))
-    .spawn(move || run_column(idx, rows2, sum2, stop2, rec2, calib2, hub3))
-    .ok();
+    .spawn(move || {
+      let _guard = AliveGuard(alive2);
+      let token = threads::ThreadToken::new(format!("column-{}", idx + 1));
+      let r = catch_unwind(AssertUnwindSafe(|| {
+        run_column(idx, column_on, rows2, stop2, rec2, calib2, hub3, token);
+      }));
+      if r.is_err() {
+        events::log(
+          "error",
+          "engine",
+          format!("第 {} 列的列工作线程 panic（详见事件日志）", idx + 1),
+        );
+      }
+    }) {
+    Ok(j) => Some(j),
+    Err(e) => {
+      alive.store(false, Relaxed);
+      events::log(
+        "error",
+        "engine",
+        format!("第 {} 列线程起不来：{e}", idx + 1),
+      );
+      None
+    }
+  };
 
   ColumnRuntime {
-    summary,
     stop,
     join,
     captures,
-    playbacks,
+    alive,
   }
 }
 
+struct AliveGuard(Arc<AtomicBool>);
+impl Drop for AliveGuard {
+  fn drop(&mut self) {
+    self.0.store(false, Relaxed);
+  }
+}
+
+#[allow(clippy::too_many_arguments)] // 线程入口：参数就是这一列的完整上下文
 fn run_column(
   idx: usize,
+  column_on: bool,
   rows: Arc<Mutex<Vec<Row>>>,
-  summary: Arc<Mutex<String>>,
   stop: Arc<AtomicBool>,
   rec: Arc<RecorderHub>,
   calib: Arc<CalibHub>,
   hub: SharedHub,
+  token: threads::ThreadToken,
 ) {
   let ctx = FrameContext::default();
   let mut tmp = [0.0f32; HOP];
@@ -782,6 +1110,12 @@ fn run_column(
   let mut next = Instant::now() + TICK;
   let mut ticks: u64 = 0;
   let mut last_ticks: u64 = 0;
+  // 节拍质量：迟到（上一拍处理超时/被挂起）与单拍处理耗时。这两项是「为什么卡」的第一现场。
+  let mut tick_overruns: u64 = 0;
+  let mut tick_overrun_rate = RateMeter::new();
+  let mut last_late_ms: f32 = 0.0;
+  let mut max_late_ms: f32 = 0.0;
+  let mut max_work_ms: f32 = 0.0;
   // 重置代号：会话起步 / 每次校准都让 far 网格与 mic 序号从同一原点计时
   let calib_epoch = calib.epoch();
   let mut epoch_seen = calib_epoch.load(Relaxed);
@@ -789,21 +1123,29 @@ fn run_column(
 
   while !stop.load(Relaxed) {
     ticks += 1;
+    let tick_start = Instant::now();
+    let late = tick_start.saturating_duration_since(next);
+    if late > TICK_LATE_WARN {
+      tick_overruns += 1;
+      last_late_ms = late.as_secs_f32() * 1000.0;
+      max_late_ms = max_late_ms.max(last_late_ms);
+    }
+    token.beat();
     let mut acc = [0.0f32; HOP];
     {
       let mut g = rows.lock().unwrap();
+      // 混合系数按**配置的输入源**计数（`source`），不是按当前拿到租约的数量：
+      // 一个设备打不开时，其余输入不该突然被抬高 6 dB（DESIGN.md §3.2）。
       let n_inputs = g
         .iter()
-        .filter(|r| {
-          r.kind == RowKind::Input
-            && (r.input.is_some() || r.aec.is_some() || r.net_input.is_some())
-        })
+        .filter(|r| r.kind == RowKind::Input && r.enabled && r.source)
         .count();
       let k = 1.0 / n_inputs.max(1) as f32;
       let recording = rec.active();
       let calibrating = calib.active();
 
       for (ri, r) in g.iter_mut().enumerate() {
+        let mut inf_sample: Option<f32> = None;
         // 行启用开关翻转 → 转发给媒体行（音效板淡出在播声部；播放器硬旁路）
         if r.enabled != r.enabled_prev {
           r.enabled_prev = r.enabled;
@@ -813,9 +1155,12 @@ fn run_column(
         }
         match r.kind {
           RowKind::Input => {
-            // 启用/停用：挂摘设备租约（停用即释放引用；重新启用可能失败 → 明确原因）
-            apply_input_lease(r, &hub, idx, ri);
-            if let Some(aec) = r.aec.as_mut() {
+            // 启用/停用：挂摘设备租约。运行期**只在后台打开**（poll），绝不阻塞这一拍。
+            poll_input_lease(r, &hub, idx, ri, tick_start);
+            if !r.enabled {
+              // 停用的输入行不产出：AEC / 回环 / 网络 / 测试音都必须尊重行/列开关
+              // （以前只有池化的普通输入看开关，其余几种停用后仍在混音）。
+            } else if let Some(aec) = r.aec.as_mut() {
               // AEC 行：mic hop 与 far 窗口对齐后过模型；far 历史不足则直通 mic
               let (got, dropped) = take_hop(&mut aec.mic, &mut tmp);
               r.ring_dropped += dropped as u64;
@@ -886,8 +1231,11 @@ fn run_column(
                       } else {
                         aec.exact += 1;
                       }
+                      let t = Instant::now();
                       match aec.engine.process(&tmp, &far) {
                         Ok(out) => {
+                          let elapsed = t.elapsed().as_secs_f32() * 1000.0;
+                          inf_sample = Some(elapsed);
                           aec.echo.push(&tmp, &far, out);
                           for i in 0..HOP {
                             acc[i] += out[i] * k;
@@ -921,6 +1269,17 @@ fn run_column(
                 }
               }
             }
+            if let Some(ms) = inf_sample {
+              r.inf_ms = if r.inf_ms == 0.0 {
+                ms
+              } else {
+                r.inf_ms * 0.9 + ms * 0.1
+              };
+              r.inf_max_ms = r.inf_max_ms.max(ms);
+              if ms > TICK.as_secs_f32() * 1000.0 * 0.8 {
+                r.inf_over += 1;
+              }
+            }
           }
           RowKind::Process => {
             if r.enabled
@@ -931,8 +1290,10 @@ fn run_column(
                 rec.tap(idx, ri, Phase::Pre, &acc);
               }
               let t = Instant::now();
-              if let Err(StageError::Fatal(m)) = st.process(&mut acc, &ctx) {
-                r.error = Some(m);
+              match st.process(&mut acc, &ctx) {
+                Ok(()) => r.error = None,
+                Err(StageError::Unavailable(_)) => {}
+                Err(StageError::Fatal(m)) => r.error = Some(m),
               }
               let ms = t.elapsed().as_secs_f32() * 1000.0;
               r.inf_ms = if r.inf_ms == 0.0 {
@@ -943,14 +1304,17 @@ fn run_column(
               if ms > r.inf_max_ms {
                 r.inf_max_ms = ms;
               }
+              if ms > TICK.as_secs_f32() * 1000.0 * 0.8 {
+                r.inf_over += 1;
+              }
               if recording {
                 rec.tap(idx, ri, Phase::Post, &acc);
               }
             }
           }
           RowKind::Output => {
-            // 启用/停用：挂摘设备租约（停用即从混音注销 + 释放引用）
-            apply_output_lease(r, &hub, idx, ri);
+            // 启用/停用：挂摘设备租约（运行期在后台打开，绝不阻塞这一拍）
+            poll_output_lease(r, &hub, idx, ri, tick_start);
             if r.enabled {
               if let Some(f) = r.output.as_ref() {
                 f.push_hop(&acc);
@@ -994,32 +1358,73 @@ fn run_column(
         if errs > 0 {
           s.push_str(&format!("，异常 {errs}"));
         }
-        // 行状态：处理行（模型/参考 + 推理耗时）、AEC 行（对齐/延时）、输入行（环水位/丢弃），
-        // 进调试接口便于观测
+        if tick_overruns > 0 {
+          s.push_str(&format!(
+            "，节拍超时 {tick_overruns}（最大迟到 {max_late_ms:.1} ms）"
+          ));
+        }
+        // 行状态：结构化（`rows`）+ 人话（`detail`）。失败的行必须把原因带出来。
+        let mut rows_info: Vec<RowInfo> = Vec::with_capacity(g.len());
         let mut notes: Vec<String> = Vec::new();
-        for r in g.iter_mut() {
-          // 失败的行必须把原因带出来（AGENTS.md：不静默失败；否则只能看到「异常 N」无从定位）
-          if let Some(e) = r.error.as_ref() {
-            notes.push(format!("⚠ {}：{e}", r.label));
-            continue;
-          }
-          if r.kind == RowKind::Process {
+        for (ri, r) in g.iter_mut().enumerate() {
+          let kind = match r.kind {
+            RowKind::Input => "input",
+            RowKind::Process => "process",
+            RowKind::Output => "output",
+          };
+          let state = if !r.enabled {
+            Probe::ok("disabled".to_string())
+          } else if let Some(e) = &r.error {
+            Probe::unavailable(e.clone())
+          } else if r.unconfigured {
+            Probe::unavailable("未配置设备".to_string())
+          } else {
+            Probe::ok("running".to_string())
+          };
+          let buffer_ms = if let Some(aec) = r.aec.as_ref() {
+            Some(aec.mic.slots() as f32 * 1000.0 / crate::audio::SAMPLE_RATE as f32)
+          } else if let Some(net) = r.net_input.as_ref() {
+            Some(net.stats().rx_level as f32 * 1000.0 / crate::audio::SAMPLE_RATE as f32)
+          } else if let Some(cons) = r.input.as_ref() {
+            Some(cons.slots() as f32 * 1000.0 / crate::audio::SAMPLE_RATE as f32)
+          } else {
+            r.output.as_ref().map(|f| f.max_level_ms())
+          };
+          let dropped_per_s = r.ring_drop_rate.push(now, r.ring_dropped);
+          let has_model = r.kind == RowKind::Process || r.aec.is_some();
+          let inference_ms_avg = if has_model && r.inf_ms > 0.0 {
+            Probe::ok(r.inf_ms)
+          } else if has_model {
+            Probe::Pending
+          } else {
+            Probe::unavailable("不适用（本行无模型）")
+          };
+          let inference_ms_max = if has_model && r.inf_max_ms > 0.0 {
+            Probe::ok(r.inf_max_ms)
+          } else if has_model {
+            Probe::Pending
+          } else {
+            Probe::unavailable("不适用（本行无模型）")
+          };
+          let inference_over_per_s = if has_model {
+            r.inf_over_rate.push(now, r.inf_over)
+          } else {
+            Probe::unavailable("不适用（本行无模型）")
+          };
+          let mut detail = if let Some(e) = r.error.as_ref() {
+            format!("⚠ {e}")
+          } else if r.kind == RowKind::Process {
             let st = r
               .stage
               .as_ref()
               .and_then(|s| s.status())
               .unwrap_or_else(|| "运行中".to_string());
-            notes.push(format!(
-              "{}：{st}，{:.1} ms（最大 {:.1}）",
-              r.label, r.inf_ms, r.inf_max_ms
-            ));
+            format!("{st}，{:.1} ms（最大 {:.1}）", r.inf_ms, r.inf_max_ms)
           } else if let Some(aec) = r.aec.as_ref() {
             let ftotal = aec.hist.lock().map(|h| h.total()).unwrap_or(0);
             let mic_idx = aec.mic_hops * crate::audio::HOP as u64;
-            let rate = r.ring_drop_rate.push(now, r.ring_dropped);
-            notes.push(format!(
-              "{}：精确 {}，回退 {}，直通 {}，延时 {} ms ｜ 远端解释度 ρ={:.2}，回声抑制 {:.1} dB ｜ 网格 far={} mic={}（差 {}）{}",
-              r.label,
+            format!(
+              "精确 {}，回退 {}，直通 {}，延时 {} ms ｜ 远端解释度 ρ={:.2}，回声抑制 {:.1} dB ｜ 网格 far={} mic={}（差 {}）{}",
               aec.exact,
               aec.latest,
               aec.pass,
@@ -1029,45 +1434,87 @@ fn run_column(
               ftotal,
               mic_idx,
               mic_idx as i64 - ftotal as i64,
-              ring_drop_note(r.ring_dropped, &rate)
-            ));
+              ring_drop_note(r.ring_dropped, &dropped_per_s)
+            )
           } else if let Some(net) = r.net_input.as_ref() {
-            // 网络行状态：入站水位与欠载，便于判断「手机没在说话」还是「缓冲欠载」
             let ns = net.stats();
-            notes.push(format!(
-              "{}：入站 {} 包 / {:.0} ms，欠载 {}，已取 {} hop",
-              r.label,
+            format!(
+              "入站 {} 包 / {:.0} ms，欠载 {}，已取 {} hop",
               ns.rx_packets,
               ns.rx_level as f64 / crate::audio::SAMPLE_RATE as f64 * 1000.0,
               ns.rx_underruns,
               ns.rx_hops
-            ));
+            )
           } else if r.net_output {
-            notes.push(format!(
-              "{}：已发 {} 包，订阅 {}",
-              r.label,
+            format!(
+              "已发 {} 包，订阅 {}",
               crate::net::hub().stats().tx_packets,
               crate::net::hub().sub_count()
-            ));
-          } else if let Some(cons) = r.input.as_mut() {
-            // 输入环水位：源「一大块到达」（Linux 回环 100 ms 一块）时，水位会周期性顶到
-            // ROW_CAP 再掉到 0 —— 掉到 0 就是列这一拍取不到数据（补静音），听感是规律地卡。
-            let ms = cons.slots() as f64 / crate::audio::SAMPLE_RATE as f64 * 1000.0;
-            let rate = r.ring_drop_rate.push(now, r.ring_dropped);
-            notes.push(format!(
-              "{}：输入环 {ms:.0} ms{}",
-              r.label,
-              ring_drop_note(r.ring_dropped, &rate)
-            ));
+            )
+          } else if let Some(ms) = buffer_ms {
+            format!(
+              "{} ms{}",
+              ms,
+              ring_drop_note(r.ring_dropped, &dropped_per_s)
+            )
+          } else {
+            String::new()
+          };
+          if detail.is_empty() {
+            detail = "—".to_string();
           }
+          if let Some(e) = r.error.as_ref() {
+            notes.push(format!("⚠ {}：{e}", r.label));
+          } else {
+            notes.push(format!("{}：{detail}", r.label));
+          }
+          let mut info = RowInfo {
+            index: ri,
+            kind: kind.to_string(),
+            ptype: r.ptype.clone(),
+            label: r.label.clone(),
+            enabled: r.enabled,
+            state,
+            device: r.device.clone(),
+            buffer_ms,
+            dropped: r.ring_dropped,
+            dropped_per_s,
+            inference_ms_avg,
+            inference_ms_max,
+            inference_over: r.inf_over,
+            inference_over_per_s,
+            detail,
+            health: Probe::Pending,
+          };
+          health::annotate_row(&mut info);
+          rows_info.push(info);
         }
         if !notes.is_empty() {
           s.push_str(&format!(" ｜ {}", notes.join("；")));
         }
-        *summary.lock().unwrap() = s;
+        hub.set_column_info(ColumnInfo {
+          index: idx,
+          enabled: column_on,
+          state: if stop.load(Relaxed) {
+            "stopped".to_string()
+          } else {
+            "running".to_string()
+          },
+          hop_rate: rate,
+          ticks,
+          tick_overruns,
+          tick_overrun_per_s: tick_overrun_rate.push(now, tick_overruns),
+          last_late_ms,
+          max_late_ms,
+          max_work_ms,
+          rows: rows_info,
+          text: s,
+        });
       }
     }
 
+    let work_ms = tick_start.elapsed().as_secs_f32() * 1000.0;
+    max_work_ms = max_work_ms.max(work_ms);
     let now = Instant::now();
     if next > now {
       std::thread::sleep(next - now);

@@ -100,12 +100,14 @@ pub fn spawn_sampler(hub: SharedHub) {
   std::thread::Builder::new()
     .name("debug-sampler".into())
     .spawn(move || {
+      let token = super::threads::ThreadToken::new("debug-sampler");
       let mut sys = System::new();
       let pid = sysinfo::get_current_pid();
       let mut gpu = GpuSampler::new();
       let mut first = true;
       let mut tick: u64 = 0;
       loop {
+        token.beat();
         sys.refresh_cpu_usage();
         sys.refresh_memory();
         if let Ok(pid) = pid {
@@ -149,10 +151,15 @@ pub fn spawn_sampler(hub: SharedHub) {
         if first || tick.is_multiple_of(2) {
           hub.set_virtual_mic(crate::audio::virtual_mic::status_probe());
         }
+        // 关键标量进 2 分钟短历史（`/debug/metrics`）
+        hub.record_metrics();
         tick += 1;
         first = false;
         std::thread::sleep(SAMPLE_PERIOD);
       }
     })
-    .expect("spawn debug-sampler");
+    .map_err(|e| {
+      crate::debug::events::log("error", "debug", format!("系统指标采样线程起不来：{e}"));
+    })
+    .ok();
 }

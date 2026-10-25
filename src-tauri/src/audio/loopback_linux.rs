@@ -64,16 +64,33 @@ pub const PARE_LATENCY_MS: u32 = 30;
 /// 处理块（`--process-time-msec`）：与缓冲同量级，太小会让 parec 自己变忙。
 pub const PARE_PROCESS_MS: u32 = 10;
 
+#[derive(Clone)]
+enum Target {
+  /// 输出设备的 monitor（AEC 远端 / 桌面声音）
+  Monitor(Option<String>),
+  /// 任意 Pulse source（`pulse:<name>` 输入行）
+  Source(String),
+}
+
 /// 打开输出回环并启动采集线程。
 pub fn spawn(hub: SharedHub, output_id: Option<String>, tag: String) -> Result<Capture, String> {
+  spawn_target(hub, Target::Monitor(output_id), tag)
+}
+
+/// 打开一个 Pulse source（OBS 同款：Linux 的「真实设备」就是 Pulse source）。
+pub fn spawn_source(hub: SharedHub, source: String, tag: String) -> Result<Capture, String> {
+  spawn_target(hub, Target::Source(source), tag)
+}
+
+fn spawn_target(hub: SharedHub, target: Target, tag: String) -> Result<Capture, String> {
   let stop = Arc::new(AtomicBool::new(false));
   let (tx, rx) = mpsc::channel::<Result<Arc<Fanout>, String>>();
   let stop2 = stop.clone();
   let name = tag.clone();
   let join = std::thread::Builder::new()
-    .name(format!("loopback-{name}"))
-    .spawn(move || run(hub, output_id, tag, stop2, tx))
-    .map_err(|e| format!("创建回环采集线程失败：{e}"))?;
+    .name(format!("pulse-{name}"))
+    .spawn(move || run(hub, target, tag, stop2, tx))
+    .map_err(|e| format!("创建 Pulse 采集线程失败：{e}"))?;
   match rx.recv_timeout(OPEN_TIMEOUT) {
     Ok(Ok(fanout)) => Ok(Capture {
       handle: super::WorkerHandle::new(stop, join),
@@ -92,7 +109,7 @@ pub fn spawn(hub: SharedHub, output_id: Option<String>, tag: String) -> Result<C
 
 fn run(
   hub: SharedHub,
-  output_id: Option<String>,
+  target: Target,
   tag: String,
   stop: Arc<AtomicBool>,
   tx: mpsc::Sender<Result<Arc<Fanout>, String>>,
@@ -103,10 +120,11 @@ fn run(
 
   let stop2 = stop.clone();
   let stats2 = stats.clone();
+  let target2 = target.clone();
   let pump = std::thread::Builder::new()
-    .name("loopback-pump".into())
-    .spawn(move || pump(output_id, prod, fmt_tx, stop2, stats2))
-    .expect("spawn loopback pump");
+    .name("pulse-pump".into())
+    .spawn(move || pump(target2, prod, fmt_tx, stop2, stats2))
+    .expect("spawn pulse pump");
 
   let name = match fmt_rx.recv_timeout(OPEN_TIMEOUT) {
     Ok(Ok(v)) => v,
@@ -120,9 +138,13 @@ fn run(
       return;
     }
   };
+  let device_id = match &target {
+    Target::Monitor(_) => "loopback".to_string(),
+    Target::Source(s) => format!("pulse:{s}"),
+  };
   let info = SourceInfo {
     name,
-    device_id: "loopback".into(),
+    device_id,
     native_rate: RATE,
     channels: 1,
     sample_format: "f32".into(),
@@ -143,28 +165,38 @@ fn run(
 
 /// 启动 `parec` 监听 monitor，读 stdout（float32le）写进无锁环。目标经 `fmt_tx` 回传。
 fn pump(
-  output_id: Option<String>,
+  target: Target,
   mut prod: rtrb::Producer<f32>,
   fmt_tx: mpsc::Sender<Result<String, String>>,
   stop: Arc<AtomicBool>,
   stats: Arc<CallbackStats>,
 ) {
-  let monitor = match resolve_monitor(output_id.as_deref()) {
-    Ok(m) => m,
-    Err(e) => {
-      let _ = fmt_tx.send(Err(e));
-      return;
+  let (device, name) = match &target {
+    Target::Source(s) => {
+      let id = format!("pulse:{s}");
+      let name = crate::devices::display_name(&id, true).unwrap_or_else(|_| s.clone());
+      (s.clone(), name)
     }
-  };
-  let name = if output_id.as_deref().filter(|s| !s.is_empty()).is_some() {
-    format!("回环：{monitor}")
-  } else {
-    "回环：系统默认输出".to_string()
+    Target::Monitor(output_id) => {
+      let monitor = match resolve_monitor(output_id.as_deref()) {
+        Ok(m) => m,
+        Err(e) => {
+          let _ = fmt_tx.send(Err(e));
+          return;
+        }
+      };
+      let name = if output_id.as_deref().filter(|s| !s.is_empty()).is_some() {
+        format!("回环：{monitor}")
+      } else {
+        "回环：系统默认输出".to_string()
+      };
+      (monitor, name)
+    }
   };
   let child = Command::new("parec")
     .env("LC_ALL", "C")
     .args([
-      &format!("--device={monitor}"),
+      &format!("--device={device}"),
       "--format=float32le",
       &format!("--rate={RATE}"),
       "--channels=1",
