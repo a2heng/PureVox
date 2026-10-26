@@ -210,6 +210,14 @@ async fn health(axum::extract::State(hub): axum::extract::State<Arc<NetHub>>) ->
       "port": s.port,
       "clients": s.clients,
       "subs": s.subs,
+      "rx_packets": s.rx_packets,
+      "rx_dropped": s.rx_dropped,
+      "rx_level": s.rx_level,
+      "rx_underruns": s.rx_underruns,
+      "tx_packets": s.tx_packets,
+      "tx_dropped": s.tx_dropped,
+      "tx_level": s.tx_level,
+      "tx_subs": s.tx_subs,
       "remote_input": s.remote_input,
       "rtt_ms": s.rtt_ms,
       "last_error": s.last_error,
@@ -337,8 +345,19 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
             reply = Some(ready(&hub));
           }
           Ok(ClientMsg::Sub) => {
+            // 重新订阅（例如网页版关掉扬声器又打开）必须**先退掉旧的**：
+            // 否则出站列表里会多留一条没人消费的队列，水位顶格、白占 CPU。
+            if let Some((old_id, _)) = sub.lock().unwrap().take() {
+              hub.unsubscribe_tx(old_id);
+            }
             let (id, s) = hub.subscribe_tx();
             *sub.lock().unwrap() = Some((id, s));
+            reply = Some(ready(&hub));
+          }
+          Ok(ClientMsg::Unsub) => {
+            if let Some((id, _)) = sub.lock().unwrap().take() {
+              hub.unsubscribe_tx(id);
+            }
             reply = Some(ready(&hub));
           }
           Ok(ClientMsg::Text { s }) => {

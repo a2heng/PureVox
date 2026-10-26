@@ -36,6 +36,11 @@ pub enum ClientMsg {
   /// 订阅电脑音频（电脑当手机音箱）。
   #[serde(rename = "sub")]
   Sub,
+  /// 退订电脑音频（网页版关掉「扬声器」）。
+  /// 不加这条也能工作，但服务端会一直往一个没人取的队列里推，水位顶格、白白占 CPU，
+  /// 而且重新 `sub` 会留下一条旧订阅（2026-10-27 实测）。
+  #[serde(rename = "unsub")]
+  Unsub,
   /// 手机输入法提交的文本（已组合好的字符串）。
   #[serde(rename = "text")]
   Text { s: String },
@@ -94,6 +99,10 @@ mod tests {
     assert!(matches!(
       serde_json::from_str::<ClientMsg>(r#"{"t":"sub"}"#).unwrap(),
       ClientMsg::Sub
+    ));
+    assert!(matches!(
+      serde_json::from_str::<ClientMsg>(r#"{"t":"unsub"}"#).unwrap(),
+      ClientMsg::Unsub
     ));
     let text: ClientMsg = serde_json::from_str(r#"{"t":"text","s":"你好 world"}"#).unwrap();
     match text {

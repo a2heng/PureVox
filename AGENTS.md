@@ -419,6 +419,11 @@ release 构建同样保留（不允许用编译开关剔除）。
   `start`（起应用并等 `/debug`；会话总线真缺 SNI watcher 时自动顶替身）/ `take '<jq 表达式>'`（读快照）/
   `verify-update <deb|rpm|appimage|none>`（点「更新 → 检查更新」，断言安装方式与**产物后缀对得上**，
   失败返回非 0）/ `stop`（收掉自己起的进程）。前置与跨总线限制见 `TAURI3.md` 3.6 节。
+  **网络上下行 / 网页版播放不要靠耳朵听**：`python tools/automation/net_loopback.py`（`--mode speaker`
+  测测试音→网络扬声器，`--mode roundtrip` 测网络麦克风→网络扬声器，含上下行 hub 与 10 ms 节拍；
+  `--json` 出结构化结果、`--out` 落可听的 WAV）与 `python tools/automation/net_web_probe.py`
+  （无头 Chrome 真开网页版，读 AudioWorklet 的欠载/水位，并验关/开后订阅 1→0→1）。
+  两者都**隔离启动**（临时 HOME + 自动空闲端口），不碰用户的 `~/.purevox`、不需要手点界面。
   **少截图**，优先用调试接口读数。
   **不许动系统的音量 / 静音**（只读不写；用户音量不是我们该改的状态）。
 - **测试自收尾**：任何启动进程的 shell 测试必须自己结束（PowerShell 用

@@ -22,12 +22,18 @@
 //! 麦克风上行、扬声器下行、打字、全尺寸键盘，所以「手机客户端」不该是个独立概念，
 //! 浏览器只是其中一种客户端。
 //!
-//! **为什么不引编解码库**：Opus 用浏览器**内置的 WebCodecs**（`AudioEncoder` /
-//! `AudioDecoder`，codec `'opus'`），与 Rust 侧 `net/opus_sys.rs` 运行时加载
-//! libopus 是同一个思路：不新增 C 编译链，不往产物里塞一份 wasm。
+//! **为什么不引编解码库**：Opus 用 `libopus-wasm`（MIT，预编译 wasm，随包分发），
+//! 与 Rust 侧 `net/opus_sys.rs` 运行时加载 libopus 是同一个思路：不新增 C 编译链。
+//! **不用浏览器内置 WebCodecs**：`AudioEncoder`/`AudioDecoder` 只有 Chrome 94+ /
+//! Safari 16.4+ 才有，实测有浏览器根本没有，于是麦克风与扬声器一起不可用。
 //!
 //! 服务端**什么都不解析**：这页是纯静态资源，协议仍只有 `/ws` 那一套
 //! （`proto.rs`），所以网页版与 APK 走的是同一条链路、同一种节拍。
+//!
+//! **下行播放必须是环形缓冲，不是「一包一个 AudioBufferSource」**（2026-10-27 实测）：
+//! Windows 的 10 ms 定时器实际按 15.6 ms 触发，包成串到达；20 ms 的按包起播会在 1 kHz
+//! 测试音上拼出 2~6 ms 空隙（8 s 内 8 次，能量 99.9% → 93.8%）。现在解码后的样本进
+//! AudioWorklet 的环形队列，预缓冲 50 ms、硬顶 300 ms，欠载数经 `spkUnderruns` 可见。
 
 /// 网页版客户端页面。整页自包含（无外链、无构建），直接内联进二进制。
 pub const PAGE: &str = r##"<!doctype html>
@@ -112,7 +118,13 @@ document.getElementById('pc').textContent = location.host;
 let ws = null, micOn = false, spkOn = false;
 /** 自动申请麦克风只试一次：用户拒了之后不该在每次重连时反复弹框骚扰。 */
 let micAsked = false;
-let enc = null, dec = null, actx = null, micNode = null, spkGain = null;
+let enc = null, dec = null, actx = null, micNode = null, spkGain = null, spkNode = null;
+/** wasm 编解码模块（`createEncoder`/`createDecoder` 的工厂）；关掉扬声器再打开时要重建解码器。 */
+let opusMod = null;
+/** 扬声器是否已经向服务端发过 `sub`（重连/关开时不能重复订阅）。 */
+let spkSub = false;
+/** 下行缓冲水位与欠载数（worklet 上报，只用于状态行 / 调试）。 */
+let spkBuffered = 0, spkUnderruns = 0;
 
 // ---- Opus 编解码器：wasm（`libopus-wasm`，MIT），不依赖浏览器内置的 WebCodecs ----
 // 帧长按引擎的 10 ms hop 配（480 样本 @ 48 kHz 单声道），和服务端队列同格式，
@@ -121,14 +133,22 @@ let enc = null, dec = null, actx = null, micNode = null, spkGain = null;
 // libopus-wasm 判为非法值而抛 `RangeError`——编解码器初始化失败，表现为「点了没反应」。
 let codecReady = false;
 async function loadCodecs() {
-  const m = await import('/libopus-wasm.js');
-  enc = await m.createEncoder({
-    channels: 1, frameSize: HOP, bitrate: 32000, signal: m.Signal.Voice,
+  if (codecReady) return;
+  opusMod = await import('/libopus-wasm.js');
+  enc = await opusMod.createEncoder({
+    channels: 1, frameSize: HOP, bitrate: 32000, signal: opusMod.Signal.Voice,
   });
-  dec = await m.createDecoder({ channels: 1 });
+  dec = await opusMod.createDecoder({ channels: 1 });
   codecReady = true;
 }
-let txQueue = [], playAt = 0, frameMs = 10, ready = false;
+
+/** 解码器按需重建：关掉扬声器时**不再销毁**它，但浏览器 / 内存异常后也能恢复。 */
+async function ensureDec() {
+  if (!codecReady) await loadCodecs();
+  if (!dec) dec = await opusMod.createDecoder({ channels: 1 });
+  return dec;
+}
+let frameMs = 10, ready = false;
 
 function say(t, cls) { st.textContent = t; dot.className = 'dot ' + (cls || ''); }
 function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
@@ -145,7 +165,12 @@ function connect() {
     // 握手是**必须**的（proto.rs：`proto` 不等于 PROTO 服务端直接回 err 断开）。
     send({ t: 'hello', proto: 1 });
   };
-  ws.onclose = () => { say('已断开，3 秒后重连', 'err'); setTimeout(connect, 3000); };
+  ws.onclose = () => {
+    // 连接断了，服务端的订阅随连接销毁；本地播放节点也收掉，重连后按 spkOn 重新订阅。
+    stopSpkNode(false);
+    say('已断开，3 秒后重连', 'err');
+    setTimeout(connect, 3000);
+  };
   ws.onerror = () => { /* onclose 会接手 */ };
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
@@ -160,7 +185,7 @@ function connect() {
           autoMic().catch(() => {});
         }
         if (micOn && !enc) startMic();
-        if (spkOn && !dec) startSpk();
+        if (spkOn) startSpk();
       } else if (m.t === 'pong') {
         const t0 = pingAt[m.id];
         if (t0) { const rtt = Math.round(performance.now() - t0);
@@ -184,7 +209,7 @@ let pingTimer = null, pingSeq = 0;
 const pingAt = {};
 const rttEl = document.getElementById('rtt');
 
-// ---- 麦克风上行：getUserMedia → AudioWorklet 取 480 样本的 hop → WebCodecs Opus ----
+// ---- 麦克风上行：getUserMedia → AudioWorklet 取 480 样本的 hop → wasm Opus ----
 let workletUrl = null;
 function worklet() {
   if (workletUrl) return workletUrl;
@@ -195,7 +220,39 @@ function worklet() {
       for(let i=0;i<c.length;i++){this.buf[this.n++]=c[i];
         if(this.n===480){const o=this.buf.slice(0);this.port.postMessage(o);this.n=0;}}}
     return true;}}
-  registerProcessor('hop',H);`;
+  // 下行播放：**环形队列 + 50 ms 预缓冲**。不能每包起一个 AudioBufferSource：
+  // Windows 的 10 ms 定时器实际按 15.6 ms 触发，包成串到达，20 ms 的「按包起播」
+  // 会周期性断 2~6 ms（1 kHz 测试音实测 8 秒内 8 次，能量从 99.9% 掉到 93.8%）。
+  class S extends AudioWorkletProcessor{
+    constructor(){super();this.q=[];this.off=0;this.samples=0;this.playing=false;this.underruns=0;this.blocks=0;
+      this.target=Math.round(sampleRate*0.05);
+      this.port.onmessage=(e)=>{const d=e.data;if(d&&d.pcm&&d.pcm.length){
+        this.q.push(d.pcm);this.samples+=d.pcm.length;
+        // 硬顶 300 ms：网络突发/主线程卡顿不能让延迟无限涨，丢最旧
+        const cap=Math.round(sampleRate*0.3);
+        while(this.samples>cap&&this.q.length>1){this.samples-=this.q.shift().length;this.off=0;}
+      }};
+    }
+    process(inputs,outputs){
+      const out=outputs[0][0];let i=0;
+      if(!this.playing){
+        if(this.samples<this.target){out.fill(0);return true;}
+        this.playing=true;
+      }
+      while(i<out.length){
+        if(!this.q.length){this.playing=false;this.underruns++;out.fill(0,i);break;}
+        const b=this.q[0];
+        const n=Math.min(out.length-i,b.length-this.off);
+        out.set(b.subarray(this.off,this.off+n),i);
+        i+=n;this.off+=n;this.samples-=n;
+        if(this.off>=b.length){this.q.shift();this.off=0;}
+      }
+      this.blocks++;
+      if(this.blocks%50===0)this.port.postMessage({level:this.samples,underruns:this.underruns});
+      return true;
+    }}
+  registerProcessor('hop',H);
+  registerProcessor('spk',S);`;
   workletUrl = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
   return workletUrl;
 }
@@ -256,30 +313,58 @@ async function startMic() {
   src.connect(micNode);
 }
 
-// ---- 扬声器下行：wasm 解码 Opus → 按 ctx.currentTime 排队播放 ----
-let spkNode = null;
+// ---- 扬声器下行：wasm 解码 → AudioWorklet 环形缓冲（50 ms 预缓冲） ----
 async function startSpk() {
+  await ensureDec();
   if (!actx) actx = new AudioContext({ sampleRate: SR });
   if (actx.state === 'suspended') await actx.resume();
-  spkGain = actx.createGain(); spkGain.gain.value = 1; spkGain.connect(actx.destination);
-  // 订阅电脑音频：proto.rs 里 `Sub` 是**无负载**的单位变体，只能发 {"t":"sub"}，
-  // 带任何额外字段服务端都解析不出来。
-  send({ t: 'sub' });
+  if (!spkGain) {
+    spkGain = actx.createGain();
+    spkGain.gain.value = 1;
+    spkGain.connect(actx.destination);
+  }
+  if (!spkNode) {
+    await actx.audioWorklet.addModule(worklet());
+    spkNode = new AudioWorkletNode(actx, 'spk', {
+      numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1],
+    });
+    spkNode.port.onmessage = (e) => {
+      const d = e.data;
+      if (d && typeof d.level === 'number') {
+        spkBuffered = d.level;
+        spkUnderruns = d.underruns;
+      }
+    };
+    spkNode.connect(spkGain);
+  }
+  // `Sub` 是**无负载**的单位变体，只能发 {"t":"sub"}；带额外字段服务端解析不出来。
+  if (!spkSub) {
+    send({ t: 'sub' });
+    spkSub = true;
+  }
 }
 
-/** 一个收到的 Opus 包 → 解码 → 排队播放。解出来是 0 帧说明这包丢了（in-band FEC 失败）。 */
+/** 收掉本地下行节点；`unsub` = 还要告诉服务端退订（连接断开时服务端自己会清）。 */
+function stopSpkNode(unsub) {
+  if (unsub) send({ t: 'unsub' });
+  if (spkNode) {
+    try { spkNode.disconnect(); } catch (e) { /* 已断开 */ }
+    spkNode = null;
+  }
+  spkSub = false;
+  spkBuffered = 0;
+}
+
+/** 一个收到的 Opus 包 → 解码 → 塞进 worklet 的环形队列（不在这里按时间起播）。 */
 function playPacket(bytes) {
+  if (!spkNode || !dec) return;
   let pcm;
   try { pcm = dec.decodeFloat(bytes, { frameSize: HOP }); }
   catch (e) { say('Opus 解码失败：' + (e && e.message ? e.message : e), 'err'); return; }
   if (!pcm || !pcm.length) return;
-  const n = pcm.length;
-  const at = Math.max(playAt, actx.currentTime + 0.02);
-  playAt = at + n / SR;
-  const src2 = actx.createBufferSource();
-  const ab = actx.createBuffer(1, n, SR);
-  ab.copyToChannel(pcm, 0);
-  src2.buffer = ab; src2.connect(spkGain); src2.start(at);
+  // 复制一份再转移：wasm 侧的内存不能保证在 postMessage 之后还归我们管
+  const copy = new Float32Array(pcm);
+  spkNode.port.postMessage({ pcm: copy }, [copy.buffer]);
 }
 
 // ---- UI ----
@@ -305,8 +390,8 @@ async function autoMic() {
 }
 bind('bSpk', async (b) => {
   spkOn = !spkOn; b.setAttribute('aria-pressed', String(spkOn));
-  if (spkOn) { await startSpk(); }
-  else { dec && dec.close(); dec = null; say('扬声器已关'); }
+  if (spkOn) { await startSpk(); say('扬声器已开（50 ms 缓冲）', 'on'); }
+  else { stopSpkNode(true); say('扬声器已关'); }
 });
 // 远程输入**没有客户端消息**：它是电脑端的总开关（proto.rs 里没有 remote_input），
 // 客户端发过去服务端解析不出来、连接会被断开。只能提示用户在电脑上勾。

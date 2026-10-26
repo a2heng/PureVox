@@ -278,6 +278,12 @@ wasm 只要浏览器有 `WebAssembly` 就行。帧长按引擎 hop 配（`channe
 与服务端队列 `[f32; HOP]` 零转换。旧 Python 实现用 WASM 版 libopus，但那个 wasm **只有
 编码器**（legacy 网页版只做上行），要下行就得上两套东西 —— 现在编解码一体。
 
+**网页下行播放 = AudioWorklet 环形缓冲，不是逐包起播**（2026-10-27 实测）：Windows 的
+10 ms 定时器实际按 15.6 ms 触发，包会成串到达；逐包 `AudioBufferSource.start()` 只有
+20 ms 余量，1 kHz 测试音 8 s 内出现 8 次 2~6 ms 空隙（能量 99.9%→93.8%）。现在解码后的
+样本进 worklet 队列，**预缓冲 50 ms、硬顶 300 ms、欠载补静音计数**（`spkUnderruns`）；
+关扬声器发 `unsub`，重新打开重建节点并重新 `sub`，服务端 `Sub` 也先退旧订阅（防泄漏）。
+
 **自签证书必须是「CA + 叶」两级**，不能是一张自签：Android 的「安装证书 → CA 证书」只接受
 `basicConstraints: CA:TRUE`，普通自签服务器证书（`CA:FALSE`）装不进去。不想装证书的用户，
 浏览器点一次「继续」即可（Chrome 绕过证书错误后仍算安全上下文）。
