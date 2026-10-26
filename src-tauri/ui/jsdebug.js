@@ -22,8 +22,14 @@
 ;(() => {
   /** @param {'error'|'info'} kind @param {unknown} message */
   const send = (kind, message) => {
+    const invoke = window.__TAURI__?.core?.invoke
+    if (!invoke) {
+      // 浏览器里的调试面板没有 IPC：留一份在控制台（F12），不影响渲染
+      ;(kind === 'error' ? console.error : console.info)(String(message))
+      return
+    }
     try {
-      window.__TAURI__.core.invoke('ui_report', { kind, message: String(message) })
+      invoke('ui_report', { kind, message: String(message) })
     } catch (_) {
       /* Tauri 未就绪时忽略 */
     }
@@ -52,13 +58,25 @@
     }
   }
 
-  // 顶栏「开发者工具」按钮已随调试页搬到独立窗口（debug.html 的标题栏）。
   window.addEventListener('DOMContentLoaded', () => {
-    // 调试面板现在是**独立窗口**（debug.html）：顶栏按钮只负责打开 / 聚焦。
+    // 顶栏「调试面板」：面板已彻底解耦，用系统浏览器打开（独立进程，见 open_debug_window）。
     document.getElementById('btn-debug')?.addEventListener('click', () => {
       window.__TAURI__.core
         .invoke('open_debug_window')
-        .catch((e) => send('error', '打开调试窗口失败：' + e))
+        .catch((e) => send('error', '打开调试面板失败：' + e))
+    })
+  })
+
+  // WebView2 开发者工具：F12 / Ctrl+Shift+I。
+  // 以前面板里有「开发者工具」按钮，面板解耦到浏览器后那个按钮没地方放了；这里是主窗口
+  // 专用的等价入口（浏览器里的面板自带 F12，不需要转发）。
+  window.addEventListener('keydown', (e) => {
+    if (!window.__TAURI__) return
+    const devtools = e.key === 'F12' || (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i'))
+    if (!devtools) return
+    e.preventDefault()
+    window.__TAURI__.core.invoke('open_devtools').catch(() => {
+      /* 打不开就算了：不影响界面 */
     })
   })
 

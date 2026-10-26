@@ -148,12 +148,49 @@ pub struct AppSettings {
   /// 改了要重启服务才生效（监听端口变了必须重绑）。
   #[serde(default = "d_net_port")]
   pub net_port: u16,
+  /// 主窗口上次的位置与大小（物理像素；关到托盘 / 重启后回到原处）。
+  /// `None` = 还没记过（首次运行用 `tauri.conf.json` 的默认尺寸）。
+  #[serde(default)]
+  pub window: Option<WindowGeom>,
   /// 网络服务对外广告用的网卡地址（空 = 自动用默认路由那张）。
   ///
   /// **为什么不直接记网卡名**：DHCP 换地址后名字还在、地址没了，记地址反而会指到一个
   /// 已经不属于本机的 IP 上。所以记的是**地址本身**，取不到就回落自动（见 `addrs.rs`）。
   #[serde(default)]
   pub net_ip: String,
+}
+
+/// 主窗口几何（**物理像素**）。
+///
+/// 存物理量而不是逻辑量：同一个窗口在不同缩放比的显示器上，逻辑尺寸会变，
+/// 物理尺寸才是「用户上次看到的那块地方」。
+///
+/// 尺寸语义按平台（读写都在 [`crate::winstate`]，两边自洽、不会因边框宽度反复缩水）：
+/// - Windows：`WINDOWPLACEMENT.rcNormalPosition` 的**外框**（含标题栏/边框），最大化时也是还原外框；
+/// - Linux / 其它：`outer_position`（外框左上角）+ `inner_size`（客户区）。
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowGeom {
+  pub x: i32,
+  pub y: i32,
+  pub w: u32,
+  pub h: u32,
+  /// 记录时是否最大化；最大化时 `x/y/w/h` 仍是**还原尺寸**（见 `winstate`）
+  #[serde(default)]
+  pub maximized: bool,
+}
+
+/// 设置文件的读-改-写互斥：窗口几何的定时保存与界面里的设置保存不能互相覆盖。
+static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 只更新窗口几何（不动其它设置）。
+pub fn save_window_geom(g: WindowGeom) -> Result<(), String> {
+  let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+  let mut s = load_settings();
+  if s.window == Some(g) {
+    return Ok(());
+  }
+  s.window = Some(g);
+  write_settings(&s)
 }
 
 fn d_net_port() -> u16 {
@@ -185,6 +222,7 @@ impl Default for AppSettings {
       start_hidden: false,
       net_port: d_net_port(),
       net_ip: String::new(),
+      window: None,
     }
   }
 }
@@ -270,6 +308,12 @@ pub fn load_settings() -> AppSettings {
 }
 
 pub fn save_settings(s: &AppSettings) -> Result<(), String> {
+  let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+  write_settings(s)
+}
+
+/// 真正落盘（调用方已持 [`SETTINGS_LOCK`]）。
+fn write_settings(s: &AppSettings) -> Result<(), String> {
   let text = serde_json::to_string_pretty(s).map_err(|e| format!("序列化失败：{e}"))?;
   write_atomic(&settings_path()?, &text)
 }

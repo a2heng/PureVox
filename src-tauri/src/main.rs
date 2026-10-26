@@ -65,6 +65,7 @@ mod vb_panel;
 mod vb_panel;
 mod version;
 mod wav;
+mod winstate;
 
 use std::sync::{Arc, Mutex};
 
@@ -109,30 +110,25 @@ fn open_devtools(window: tauri::WebviewWindow) {
   window.open_devtools();
 }
 
-/// 打开（或聚焦）独立的调试窗口。调试页已从主窗口的抽屉搬出来（`ui/debug.html`）。
+/// 打开调试面板（**系统浏览器**，独立进程）：页面由本机只读调试接口提供
+/// （`http://127.0.0.1:47821/debug/ui`），它只 `fetch('/debug')` 渲染，不经过 WebView2 / IPC。
+///
+/// **不要再退回「第二个 WebView2 窗口」**：Tauri 3 alpha 在本机建第二个 webview 时页面
+/// 根本不会导航（CDP 目标停在 `about:blank`、`Chrome_WidgetWin_0` 是 0×0，整窗纯白，
+/// 时好时坏；2026-10-26 实测）。面板只是渲染只读数据，交给浏览器是天然解耦的独立进程，
+/// 也不会再把主界面拖下水（白窗卡死过一次）。
+///
+/// 解耦的代价：面板**截不到主窗口的图**（跨进程），所以面板里没有「截屏」按钮；
+/// 内置截屏已整体移除（用户 2026-10-26 决定），抓界面截图用系统截图工具。
 #[tauri::command]
-fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
-  if let Some(w) = app.get_webview_window("debug") {
-    let _ = w.unminimize();
-    let _ = w.show();
-    let _ = w.set_focus();
-    return Ok(());
-  }
-  tauri::WebviewWindowBuilder::new(&app, "debug", tauri::WebviewUrl::App("debug.html".into()))
-    .title("PureVox — 调试")
-    .inner_size(1180.0, 900.0)
-    .min_inner_size(860.0, 560.0)
-    .resizable(true)
-    .build()
-    .map(|_| ())
-    .map_err(|e| format!("打开调试窗口失败：{e}"))
-}
-
-/// 关闭调试窗口（窗口里的「关闭」按钮用；系统标题栏关闭走同一路径）。
-#[tauri::command]
-fn close_debug_window(app: tauri::AppHandle) {
-  if let Some(w) = app.get_webview_window("debug") {
-    let _ = w.close();
+fn open_debug_window(hub: tauri::State<'_, SharedHub>) -> Result<(), String> {
+  let url = format!("http://127.0.0.1:{}/debug/ui", debug::DEBUG_HTTP_PORT);
+  match &hub.snapshot().app.debug_http {
+    debug::Probe::Ok { .. } => openurl::open(&url),
+    debug::Probe::Pending => Err(format!("调试接口还没起来（{url}）")),
+    debug::Probe::Unavailable { reason } => Err(format!(
+      "调试接口不可用：{reason}（页面在 {url}，接口没起来就打不开）"
+    )),
   }
 }
 
@@ -739,19 +735,6 @@ fn update_open_page(url: String) -> Result<(), String> {
   openurl::open(&url)
 }
 
-/// 内置 UI 截屏（开发/诊断）：把当前 WebView 渲染成 PNG 落盘，返回路径。
-///
-/// 走阻塞线程：截屏要等 GTK 主循环回调，不能在 async 运行时线程上干等。
-#[tauri::command]
-async fn capture_ui() -> Result<String, String> {
-  tauri::async_runtime::spawn_blocking(|| {
-    let path = debug::screenshot::capture()?;
-    Ok(path.display().to_string())
-  })
-  .await
-  .map_err(|e| format!("截屏任务中断：{e}"))?
-}
-
 /// 用系统默认浏览器打开链接（驱动下载 / 教程）。
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -789,8 +772,6 @@ fn main() {
     .manage(audio)
     .manage(hotkey_host)
     .setup(|app| {
-      // 内置 UI 截屏（开发/诊断）：登记 AppHandle，HTTP/命令稍后从主线程取 WebView。
-      debug::screenshot::init(app.handle().clone());
       // 打包后模型位于 Tauri 资源目录（Windows：安装目录/models；Linux deb：/usr/lib/<productName>/models），
       // 注册给模型查找（开发态该目录不存在，走仓库 models/）。
       if let Ok(res) = app.path().resource_dir() {
@@ -802,9 +783,19 @@ fn main() {
       // 模型预热（后台）：开销不计，换来首次启动/重建不用等磁盘与 ORT 初始化。
       infer::preload_all();
       // 窗口标题带版本（与包版本同源，见 `version.rs`）。
+      let start_hidden = config::load_settings().start_hidden;
       if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_title(&format!("PureVox {}", version::VERSION));
+        // 位置/大小记忆：恢复上次的几何，再决定要不要显示（config 里主窗口是 visible:false，
+        // 这样不会先按默认尺寸闪一下再跳到记住的位置）。
+        winstate::restore(&w);
+        if !start_hidden {
+          let _ = w.show();
+          let _ = w.set_focus();
+        }
       }
+      // 运行中把窗口几何写回（拖动/缩放后 1.5 s 内落盘，见 `winstate`）。
+      winstate::spawn_saver(app.handle().clone());
       // 托盘：**失败不能致命**。`org.kde.StatusNotifierWatcher` 在 GNOME 上由 appindicator
       // 扩展提供，扩展没启用（精简安装 / 关掉扩展）时总线上根本没有这个名字，ksni 直接返回
       // 硬错误。引擎与主窗口跟托盘没关系，没有它照样能用 —— 报出原因继续跑。原来这里用 `?`
@@ -869,8 +860,8 @@ fn main() {
           std::thread::sleep(std::time::Duration::from_millis(800));
           let h = handle.clone();
           let _ = handle.run_on_main_thread(move || {
-            if let Err(e) = open_debug_window(h) {
-              eprintln!("AUTODEBUG 打开调试窗口失败：{e}");
+            if let Err(e) = open_debug_window(h.state::<SharedHub>()) {
+              eprintln!("AUTODEBUG 打开调试面板失败：{e}");
             }
           });
         });
@@ -902,10 +893,8 @@ fn main() {
       refresh_devices,
       device_refresh_state,
       ui_report,
-      capture_ui,
       open_devtools,
       open_debug_window,
-      close_debug_window,
       set_autostart,
       get_autostart,
       set_running,

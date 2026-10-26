@@ -17,10 +17,12 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// 调试列：只渲染 Rust 快照（debug_snapshot），不自行计算指标（AGENTS.md 1.3）。
-// 独立作用域（IIFE）：与 columns.js 共享全局，避免顶层 const 重名。
+// 调试面板：只渲染 Rust 快照，不自行计算指标（AGENTS.md 1.3）。
+// 页面由本机只读调试接口提供（GET /debug/ui），浏览器独立进程打开；快照由 snapshot.js 轮询，
+// 这里只订阅 `pv-snapshot` 事件渲染。**不再有跨进程的东西**（截图 / 关闭窗口 / 开发者工具按钮
+// 都去掉了：面板截不到主窗口的图，关标签页用浏览器自己）。
+// 独立作用域（IIFE）：与其它模块共享全局，避免顶层 const 重名。
 ;(() => {
-const { invoke } = window.__TAURI__.core
 
 const $ = (id) => document.getElementById(id)
 const T = (s, vars) => (window.__pvT ? window.__pvT(s, vars) : s)
@@ -426,29 +428,4 @@ document.addEventListener('pv-langchange', () => {
   renderNet(last.net)
 })
 
-// 独立调试窗口自己的两个按钮：关闭窗口 / 截主界面。
-// （以前它们在主窗口的 shell.js 里；调试页搬出来后由本文件负责，避免两处实现。）
-window.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('btn-devtools')?.addEventListener('click', () => {
-    window.__TAURI__.core.invoke('open_devtools')
-  })
-  document.getElementById('dbg-close')?.addEventListener('click', () => {
-    window.__TAURI__.core.invoke('close_debug_window').catch(() => {
-      /* 窗口已经没了：忽略 */
-    })
-  })
-  document.getElementById('btn-shot')?.addEventListener('click', async () => {
-    const b = /** @type {HTMLButtonElement | null} */ ($('btn-shot'))
-    const out = $('dbg-shot')
-    if (b) b.disabled = true
-    try {
-      const path = await invoke('capture_ui')
-      if (out) out.textContent = T('截图已保存：') + path
-    } catch (e) {
-      if (out) out.textContent = T('截图失败：') + e
-    } finally {
-      if (b) b.disabled = false
-    }
-  })
-})
 })()

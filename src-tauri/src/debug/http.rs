@@ -28,7 +28,13 @@
 //! - `/debug/plan` 当前计划
 //! - `/debug/calib` AEC 校准的结构化报告（与快照 `calib_report`、`calib_last.json` 同源）
 //! - `/debug/bundle` 一键诊断包（快照 + 日志 + 指标）
-//! - `/debug/screenshot` 截取当前界面并返回保存路径（PNG 实体在 `/debug/ui.png`）
+//! - `/debug/ui` 调试面板页面本身（**给浏览器打开**；CSS/JS 同源静态资源随二进制内嵌，
+//!   见 [`static_asset`]）。它只 `fetch('/debug')` 渲染，不经过 WebView2 / IPC。
+//!
+//! 为什么面板页面走这里而不是 Tauri 的第二个 WebView2 窗口：Tauri 3 alpha 在本机建第二个
+//! WebView2 时**页面根本不会导航**（CDP 里目标停在 `about:blank`、`Chrome_WidgetWin_0`
+//! 是 0×0，整窗纯白；2026-10-26 实测）。调试面板只是渲染 `/debug` 的只读数据，用系统浏览器
+//! 开一个独立进程最省事，也不会把主界面拖下水。
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -38,7 +44,7 @@ use serde_json::{Value, json};
 
 use super::{DEBUG_HTTP_PORT, Probe, SharedHub, events, metrics};
 
-const ENDPOINTS: [&str; 11] = [
+const ENDPOINTS: [&str; 10] = [
   "/debug",
   "/debug/system",
   "/debug/audio",
@@ -48,9 +54,27 @@ const ENDPOINTS: [&str; 11] = [
   "/debug/plan",
   "/debug/calib",
   "/debug/bundle",
-  "/debug/screenshot",
-  "/debug/ui.png",
+  "/debug/ui",
 ];
+
+/// 调试面板页面（浏览器版）的静态资源：**随二进制内嵌**，安装后不依赖磁盘上的 ui/ 目录。
+///
+/// 页面里用绝对路径引用（`/debug/ui/debug.js` …），所以不需要目录重定向：
+/// `/debug/ui` 与 `/debug/ui/xxx` 都直接命中这张表。
+fn static_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
+  const HTML: &[u8] = include_bytes!("../../ui/debug.html");
+  const JS: &str = "text/javascript; charset=utf-8";
+  const CSS: &str = "text/css; charset=utf-8";
+  Some(match path {
+    "/debug/ui" => ("text/html; charset=utf-8", HTML),
+    "/debug/ui/debug.js" => (JS, include_bytes!("../../ui/debug.js")),
+    "/debug/ui/debug.css" => (CSS, include_bytes!("../../ui/debug.css")),
+    "/debug/ui/i18n.js" => (JS, include_bytes!("../../ui/i18n.js")),
+    "/debug/ui/snapshot.js" => (JS, include_bytes!("../../ui/snapshot.js")),
+    "/debug/ui/jsdebug.js" => (JS, include_bytes!("../../ui/jsdebug.js")),
+    _ => return None,
+  })
+}
 
 pub fn spawn(hub: SharedHub) {
   let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, DEBUG_HTTP_PORT));
@@ -188,16 +212,6 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
         ),
       )
     }
-    "/debug/screenshot" => match crate::debug::screenshot::capture() {
-      Ok(path) => (
-        "200 OK",
-        json!({ "path": path.display().to_string(), "png": "/debug/ui.png" }),
-      ),
-      Err(e) => (
-        "500 Internal Server Error",
-        json!({ "error": e, "hint": "内置截屏当前仅在 Linux（WebKitGTK）可用" }),
-      ),
-    },
     "/debug/bundle" => {
       let snap = hub.snapshot();
       let bundle = json!({
@@ -238,28 +252,17 @@ fn handle(hub: &SharedHub, mut stream: TcpStream) -> std::io::Result<()> {
   let path = path.trim_end_matches('/');
   let path = if path.is_empty() { "/" } else { path };
 
-  if method == "GET" && path == "/debug/ui.png" {
-    match crate::debug::screenshot::capture_png() {
-      Ok(png) => {
-        write!(
-          stream,
-          "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-          png.len()
-        )?;
-        stream.write_all(&png)?;
-        return stream.flush();
-      }
-      Err(e) => {
-        let body = serde_json::to_string(&json!({ "error": e })).unwrap_or_else(|_| "{}".into());
-        write!(
-          stream,
-          "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-          body.len()
-        )?;
-        stream.write_all(body.as_bytes())?;
-        return stream.flush();
-      }
-    }
+  // 调试面板页面（浏览器版）：HTML / CSS / JS 都是内嵌静态资源，不走 JSON 通道。
+  if method == "GET"
+    && let Some((ctype, body)) = static_asset(path)
+  {
+    write!(
+      stream,
+      "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+      body.len()
+    )?;
+    stream.write_all(body)?;
+    return stream.flush();
   }
 
   let (status, body) = if method == "GET" {

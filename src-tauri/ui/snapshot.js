@@ -17,25 +17,34 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// 主窗口的快照轮询（2 Hz）。
+// 快照轮询（2 Hz）：主窗口与调试面板共用同一份实现、同一频率。
 //
-// 以前这个循环住在 `debug.js` 里——但调试页搬去独立窗口（debug.html）后，主窗口就不再加载
-// debug.js，于是 `__pvOnSnapshot` 永远收不到数据：设备下拉只剩「未选择设备 / 设备不在」，
-// 麦克风、输出都选不了（2026-10-26 用户实测）。所以把它拆成独立模块：
-// **主窗口也要有快照**，设备列表 / 运行状态 / 录制校准状态都靠它；调试窗口另有自己的轮询。
+// 两条取数通道，**同一份 `DebugSnapshot`**（AGENTS §1.3 单一数据源）：
+// - 主窗口：Tauri IPC `debug_snapshot`（进程内）；
+// - 调试面板：浏览器里没有 IPC，走本机只读接口 `GET /debug`（页面与接口同源）。
+// 以前这个循环住在 `debug.js` 里，面板搬走后主窗口就收不到快照（设备下拉只剩「未选择设备」，
+// 2026-10-26 用户实测），所以拆成独立模块。
 //
-// 纪律：只取快照并转发，不渲染、不计算（AGENTS §1.3 单一数据源）。
+// 纪律：只取快照并转发，不渲染、不计算。
 ;(() => {
-  const { invoke } = window.__TAURI__.core
+  const invoke = window.__TAURI__?.core?.invoke
   const POLL_MS = 500
+
+  /** 取一份快照：IPC（主窗口）或 HTTP（浏览器里的调试面板）。 */
+  async function getSnapshot() {
+    if (invoke) return invoke('debug_snapshot')
+    const r = await fetch('/debug', { cache: 'no-store' })
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText)
+    return r.json()
+  }
 
   async function tick() {
     try {
-      const s = await invoke('debug_snapshot')
+      const s = await getSnapshot()
       window.__pvOnSnapshot?.(s)
       document.dispatchEvent(new CustomEvent('pv-snapshot', { detail: s }))
     } catch (e) {
-      window.__pvDebug?.('主界面取快照失败：' + e)
+      window.__pvDebug?.('取快照失败：' + e)
       document.dispatchEvent(new CustomEvent('pv-snapshot-error', { detail: String(e) }))
     }
     setTimeout(tick, POLL_MS)

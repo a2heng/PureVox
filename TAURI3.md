@@ -410,10 +410,20 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
 - 有音频流时 `/debug` 响应含波形与频谱数组（数百 KB），Windows PowerShell 5 的 `ConvertFrom-Json`
   解析失败且只回显原文；改用 `.venv\Scripts\python.exe` 跑脚本解析。PowerShell 向原生程序传参会吞掉双引号，
   Python 代码写进文件再执行，不要用 `python -c "..."`。
-- 截图用 `PrintWindow(hwnd, hdc, 2)`（`PW_RENDERFULLCONTENT`，能截到 WebView2 内容），
-  不用 `CopyFromScreen`（截的是屏幕上最前面的窗口）。注意：
-  - 从智能体 shell 启动的程序窗口是**最小化**的，先 `ShowWindow(hwnd, 4)`（`SW_SHOWNOACTIVATE`，不抢焦点）再截。
-  - `Process.MainWindowHandle` 可能指向 26×26 的辅助窗口，要用 `EnumWindows` 按标题 `PureVox` 找主窗口。
+- **第二个 WebView2 窗口在本机是废的（页面根本不会导航）**：用
+  `WebviewWindowBuilder` 建第二个窗口时，CDP（`--remote-debugging-port`）里它的目标停在
+  `about:blank`，`EnumChildWindows` 能看到 `WRY_WEBVIEW` 但 `Chrome_WidgetWin_0` 是 0×0 且不可见，
+  `PrintWindow` 与 `CopyFromScreen` 拿到的客户区都是**纯白**；页面的 JS 一次都没跑（窗口的
+  `ui` 报告里没有它）。`--disable-gpu`、`additional_browser_args`、显式 `show()`、改窗口大小、
+  hide/show、`RedrawWindow` 全试过，都不解决；两个窗口用**不同**的 `additional_browser_args`
+  还会额外触发 `CreateCoreWebView2EnvironmentWithOptions` 的 `0x8007139F`（`ERROR_INVALID_STATE`，
+  同一 user data folder 的 environment options 必须一致），失败后留下一个白窗。**结论：别再给调试
+  面板建第二个 webview**，走浏览器 + HTTP（AGENTS §1.1）。
+- **量窗口尺寸要 DPI-aware**：DPR 200%（dpi 192）时，DPI-unaware 进程拿到的 `GetWindowRect`
+  是虚拟化过的一半尺寸（1193×936 其实是 2386×1871 物理），据此判断「窗口多大 / 截没截全」
+  会全部错位；脚本先 `SetProcessDpiAwarenessContext(-4)`（PER_MONITOR_AWARE_V2）再量。
+- **界面自报要能证明「页面跑了」**：调试面板的 `ui` 消息里有视口尺寸与 dpr
+  （`布局正常：… 视口 WxH，dpr D`），没有这条消息 = 页面根本没加载，而不是「渲染成白色」。
 
 **Linux 桌面会话里做无人值守验证**（`tools/automation/ui.py` 的会话子命令：`start` / `take` /
 `verify-update` / `stop`）：

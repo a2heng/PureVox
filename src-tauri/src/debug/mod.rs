@@ -23,7 +23,6 @@
 pub mod events;
 pub mod http;
 pub mod metrics;
-pub mod screenshot;
 pub mod system;
 pub mod threads;
 

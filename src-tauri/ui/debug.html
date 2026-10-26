@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>PureVox — 调试</title>
-<link rel="stylesheet" href="debug.css" />
+<link rel="stylesheet" href="/debug/ui/debug.css" />
 </head>
 <body class="debug-window debug-on">
 <!--
@@ -26,12 +26,14 @@
   SPDX-License-Identifier: GPL-3.0-or-later
 -->
 <!--
-  调试独立窗口（Rust 命令 `open_debug_window` → WebviewUrl::App("debug.html")）。
-  内容与快照 debug_snapshot 同源；这里只渲染，不另算指标（AGENTS.md 1.3 / 1.4）。
+  调试面板（浏览器版）：由本机只读调试接口提供（GET /debug/ui，静态资源随二进制内嵌），
+  顶栏「调试面板」用系统浏览器打开它（独立进程，AGENTS.md 1.1）。
+  页面只 fetch('/debug') 渲染同一份快照，不经过 WebView2 / IPC，也不自己算指标（1.3 / 1.4）。
+  解耦的代价：面板截不到主窗口的图（跨进程）—— 内置截屏已移除，截图用系统工具。
 -->
       <section id="debug" class="column debug" aria-label="Debug">
 
-        <h2><span data-i18n="调试">调试</span> <span id="dbg-status" class="mono"></span><span id="dbg-shot" class="sub"></span><button id="btn-devtools" class="drawer-close" type="button" data-i18n="开发者工具">开发者工具</button><button id="btn-shot" class="drawer-close" type="button" data-i18n="截屏">截屏</button><button id="dbg-close" class="drawer-close" type="button" data-i18n="关闭">关闭</button></h2>
+        <h2><span data-i18n="调试">调试</span> <span id="dbg-status" class="mono"></span></h2>
 
         <!-- 设备条带放在调试面板最上面：调试时最常看的就是每路流，不用往下翻过
              应用/系统/GPU。JS 与 CSS 不变，只是把渲染容器提前。 -->
@@ -112,9 +114,9 @@
         </section>
       </section>
 
-<script src="i18n.js"></script>
-<script src="jsdebug.js"></script>
-<script src="snapshot.js"></script>
-<script src="debug.js"></script>
+<script src="/debug/ui/i18n.js"></script>
+<script src="/debug/ui/jsdebug.js"></script>
+<script src="/debug/ui/snapshot.js"></script>
+<script src="/debug/ui/debug.js"></script>
 </body>
 </html>

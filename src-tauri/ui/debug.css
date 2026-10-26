@@ -818,13 +818,21 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  /* 侧栏宽度**唯一来源**（不要再在 #sidebar 上另写 width：两处不一致 = 内容被右侧盖住，
+     2026-10-26 实测「启动按钮/中英文被右边压着」就是这么来的）。 */
+  grid-template-columns: 176px minmax(0, 1fr);
+  /* 行高**必须**钉成「正好一屏」：隐式 auto 行会被右侧列的内容撑高，于是 #shell 溢出被裁
+     —— 症状就是侧栏底部（版本 / 中英文按钮）被切掉、列区内容也看不全（2026-10-26 实测）。 */
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
 }
 
 /* ---------------- 侧栏 ---------------- */
 #sidebar {
   min-height: 0;
+  /* 宽度由 #shell 的列宽决定（172→176 只改那一处）；内容一律左对齐，不随窗口塌缩/居中 */
+  min-width: 0;
+  align-items: stretch;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1162,14 +1170,16 @@ body {
 .add-column {
   flex: 0 0 auto;
   align-self: flex-start;
-  width: 128px;
-  height: 64px;
+  /* 次要入口，别抢列的位置：一枚小号虚线按钮（2026-10-26 用户要求缩小） */
+  width: 92px;
+  height: 38px;
   margin-top: 2px;
+  padding: 0 8px;
   border-style: dashed;
   border-color: var(--line-strong);
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11.5px;
 }
 .add-column:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); background: var(--accent-weak); }
 
@@ -1301,23 +1311,9 @@ body.debug-on #debug { display: flex; transform: none; opacity: 1; visibility: v
 .panel-box { width: min(620px, 100%); border-radius: 16px; padding: 20px 22px; box-shadow: var(--shadow-lg); }
 .panel-box h3 { font-size: 16px; }
 
-/* 窄屏：侧栏只留图标与主按钮 */
-@media (max-width: 1020px) {
-  #shell { grid-template-columns: 64px minmax(0, 1fr); }
-  #sidebar { padding: 14px 8px 10px; align-items: center; }
-  .brand-text, .side-sec, .side-columns, .side-add, .side-health #side-state, .side-health #side-generation, .side-nav button span, .side-foot #side-version { display: none; }
-  #sidebar .brand { padding: 0; }
-  #btn-run { width: 44px; font-size: 0; padding: 0; }
-  #btn-run::before { content: "▶"; font-size: 13px; }
-  #btn-run.run-stop::before { content: "■"; }
-  .side-nav button { justify-content: center; padding: 0; }
-  .side-health { justify-content: center; padding: 0; }
-  #topbar { padding: 16px 16px 10px; flex-wrap: wrap; align-items: flex-start; }
-  .page-meta { max-width: 100%; justify-content: flex-start; }
-  #columns { padding: 12px; }
-  .column.audio { width: min(420px, calc(100vw - 100px)); }
-  #debug { width: calc(100vw - 24px); }
-}
+/* 窄屏塌缩档**已删除**（2026-10-26）：桌面窗口没有「手机版」，按窗口宽度把左栏压成
+   64px 图标条会让菜单居中、文字换行、内容被裁；列宽也不该跟着窗口变。
+   侧栏宽度固定 232px（#shell 的 grid 第一列），窗口变小由右侧列区自己换行/滚动承担。 */
 
 /* ---------- 细节修正（2026-10-25：品牌图标 / 启动键 / 行头对齐 / 开关） ---------- */
 .brand-logo svg {
@@ -1520,7 +1516,6 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: default; }
 .row .badge { min-width: 3.4em; }
 .row .detail, .row .detail2, .row .detail3 { gap: 5px 7px; }
 .col-foot { margin-top: 8px; }
-.add-column { height: 54px; }
 
 /* 开关右侧不再写“启用”两个字（title / aria-label 仍说明） */
 .row .en,
@@ -1845,7 +1840,6 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: default; }
    否则滑块被挤到 40px 以下）。**不写任何 height 容器**：高度仍由内容决定
    （文件头「布局铁律」）。 */
 :root { --col-w: 360px; }
-#shell { grid-template-columns: 176px minmax(0, 1fr); }
 #sidebar { gap: 6px; padding: 8px 8px 6px; }
 #sidebar .brand { gap: 8px; padding: 0 2px 2px; }
 .brand-logo { width: 26px; height: 26px; border-radius: 8px; }
