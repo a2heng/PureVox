@@ -20,6 +20,7 @@
 package com.purevox.mic.audio
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
@@ -206,6 +207,7 @@ class MicUplink(
 
     // ---------------------------------------------------------------- 内部
 
+    @SuppressLint("MissingPermission") // start() 已检查 RECORD_AUDIO；这里只是建流
     private fun buildRecord(source: Int): AudioRecord? {
         // 先建对象再开录：部分机型上 getMinBufferSize 能报一个正数，但真正
         // new AudioRecord 才暴露底层不支持（state != INITIALIZED / startRecording 失败）。

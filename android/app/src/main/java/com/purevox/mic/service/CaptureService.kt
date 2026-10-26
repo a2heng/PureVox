@@ -19,6 +19,7 @@
 
 package com.purevox.mic.service
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -177,6 +178,7 @@ class CaptureService : Service() {
     // ---------------------------------------------------------------- 内部
 
     @Suppress("DEPRECATION")
+    @SuppressLint("NewApi") // type != 0 只在 SDK >= Q 时成立，lint 看不到分支
     private fun startForegroundCompat(text: String, mic: Boolean) {
         val notification = buildNotification(text)
         val type = when {
