@@ -1974,3 +1974,21 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: default; }
    整页会横向溢出，而 `.panel` 是 `position: fixed; inset: 0` 居中 —— 溢出后它按**加宽的
    文档**居中，于是「更新」这类对话框整个偏到右边、右侧被裁掉（2026-10-26 实测截图）。 */
 :root { --dbg-w: min(1040px, 48vw); }
+
+/* 更新说明里的行内 Markdown（`update.js` 的 inlineInto 产出）：粗体 / 等宽 / 链接。
+   以前面板直接把 `**Windows**` 与反引号原样显示（release 说明是 Markdown）。 */
+.up-notes strong { color: var(--fg); font-weight: 600; }
+.up-notes code {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  overflow-wrap: anywhere;
+}
+.up-notes a { color: var(--accent); text-decoration: underline; }
+
+/* 更新面板里「用不上」的行整行收起（`<tr class="hidden">`）：
+   通用 `.hidden` 只对块级元素生效，表格行要单独写 display:none 才会真的消失。 */
+.update-box tr.hidden { display: none; }

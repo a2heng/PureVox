@@ -186,16 +186,10 @@
       <div class="panel-box update-box">
         <h3><span data-i18n="更新">更新</span><span id="up-phase" class="up-phase"></span></h3>
         <table class="kv">
-          <tr>
-            <th data-i18n="当前版本">当前版本</th><td id="up-cur" class="mono"></td>
-            <th data-i18n="最新版本">最新版本</th><td id="up-latest" class="mono"></td>
-          </tr>
-          <tr>
-            <th data-i18n="安装方式">安装方式</th><td id="up-kind" class="mono"></td>
-            <th data-i18n="发布日期">发布日期</th><td id="up-date" class="mono"></td>
-          </tr>
-          <tr><th data-i18n="匹配产物">匹配产物</th><td id="up-asset" colspan="3" class="mono"></td></tr>
-          <tr><th data-i18n="状态">状态</th><td id="up-state" colspan="3"></td></tr>
+          <tr><th data-i18n="当前版本">当前版本</th><td id="up-cur" class="mono"></td></tr>
+          <tr><th data-i18n="最新版本">最新版本</th><td id="up-latest" class="mono"></td></tr>
+          <tr><th data-i18n="匹配产物">匹配产物</th><td id="up-asset" class="mono"></td></tr>
+          <tr id="up-state-row" class="hidden"><th data-i18n="状态">状态</th><td id="up-state"></td></tr>
         </table>
         <div id="up-progress" class="up-progress"><div id="up-bar"></div></div>
         <div class="up-notes-head">

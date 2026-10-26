@@ -35,7 +35,7 @@
     启动: 'Start',
     停止: 'Stop',
     更新: 'Update',
-    安装方式: 'Install kind',
+    开发构建: 'dev build',
     发布日期: 'Published',
     匹配产物: 'Matched asset',
     更新说明: 'Release notes',

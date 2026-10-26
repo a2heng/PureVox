@@ -74,6 +74,8 @@ symphonia = { version = "0.5", default-features = false, features = [
 # 界面文件选择 → base64 文本过 IPC：浏览器 <input type=file> 只能拿到字节数组，
 # 编码成一个 JSON 字符串比逐字节数组小一个量级（随 tauri 进入依赖树，无需新增下载）
 base64 = "0.23"
+# 调试截屏（Windows PrintWindow / Linux snapshot）落 PNG：只用到编码
+png = "0.17"
 # ONNX 推理（onnxruntime 绑定；构建时下载 onnxruntime 并把 dll 复制到产物旁）
 # rc.15 起 `Session::builder` 要显式传 `Environment`（`infer::ort_env`），已跟进。
 # 升级前后都比过：同一模型 rc.13 / rc.15 都是 ~5.7 ms/hop（`cargo run --example ort_bench`，
@@ -98,6 +100,9 @@ mdns-sd = "0.21"
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dxgi",
+  # 调试截屏：GDI（CreateDIBSection）+ PrintWindow（Xps）
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_Xps",
   "Win32_Graphics_Dxgi_Common",
   "Win32_System_Performance",
   "Win32_System_ProcessStatus",

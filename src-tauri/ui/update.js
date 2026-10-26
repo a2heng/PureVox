@@ -62,6 +62,44 @@
    * 这里只认发布说明实际会用到的四种：`#`/`##` 标题、`- ` 列表、空行分段、其余按段落
    * （`pre-wrap` + `overflow-wrap` 保证长行不撑破面板）。不引第三方 Markdown 解析器。
    */
+  /**
+   * 行内 Markdown 的最小实现：`**粗体**`、`` `等宽` ``、`[文字](链接)`。
+   *
+   * 以前整段用 `textContent` 写进去 → 面板里直接把 `**Windows**` 和反引号原样显示出来
+   * （2026-10-26 用户：「猴版」）。这里按标记切成 text / strong / code / a 节点逐个挂上，
+   * **不碰 innerHTML**（release 说明来自外部，别给它开 HTML 注入口子）。
+   */
+  function inlineInto(el, text) {
+    // 反引号写成 \u0060：i18n 门禁的扫描器不认正则字面量，会把裸反引号当成模板字符串
+    // 的开头，于是后面整段代码都被当成「没翻译的中文串」（E1 误报）。转义之后绕开。
+    const re = /\*\*([^*]+)\*\*|[\u0060]([^\u0060]+)[\u0060]|\[([^\]]+)\]\(([^)\s]+)\)/g
+    let last = 0
+    let m
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)))
+      if (m[1] != null) {
+        const b = document.createElement('strong')
+        b.textContent = m[1]
+        el.appendChild(b)
+      } else if (m[2] != null) {
+        const c = document.createElement('code')
+        c.textContent = m[2]
+        el.appendChild(c)
+      } else {
+        const a = document.createElement('a')
+        a.textContent = m[3]
+        a.href = m[4]
+        a.addEventListener('click', (ev) => {
+          ev.preventDefault()
+          invoke('update_open_page', { url: m[4] }).catch(() => {})
+        })
+        el.appendChild(a)
+      }
+      last = re.lastIndex
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)))
+  }
+
   function renderNotes(text) {
     const box = $('up-notes')
     const len = $('up-notes-len')
@@ -88,7 +126,7 @@
         flush()
         const el = document.createElement('div')
         el.className = 'up-note-h' + (h[1].length === 1 ? ' h1' : '')
-        el.textContent = h[2]
+        inlineInto(el, h[2])
         box.appendChild(el)
         continue
       }
@@ -100,59 +138,63 @@
           box.appendChild(list)
         }
         const item = document.createElement('li')
-        item.textContent = li[1]
+        inlineInto(item, li[1])
         list.appendChild(item)
         continue
       }
       flush()
       const p = document.createElement('p')
       p.className = 'up-note-p'
-      p.textContent = t.trim()
+      inlineInto(p, t.trim())
       box.appendChild(p)
     }
   }
 
   function paint() {
+    if (!st) return
+    const dev = !st.current_stamp
     const cur = $('up-cur')
-    if (cur) cur.textContent = st ? st.current_version + (st.current_stamp ? '（' + st.current_stamp + '）' : '') : ''
+    if (cur) cur.textContent = st.current_version + (dev ? '（' + T('开发构建') + '）' : '')
     const latest = $('up-latest')
-    if (latest) latest.textContent = st && st.latest_tag ? st.latest_version + '（' + st.latest_tag + '）' : '—'
-    const kind = $('up-kind')
-    if (kind) kind.textContent = st && st.install_kind ? st.install_kind : '—'
-    const date = $('up-date')
-    if (date) date.textContent = st && st.published_at ? st.published_at.replace('T', ' ').replace('Z', ' UTC') : '—'
-
-    // 匹配到的产物：名字 + 大小（没匹配到就明说，别留空让人自己猜）
+    if (latest) {
+      // 日期只留「年-月-日」：带时间与 UTC 在窄面板里换行，且对「要不要更新」没影响
+      const day = (st.published_at || '').slice(0, 10)
+      // 只写 tag（里面已经带 yy.MM.dd）+ 日期：再写一遍显示版本是纯重复
+      latest.textContent = st.latest_tag ? st.latest_tag + (day ? '  ·  ' + day : '') : '—'
+    }
     const asset = $('up-asset')
     if (asset) {
-      if (!st) asset.textContent = ''
-      else if (st.asset_name) asset.textContent = st.asset_name + (st.asset_size ? ' · ' + mb(st.asset_size) : '')
-      else if (st.latest_tag) asset.textContent = T('没有匹配到本机安装方式可用的包')
+      if (st.asset_name) asset.textContent = st.asset_name + (st.asset_size ? '  ·  ' + mb(st.asset_size) : '')
+      else if (st.latest_tag) asset.textContent = T('没有匹配到本机安装方式可用的包') + '（' + st.install_kind + '）'
       else asset.textContent = '—'
     }
-
     const phase = $('up-phase')
-    if (phase && st) {
+    if (phase) {
       phase.textContent = PHASE_TEXT[st.phase] ? PHASE_TEXT[st.phase]() : st.phase
       phase.className = 'up-phase ' + (PHASE_CLASS[st.phase] || '')
     }
-
+    // 状态行只在「有额外信息」时出现：是否有新版本由标题旁的 chip 说，不重复一遍
+    // （以前这里再写一遍「有新版本」，加上 dev 构建的说明，一屏三处重复同样的意思）。
+    const stateRow = $('up-state-row')
     const state = $('up-state')
-    if (state && st) {
-      state.textContent = (st.reason || '') || (PHASE_TEXT[st.phase] ? PHASE_TEXT[st.phase]() : st.phase)
+    const extra = st.reason || ''
+    const needRow = !!extra && st.phase !== 'available' && st.phase !== 'uptodate'
+    if (stateRow && state) {
+      stateRow.classList.toggle('hidden', !needRow)
+      state.textContent = needRow ? extra : ''
       state.className = st.phase === 'failed' || st.phase === 'unsupported' ? 'na'
-        : st.phase === 'available' || st.phase === 'ready' || st.phase === 'installed' ? 'ok' : ''
+        : st.phase === 'ready' || st.phase === 'installed' ? 'ok' : ''
     }
 
     // 下载进度：只在下载/已下载时占位，平时收起来（不占高度）
     const prog = $('up-progress')
     const bar = $('up-bar')
-    const show = st && (st.phase === 'downloading' || st.phase === 'ready') && st.asset_size > 0
+    const show = (st.phase === 'downloading' || st.phase === 'ready') && st.asset_size > 0
     if (prog && bar) {
-      prog.classList.toggle('on', !!show)
+      prog.classList.toggle('on', show)
       const pct = show ? Math.min(100, (st.received / st.asset_size) * 100) : 0
       bar.style.width = pct.toFixed(1) + '%'
-      prog.title = show ? `${mb(st.received)} / ${mb(st.asset_size)}（${pct.toFixed(0)}%）` : ''
+      prog.title = show ? `${mb(st.received)} / ${mb(st.asset_size)} (${pct.toFixed(0)}%)` : ''
     }
 
     renderNotes(st ? st.notes : '')

@@ -53,7 +53,12 @@ release 构建同样保留（不允许用编译开关剔除）。
 
 - 字段只增不改名；新增字段同步更新本表。
 - **内置截屏**（`debug/screenshot.rs`）：Linux 走 WebKitGTK 的 `webkit_web_view_get_snapshot`
-  （Wayland/GNOME 50 禁掉了 `Shell.Screenshot`，`wlr-screencopy` 也不可用）；窗口标题栏不在图内。
+  （Wayland/GNOME 50 禁掉了 `Shell.Screenshot`，`wlr-screencopy` 也不可用）；Windows 走
+  `PrintWindow(PW_RENDERFULLCONTENT)`（WebView2 内容）。**两边都按窗口客户区的物理像素取图**
+  —— 本进程是 per-monitor DPI aware，200% 缩放下 1560 逻辑 px 就是 3120 物理 px，
+  所以图是完整的一张、分辨率也够。**不要去改窗口尺寸迁就截图**（走过一次回头路：把窗口
+  夹到工作区 → 用户看到的是「启动变小了」）；用外部 DPI-unaware 工具（PowerShell
+  `GetWindowRect`）量这个窗口会得到虚拟化过的一半尺寸，据此截图才会「截不全」。
   调试面板标题旁的「截屏」按钮调同一实现，截图固定落 `~/.purevox/screenshots/ui.png`（覆盖），
   其它平台明确不可用。它是开发/报障工具，不属于音频链路。
 - 快照另带 `ui`：界面自报的最近消息数组（新在前，最多 50 条，见 `ui_report` 命令）；

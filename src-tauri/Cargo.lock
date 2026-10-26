@@ -3524,6 +3524,7 @@ dependencies = [
  "libc",
  "mdns-sd",
  "ort",
+ "png 0.17.16",
  "rcgen",
  "reqwest",
  "rtrb",

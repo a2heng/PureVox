@@ -108,7 +108,11 @@
     if (over || barMsg || rowMsg) {
       send('error', `布局溢出：文档 ${de.scrollWidth}x${de.scrollHeight} > 视口 ${de.clientWidth}x${de.clientHeight}${barMsg}${rowMsg}`)
     } else {
-      send('info', `布局正常：文档无外层滚动，顶栏/行无溢出，视口 ${de.clientWidth}x${de.clientHeight}`)
+      // 带上 dpr / 屏幕逻辑尺寸：200% 缩放下「窗口比屏幕还大」是布局错位（面板偏到右边、
+      // 截图截不全）的根因，光看 1560x900 看不出来（2026-10-26）。
+      const dpr = window.devicePixelRatio || 1
+      send('info', `布局正常：文档无外层滚动，顶栏/行无溢出，视口 ${de.clientWidth}x${de.clientHeight}` +
+        `，dpr ${dpr}，屏幕 ${window.screen.availWidth}x${window.screen.availHeight}`)
     }
   }
   window.addEventListener('load', () => setTimeout(checkLayout, 400))

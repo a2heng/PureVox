@@ -46,16 +46,11 @@ ROOT = Path(__file__).resolve().parents[2]
 # 命名规则见 update/mod.rs 的 `ci_asset_names_match_the_tag_version` 测试（它直接读
 # release_stage.sh，改了会红）。
 PRODUCT_LINES = (
-    "- **Windows x64**：`PureVox-<版本>-windows-x64-setup.exe`"
-    "（NSIS 安装包，静默参数 `/S`，**自动更新走它**）",
-    "- **Linux x64**：`PureVox-<版本>-linux-x64.AppImage`（**只有它能自动更新**）、"
-    "`PureVox-<版本>-linux-x64.deb`、`PureVox-<版本>-linux-x64.rpm`"
-    "（系统缺 `libopus0` 时网络音频降级，其余功能正常）",
-    "- **Android arm64**：`PureVox-<版本>-android-arm64.apk`"
-    "（手机 ⇄ 电脑客户端，**正式签名**的 release 包 —— 可直接安装、可覆盖升级；"
-    "不是 debug 包。App 内可检查并安装更新）",
+    "- **Windows**：`PureVox-<版本>-windows-x64-setup.exe`",
+    "- **Linux**：`PureVox-<版本>-linux-x64.AppImage` / `.deb` / `.rpm`",
+    "- **Android**：`PureVox-<版本>-android-arm64.apk`",
     "",
-    "> 三个平台**独立命名**，自动更新按**文件名后缀**认领本平台产物（不看版本号）。",
+    "桌面端内置 ONNX 模型；授权见 `MODEL-LICENSE.md`。",
 )
 
 
@@ -97,8 +92,6 @@ def main() -> int:
     lines.append("## 产物")
     lines.append("")
     lines.extend(PRODUCT_LINES)
-    lines.append("")
-    lines.append("桌面端均内置现役 ONNX 模型，模型授权见 `MODEL-LICENSE.md`。")
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

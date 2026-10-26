@@ -21,7 +21,13 @@
 //! 被 `Shell.Screenshot` 禁用，`wlr-screencopy` 也不支持。这里直接调用 WebKitGTK 的
 //! `webkit_web_view_get_snapshot`，截的是**应用内容本身**（不含窗口边框），跨显示服务器稳定。
 //!
-//! 平台实现按文件分（AGENTS §4）：`screenshot_linux.rs` / `screenshot_other.rs`。
+//! 平台实现按文件分（AGENTS §4）：
+//! - `screenshot_linux.rs`：WebKitGTK `webkit_web_view_get_snapshot`（内容本身）；
+//! - `screenshot_windows.rs`：`PrintWindow(PW_RENDERFULLCONTENT)` 截客户区（WebView2 内容）；
+//! - `screenshot_other.rs`：明确不可用（给出原因）。
+//!
+//! Windows 上窗口必须**放得下**才有意义（200% 缩放下 1560 逻辑 px = 3120 物理 px，
+//! 比屏幕还宽 → 只能截到左边一块），所以启动时 `main.rs` 会把窗口夹进工作区。
 //! 入口：
 //! - Tauri 命令 `capture_ui`（调试面板「截屏」按钮）；
 //! - 调试 HTTP `GET /debug/ui.png`（给我们/脚本直接抓图，见 AGENTS §1.2）。
@@ -34,7 +40,10 @@ use std::sync::OnceLock;
 #[cfg(target_os = "linux")]
 #[path = "screenshot_linux.rs"]
 mod imp;
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+#[path = "screenshot_windows.rs"]
+mod imp;
+#[cfg(not(any(target_os = "linux", windows)))]
 #[path = "screenshot_other.rs"]
 mod imp;
 
