@@ -372,10 +372,11 @@ release 构建同样保留（不允许用编译开关剔除）。
   **按实时推进**（回环设备空闲不出数据时补零，否则序号会随会话时长越落越后、取窗口永远失败），
   窗口 = mic 采样序号 − 延时，历史不足先退最近段、再没有就直通 mic；far 与 mic 序号同原点
   （会话起步 / 校准开始归零）。TSE 是**处理行**
-  （`ptype = tse`，`params.reference` = 参考 WAV，默认 `~/.purevox/tse_reference.wav`，须 48 kHz 单声道；
-  10 s → `enr_tok`；无参考直通）。行状态（对齐计数 / 推理耗时 / 参考状态）经 `Stage::status` 进列概要。
+  （`ptype = tse`，参考固定为 `~/.purevox/tse_reference.wav`，须 48 kHz 单声道；界面不给路径设置，
+  只显示录制时间 + 打开文件夹；10 s → `enr_tok`，参考编码器是 Rust 内固定 DSP、不再带 ONNX；无参考直通）。
+  行状态（对齐计数 / 推理耗时 / 参考状态）经 `Stage::status` 进列概要。
 - **参考录制 / 延时校准**：命令 `record_tse_reference(seconds)` 录「降噪后、TSE 前」的信号（`recorder.rs`，
-  RMS 归一化到 -20 dBFS，峰值不削顶）→ `~/.purevox/tse_reference.wav`；命令 `calibrate_aec_delay()`
+  **原样保存**，不做音量归一化 / 限幅；完成提示报实测 RMS 与峰值）→ `~/.purevox/tse_reference.wav`；命令 `calibrate_aec_delay()`
   对第一个 AEC 行采集 1.6 s、向被回环的输出送 500→7000 Hz 单次扫频探针（150 ms、平顶包络、0.98
   幅度；**峰宽由带宽决定，不是时长**），FFT 互相关**对称搜索**延时（**从零
   重置、固定参考延时、只喂精确窗口 → 测的是绝对延时**，不累加、每次可重复），并

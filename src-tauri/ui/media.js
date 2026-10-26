@@ -406,8 +406,9 @@
           paint()
         })
         .catch((e) => {
-          status.className = 'media-status err'
-          status.textContent = T('移除失败：') + String(e)
+          status.className = 'media-status'
+          status.textContent = ''
+          window.__pvToast?.(T('移除失败：') + String(e), 'error', 7000)
         })
     }
 
@@ -416,20 +417,19 @@
       status.textContent = T('正在解码入库…')
       pickAndImport('soundpad', true)
         .then((infos) => {
-          if (!infos.length) {
-            status.textContent = ''
-            return
-          }
+          status.textContent = ''
+          if (!infos.length) return
           for (const info of infos) {
             pads.push({ name: info.name, path: info.path, volume_db: 0, hotkey: '' })
           }
           commit()
           paint()
-          status.textContent = T('已添加 {n} 个音效', { n: infos.length })
+          window.__pvToast?.(T('已添加 {n} 个音效', { n: infos.length }), 'ok')
         })
         .catch((e) => {
-          status.className = 'media-status err'
-          status.textContent = T('导入失败：') + String(e)
+          status.className = 'media-status'
+          status.textContent = ''
+          window.__pvToast?.(T('导入失败：') + String(e), 'error', 7000)
         })
     }
 
@@ -533,18 +533,17 @@
       status.textContent = T('正在解码入库…')
       pickAndImport('music', false)
         .then((infos) => {
-          if (!infos.length) {
-            status.textContent = ''
-            return
-          }
+          status.textContent = ''
+          if (!infos.length) return
           setTrack(infos[0].path)
           title.textContent = baseName(infos[0].path)
           art.textContent = '♪'
-          status.textContent = ''
+          window.__pvToast?.(T('曲目已导入'), 'ok')
         })
         .catch((e) => {
-          status.className = 'media-status err'
-          status.textContent = T('导入失败：') + String(e)
+          status.className = 'media-status'
+          status.textContent = ''
+          window.__pvToast?.(T('导入失败：') + String(e), 'error', 7000)
         })
     }
 

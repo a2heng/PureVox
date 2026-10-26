@@ -16,7 +16,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! TSE 参考录音（DESIGN.md §7）：在列工作线程里对「降噪后、TSE 前」的信号取样，
-//! 录满 N 秒后做**音量归一化**（RMS 到 -20 dBFS，峰值不削顶）再写 48 kHz 单声道 WAV。
+//! 录满 N 秒后**原样**写 48 kHz 单声道 WAV，并把实测 RMS / 峰值一起报出来。
+//!
+//! **不做音量归一化 / 限幅**（2026-10-26 实测 + legacy 对照）：
+//! - 主模型对参考电平不敏感：同一段参考整体 ±20 dB 后喂 ref_encoder + 主模型，
+//!   主模型输出相对差异 < 2%（只有严重削顶的极端电平才明显变差）；
+//! - legacy `pvengine/components/tse.py` + `_Recorder` 也是原样写盘；
+//! - 归一化为了压峰值必然削掉/软限幅峰值，反而是「不真实」的那一步。
+//!
+//! 只保留最小校验（近静音拒绝），避免录出一段没法用的参考。
 //!
 //! 采样点由计划决定：优先第一个**启用**的 TSE 行的输入（降噪后）；没有 TSE 行则取最后一个
 //! 启用降噪行的输出。进度与结果发布到调试快照的 `recorder` 字段。
@@ -180,18 +188,19 @@ impl RecorderHub {
     let spawned = std::thread::Builder::new()
       .name("tse-ref-write".into())
       .spawn(move || {
-        let result = normalize_and_write(&buf[..needed], &path);
+        let result = write_reference(&buf[..needed], &path);
         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
         match result {
-          Ok(peak_db) => {
+          Ok(level) => {
             let text = format!(
-              "完成：{}（{} s，归一化后峰值 {peak_db:.1} dBFS）",
-              path.display(),
-              needed as f64 / SAMPLE_RATE as f64
+              "完成：参考语音已保存（{secs:.0} s，RMS {rms_db:.1} dBFS，峰值 {peak_db:.1} dBFS）",
+              secs = needed as f64 / SAMPLE_RATE as f64,
+              rms_db = level.rms_db,
+              peak_db = level.peak_db,
             );
             *st = State::Done;
             drop(st);
-            crate::debug::events::log("info", "recorder", text.clone());
+            crate::debug::events::log("info", "recorder", format!("{text} → {}", path.display()));
             hub.set_recorder(Probe::ok(text));
           }
           Err(e) => {
@@ -239,30 +248,40 @@ fn resolve_target(plan: &Plan) -> Option<(usize, usize, Phase)> {
   None
 }
 
-/// 音量归一化（RMS → -20 dBFS，峰值不超 0.99）后写 16-bit WAV，返回归一化后峰值 dBFS。
-fn normalize_and_write(samples: &[f32], path: &Path) -> Result<f32, String> {
-  if samples.is_empty() {
-    return Err("录音为空".into());
+/// 写盘后的实测电平（单位 dBFS；RMS 与峰值分开报，不拿峰值冒充「归一化结果」）。
+struct Level {
+  rms_db: f32,
+  peak_db: f32,
+}
+
+/// 原样写参考语音（16-bit WAV，**不做归一化 / 限幅**），返回实测电平。
+///
+/// 只拒绝近静音：几乎没声音的参考不如不录，明确失败比让 TSE 悄悄直通更好排查。
+fn write_reference(samples: &[f32], path: &Path) -> Result<Level, String> {
+  let r = rms(samples);
+  let p = peak(samples);
+  if r < 1e-5 || p < 1e-4 {
+    return Err(format!("录音太小（RMS {r:.1e}），请对着麦克风说话"));
   }
-  let rms = (samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32).sqrt();
-  let peak = samples.iter().fold(0.0f32, |m, x| m.max(x.abs()));
-  if rms < 1e-5 || peak < 1e-4 {
-    return Err(format!("录音太小（RMS {rms:.1e}），请对着麦克风说话"));
-  }
-  const TARGET_RMS: f32 = 0.1; // -20 dBFS
-  let mut gain = (TARGET_RMS / rms).clamp(0.1, 20.0);
-  if peak * gain > 0.99 {
-    gain = 0.99 / peak;
-  }
-  let out: Vec<f32> = samples
-    .iter()
-    .map(|x| (x * gain).clamp(-1.0, 1.0))
-    .collect();
   if let Some(dir) = path.parent() {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败：{e}"))?;
   }
-  crate::wav::write_mono_16(path, &out, SAMPLE_RATE)?;
-  Ok(20.0 * (peak * gain).max(1e-6).log10())
+  crate::wav::write_mono_16(path, samples, SAMPLE_RATE)?;
+  Ok(Level {
+    rms_db: 20.0 * r.max(1e-6).log10(),
+    peak_db: 20.0 * p.max(1e-6).log10(),
+  })
+}
+
+fn rms(samples: &[f32]) -> f32 {
+  if samples.is_empty() {
+    return 0.0;
+  }
+  (samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+fn peak(samples: &[f32]) -> f32 {
+  samples.iter().fold(0.0f32, |m, x| m.max(x.abs()))
 }
 
 #[cfg(test)]
@@ -313,5 +332,35 @@ mod tests {
     assert!(rec.start(&plan, 1.0, p).is_err(), "录制中不许再开一段");
     rec.timeout_if_recording(t, "测试超时".into());
     assert!(!rec.active(), "看门狗必须把状态置回非录制");
+  }
+
+  /// 参考语音**原样写盘**：不做归一化 / 限幅（用户 2026-10-26 要求「更真实」）。
+  /// 写进去的波形与录到的一致，只差 16-bit 量化；回报的电平就是这段录音的实测值。
+  #[test]
+  fn write_reference_keeps_waveform_unchanged() {
+    let v: Vec<f32> = (0..4_800)
+      .map(|i| 0.2 * ((i as f32) * 0.02).sin() * (1.0 - (i as f32) / 9_600.0))
+      .collect();
+    let path = std::env::temp_dir().join(format!("pv-rec-raw-{}.wav", std::process::id()));
+    let level = write_reference(&v, &path).expect("应能写盘");
+    let (back, rate) = crate::wav::read_mono(&path).expect("应能读回");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(rate, SAMPLE_RATE);
+    assert_eq!(back.len(), v.len());
+    assert!(
+      back.iter().zip(&v).all(|(b, x)| (b - x).abs() <= 1e-4),
+      "写盘只能有 16-bit 量化误差，不允许改增益 / 限幅"
+    );
+    let expect_rms = 20.0 * rms(&v).log10();
+    let expect_peak = 20.0 * peak(&v).log10();
+    assert!((level.rms_db - expect_rms).abs() < 0.05);
+    assert!((level.peak_db - expect_peak).abs() < 0.05);
+  }
+
+  #[test]
+  fn write_reference_rejects_silence() {
+    let path = std::env::temp_dir().join(format!("pv-rec-sil-{}.wav", std::process::id()));
+    assert!(write_reference(&vec![0.0; 480], &path).is_err());
+    assert!(!path.exists(), "近静音不该落盘");
   }
 }

@@ -20,71 +20,58 @@
 // TSE 参考音频卡片（DESIGN.md §7）。
 //
 // 行为对齐 legacy `uitk/dialogs.py::open_tse_dialog`：
-// - 显示当前参考（文件名 / 大小 / 修改时间 / 时长）；没有参考时明确写「TSE 将直通」；
-// - 「开始录音 (10s)」录的是**降噪后、TSE 前**的信号（后端 `recorder.rs` 的 Pre 抽头）；
+// - 参考语音固定为 `~/.purevox/tse_reference.wav`，界面**不给路径输入**（用户 2026-10-26
+//   明确要求），只显示录制时间 + 一个「打开参考语音文件夹」入口；
+// - 「开始录音」录的是**降噪后、TSE 前**的信号（后端 `recorder.rs` 的 Pre 抽头）；
 // - 录音必须引擎在跑；10 秒内没收到音频由后端看门狗明确失败，不永远停在「录制中」；
-// - 完成后由 `columns.js` 的全局逻辑重建会话加载新参考；卡片随后刷新文件状态。
+// - 完成 / 失败走**右下角气泡**（与其它操作同一套 `__pvToast`），卡片里只留持久状态；
+// - 完成后由 `columns.js` 的全局逻辑重建会话加载新参考；卡片随后刷新参考信息。
 //
-// 本文件独占 TSE 卡片控件；`columns.js` 只放「参考路径输入框」与挂载点（与 media.js 同一纪律）。
+// 本文件独占 TSE 卡片控件；`columns.js` 只挂载点（与 media.js 同一纪律）。
 
 ;(() => {
   const { invoke } = window.__TAURI__.core
   const T = (s, vars) => (window.__pvT ? window.__pvT(s, vars) : s)
+  /**
+   * @param {string} text
+   * @param {'info'|'ok'|'warn'|'error'} [level]
+   * @param {number} [ms]
+   */
+  const toast = (text, level = 'info', ms) => window.__pvToast?.(text, level, ms)
 
   /** @type {Set<any>} */
   const cards = new Set()
 
-  function baseName(p) {
-    if (!p) return ''
-    const parts = String(p).split(/[\\/]/)
-    return parts[parts.length - 1] || p
-  }
-
-  function fmtSize(n) {
-    if (!n) return '0 KB'
-    if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB'
-    return Math.max(1, Math.round(n / 1024)) + ' KB'
-  }
-
+  /** 录制时间按固定格式显示（`YYYY/MM/DD HH:mm`）：不随系统 locale 变，行宽也稳定。 */
   function fmtTime(ms) {
     if (!ms) return '—'
-    try {
-      return new Date(ms).toLocaleString()
-    } catch {
-      return '—'
-    }
+    const d = new Date(ms)
+    if (Number.isNaN(d.getTime())) return '—'
+    const p = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
   }
 
-  function setStatus(card, text, cls = '') {
-    if (!card.status) return
-    card.status.textContent = text
-    card.status.className = 'tse-status mono ' + cls
+  /** 参考信息一行：只有录制时间（时长恒为 10 s、文件名固定，都不占地方）。 */
+  function setInfo(card, text, cls = '') {
+    if (!card.info) return
+    card.info.textContent = text
+    card.info.className = 'tse-info mono ' + cls
   }
 
   async function refresh(card) {
     try {
-      const reference = (card.row.params && card.row.params.reference) || null
       const info =
-        /** @type {{path:string,exists:boolean,size:number,modified_ms:number,duration_s:number|null,is_default:boolean}} */ (
-          await invoke('tse_reference_info', { reference })
+        /** @type {{path:string,exists:boolean,size:number,modified_ms:number,duration_s:number|null}} */ (
+          await invoke('tse_reference_info')
         )
       if (!cards.has(card)) return
       if (info && info.exists) {
-        setStatus(
-          card,
-          T('已有参考：{name}（{size} · {time} · {dur}）', {
-            name: baseName(info.path),
-            size: fmtSize(info.size),
-            time: fmtTime(info.modified_ms),
-            dur: info.duration_s ? info.duration_s.toFixed(1) + ' s' : '—',
-          }),
-          'ok',
-        )
+        setInfo(card, T('参考语音：录制于 {time}', { time: fmtTime(info.modified_ms) }), 'ok')
       } else {
-        setStatus(card, T('尚无参考音频——TSE 将直通。'), 'na')
+        setInfo(card, T('尚无参考语音（TSE 直通）'), 'na')
       }
     } catch (e) {
-      if (cards.has(card)) setStatus(card, T('参考状态读取失败：') + e, 'na')
+      if (cards.has(card)) setInfo(card, T('参考状态读取失败：') + e, 'na')
     }
   }
 
@@ -98,47 +85,63 @@
       row,
       ctx,
       recording: false,
-      status: document.createElement('div'),
+      info: document.createElement('div'),
       btn: document.createElement('button'),
+      folder: document.createElement('button'),
       progress: document.createElement('span'),
     }
-    card.status.className = 'tse-status mono'
-    card.status.textContent = T('读取参考状态…')
+    card.info.className = 'tse-info mono'
+    card.info.textContent = T('读取参考状态…')
 
-    const note = document.createElement('div')
-    note.className = 'note'
-    note.textContent = T(
-      '录的是「降噪后、TSE 前」的 10 秒信号，音量归一化到 -20 dBFS。请先启动音频处理，并对麦克风持续说话。',
+    // 介绍只讲 TSE 是干什么的；「录的是什么信号」属于实现细节，不再上屏。
+    const intro = document.createElement('div')
+    intro.className = 'note tse-intro'
+    intro.textContent = T(
+      'TSE 介绍：只保留目标说话人的声音。先录 10 秒自己的说话声作为参考，之后按这个声音过滤其他人；录制前请先启动音频处理，并对着麦克风持续说话。',
     )
 
     const ctl = document.createElement('div')
     ctl.className = 'tse-controls'
     card.btn.type = 'button'
+    card.btn.className = 'primary'
     card.btn.textContent = T('● 开始录音 (10s)')
-    card.progress.className = 'tse-progress mono'
     card.btn.addEventListener('click', async () => {
       if (card.recording) return
       if (ctx.running && !ctx.running()) {
-        setStatus(card, T('请先启动音频处理，再录制参考。'), 'na')
+        toast(T('请先启动音频处理，再录制参考。'), 'warn', 6000)
         return
       }
       card.recording = true
       card.btn.disabled = true
-      card.progress.textContent = ''
-      setStatus(card, T('录音中… {sec}s（请持续说话）', { sec: 10 }), 'ok')
+      card.progress.textContent = T('录音中… {sec}s（请持续说话）', { sec: 10 })
       try {
         await invoke('record_tse_reference', { seconds: 10 })
       } catch (e) {
         card.recording = false
         card.btn.disabled = false
-        setStatus(card, T('录制失败：') + e, 'na')
+        card.progress.textContent = ''
+        toast(T('录制失败：') + e, 'error', 7000)
+        void refresh(card)
       }
     })
 
-    ctl.append(card.btn, card.progress)
+    card.folder.type = 'button'
+    card.folder.textContent = T('打开参考语音文件夹')
+    card.folder.addEventListener('click', () => {
+      card.folder.disabled = true
+      invoke('tse_open_reference_folder')
+        .then(() => toast(T('已打开参考语音文件夹'), 'ok', 2500))
+        .catch((e) => toast(T('打开参考语音文件夹失败：') + e, 'error', 6000))
+        .finally(() => {
+          card.folder.disabled = false
+        })
+    })
+
+    card.progress.className = 'tse-progress mono'
+    ctl.append(card.btn, card.folder, card.progress)
     const box = document.createElement('div')
     box.className = 'tse-card'
-    box.append(card.status, note, ctl)
+    box.append(intro, card.info, ctl)
     el.appendChild(box)
     cards.add(card)
     void refresh(card)
@@ -157,15 +160,18 @@
         if (tpl && tpl.id === 'rec.done') {
           card.recording = false
           card.btn.disabled = false
-          setStatus(card, T('完成！参考已生效。'), 'ok')
+          card.progress.textContent = ''
+          toast(T('参考语音已录制，TSE 已生效'), 'ok')
+          // 会话重建由 `columns.js` 在同一个快照里触发；这里只刷新卡片自己的信息行。
           setTimeout(() => {
             if (cards.has(card)) void refresh(card)
-          }, 1500)
+          }, 800)
         }
       } else if (rec.state === 'unavailable') {
         card.recording = false
         card.btn.disabled = false
-        setStatus(card, T('录制失败：') + rec.reason, 'na')
+        card.progress.textContent = ''
+        toast(T('录制失败：') + rec.reason, 'error', 7000)
         void refresh(card)
       }
     }

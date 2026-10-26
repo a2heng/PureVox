@@ -28,6 +28,12 @@
   const { invoke } = window.__TAURI__.core
   const T = (s, vars) => (window.__pvT ? window.__pvT(s, vars) : s)
   const $ = (id) => document.getElementById(id)
+  /**
+   * @param {string} text
+   * @param {'info'|'ok'|'warn'|'error'} [level]
+   * @param {number} [ms]
+   */
+  const toast = (text, level = 'info', ms) => window.__pvToast?.(text, level, ms)
 
   /** @type {any} */
   let st = null
@@ -238,6 +244,7 @@
         paint()
       })
       .catch((e) => {
+        toast(T('检查更新失败：') + e, 'error', 7000)
         window.__pvDebug?.('检查更新失败：' + e)
         refresh()
       })
@@ -248,8 +255,14 @@
       .then((s) => {
         st = s
         paint()
+        const st2 = /** @type {any} */ (s)
+        if (st2 && st2.phase === 'ready') toast(T('已下载，可以安装'), 'ok')
+        else if (st2 && st2.phase === 'failed') {
+          toast(T('下载更新失败：') + (st2.reason || ''), 'error', 8000)
+        }
       })
       .catch((e) => {
+        toast(T('下载更新失败：') + e, 'error', 8000)
         window.__pvDebug?.('下载失败：' + e)
         refresh()
       })
@@ -261,9 +274,11 @@
         // Windows：安装器接管，进程 1 s 后退出（界面来不及显示什么）；
         // Linux：装完状态变 installed，刷新一次就能看到「重启生效」。
         window.__pvDebug?.(typeof msg === 'string' ? msg : '已拉起安装器')
+        toast(T('已安装，重启 PureVox 生效'), 'ok', 6000)
         refresh()
       })
       .catch((e) => {
+        toast(T('安装更新失败：') + e, 'error', 8000)
         window.__pvDebug?.('安装失败：' + e)
         refresh()
       })

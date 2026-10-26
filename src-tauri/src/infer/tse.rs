@@ -23,13 +23,18 @@
 //!              cache_in [1,D]            扁平流式缓存（首帧零起；D 由模型决定，如 513216）
 //!         输出  enh_hop  [1,480]（滞后 1 hop）+ cache_out [1,D]
 //!
-//! 参考编码器（无参数）  输入 ref_spec [1,2,1001,481] → 输出 enr_tok [1,2,1001,180]
+//! 参考编码器（无训练参数）  输入 ref_spec [1,2,1001,481] → 输出 enr_tok [1,2,1001,180]
 //! ```
 //!
 //! 参考语音：10 s 48 kHz 单声道 → 平铺/截断到 480000 → 双端零 pad 480 → 1001 帧 × 960
 //! sqrt-Hann → rfft → ref_spec。无参考时 [`Tse::process`] 直通（不进模型、不动缓存）。
+//!
+//! **参考编码器不再带 ONNX**（2026-10-26）：`*_ref_encoder.onnx` 里没有任何训练参数，
+//! 只有一层固定 DSP（逐 bin 的 DRC + 120 个原始 bin + 60 个 ERB 带平均），矩阵是固定的
+//! 等权分带。既然 STFT 本来就在 Rust 里做，这一层直接在本文件实现，省掉一个模型文件、
+//! 一个 ORT 会话和一次模型池租约；数值已与旧 ONNX 逐元素对比过（max |Δ| ≈ 1e-6）。
 
-use ort::value::{Tensor, TensorRef};
+use ort::value::TensorRef;
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 
@@ -42,21 +47,21 @@ const REF_SAMPLES: usize = SAMPLE_RATE as usize * 10;
 const REF_FRAMES: usize = REF_SAMPLES / HOP + 1;
 const WIN: usize = 2 * HOP;
 const BINS: usize = WIN / 2 + 1;
+/// `enr_tok` 每帧维度：120 个原始 bin + 60 个 ERB 带。
+const TOK_DIM: usize = 180;
+/// 原始 bin 与 ERB 带的分界（bin 0..120 原样保留）。
+const RAW_BINS: usize = 120;
+/// ERB 带边界（bin 索引，含末尾哨兵 481）：60 带恰好覆盖 bin 120..480。
+/// 表来自旧 `*_ref_encoder.onnx` 的固定矩阵（每带等权平均），**是模型契约的一部分**。
+const ERB_BAND_START: [usize; 61] = [
+  120, 123, 126, 129, 132, 135, 138, 141, 145, 148, 152, 155, 159, 163, 166, 170, 174, 178, 183,
+  187, 191, 196, 200, 205, 210, 215, 220, 225, 230, 236, 241, 247, 253, 258, 264, 271, 277, 283,
+  290, 297, 304, 311, 318, 325, 333, 340, 348, 356, 365, 373, 382, 391, 400, 409, 418, 428, 438,
+  448, 459, 469, 481,
+];
 
 pub fn tse_models() -> &'static [(&'static str, &'static str)] {
   &[(MODEL_TSE, "TSE 202609c（现役）")]
-}
-
-/// 主模型文件名 → 同目录参考编码器文件名（剥离 `_epNNN` 段）。
-pub fn ref_encoder_file(model_file: &str) -> String {
-  let stem = model_file.strip_suffix(".onnx").unwrap_or(model_file);
-  let stem = match stem.rfind("_ep") {
-    Some(i) if i + 3 < stem.len() && stem[i + 3..].bytes().all(|b| b.is_ascii_digit()) => {
-      &stem[..i]
-    }
-    _ => stem,
-  };
-  format!("{stem}_ref_encoder.onnx")
 }
 
 pub struct Tse {
@@ -83,11 +88,11 @@ impl Tse {
   }
 
   /// 用 48 kHz 单声道参考语音计算 `enr_tok`（一次性；会话内不热切换）。
-  pub fn set_reference(&mut self, model_file: &str, samples: &[f32]) -> Result<(), String> {
+  pub fn set_reference(&mut self, samples: &[f32]) -> Result<(), String> {
     if samples.len() < HOP {
       return Err("参考语音太短（不足 10 ms）".into());
     }
-    self.enr_tok = Some(compute_enr_tok(model_file, samples)?);
+    self.enr_tok = Some(compute_enr_tok(samples));
     Ok(())
   }
 
@@ -148,12 +153,12 @@ impl Tse {
   }
 }
 
-/// 参考语音 → `enr_tok`（走 `*_ref_encoder.onnx`，同样复用模型池）。
-fn compute_enr_tok(model_file: &str, ref_samples: &[f32]) -> Result<(Vec<f32>, [i64; 4]), String> {
-  let path = crate::infer::model_path(&ref_encoder_file(model_file))?;
-  let model = crate::infer::checkout(&path)?;
-  let mut session = model.lock();
-
+/// 参考语音 → `enr_tok`（纯 Rust，等价于旧 `*_ref_encoder.onnx`）。
+///
+/// 逐帧：`sqrt-Hann` 窗 → rfft → 每个 bin 做 DRC
+/// `g = ln(1 + 10·mag) / (mag + 1e-8)`（`mag = sqrt(re² + im² + 1e-8)`）→
+/// 前 120 个 bin 原样进 token，120..480 按固定 ERB 带等权平均成 60 维。
+fn compute_enr_tok(ref_samples: &[f32]) -> (Vec<f32>, [i64; 4]) {
   // 10 s 归一（不足平铺），双端零 pad 一个 hop
   let n = ref_samples.len();
   let mut x = vec![0.0f32; REF_SAMPLES + 2 * HOP];
@@ -171,37 +176,88 @@ fn compute_enr_tok(model_file: &str, ref_samples: &[f32]) -> Result<(Vec<f32>, [
 
   let mut planner = FftPlanner::<f32>::new();
   let fft = planner.plan_fft_forward(WIN);
-  let mut spec = vec![0.0f32; 2 * REF_FRAMES * BINS];
+  // [1,2,1001,180] 的连续布局：先通道 0 全部帧，再通道 1。
+  let plane = REF_FRAMES * TOK_DIM;
+  let mut tok = vec![0.0f32; 2 * plane];
   let mut buf = vec![Complex::new(0.0f32, 0.0f32); WIN];
+  let mut re = vec![0.0f32; BINS];
+  let mut im = vec![0.0f32; BINS];
+
   for k in 0..REF_FRAMES {
     for i in 0..WIN {
       buf[i] = Complex::new(x[k * HOP + i] * win[i], 0.0);
     }
     fft.process(&mut buf);
     for b in 0..BINS {
-      spec[k * BINS + b] = buf[b].re;
-      spec[REF_FRAMES * BINS + k * BINS + b] = buf[b].im;
+      let r = buf[b].re;
+      let i = buf[b].im;
+      let mag = (r * r + i * i + 1e-8).sqrt();
+      let g = (1.0 + 10.0 * mag).ln() / (mag + 1e-8);
+      re[b] = r * g;
+      im[b] = i * g;
+    }
+    let base0 = k * TOK_DIM;
+    let base1 = plane + k * TOK_DIM;
+    tok[base0..base0 + RAW_BINS].copy_from_slice(&re[..RAW_BINS]);
+    tok[base1..base1 + RAW_BINS].copy_from_slice(&im[..RAW_BINS]);
+    for band in 0..(ERB_BAND_START.len() - 1) {
+      let lo = ERB_BAND_START[band];
+      let hi = ERB_BAND_START[band + 1];
+      let w = 1.0 / (hi - lo) as f32;
+      let mut sr = 0.0f32;
+      let mut si = 0.0f32;
+      for b in lo..hi {
+        sr += re[b] * w;
+        si += im[b] * w;
+      }
+      tok[base0 + RAW_BINS + band] = sr;
+      tok[base1 + RAW_BINS + band] = si;
     }
   }
 
-  let input = Tensor::from_array(([1i64, 2, REF_FRAMES as i64, BINS as i64], spec))
-    .map_err(|e| format!("构造 ref_spec 失败：{e}"))?;
-  let out_name = session
-    .outputs()
-    .first()
-    .map(|o| o.name().to_string())
-    .ok_or_else(|| "参考编码器没有输出".to_string())?;
-  let outputs = session
-    .run(ort::inputs!["ref_spec" => input])
-    .map_err(|e| format!("参考编码器推理失败：{e}"))?;
-  let (shape, tok) = outputs[out_name.as_str()]
-    .try_extract_tensor::<f32>()
-    .map_err(|e| format!("读取 enr_tok 失败：{e}"))?;
-  let dims: Vec<i64> = shape.iter().copied().collect();
-  if dims.len() != 4 {
-    return Err(format!("参考编码器输出维度异常：{dims:?}"));
+  (tok, [1, 2, REF_FRAMES as i64, TOK_DIM as i64])
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// 参考编码器的 Rust 实现必须与旧的 `*_ref_encoder.onnx` 数值等价。
+  /// 期望值由旧 ONNX 对同一段确定性信号（0.1 s 双音平铺到 10 s）算得：
+  /// sum / sumsq / 若干采样点（见 2026-10-26 的核对记录）。
+  #[test]
+  fn enr_tok_matches_ref_encoder_onnx() {
+    let n = 4_800usize;
+    let refv: Vec<f32> = (0..n)
+      .map(|i| {
+        let t = i as f64 / SAMPLE_RATE as f64;
+        (0.3 * (2.0 * std::f64::consts::PI * 440.0 * t).sin()
+          + 0.1 * (2.0 * std::f64::consts::PI * 3_500.0 * t).sin()) as f32
+      })
+      .collect();
+    let (tok, shape) = compute_enr_tok(&refv);
+    assert_eq!(shape, [1, 2, REF_FRAMES as i64, TOK_DIM as i64]);
+    assert_eq!(tok.len(), 2 * REF_FRAMES * TOK_DIM);
+
+    let sum: f64 = tok.iter().map(|&x| x as f64).sum();
+    let sumsq: f64 = tok.iter().map(|&x| (x as f64) * (x as f64)).sum();
+    assert!((sum - 38_598.620_608_881_574).abs() < 0.05, "sum={sum}");
+    assert!(
+      (sumsq - 332_570.926_743_560_65).abs() < 5.0,
+      "sumsq={sumsq}"
+    );
+    for (idx, expect) in [
+      (0usize, 3.982_298_9f32),
+      (119, 0.910_522),
+      (120, -0.300_055_4),
+      (180, 1.341_437_7),
+      (180_000, -3.982_298_9),
+    ] {
+      assert!(
+        (tok[idx] - expect).abs() < 1e-3,
+        "tok[{idx}]={} 期望 {expect}",
+        tok[idx]
+      );
+    }
   }
-  let mut arr = [0i64; 4];
-  arr.copy_from_slice(&dims);
-  Ok((tok.to_vec(), arr))
 }

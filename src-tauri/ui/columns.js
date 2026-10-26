@@ -303,7 +303,7 @@ function paramControls(row, ci, ri, keys) {
     if (keys && !keys.includes(p.key)) continue
     const item = document.createElement('span')
     item.className = 'param'
-    if (p.key === 'model' || p.key === 'reference' || p.key === 'path' || p.key === 'pads' || p.kind === 'choice') {
+    if (p.key === 'model' || p.key === 'path' || p.key === 'pads' || p.kind === 'choice') {
       item.classList.add('wide')
     }
     const label = document.createElement('span')
@@ -366,8 +366,6 @@ function paramControls(row, ci, ri, keys) {
       const input = document.createElement('input')
       input.type = 'text'
       input.value = row.params[p.key] ?? p.default
-      input.placeholder =
-        p.key === 'reference' ? T('默认 {path}', { path: '~/.purevox/tse_reference.wav' }) : ''
       input.addEventListener('change', () => commit(p, input.value, false))
       item.appendChild(input)
     }
@@ -562,9 +560,10 @@ function rowElement(col, ci, row, ri) {
       invoke('calibrate_aec_delay')
         .then((t) => window.__pvDebug?.('开始校准：' + t))
         .catch((e) => {
-          // 失败原因必须**看得见**（顶栏校准状态串），不能只进调试日志
+          // 失败原因必须**看得见**（顶栏校准状态串 + 右下角气泡），不能只进调试日志
           calSnap = { state: 'failed', value: '', reason: String(e) }
           paintRecCal()
+          window.__pvToast?.(T('校准失败：') + e, 'error', 7000)
           window.__pvDebug?.('校准失败：' + e)
         })
         .finally(() => {
@@ -601,12 +600,10 @@ function rowElement(col, ci, row, ri) {
     detail.appendChild(note)
   }
 
-  // TSE 行：参考路径 + 卡片（当前参考 / 10 秒录音 / 进度 / 完成或失败）
+  // TSE 行：参考语音的录制 / 文件夹入口全部由 `tse.js` 独占（与 media.js 同一纪律：
+  // 一件事只有一个入口）。这里**不画参考路径输入框**——参考固定为
+  // `~/.purevox/tse_reference.wav`（用户 2026-10-26 明确要求）。
   if (kind === 'process' && row.ptype === 'tse') {
-    const d2 = document.createElement('div')
-    d2.className = 'detail2'
-    d2.appendChild(paramControls(row, ci, ri, ['reference']))
-    el.appendChild(d2)
     if (window.__pvTse?.attach(el, ci, ri, row, { apply, running: () => running })) {
       el.classList.add('tse-row')
     }
@@ -849,6 +846,11 @@ window.__pvOnSnapshot = (s) => {
         row.params.far_gain_db = r.far_gain_db.toFixed(1)
         window.__pvDebug?.(
           `校准报告：延时 ${r.delay_ms} ms，近端 ${r.mic_gain_db} dB，远端 ${r.far_gain_db} dB，已应用并重建`,
+        )
+        window.__pvToast?.(
+          T('校准完成：延时 {d} ms', { d: r.delay_ms.toFixed(1) }),
+          'ok',
+          5000,
         )
         render()
         apply()

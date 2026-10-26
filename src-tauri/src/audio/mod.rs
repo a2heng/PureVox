@@ -245,7 +245,7 @@ impl AudioManager {
     self.hub.set_engine_stopped();
   }
 
-  /// 录制 TSE 参考（降噪后、音量归一化，48 kHz 单声道）；返回目标文件路径。
+  /// 录制 TSE 参考（降噪后、原样，48 kHz 单声道）；返回目标文件路径。
   ///
   /// **必须引擎在跑**：参考取自列线程的实时链路，没跑就没有样本（legacy 也是这个语义，
   /// 并明确提示「请先启动音频处理」）。同时挂看门狗：10 秒内收不到音频就明确失败，
@@ -255,7 +255,7 @@ impl AudioManager {
       return Err("请先启动音频处理，再录制参考（TSE 参考取自运行中的链路）".into());
     }
     let plan = self.plan();
-    let path = config::tse_reference_path(&plan);
+    let path = config::default_tse_reference();
     let token = self.rec.start(&plan, seconds, path.clone())?;
     let rec = self.rec.clone();
     let secs = seconds.max(1.0);

@@ -15,7 +15,9 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Linux：用系统默认浏览器打开链接（`xdg-open`）。
+//! Linux：用系统默认浏览器打开链接（`xdg-open`）；`reveal` 打开文件所在目录。
+
+use std::path::Path;
 
 pub fn open(url: &str) -> Result<(), String> {
   std::process::Command::new("xdg-open")
@@ -23,4 +25,15 @@ pub fn open(url: &str) -> Result<(), String> {
     .spawn()
     .map(|_| ())
     .map_err(|e| format!("打开链接失败：{e}"))
+}
+
+/// 用文件管理器打开 `path` 所在目录（`xdg-open <dir>`；桌面环境没有「定位并选中」的
+/// 通用命令，打开父目录已经满足「找到参考语音」的用途）。
+pub fn reveal(path: &Path) -> Result<(), String> {
+  let dir = path.parent().unwrap_or(path);
+  std::process::Command::new("xdg-open")
+    .arg(dir)
+    .spawn()
+    .map(|_| ())
+    .map_err(|e| format!("打开文件夹失败：{e}"))
 }

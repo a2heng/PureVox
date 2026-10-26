@@ -109,11 +109,13 @@
         if (hint) hint.textContent = wantAuto ? T('开机自启已开启') : T('开机自启已关闭')
         return invoke('set_settings', { settings }).then(() => {
           window.__pvDebug?.('设置已保存（热键 ' + settings.hotkey + '）')
+          window.__pvToast?.(T('设置已保存'), 'ok')
           close()
         })
       })
       .catch((e) => {
         if (hint) hint.textContent = T('开机自启设置失败：') + e
+        window.__pvToast?.(T('开机自启设置失败：') + e, 'error', 7000)
         window.__pvDebug?.('开机自启设置失败：' + e)
       })
   }

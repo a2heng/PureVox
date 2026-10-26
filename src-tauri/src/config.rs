@@ -82,28 +82,8 @@ pub fn expand_path(p: &str) -> PathBuf {
   PathBuf::from(p)
 }
 
-/// TSE 参考路径：计划里第一个 TSE 行的 `reference`（非空）优先，否则默认路径。
-/// 与 `TseStage::load` / 录音命令共用，避免「录到默认路径、TSE 读自定义路径」的错位。
-pub fn tse_reference_path(plan: &Plan) -> PathBuf {
-  for c in &plan.columns {
-    for r in &c.rows {
-      if r.ptype == "tse" {
-        if let Some(p) = r
-          .params
-          .get("reference")
-          .map(|s| s.trim())
-          .filter(|s| !s.is_empty())
-        {
-          return expand_path(p);
-        }
-        return default_tse_reference();
-      }
-    }
-  }
-  default_tse_reference()
-}
-
 /// TSE 参考录音默认路径（`~/.purevox/tse_reference.wav`）。
+/// **唯一路径**：界面不给路径设置，录音 / 加载 / 「打开文件夹」都从这里取。
 pub fn default_tse_reference() -> PathBuf {
   config_dir()
     .map(|d| d.join("tse_reference.wav"))

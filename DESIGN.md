@@ -558,7 +558,7 @@ mic/far 仍各自持有采集路径；面板还没把 `mix_sources` 画出来（
 ## 7. 模型生命周期
 
 ```rust
-pub enum ModelKind { Denoise, Tse, Aec, TseRefEncoder }
+pub enum ModelKind { Denoise, Tse, Aec }
 pub struct ModelDesc { pub key: &'static str, pub file: &'static str, pub label: &'static str, pub kind: ModelKind }
 pub fn models() -> &'static [ModelDesc];
 pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
@@ -566,7 +566,9 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 
 - 现存：`purevox_denoise_202609b_ep0046.onnx`（现役）、`202606`（旧版对照；`202609a` / `202609c`
   已于 2026-10-26 删除以减小包体）、
-  `purevox_aec_202610_ep0372.onnx`（现役）、`purevox_tse_202609c_ep0201.onnx`（+ `..._ref_encoder.onnx`）。
+  `purevox_aec_202610_ep0372.onnx`（现役）、`purevox_tse_202609c_ep0201.onnx`。
+  TSE 的参考编码器**不是模型**（无训练参数，只有固定 DRC + ERB 分带），2026-10-26 起由
+  `infer/tse.rs` 在 Rust 内实现，`*_ref_encoder.onnx` 已删除。
   **缓存维度从模型输入读，不写死**。
 - 选择存配置（`denoise_model` 等），计划构建时校验文件存在，缺失进 `problems`。
 - 会话配置：`with_intra_threads(1)` + `with_inter_threads(1)` + `with_intra_op_spinning(false)`
@@ -639,7 +641,7 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 | **列 UI（增删列、加/拖行、两端固定）** | ◑ 已实现（增删列、加/删/上下移行、两端固定）；**列头启用开关待做**（`ColumnSpec.enabled`，停用=保留配置、放掉设备引用，见 §6.5）、拖动待做 | §3.1 / §6.5 |
 | **设备接管（多路共用设备 + 软件混音）** | ✅ 已实现（2026-10-19）：`audio/device_pool.rs` 按 `(设备, 角色)` 只开一次 + 引用计数 + 跨重建存活；`audio/mixer.rs` 每源一路可调比例重采样 + 水位伺服后相加；行级/列头开关 = 订阅与引用的挂摘。**待做**：回环与 AEC 行的采集池化、面板逐源展示 | §6.5 |
 | **模型注册表 + 型号选择** | ◑ 降噪/TSE 型号下拉已接入；统一 `ModelDesc` 注册表待做 | §7 |
-| **TSE 目标说话人提取** | ✅ 已实现（参考 10 s → `enr_tok`，3.9 ms/hop；参考可录制=降噪后+音量归一化；无参考直通） | §4 / §7 |
+| **TSE 目标说话人提取** | ✅ 已实现（参考 10 s → `enr_tok`（Rust 内固定 DSP，无 ref ONNX），3.9 ms/hop；参考可录制=降噪后原样；无参考直通） | §4 / §7 |
 | **AEC 回声消除** | ✅ 已实现（far 参考采集 + 2 s 网格对齐 + 每行缓存 + 互相关延时校准） | §4 |
 | 回环 | ✅ 已实现（`audio/loopback.rs`，WASAPI loopback） | 作为「输入行」的源（`loopback`，电脑播放音频） |
 | 媒体 | ✅ 已实现（后端 + 界面，2026-10-12）：`soundpad` / `player` 处理行、媒体库导入（symphonia）、每音效热键、MediaHub 控制 | §4 |

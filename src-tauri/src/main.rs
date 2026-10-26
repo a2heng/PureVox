@@ -367,7 +367,7 @@ fn list_nodes() -> Vec<NodeInfo> {
     .collect()
 }
 
-/// 录制 TSE 参考：录「降噪后、TSE 前」的信号 `seconds` 秒，做音量归一化后写
+/// 录制 TSE 参考：录「降噪后、TSE 前」的信号 `seconds` 秒，**原样**写
 /// `~/.purevox/tse_reference.wav`；进度见 `/debug` 的 `recorder` 字段。
 #[tauri::command]
 async fn record_tse_reference(
@@ -380,7 +380,7 @@ async fn record_tse_reference(
     .map_err(|e| format!("录制异常：{e}"))?
 }
 
-/// TSE 参考文件的当前状态（界面卡片显示：文件名 / 大小 / 修改时间 / 时长）。
+/// TSE 参考文件的当前状态（界面卡片只显示录制时间；其余字段留给调试 / 脚本）。
 #[derive(serde::Serialize)]
 struct TseRefInfo {
   path: String,
@@ -388,24 +388,12 @@ struct TseRefInfo {
   size: u64,
   modified_ms: u64,
   duration_s: Option<f64>,
-  is_default: bool,
 }
 
-/// 读 TSE 参考状态。`reference` 为空时按计划里第一个 TSE 行的路径（与录音/加载一致）。
+/// 读 TSE 参考状态（唯一路径：`~/.purevox/tse_reference.wav`）。
 #[tauri::command]
-async fn tse_reference_info(
-  reference: Option<String>,
-  mgr: tauri::State<'_, Arc<AudioManager>>,
-) -> Result<TseRefInfo, String> {
-  let plan = mgr.plan();
-  let default = config::default_tse_reference();
-  let path = match reference
-    .map(|s| s.trim().to_string())
-    .filter(|s| !s.is_empty())
-  {
-    Some(p) => config::expand_path(&p),
-    None => config::tse_reference_path(&plan),
-  };
+async fn tse_reference_info() -> Result<TseRefInfo, String> {
+  let path = config::default_tse_reference();
   tauri::async_runtime::spawn_blocking(move || {
     let meta = std::fs::metadata(&path).ok();
     let exists = meta.is_some();
@@ -429,11 +417,20 @@ async fn tse_reference_info(
       size,
       modified_ms,
       duration_s,
-      is_default: path == default,
     })
   })
   .await
   .map_err(|e| format!("读取参考信息异常：{e}"))?
+}
+
+/// 打开 TSE 参考语音所在文件夹（资源管理器 / 文件管理器里定位 `tse_reference.wav`）。
+#[tauri::command]
+async fn tse_open_reference_folder() -> Result<(), String> {
+  let path = config::default_tse_reference();
+  if let Some(dir) = path.parent() {
+    std::fs::create_dir_all(dir).map_err(|e| format!("创建参考语音文件夹失败：{e}"))?;
+  }
+  openurl::reveal(&path)
 }
 
 /// 测 AEC 延时：采集 1.6 s（最大搜索 1000 ms），结果见 `/debug` 的 `calib` 字段。
@@ -919,6 +916,7 @@ fn main() {
       list_nodes,
       record_tse_reference,
       tse_reference_info,
+      tse_open_reference_folder,
       calibrate_aec_delay,
       net_start,
       net_stop,

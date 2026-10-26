@@ -32,6 +32,12 @@
 
   /** @param {string} s @param {Record<string, string|number>} [vars] */
   const T = (s, vars) => (window.__pvT ? window.__pvT(s, vars) : s)
+  /**
+   * @param {string} text
+   * @param {'info'|'ok'|'warn'|'error'} [level]
+   * @param {number} [ms]
+   */
+  const toast = (text, level = 'info', ms) => window.__pvToast?.(text, level, ms)
 
   /**
    * @param {string} cmd @param {Record<string, unknown>} [args]
@@ -108,16 +114,18 @@
   }
 
   /**
-   * 跑一个服务动作，按钮上给反馈，成功/失败都写进状态行（不静默）。
+   * 跑一个服务动作，按钮上给反馈，成功 / 失败都走右下角气泡（不静默）。
    * @param {HTMLButtonElement} btn @param {string} cmd @param {string} doing
-   * @param {(r: any) => string} [fmt]
+   * @param {string} done 成功文案（调用点已过 T()）
    */
-  async function action(btn, cmd, doing, fmt) {
+  async function action(btn, cmd, doing, done) {
     busy(btn, doing)
     try {
       const r = await invoke(cmd)
       if (window.__pvDebug) window.__pvDebug(T('网络服务：') + String(r))
+      if (done) toast(done, 'ok')
     } catch (e) {
+      toast(T('网络服务失败：') + String(e), 'error', 7000)
       if (window.__pvDebug) window.__pvDebug(T('网络服务失败：') + String(e))
     } finally {
       btn.disabled = false
@@ -137,7 +145,9 @@
       window.setTimeout(() => {
         btn.textContent = old
       }, 1200)
+      toast(T('已复制客户端地址'), 'ok', 2500)
     } catch (e) {
+      toast(T('复制失败：') + String(e), 'error', 6000)
       if (window.__pvDebug) window.__pvDebug(T('复制失败：') + String(e))
     }
   }
@@ -236,24 +246,44 @@
      * `T('…')` 的字面量收集 msgid，`T(变量)` 它看不见，动态文案也翻译不了。
      * @param {string} text 已翻译的按钮文字
      * @param {string} cmd @param {string} doing 已翻译的进行中文字
+     * @param {string} done 已翻译的成功文字
      * @param {string} tip 已翻译的 tooltip
      * @param {boolean} [primary]
      */
-    const mk = (text, cmd, doing, tip, primary) => {
+    const mk = (text, cmd, doing, done, tip, primary) => {
       const b = document.createElement('button')
       b.type = 'button'
       b.textContent = text
       b.title = tip
       if (primary) b.className = 'primary'
-      b.addEventListener('click', () => action(b, cmd, doing))
+      b.addEventListener('click', () => action(b, cmd, doing, done))
       acts.appendChild(b)
       return b
     }
     // 三个生命周期按钮。**不做「隐藏」，只做「禁用」** —— 禁用时按钮还在原位，卡片
     // 不会因为服务起停而重排，界面不跳（AGENTS.md §1.1 的固定行数刷新同理）。
-    const bStart = mk(T('启动'), 'net_start', T('启动中'), T('启动局域网服务，客户端才能连进来'))
-    const bStop = mk(T('停止'), 'net_stop', T('停止中'), T('停止服务并断开所有客户端（远程输入同时强制关闭）'))
-    mk(T('重启服务'), 'net_restart', T('重启中'), T('重开监听并重新绑定端口（换端口后用这个生效）'), true)
+    const bStart = mk(
+      T('启动'),
+      'net_start',
+      T('启动中'),
+      T('网络服务已启动'),
+      T('启动局域网服务，客户端才能连进来'),
+    )
+    const bStop = mk(
+      T('停止'),
+      'net_stop',
+      T('停止中'),
+      T('网络服务已停止'),
+      T('停止服务并断开所有客户端（远程输入同时强制关闭）'),
+    )
+    mk(
+      T('重启服务'),
+      'net_restart',
+      T('重启中'),
+      T('网络服务已重启'),
+      T('重开监听并重新绑定端口（换端口后用这个生效）'),
+      true,
+    )
     bar.appendChild(acts)
     box.appendChild(bar)
 
@@ -290,6 +320,7 @@
           if (window.__pvDebug) window.__pvDebug(String(r))
         })
         .catch((e) => {
+          toast(T('切换网卡失败：') + String(e), 'error', 6000)
           if (window.__pvDebug) window.__pvDebug(T('切换网卡失败：') + String(e))
         })
         .finally(() => {
@@ -309,6 +340,7 @@
       const p = Number(portIn.value)
       if (!Number.isInteger(p) || p < 1024 || p > 65535) {
         portIn.value = String(addrPort) // 非法值回滚，别留个填不回去的框
+        toast(T('端口要在 1024~65535 之间'), 'warn', 5000)
         if (window.__pvDebug) window.__pvDebug(T('端口要在 1024~65535 之间'))
         return
       }
@@ -316,10 +348,12 @@
       invoke('net_set_port', { port: p })
         .then((r) => {
           addrPort = p
+          toast(T('端口已改为 {p}', { p }), 'ok', 3000)
           if (window.__pvDebug) window.__pvDebug(String(r))
         })
         .catch((e) => {
           portIn.value = String(addrPort)
+          toast(T('改端口失败：') + String(e), 'error', 6000)
           if (window.__pvDebug) window.__pvDebug(T('改端口失败：') + String(e))
         })
         .finally(() => {
@@ -345,6 +379,7 @@
       try {
         const pem = await invoke('net_ca_pem')
         if (!pem) {
+          toast(T('证书还没准备好：先启动服务'), 'warn', 5000)
           if (window.__pvDebug) window.__pvDebug(T('证书还没准备好：先启动服务'))
           return
         }
@@ -355,8 +390,10 @@
         a.download = 'purevox-ca.crt'
         a.click()
         URL.revokeObjectURL(url)
+        toast(T('CA 证书已下载'), 'ok')
         if (window.__pvDebug) window.__pvDebug(T('CA 证书已下载'))
       } catch (e) {
+        toast(T('取证书失败：') + String(e), 'error', 6000)
         if (window.__pvDebug) window.__pvDebug(T('取证书失败：') + String(e))
       } finally {
         caBtn.disabled = false
@@ -434,6 +471,7 @@
         })
         .catch((e) => {
           cb.checked = remoteInput // 失败必须回滚，不能界面显示已开而实际是关
+          toast(T('远程输入开关失败：') + String(e), 'error', 6000)
           if (window.__pvDebug) window.__pvDebug(T('远程输入开关失败：') + String(e))
         })
     })

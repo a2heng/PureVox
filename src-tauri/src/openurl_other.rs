@@ -15,7 +15,10 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 其它平台（非 Windows / 非 Linux）：用系统默认程序打开链接（macOS `open`）。
+//! 其它平台（非 Windows / 非 Linux）：用系统默认程序打开链接（macOS `open`）；
+//! `reveal` 在访达里定位文件（`open -R`）。
+
+use std::path::Path;
 
 pub fn open(url: &str) -> Result<(), String> {
   std::process::Command::new("open")
@@ -23,4 +26,13 @@ pub fn open(url: &str) -> Result<(), String> {
     .spawn()
     .map(|_| ())
     .map_err(|e| format!("打开链接失败：{e}"))
+}
+
+pub fn reveal(path: &Path) -> Result<(), String> {
+  std::process::Command::new("open")
+    .arg("-R")
+    .arg(path)
+    .spawn()
+    .map(|_| ())
+    .map_err(|e| format!("打开文件夹失败：{e}"))
 }

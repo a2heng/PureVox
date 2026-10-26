@@ -576,12 +576,8 @@ static SPECS: &[NodeSpec] = &[
           default: crate::infer::tse::MODEL_TSE,
         },
       },
-      // 留空 = 默认 ~/.purevox/tse_reference.wav
-      ParamSpec {
-        key: "reference",
-        label: "参考语音",
-        kind: ParamKind::Text { default: "" },
-      },
+      // 参考语音不在界面上给路径：固定 `~/.purevox/tse_reference.wav`，由
+      // `record_tse_reference` 录制、`ui/tse.js` 卡片显示录制时间并提供文件夹入口。
     ],
   },
   NodeSpec {
@@ -711,14 +707,7 @@ pub fn create_stage(
         Some(ParamValue::Text(t)) => t.clone(),
         _ => crate::infer::tse::MODEL_TSE.to_string(),
       };
-      let reference = match params.get("reference") {
-        Some(ParamValue::Text(t)) if !t.trim().is_empty() => Some(t.clone()),
-        _ => None,
-      };
-      Ok(Box::new(super::components::tse::TseStage::load(
-        &model,
-        reference.as_deref(),
-      )?))
+      Ok(Box::new(super::components::tse::TseStage::load(&model)?))
     }
     "gain" => {
       let db = match params.get("gain_db") {

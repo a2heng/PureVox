@@ -57,7 +57,7 @@ fn ort_env() -> Result<&'static ort::environment::Environment, String> {
 /// 统一 ONNX 会话：单线程推理 + 关闭自旋等待。
 ///
 /// ort/onnxruntime 默认按核数建线程池并忙等（allow_spinning），会占满 CPU 并和音频回调抢核，
-/// 实测把 1 ms 的推理拖到 100 ms。降噪 / AEC / TSE / 参考编码器都走这一条路径。
+/// 实测把 1 ms 的推理拖到 100 ms。降噪 / AEC / TSE 都走这一条路径。
 pub(crate) fn build_session(path: &Path) -> Result<Session, String> {
   let path = path.to_path_buf();
   let env = ort_env()?;
@@ -273,10 +273,7 @@ pub fn preload_all() {
       let mut files: Vec<String> = Vec::new();
       files.extend(denoise_models().iter().map(|(f, _)| (*f).to_string()));
       files.extend(aec::aec_models().iter().map(|(f, _)| (*f).to_string()));
-      for (f, _) in tse::tse_models() {
-        files.push((*f).to_string());
-        files.push(tse::ref_encoder_file(f));
-      }
+      files.extend(tse::tse_models().iter().map(|(f, _)| (*f).to_string()));
       files.sort();
       files.dedup();
       for f in files {

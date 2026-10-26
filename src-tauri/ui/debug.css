@@ -721,13 +721,17 @@ td { padding: 3px 8px 3px 0; overflow: hidden; text-overflow: ellipsis; }
   width: 100%;
   min-width: 0;
 }
-.tse-status {
+.tse-info {
   font-size: 12px;
   line-height: 1.45;
   color: var(--muted);
-  white-space: normal;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
 }
+.tse-info.ok { color: var(--fg-2); }
+.tse-intro { margin: 0; }
 .tse-controls {
   display: flex;
   flex-wrap: wrap;

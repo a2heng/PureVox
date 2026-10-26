@@ -75,9 +75,16 @@ window.__pvDriversLinux = (() => {
     invoke(cmd)
       .then((/** @type {any} */ s) => {
         probe = { state: 'ok', value: s }
+        window.__pvToast?.(
+          cmd === 'virtual_mic_create' ? T('虚拟麦克风已创建') : T('虚拟麦克风已移除'),
+          'ok',
+        )
         window.__pvDebug?.(cmd + ' 成功')
       })
-      .catch((e) => window.__pvDebug?.(cmd + ' 失败：' + e))
+      .catch((e) => {
+        window.__pvToast?.(T('虚拟驱动操作失败：') + e, 'error', 7000)
+        window.__pvDebug?.(cmd + ' 失败：' + e)
+      })
       .finally(() => {
         busy = false
         refresh()

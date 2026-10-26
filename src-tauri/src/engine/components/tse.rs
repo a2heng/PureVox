@@ -29,14 +29,11 @@ pub struct TseStage {
 }
 
 impl TseStage {
-  /// `reference` 为空则用默认路径 `~/.purevox/tse_reference.wav`。
-  pub fn load(model_file: &str, reference: Option<&str>) -> Result<Self, String> {
+  /// 参考语音固定为 `~/.purevox/tse_reference.wav`（界面不给路径设置，见 DESIGN.md §7）。
+  pub fn load(model_file: &str) -> Result<Self, String> {
     let mut engine = Tse::load(model_file)?;
-    let path = match reference.filter(|p| !p.trim().is_empty()) {
-      Some(p) => crate::config::expand_path(p),
-      None => crate::config::default_tse_reference(),
-    };
-    let status = match load_reference(&mut engine, model_file, &path) {
+    let path = crate::config::default_tse_reference();
+    let status = match load_reference(&mut engine, &path) {
       Ok(secs) => format!("参考已加载（{secs:.1} s）"),
       Err(e) => format!("未设置参考（直通）：{e}"),
     };
@@ -44,7 +41,7 @@ impl TseStage {
   }
 }
 
-fn load_reference(engine: &mut Tse, model_file: &str, path: &Path) -> Result<f64, String> {
+fn load_reference(engine: &mut Tse, path: &Path) -> Result<f64, String> {
   let (samples, rate) = crate::wav::read_mono(path)?;
   if rate != crate::audio::SAMPLE_RATE {
     return Err(format!(
@@ -53,7 +50,7 @@ fn load_reference(engine: &mut Tse, model_file: &str, path: &Path) -> Result<f64
     ));
   }
   let secs = samples.len() as f64 / rate as f64;
-  engine.set_reference(model_file, &samples)?;
+  engine.set_reference(&samples)?;
   Ok(secs)
 }
 

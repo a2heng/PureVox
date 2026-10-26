@@ -71,7 +71,10 @@ window.__pvDriversWindows = (() => {
   }
 
   function openLink(url) {
-    invoke('open_url', { url }).catch((e) => window.__pvDebug?.('打开链接失败：' + e))
+    invoke('open_url', { url }).catch((e) => {
+      window.__pvToast?.(T('打开链接失败：') + e, 'error', 6000)
+      window.__pvDebug?.('打开链接失败：' + e)
+    })
   }
 
   return {
