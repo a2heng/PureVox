@@ -52,6 +52,7 @@ r"""用假产物树 + 假 `gh` 在本地跑一遍 `release_stage.sh`，两个场
 
 from __future__ import annotations
 
+import ast
 import os
 import pathlib
 import shutil
@@ -172,9 +173,35 @@ def run_case(label: str, expect_rc: int, expect_gh: bool = False, **kw) -> bool:
     return ok
 
 
+def assert_bundle_constants() -> bool:
+    """`assert_bundle.py` 的常量存在性（**静态**检查，不需要产物树）。
+
+    来历（2026-10-26）：改体积下限时把注释写在常量那一行上，替换完常量本身没了 ——
+    本机没产物树所以跑不到那段，直到 CI 打完整包才炸 `NameError: MIN_MB`。
+    这类「只在有产物时才走到」的脚本，最容易在门禁里静默烂掉，所以在这里静态看一眼。
+    """
+    path = ROOT / "tools" / "automation" / "assert_bundle.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = {
+        t.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for t in node.targets
+        if isinstance(t, ast.Name)
+    }
+    missing = [n for n in ("MIN_MB", "DEBUG_URL", "BUNDLE") if n not in names]
+    if missing:
+        print(f"  assert_bundle.py 缺少常量：{missing}")
+        return False
+    return True
+
+
 def main() -> int:
     print("== run_release_stage：用假产物树 + 假 gh 跑 release_stage.sh ==")
+    ok_const = assert_bundle_constants()
+    print(f"  assert_bundle.py 常量：{'OK' if ok_const else '缺'}")
     results = [
+        ok_const,
         run_case("五种产物齐全（必须走到 gh，且用的是假 gh）", 0, expect_gh=True),
         run_case("缺 deb", 1, drop=f"PureVox-Linux-x64-{VERSION}-deb"),
         run_case("没有 notes 文件", 1, notes=False),
