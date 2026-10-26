@@ -22,7 +22,7 @@ package com.purevox.mic.audio
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import android.os.Build
+import android.os.Process
 import android.util.Log
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -57,11 +57,15 @@ class SpeakerDownlink {
         /** 一次写入的样本数：10 ms @48 kHz（与工程 10 ms hop 网格一致）。 */
         private const val WRITE_CHUNK = 480
 
-        /** 开声前预热水位：50 ms（与网页版同一目标；Android 计时器通常更准，但网络突发仍要兜）。 */
-        private const val PREBUFFER_SAMPLES = 2400
+        /** 开声前预热水位：60 ms。网页版实验田 50 ms 已 0 欠载；安卓再加 10 ms 余量。 */
+        private const val PREBUFFER_SAMPLES = 2880
 
-        /** 包队列深度：200 包（@10 ms ≈ 2 s），突发兜底。 */
-        private const val PACKET_QUEUE = 200
+        /** 包队列深度：300 包（@10 ms ≈ 3 s），突发兜底。 */
+        private const val PACKET_QUEUE = 300
+
+        /** AudioTrack 底层缓冲：80 ms（float 单声道 = 480 × 4 × 8 字节）。
+         *  关键是**别开 LOW_LATENCY**：它会把底层缓冲压到 10~20 ms，网络一抖就欠载。 */
+        private const val TRACK_BUFFER_MS = 80
 
         private const val PREBUFFER_WAIT_MS = 500L
 
@@ -228,8 +232,9 @@ class SpeakerDownlink {
     private fun openTrack(): AudioTrack? {
         return try {
             val minBytes = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_MASK, PCM_ENCODING)
-            // 至少 80 ms：给调度抖动留余量（minBytes 常常只有几十毫秒）
-            val bytes = maxOf(if (minBytes > 0) minBytes else 0, WRITE_CHUNK * 4 * 8)
+            // 至少 200 ms：网络下行不是本地播放，缓冲小于网络抖动必然欠载
+            val bytes = maxOf(if (minBytes > 0) minBytes else 0,
+                WRITE_CHUNK * 4 * (TRACK_BUFFER_MS / 10))
             val attrs = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -239,15 +244,15 @@ class SpeakerDownlink {
                 .setSampleRate(SAMPLE_RATE)
                 .setChannelMask(CHANNEL_MASK)
                 .build()
-            val builder = AudioTrack.Builder()
+            // **不要 setPerformanceMode(LOW_LATENCY)**：它会让系统把底层缓冲压到很小
+            // （实测某些机型只剩 10~20 ms），网络包一抖就欠载，1 kHz 听起来就是咔哒。
+            // 网络下行本来就有 50~80 ms 缓冲，低延迟模式没有收益，只有风险。
+            val at = AudioTrack.Builder()
                 .setAudioAttributes(attrs)
                 .setAudioFormat(format)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setBufferSizeInBytes(bytes)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-            }
-            val at = builder.build()
+                .build()
             if (at.state != AudioTrack.STATE_INITIALIZED) {
                 lastError = "AudioTrack 初始化失败（48 kHz 单声道 float 输出不被支持）"
                 at.release()
@@ -263,6 +268,7 @@ class SpeakerDownlink {
     }
 
     private fun decodeLoop(dec: OpusDecoder) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         while (running) {
             val pkt = try {
                 packets.poll(POLL_WAIT_MS, TimeUnit.MILLISECONDS)
@@ -281,6 +287,7 @@ class SpeakerDownlink {
     }
 
     private fun writeLoop(at: AudioTrack) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val chunk = FloatArray(WRITE_CHUNK)
         val silence = FloatArray(WRITE_CHUNK)
         try {
