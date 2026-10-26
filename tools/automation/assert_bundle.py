@@ -51,7 +51,10 @@ import _utf8  # noqa: E402
 
 _utf8.force()
 
-MIN_MB = 40          # 产物体积下限（MB）：无模型 ~10MB，带模型 >60MB
+# 产物体积下限（MB）：漏打模型时安装包会缩到 ~10MB。
+# 2026-10-26 从 40 调到 20：模型瘦身（删 202609a/202609c，-23 MB）后 Windows 安装包
+# 只有 36.8 MB，旧下限把**正确的包**判成「疑似模型未随包」。这条只是「有没有模型」的
+# 粗筛，真正齐全与否由 `check_layout` 数 .onnx 个数；模型再瘦就跟着调这个数。
 DEBUG_URL = "http://127.0.0.1:47821/debug"
 SMOKE_POLL = 60      # 轮询次数
 SMOKE_INTERVAL = 0.5  # 秒
@@ -90,7 +93,7 @@ def newest(dir_path: Path, pattern: str) -> Path | None:
 
 
 def check_size(path: Path) -> None:
-    """产物体积下限：漏打模型时安装包会缩到 ~10MB，肉眼很难发现。"""
+    """产物体积下限：漏打模型时安装包会缩到 ~10MB，肉眼很难发现（模型清单见 `check_layout`）。"""
     mb = path.stat().st_size / (1024 * 1024)
     if mb < MIN_MB:
         raise SystemExit(
