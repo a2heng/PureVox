@@ -122,19 +122,23 @@ class MicUplink(
         encoderName = enc.codecName
 
         var used = sourceId
-        val picked = buildRecord(sourceId) ?: run {
-            // 所选 API 不可用（无权限 / 机型不支持）→ 回退到 MIC，把原因说出来，不静默。
-            val fallback = buildRecord(MediaRecorder.AudioSource.MIC)
-            if (fallback != null) {
-                used = MediaRecorder.AudioSource.MIC
-                onWarning?.invoke(
-                    context.getString(
-                        com.purevox.mic.R.string.mic_source_fallback,
-                        MicSources.label(context, sourceId),
-                    ),
-                )
+        val picked = if (sourceId == MediaRecorder.AudioSource.MIC) {
+            buildRecord(sourceId)
+        } else {
+            buildRecord(sourceId) ?: run {
+                // 所选 API 不可用（无权限 / 机型不支持）→ 回退到 MIC，把原因说出来，不静默。
+                val fallback = buildRecord(MediaRecorder.AudioSource.MIC)
+                if (fallback != null) {
+                    used = MediaRecorder.AudioSource.MIC
+                    onWarning?.invoke(
+                        context.getString(
+                            com.purevox.mic.R.string.mic_source_fallback,
+                            MicSources.label(context, sourceId),
+                        ),
+                    )
+                }
+                fallback
             }
-            fallback
         }
         if (picked == null) {
             enc.stop()
