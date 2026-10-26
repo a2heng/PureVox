@@ -195,19 +195,19 @@ $('prob-copy')?.addEventListener('click', async () => {
   }
 })
 
-// ---------- 内置截屏（调试抽屉标题栏） ----------
-$('btn-shot')?.addEventListener('click', async () => {
-  const b = /** @type {HTMLButtonElement|null} */ ($('btn-shot'))
-  if (b) b.disabled = true
-  try {
-    const path = await invoke('capture_ui')
-    toast(T('截图已保存：') + path, 'ok', 6500)
-  } catch (e) {
-    toast(T('截图失败：') + e, 'error', 7000)
-  } finally {
-    if (b) b.disabled = false
-  }
+// ---------- 系统声音（Windows / Linux）----------
+// 只负责“打开系统声音控制面板”（Windows=mmsys.cpl，Linux=pavucontrol/系统设置）。
+// 平台不支持就隐藏按钮：不显示一个点了必失败的入口。
+$('btn-sound')?.addEventListener('click', () => {
+  invoke('open_sound_panel')
+    .then(() => toast(T('已打开系统声音面板'), 'ok'))
+    .catch((e) => toast(T('打开系统声音面板失败：') + e, 'error', 6000))
 })
+invoke('get_platform')
+  .then((p) => {
+    if (p !== 'windows' && p !== 'linux') $('btn-sound')?.remove()
+  })
+  .catch((e) => window.__pvDebug?.('读取平台失败：' + e))
 
 // ---------- 面板：点遮罩 / Esc 关闭 ----------
 function visiblePanel() {
@@ -236,14 +236,10 @@ document.addEventListener('keydown', (e) => {
     t instanceof HTMLElement &&
     (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
   if (e.key === 'Escape') {
-    // 面板在最上层，先关面板；没有面板才收抽屉
+    // 面板在最上层，先关面板（调试窗口有自己的关闭按钮 / 系统标题栏）
     const p = visiblePanel()
     if (p) {
       closePanel(p)
-      return
-    }
-    if (body.classList.contains('debug-on')) {
-      $('btn-debug')?.click()
       return
     }
     return

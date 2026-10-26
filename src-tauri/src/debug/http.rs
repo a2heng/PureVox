@@ -26,6 +26,7 @@
 //! - `/debug/logs?limit=N` 事件日志
 //! - `/debug/metrics` 2 分钟指标历史
 //! - `/debug/plan` 当前计划
+//! - `/debug/calib` AEC 校准的结构化报告（与快照 `calib_report`、`calib_last.json` 同源）
 //! - `/debug/bundle` 一键诊断包（快照 + 日志 + 指标）
 //! - `/debug/screenshot` 截取当前界面并返回保存路径（PNG 实体在 `/debug/ui.png`）
 
@@ -37,7 +38,7 @@ use serde_json::{Value, json};
 
 use super::{DEBUG_HTTP_PORT, Probe, SharedHub, events, metrics};
 
-const ENDPOINTS: [&str; 10] = [
+const ENDPOINTS: [&str; 11] = [
   "/debug",
   "/debug/system",
   "/debug/audio",
@@ -45,6 +46,7 @@ const ENDPOINTS: [&str; 10] = [
   "/debug/logs",
   "/debug/metrics",
   "/debug/plan",
+  "/debug/calib",
   "/debug/bundle",
   "/debug/screenshot",
   "/debug/ui.png",
@@ -173,6 +175,17 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
       (
         "200 OK",
         head(json!({ "plan": snap.plan }), snap.ts, snap.uptime_ms),
+      )
+    }
+    "/debug/calib" => {
+      let snap = hub.snapshot();
+      (
+        "200 OK",
+        head(
+          json!({ "calib": snap.calib_report }),
+          snap.ts,
+          snap.uptime_ms,
+        ),
       )
     }
     "/debug/screenshot" => match crate::debug::screenshot::capture() {

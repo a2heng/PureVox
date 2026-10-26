@@ -267,8 +267,11 @@ pub struct DebugSnapshot {
   pub device_refresh: crate::devices::RefreshState,
   /// TSE 参考录音状态/进度
   pub recorder: Probe<String>,
-  /// AEC 延时校准状态/结果
+  /// AEC 延时校准状态/结果（人话串，向后兼容）
   pub calib: Probe<String>,
+  /// AEC 校准的结构化结果（AGENTS.md §1.4：同一份进 `/debug/calib` 并落盘
+  /// `~/.purevox/calib_last.json`；界面画图与回填都读它，不再解析上面那句串）
+  pub calib_report: Probe<crate::engine::calib::CalibReport>,
   /// 网络（手机 ⇄ 电脑，DESIGN.md §4.1）：端口、客户端数、进出计数、远程输入开关、Opus 探测
   pub net: crate::net::hub::NetStats,
   /// 更新检查（GitHub Releases）：阶段、本机版本 / 最新 tag、下载进度、失败原因
@@ -298,6 +301,8 @@ struct State {
   recorder: Probe<String>,
   /// AEC 延时校准状态/结果
   calib: Probe<String>,
+  /// AEC 校准的结构化报告（与 `calib` 同一时刻发布；快照 / 端点 / 落盘同源）
+  calib_report: Probe<crate::engine::calib::CalibReport>,
   /// Linux 虚拟麦克风状态
   virtual_mic: Probe<crate::audio::virtual_mic::Status>,
   streams: BTreeMap<String, StreamInfo>,
@@ -334,6 +339,7 @@ impl DebugHub {
         running: false,
         recorder: Probe::Pending,
         calib: Probe::Pending,
+        calib_report: Probe::Pending,
         virtual_mic: Probe::Pending,
         streams: BTreeMap::new(),
       }),
@@ -403,6 +409,11 @@ impl DebugHub {
 
   pub fn set_calib(&self, v: Probe<String>) {
     self.state.write().unwrap().calib = v;
+  }
+
+  /// 结构化校准报告（与 `set_calib` 成对发布；`/debug/calib` 与快照读同一份）
+  pub fn set_calib_report(&self, v: Probe<crate::engine::calib::CalibReport>) {
+    self.state.write().unwrap().calib_report = v;
   }
 
   pub fn set_virtual_mic(&self, v: Probe<crate::audio::virtual_mic::Status>) {
@@ -519,6 +530,7 @@ impl DebugHub {
     let st_ui = st.ui.clone();
     let st_recorder = st.recorder.clone();
     let st_calib = st.calib.clone();
+    let st_calib_report = st.calib_report.clone();
     let st_virtual_mic = st.virtual_mic.clone();
     let st_running = st.running;
     let st_plan = st.plan.clone();
@@ -572,6 +584,7 @@ impl DebugHub {
       device_refresh: crate::devices::refresh_state(),
       recorder: st_recorder,
       calib: st_calib,
+      calib_report: st_calib_report,
       net: crate::net::hub().stats(),
       update: crate::update::status(),
       virtual_mic: st_virtual_mic,

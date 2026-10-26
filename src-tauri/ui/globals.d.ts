@@ -66,6 +66,13 @@ interface Window {
   }
   /** 统一提示（shell.js 注册；任何模块都能调用） */
   __pvToast?: (text: string, level?: 'info' | 'ok' | 'warn' | 'error', ms?: number) => void
+  /** AEC 校准结果面板（calib.js 注册）：快照里的结构化报告 → 曲线 + 结论 */
+  __pvCalib?: {
+    onSnapshot(probe: any): void
+    open(): void
+    close(): void
+    hasReport(): boolean
+  }
   /** TSE 参考卡片（tse.js 注册，columns.js 调用）：状态 / 10 秒录音 / 进度 */
   __pvTse?: {
     attach(

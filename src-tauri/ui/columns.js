@@ -38,7 +38,10 @@ let devices = { inputs: [], outputs: [] }
 let loopTargets = []
 let deviceStamp = null
 let lastRec = ''
-let lastCalib = ''
+/** 最近一份结构化校准报告（快照 `calib_report`）：按钮可用性与参数回填都看它 */
+let calibReport = null
+/** 已回填的报告时间戳：同一份报告只回填一次（2 Hz 轮询会重复到达） */
+let lastCalibMs = 0
 let running = false
 
 function renderRunButton() {
@@ -271,7 +274,7 @@ function farOptions(selected) {
 /** OBS 参数单位（与 OBS 的 suffix 对齐；标签里已经带单位的就不重复）。 */
 function paramUnit(key, label) {
   if (/dB|ms|Hz|:1/.test(label)) return ''
-  if (['threshold', 'open_threshold', 'close_threshold', 'output_gain', 'gain_db', 'volume_db', 'low', 'mid', 'high', 'knee'].includes(key)) return 'dB'
+  if (['threshold', 'open_threshold', 'close_threshold', 'output_gain', 'gain_db', 'mic_gain_db', 'far_gain_db', 'volume_db', 'low', 'mid', 'high', 'knee'].includes(key)) return 'dB'
   if (key.endsWith('_time') || key.endsWith('_ms')) return 'ms'
   if (key === 'ratio') return ':1'
   return ''
@@ -569,8 +572,15 @@ function rowElement(col, ci, row, ri) {
           cal.textContent = T('校准')
         })
     })
-    acts.appendChild(cal)
-    // 直通（A/B 对比）：紧跟在校准后面，不再挤在「麦克风」那一行。
+    // 结果：打开最近一次校准的曲线 + 结论（数据来自快照 `calib_report`，见 calib.js）
+    const view = document.createElement('button')
+    view.type = 'button'
+    view.id = 'aec-cal-view'
+    view.textContent = T('结果')
+    view.title = T('查看最近一次校准结果（含曲线与结论）')
+    view.disabled = !calibReport
+    view.addEventListener('click', () => window.__pvCalib?.open())
+    // 直通（A/B 对比）：**放在校准左边、左对齐**（用户指定的顺序：直通 / 校准 / 结果）。
     const by = document.createElement('label')
     by.className = 'en'
     const cb = document.createElement('input')
@@ -582,7 +592,7 @@ function rowElement(col, ci, row, ri) {
       apply()
     })
     by.append(cb, document.createTextNode(T('直通')))
-    acts.appendChild(by)
+    acts.append(by, cal, view)
     detail.appendChild(acts)
 
     const note = document.createElement('div')
@@ -806,22 +816,39 @@ window.__pvOnSnapshot = (s) => {
     }
   }
 
-  // 延时校准：顶栏显示；测出「延时 X ms」时回填第一个 AEC 行并重建会话
+  // 延时校准：顶栏状态串照旧显示（向后兼容）；参数回填与结果图走结构化报告
   const cal = s.calib
   if (cal) {
     calSnap = { state: cal.state ?? '', value: cal.value ?? '', reason: cal.reason ?? '' }
     paintRecCal()
-    const t = calSnap.state === 'ok' ? window.__pvTpl(calSnap.value) : null
-    if (t && t.id === 'cal.result' && plan && calSnap.value !== lastCalib) {
-      lastCalib = calSnap.value
-      const col = plan.columns.find((c) => c.rows.some((r) => r.ptype === 'echo_cancel'))
-      const row = col && col.rows.find((r) => r.ptype === 'echo_cancel')
+  }
+
+  // 结构化校准报告（AGENTS.md §1.4）：**唯一回填依据**，UI 不再解析中文串。
+  // 同一份报告只回填一次（created_ms 变化才动参数，2 Hz 轮询会重复送达）。
+  const cr = s.calib_report
+  if (cr && cr.state === 'ok' && cr.value) {
+    const r = cr.value
+    calibReport = r
+    window.__pvCalib?.onSnapshot(cr)
+    const vb = /** @type {HTMLButtonElement | null} */ ($('aec-cal-view'))
+    if (vb) vb.disabled = false
+    if (
+      r.ok &&
+      r.created_ms !== lastCalibMs &&
+      plan &&
+      r.delay_ms != null &&
+      r.mic_gain_db != null &&
+      r.far_gain_db != null
+    ) {
+      lastCalibMs = r.created_ms
+      const col = plan.columns.find((c) => c.rows.some((x) => x.ptype === 'echo_cancel'))
+      const row = col && col.rows.find((x) => x.ptype === 'echo_cancel')
       if (row) {
-        row.params.far_delay_ms = t.vars.d
-        row.params.mic_gain_db = t.vars.m
-        row.params.far_gain_db = t.vars.f
+        row.params.far_delay_ms = String(r.delay_ms)
+        row.params.mic_gain_db = r.mic_gain_db.toFixed(1)
+        row.params.far_gain_db = r.far_gain_db.toFixed(1)
         window.__pvDebug?.(
-          `校准：延时 ${t.vars.d} ms，近端 ${t.vars.m} dB，远端 ${t.vars.f} dB，已回填并重建`
+          `校准报告：延时 ${r.delay_ms} ms，近端 ${r.mic_gain_db} dB，远端 ${r.far_gain_db} dB，已应用并重建`,
         )
         render()
         apply()

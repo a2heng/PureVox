@@ -354,11 +354,21 @@ impl AudioManager {
       );
       Some(self.run_epoch())
     };
-    // 固定参考延时（见 calib::CALIB_REF_MS）：校准测的是绝对延时，不依赖当前存储值
-    if let Err(e) = self
-      .calib
-      .start(ci, ri, 1.6, 1000.0, crate::engine::calib::CALIB_REF_MS)
-    {
+    // 固定参考延时（见 calib::CALIB_REF_MS）：校准测的是绝对延时，不依赖当前存储值。
+    // 设备标识只进报告（诊断 / AI 复现），不参与算法。
+    let mic_dev = plan.columns[ci].rows[ri]
+      .device
+      .clone()
+      .filter(|d| !d.is_empty());
+    let far_dev = Some(far.clone()).filter(|d| !d.is_empty());
+    if let Err(e) = self.calib.start(crate::engine::calib::CalibStart {
+      col: ci,
+      row: ri,
+      seconds: 1.6,
+      current_delay_ms: crate::engine::calib::CALIB_REF_MS,
+      mic_device: mic_dev,
+      far_device: far_dev,
+    }) {
       // 启动失败要把临时会话收回去，不能让它一直跑着
       if let Some(epoch) = temp_epoch
         && self.untouched_since(epoch)

@@ -37,8 +37,14 @@ window.__pvDriversWindows = (() => {
 
   function paint() {
     if (!els) return
-    if (installed === null) els.state.textContent = T('检测中…')
-    else els.state.textContent = installed ? T('已安装') : T('未安装')
+    if (installed === null) {
+      els.state.textContent = T('检测中…')
+      els.state.className = 'state'
+    } else {
+      els.state.textContent = installed ? T('已安装') : T('未安装')
+      // 安装 = 绿、没安装 = 红（用户要求一眼看出，不靠读字）
+      els.state.className = 'state ' + (installed ? 'ok' : 'err')
+    }
     if (els.guide) els.guide.style.display = installed ? 'none' : ''
   }
 
@@ -76,6 +82,15 @@ window.__pvDriversWindows = (() => {
       if (els.flow) els.flow.textContent = T('麦克风 → PureVox → CABLE In → CABLE Out → 其它软件')
       $btn('vb-download')?.addEventListener('click', () => openLink(DOWNLOAD_URL))
       $btn('vb-tutorial')?.addEventListener('click', () => openLink(TUTORIAL_URL))
+      // VB-CABLE 控制面板：**必须提权**（写驱动设置），Rust 侧走 Start-Process -Verb RunAs
+      $btn('vb-panel')?.addEventListener('click', () => {
+        invoke('open_vb_panel')
+          .then(() => window.__pvToast?.(T('已请求管理员权限打开 VB-CABLE 控制面板'), 'ok'))
+          .catch((e) => {
+            window.__pvToast?.(T('打开 VB-CABLE 控制面板失败：') + e, 'error', 6000)
+            window.__pvDebug?.('打开 VB-CABLE 控制面板失败：' + e)
+          })
+      })
       $btn('vb-refresh')?.addEventListener('click', refresh)
       paint()
     },

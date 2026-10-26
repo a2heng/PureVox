@@ -47,7 +47,22 @@ mod openurl;
 mod openurl;
 mod plan;
 mod recorder;
+#[cfg(windows)]
+#[path = "sound_panel_windows.rs"]
+mod sound_panel;
+#[cfg(target_os = "linux")]
+#[path = "sound_panel_linux.rs"]
+mod sound_panel;
+#[cfg(not(any(windows, target_os = "linux")))]
+#[path = "sound_panel_other.rs"]
+mod sound_panel;
 mod update;
+#[cfg(windows)]
+#[path = "vb_panel_windows.rs"]
+mod vb_panel;
+#[cfg(not(windows))]
+#[path = "vb_panel_other.rs"]
+mod vb_panel;
 mod version;
 mod wav;
 
@@ -92,6 +107,33 @@ fn ui_report(kind: String, message: String, hub: tauri::State<'_, SharedHub>) {
 #[tauri::command]
 fn open_devtools(window: tauri::WebviewWindow) {
   window.open_devtools();
+}
+
+/// 打开（或聚焦）独立的调试窗口。调试页已从主窗口的抽屉搬出来（`ui/debug.html`）。
+#[tauri::command]
+fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
+  if let Some(w) = app.get_webview_window("debug") {
+    let _ = w.unminimize();
+    let _ = w.show();
+    let _ = w.set_focus();
+    return Ok(());
+  }
+  tauri::WebviewWindowBuilder::new(&app, "debug", tauri::WebviewUrl::App("debug.html".into()))
+    .title("PureVox — 调试")
+    .inner_size(1180.0, 900.0)
+    .min_inner_size(860.0, 560.0)
+    .resizable(true)
+    .build()
+    .map(|_| ())
+    .map_err(|e| format!("打开调试窗口失败：{e}"))
+}
+
+/// 关闭调试窗口（窗口里的「关闭」按钮用；系统标题栏关闭走同一路径）。
+#[tauri::command]
+fn close_debug_window(app: tauri::AppHandle) {
+  if let Some(w) = app.get_webview_window("debug") {
+    let _ = w.close();
+  }
 }
 
 /// 开机自启开关（写/删当前用户 Run 键）。
@@ -719,6 +761,18 @@ fn open_url(url: String) -> Result<(), String> {
   openurl::open(&url)
 }
 
+/// 打开系统声音控制面板（Windows = mmsys.cpl；Linux = pavucontrol / 系统设置）。
+#[tauri::command]
+fn open_sound_panel() -> Result<(), String> {
+  sound_panel::open()
+}
+
+/// 以管理员权限打开 VB-CABLE 控制面板（仅 Windows；其它平台明确不可用）。
+#[tauri::command]
+fn open_vb_panel() -> Result<(), String> {
+  vb_panel::open()
+}
+
 fn main() {
   // panic 也进事件日志：release 没有控制台，后台线程 panic 不能「只消失不报」。
   debug::events::install_panic_hook();
@@ -807,18 +861,37 @@ fn main() {
           }
         });
       }
+      // 调试钩子：`PUREVOX_AUTODEBUG=1` 自动打开独立调试窗口（无人值守验证用）。
+      // 窗口创建必须回主线程（Linux 的 GTK 尤其如此）。
+      if std::env::var("PUREVOX_AUTODEBUG").is_ok() {
+        let handle = app.handle().clone();
+        std::thread::spawn(move || {
+          std::thread::sleep(std::time::Duration::from_millis(800));
+          let h = handle.clone();
+          let _ = handle.run_on_main_thread(move || {
+            if let Err(e) = open_debug_window(h) {
+              eprintln!("AUTODEBUG 打开调试窗口失败：{e}");
+            }
+          });
+        });
+      }
       Ok(())
     })
     // 最小化 / 关闭都收到托盘（不退出）
     .on_window_event(|window, event| match event {
       tauri::WindowEvent::CloseRequested { api, .. } => {
+        // 调试窗口正常关闭；只有主窗口收到托盘（AGENTS §1.1：调试是独立窗口）
+        if window.label() != "main" {
+          return;
+        }
         api.prevent_close();
         hide_to_tray(window);
       }
       // 最小化：Windows 下最小化会先 `Resized(0x0)` 再 `is_minimized()==true`，
       // 两个判据都要看（只看 `is_minimized()` 实测会漏，窗口留在任务栏上 —— 2026-10-26）。
       tauri::WindowEvent::Resized(size)
-        if window.is_minimized().unwrap_or(false) || size.width == 0 || size.height == 0 =>
+        if window.label() == "main"
+          && (window.is_minimized().unwrap_or(false) || size.width == 0 || size.height == 0) =>
       {
         hide_to_tray(window);
       }
@@ -831,6 +904,8 @@ fn main() {
       ui_report,
       capture_ui,
       open_devtools,
+      open_debug_window,
+      close_debug_window,
       set_autostart,
       get_autostart,
       set_running,
@@ -873,7 +948,9 @@ fn main() {
       update_download,
       update_install,
       update_open_page,
-      open_url
+      open_url,
+      open_sound_panel,
+      open_vb_panel
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

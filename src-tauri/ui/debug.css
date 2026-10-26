@@ -1815,16 +1815,18 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: default; }
 .row > .detail > .aec-actions {
   grid-column: 1 / -1;
 }
-/* AEC 动作行：跨两列、不带标签（「校准」当标签太怪）。**校准居中、直通靠最右**，
-   中间留白自己分配（以前两个控件都挤在右边）。 */
+/* AEC 动作行：直通靠左、校准居中、结果靠右（用户指定「左中右对齐」）；
+   校准 / 结果同宽。 */
 .row > .detail > .aec-actions {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 8px;
 }
-.row > .detail > .aec-actions > .primary { grid-column: 2; justify-self: center; }
-.row > .detail > .aec-actions > .en { grid-column: 3; justify-self: end; }
+.row > .detail > .aec-actions > .en { grid-column: 1; justify-self: start; }
+.row > .detail > .aec-actions > #aec-cal { grid-column: 2; justify-self: center; }
+.row > .detail > .aec-actions > #aec-cal-view { grid-column: 3; justify-self: end; }
+.row > .detail > .aec-actions > button { min-width: 88px; }
 /* 参数网格里每个参数用同一套列宽：标签列 = --label-w，滑块 / 数字 / 单位依次排开。
    这样「模型」下拉和输入行的设备下拉左缘落在同一条竖线上。 */
 .row .params .param,
@@ -1992,3 +1994,82 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: default; }
 /* 更新面板里「用不上」的行整行收起（`<tr class="hidden">`）：
    通用 `.hidden` 只对块级元素生效，表格行要单独写 display:none 才会真的消失。 */
 .update-box tr.hidden { display: none; }
+
+/* ---------- AEC 校准结果（ui/calib.js，AGENTS.md §1.4）----------
+   曲线画在 canvas 上（平滑后的带内能量包络，不是原始波形），数据全部来自
+   快照里的 `calib_report`；这里只负责布局与配色。 */
+.calib-box { width: min(820px, 100%); }
+.calib-box h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; }
+.cal-verdict {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.cal-verdict.ok { color: #22c55e; }
+.cal-verdict.na { color: #f97316; }
+#calib-canvas {
+  display: block;
+  width: 100%;
+  height: 260px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, #020617 26%, transparent);
+}
+.calib-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 8px 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.calib-legend .lg { display: inline-flex; align-items: center; gap: 6px; }
+.calib-legend .lg::before {
+  content: '';
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.calib-legend .lg.mic { color: #4aa3ff; }
+.calib-legend .lg.far { color: #f0a13c; }
+.calib-kv td { font-variant-numeric: tabular-nums; }
+.calib-diag {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.calib-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  /* `.mono` 默认 white-space: pre，会把这一长行顶出面板（横向滚动条）；这里必须允许换行 */
+  white-space: normal;
+  word-break: break-all;
+}
+.calib-kv tr.hidden { display: none; }
+
+/* ---------- 独立调试窗口（debug.html）----------
+   调试页不再是主窗口里的抽屉：占满整个独立窗口，不再有固定的 right/bottom 与滑入动画。
+   body 同时带 debug-on（沿用原来的显示规则），这里只覆盖定位与尺寸。 */
+body.debug-window { margin: 0; background: var(--bg); }
+body.debug-window #debug {
+  position: static;
+  width: 100%;
+  max-width: none;
+  height: 100vh;
+  min-height: 100vh;
+  padding: 12px 16px 18px;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  transform: none;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+body.debug-window #debug > h2 { top: 0; margin: -12px -16px 10px; }

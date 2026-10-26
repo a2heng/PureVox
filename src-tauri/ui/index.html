@@ -42,11 +42,11 @@
 
         <nav class="side-nav" aria-label="Tools">
           <button id="btn-refresh" type="button" data-i18n="刷新设备">刷新设备</button>
-          <button id="btn-drivers" type="button" data-i18n="驱动">驱动</button>
+          <button id="btn-drivers" type="button" data-i18n="虚拟驱动">虚拟驱动</button>
+          <button id="btn-sound" type="button" data-i18n="系统声音">系统声音</button>
           <button id="btn-update" type="button" data-i18n="更新">更新</button>
           <button id="btn-settings" type="button" data-i18n="设置">设置</button>
           <button id="btn-debug" type="button" data-i18n="调试面板">调试面板</button>
-          <button id="btn-devtools" type="button" data-i18n="开发者工具">开发者工具</button>
         </nav>
 
         <div class="side-foot">
@@ -64,88 +64,6 @@
         </section>
       </main>
 
-      <!-- 调试列：抽屉，不再占工作区宽度（顶栏开关显隐） -->
-      <section id="debug" class="column debug" aria-label="Debug">
-
-        <h2><span data-i18n="调试">调试</span> <span id="dbg-status" class="mono"></span><button id="btn-shot" class="drawer-close" type="button" data-i18n="截屏">截屏</button><button id="dbg-close" class="drawer-close" type="button" data-i18n="关闭">关闭</button></h2>
-
-        <!-- 设备条带放在调试面板最上面：调试时最常看的就是每路流，不用往下翻过
-             应用/系统/GPU。JS 与 CSS 不变，只是把渲染容器提前。 -->
-        <div id="audio-streams"></div>
-
-        <section>
-          <h3 data-i18n="应用">应用</h3>
-          <table class="kv">
-            <tr>
-              <th data-i18n="版本">版本</th><td id="app-version"></td>
-              <th>PID</th><td id="app-pid"></td>
-            </tr>
-            <tr>
-              <th data-i18n="运行时长">运行时长</th><td id="app-uptime"></td>
-              <th data-i18n="快照时间">快照时间</th><td id="app-ts"></td>
-            </tr>
-            <tr><th data-i18n="调试接口">调试接口</th><td id="app-http" colspan="3"></td></tr>
-          </table>
-        </section>
-
-        <section>
-          <h3><span data-i18n="CPU 系统">CPU 系统</span> / <span data-i18n="内存">内存</span> <span id="sys-sampled" class="sub"></span></h3>
-          <table class="kv">
-            <tr>
-              <th data-i18n="CPU 系统">CPU 系统</th><td id="cpu-system"></td>
-              <th data-i18n="CPU 本进程">CPU 本进程</th><td id="cpu-process"></td>
-            </tr>
-            <tr>
-              <th data-i18n="逻辑核数">逻辑核数</th><td id="cpu-cores"></td><th></th><td></td>
-            </tr>
-            <tr>
-              <th data-i18n="内存 系统已用">内存 系统已用</th><td id="mem-used"></td>
-              <th data-i18n="内存 系统可用">内存 系统可用</th><td id="mem-avail"></td>
-            </tr>
-            <tr>
-              <th data-i18n="本进程 工作集">本进程 工作集</th><td id="mem-ws"></td>
-              <th data-i18n="本进程 私有字节">本进程 私有字节</th><td id="mem-private"></td>
-            </tr>
-          </table>
-          <p class="note" data-i18n="本进程不含 WebView2 子进程（界面渲染在 msedgewebview2.exe 中）。">本进程不含 WebView2 子进程（界面渲染在 msedgewebview2.exe 中）。</p>
-        </section>
-
-        <section>
-          <h3>GPU</h3>
-          <div id="gpu-state" class="state"></div>
-          <table class="grid" id="gpu-table">
-            <colgroup><col class="c-name" /><col class="c-num" /><col class="c-num" /><col class="c-mem" /><col class="c-num" /></colgroup>
-            <thead>
-              <tr>
-                <th data-i18n="适配器">适配器</th>
-                <th data-i18n="整卡占用">整卡占用</th>
-                <th data-i18n="本进程占用">本进程占用</th>
-                <th data-i18n="显存已用 / 总量">显存已用 / 总量</th>
-                <th data-i18n="本进程显存">本进程显存</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </section>
-
-        <section>
-          <h3 data-i18n="音频">音频</h3>
-          <table class="kv">
-            <tr><th data-i18n="结论">结论</th><td id="audio-verdict" colspan="3"></td></tr>
-            <tr><th data-i18n="引擎">引擎</th><td id="audio-engine" colspan="3"></td></tr>
-            <tr><th data-i18n="参考录制">参考录制</th><td id="audio-recorder" colspan="3"></td></tr>
-            <tr><th data-i18n="延时校准">延时校准</th><td id="audio-calib" colspan="3"></td></tr>
-          </table>
-          <!-- 网络只留只读状态行；开关、二维码、远程输入都在网络行卡片里（见 netrow.js） -->
-          <h3 data-i18n="网络">网络</h3>
-          <table class="kv">
-            <tr><th data-i18n="客户端 ⇄ 电脑">客户端 ⇄ 电脑</th><td id="net-status" colspan="3"></td></tr>
-            <tr><th data-i18n="出站水位">出站水位</th><td id="net-subs" colspan="3"></td></tr>
-            <tr><th data-i18n="结论">结论</th><td id="net-verdict" colspan="3"></td></tr>
-            <tr><th data-i18n="Opus 库">Opus 库</th><td id="net-codec" colspan="3"></td></tr>
-          </table>
-        </section>
-      </section>
     </div>
 
     <div id="drawer-backdrop" hidden></div>
@@ -255,7 +173,7 @@
     <!-- 驱动面板：按平台切换实现（Linux 虚拟驱动 / Windows VB-CABLE），位置与 UI 一致 -->
     <div id="drivers" class="panel hidden">
       <div class="panel-box">
-        <h3 id="drivers-title" data-i18n="驱动">驱动</h3>
+        <h3 id="drivers-title" data-i18n="虚拟驱动">虚拟驱动</h3>
         <div id="drivers-body"></div>
         <div class="set-foot">
           <button id="drv-close" type="button" data-i18n="关闭">关闭</button>
@@ -289,10 +207,44 @@
       <div class="set-row">
         <button id="vb-download" type="button" data-i18n="驱动下载">驱动下载</button>
         <button id="vb-tutorial" type="button" data-i18n="视频教程">视频教程</button>
+        <button id="vb-panel" type="button" data-i18n="VB 控制面板">VB 控制面板</button>
         <button id="vb-refresh" type="button" data-i18n="刷新">刷新</button>
       </div>
       <p class="note" id="vb-guide" data-i18n="未检测到 VB-CABLE：点「驱动下载」安装后，点顶栏「刷新设备」重新检测。">未检测到 VB-CABLE：点「驱动下载」安装后，点顶栏「刷新设备」重新检测。</p>
     </template>
+
+    <!-- AEC 校准结果：曲线 + 结论（数据来自快照 calib_report，与 /debug/calib、
+         ~/.purevox/calib_last.json 同源；见 calib.js 与 AGENTS.md §1.4）。
+         校准完成后自动弹出；也可从 AEC 行的「结果」按钮打开。 -->
+    <div id="calib" class="panel hidden">
+      <div class="panel-box calib-box">
+        <h3>
+          <span data-i18n="校准结果">校准结果</span>
+          <span id="calib-verdict" class="cal-verdict"></span>
+        </h3>
+        <div class="calib-chart">
+          <canvas id="calib-canvas" width="760" height="260"></canvas>
+        </div>
+        <div class="calib-legend">
+          <span class="lg mic" data-i18n="麦克风（近端，1.5–2.5 kHz 包络）">麦克风（近端，1.5–2.5 kHz 包络）</span>
+          <span class="lg far" data-i18n="远端参考（回环）">远端参考（回环）</span>
+        </div>
+        <table class="kv calib-kv">
+          <tr><th data-i18n="延时">延时</th><td id="calib-delay" class="mono"></td></tr>
+          <tr><th data-i18n="回声路径">回声路径</th><td id="calib-echo" class="mono"></td></tr>
+          <tr><th data-i18n="近端电平">近端电平</th><td id="calib-mic" class="mono"></td></tr>
+          <tr><th data-i18n="远端电平">远端电平</th><td id="calib-far" class="mono"></td></tr>
+          <tr><th data-i18n="结论">结论</th><td id="calib-conclusion"></td></tr>
+          <tr id="calib-next-row" class="hidden"><th data-i18n="下一步">下一步</th><td id="calib-next"></td></tr>
+        </table>
+        <div id="calib-diag" class="calib-diag mono"></div>
+        <div id="calib-meta" class="calib-meta mono"></div>
+        <div class="set-row">
+          <button id="calib-copy" type="button" data-i18n="复制 JSON">复制 JSON</button>
+          <button id="calib-close" type="button" class="primary" data-i18n="关闭">关闭</button>
+        </div>
+      </div>
+    </div>
 
     <script src="i18n.js"></script>
     <script src="jsdebug.js"></script>
@@ -306,7 +258,8 @@
     <script src="media.js"></script>
     <script src="tse.js"></script>
     <script src="shell.js"></script>
+    <script src="calib.js"></script>
     <script src="columns.js"></script>
-    <script src="debug.js"></script>
+    <script src="snapshot.js"></script>
   </body>
 </html>

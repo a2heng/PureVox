@@ -28,13 +28,13 @@ shelf of tools.
   remote-input feature (typing / keyboard, **off by default**).
 - **Tray-first**: start/stop, show/hide, quit; minimize and close both go to the tray; global hotkey;
   Chinese and English UI.
-- **Debug-first**: the in-app panel and the read-only HTTP endpoint `http://127.0.0.1:47821/debug`
-  share one snapshot (system metrics, per-stream rate/buffer/underrun/drop counters, inference time,
-  spectrum and waveform).
+- **Debug-first**: a separate debug window and the read-only HTTP endpoint
+  `http://127.0.0.1:47821/debug` share one snapshot (system metrics, per-stream
+  rate/buffer/underrun/drop counters, inference time, spectrum and waveform).
 
 ## Status
 
-Feature complete (no longer a migration placeholder): capture + resampling, playback with clock
+Feature complete: capture + resampling, playback with clock
 servoing, denoise / TSE / AEC, OBS filters, device pool and mixing, networking (incl. the Android
 client), virtual drivers, media rows, in-app updates and packaging are all in place.
 

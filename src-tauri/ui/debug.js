@@ -22,7 +22,6 @@
 ;(() => {
 const { invoke } = window.__TAURI__.core
 
-const POLL_MS = 500 // 2 Hz
 const $ = (id) => document.getElementById(id)
 const T = (s, vars) => (window.__pvT ? window.__pvT(s, vars) : s)
 
@@ -383,28 +382,36 @@ function renderRecorder(s) {
 
 let reported = false
 let last = /** @type {PvSnapshot | null} */ (null)
-async function tick() {
-  try {
-    const s = /** @type {PvSnapshot} */ (await invoke('debug_snapshot'))
-    last = s
-    renderApp(s)
-    renderSystem(s.system)
-    renderGpu(s.system.gpu)
-    renderAudio(s.audio)
-    renderRecorder(s)
-    renderNet(s.net)
-    if (window.__pvOnSnapshot) window.__pvOnSnapshot(s)
-    put($('dbg-status'), '', '')
-    if (!reported) {
-      reported = true
-      window.__pvDebug?.(`调试面板已渲染快照（流 ${s.audio.streams.length} 路）`)
-    }
-  } catch (e) {
-    put($('dbg-status'), T('取快照失败：') + e, 'na')
-    window.__pvDebug?.('调试面板取快照失败：' + e)
+
+function renderSnapshot(s) {
+  last = s
+  renderApp(s)
+  renderSystem(s.system)
+  renderGpu(s.system.gpu)
+  renderAudio(s.audio)
+  renderRecorder(s)
+  renderNet(s.net)
+  if (window.__pvOnSnapshot) window.__pvOnSnapshot(s)
+  put($('dbg-status'), '', '')
+  if (!reported) {
+    reported = true
+    window.__pvDebug?.(`调试面板已渲染快照（流 ${s.audio.streams.length} 路）`)
   }
-  setTimeout(tick, POLL_MS)
 }
+
+// 快照轮询由 `snapshot.js` 统一负责（主窗口与调试窗口同一份实现、同一频率）；
+// 这里只订阅事件并渲染，不再自己 invoke / setTimeout（否则就是两条轮询路径）。
+document.addEventListener('pv-snapshot', (e) => {
+  try {
+    renderSnapshot(/** @type {CustomEvent} */ (e).detail)
+  } catch (err) {
+    put($('dbg-status'), T('渲染快照失败：') + err, 'na')
+    window.__pvDebug?.('调试面板渲染快照失败：' + err)
+  }
+})
+document.addEventListener('pv-snapshot-error', (e) => {
+  put($('dbg-status'), T('取快照失败：') + /** @type {CustomEvent} */ (e).detail, 'na')
+})
 
 // 语言切换：立即按新语言重绘（流卡片的标签 / 图注在建卡时定型，需强制重建卡片）
 document.addEventListener('pv-langchange', () => {
@@ -419,5 +426,29 @@ document.addEventListener('pv-langchange', () => {
   renderNet(last.net)
 })
 
-tick()
+// 独立调试窗口自己的两个按钮：关闭窗口 / 截主界面。
+// （以前它们在主窗口的 shell.js 里；调试页搬出来后由本文件负责，避免两处实现。）
+window.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btn-devtools')?.addEventListener('click', () => {
+    window.__TAURI__.core.invoke('open_devtools')
+  })
+  document.getElementById('dbg-close')?.addEventListener('click', () => {
+    window.__TAURI__.core.invoke('close_debug_window').catch(() => {
+      /* 窗口已经没了：忽略 */
+    })
+  })
+  document.getElementById('btn-shot')?.addEventListener('click', async () => {
+    const b = /** @type {HTMLButtonElement | null} */ ($('btn-shot'))
+    const out = $('dbg-shot')
+    if (b) b.disabled = true
+    try {
+      const path = await invoke('capture_ui')
+      if (out) out.textContent = T('截图已保存：') + path
+    } catch (e) {
+      if (out) out.textContent = T('截图失败：') + e
+    } finally {
+      if (b) b.disabled = false
+    }
+  })
+})
 })()

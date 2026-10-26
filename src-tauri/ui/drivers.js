@@ -39,7 +39,7 @@
     if (!body) return
     body.replaceChildren()
     if (!impl) {
-      if (title) title.textContent = T('驱动')
+      if (title) title.textContent = T('虚拟驱动')
       return
     }
     if (title) title.textContent = impl.title()

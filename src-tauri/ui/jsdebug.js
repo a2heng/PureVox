@@ -52,35 +52,13 @@
     }
   }
 
-  // 顶栏「开发者工具」按钮：打开 WebView2 devtools（JS 交互式调试）
+  // 顶栏「开发者工具」按钮已随调试页搬到独立窗口（debug.html 的标题栏）。
   window.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('btn-devtools')?.addEventListener('click', () => {
-      window.__TAURI__.core.invoke('open_devtools')
-    })
-    // 调试面板开关（状态记忆）
-    const btn = document.getElementById('btn-debug')
-    const setDebug = (on) => {
-      document.body.classList.toggle('debug-on', on)
-      try {
-        localStorage.setItem('pv_debug_on', on ? '1' : '0')
-      } catch (_) {
-        /* 忽略 */
-      }
-    }
-    try {
-      if (localStorage.getItem('pv_debug_on') === '1') document.body.classList.add('debug-on')
-    } catch (_) {
-      /* 忽略 */
-    }
-    btn?.addEventListener('click', () => {
-      setDebug(!document.body.classList.contains('debug-on'))
-      setTimeout(checkLayout, 100)
-    })
-    // 面板自己的「关闭」按钮：以前没有监听器，点了没反应，只能回顶栏再点一次开关。
-    // 走同一个 setDebug，状态记忆与布局自检保持一致。
-    document.getElementById('dbg-close')?.addEventListener('click', () => {
-      setDebug(false)
-      setTimeout(checkLayout, 100)
+    // 调试面板现在是**独立窗口**（debug.html）：顶栏按钮只负责打开 / 聚焦。
+    document.getElementById('btn-debug')?.addEventListener('click', () => {
+      window.__TAURI__.core
+        .invoke('open_debug_window')
+        .catch((e) => send('error', '打开调试窗口失败：' + e))
     })
   })
 

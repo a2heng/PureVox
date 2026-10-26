@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PureVox — 调试</title>
+<link rel="stylesheet" href="debug.css" />
+</head>
+<body class="debug-window debug-on">
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  The built-in AI models are NOT covered by the GPL; they are the
+  property of a2heng and may only be used with PureVox under
+  authorization.  See MODEL-LICENSE.md for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!--
+  调试独立窗口（Rust 命令 `open_debug_window` → WebviewUrl::App("debug.html")）。
+  内容与快照 debug_snapshot 同源；这里只渲染，不另算指标（AGENTS.md 1.3 / 1.4）。
+-->
+      <section id="debug" class="column debug" aria-label="Debug">
+
+        <h2><span data-i18n="调试">调试</span> <span id="dbg-status" class="mono"></span><span id="dbg-shot" class="sub"></span><button id="btn-devtools" class="drawer-close" type="button" data-i18n="开发者工具">开发者工具</button><button id="btn-shot" class="drawer-close" type="button" data-i18n="截屏">截屏</button><button id="dbg-close" class="drawer-close" type="button" data-i18n="关闭">关闭</button></h2>
+
+        <!-- 设备条带放在调试面板最上面：调试时最常看的就是每路流，不用往下翻过
+             应用/系统/GPU。JS 与 CSS 不变，只是把渲染容器提前。 -->
+        <div id="audio-streams"></div>
+
+        <section>
+          <h3 data-i18n="应用">应用</h3>
+          <table class="kv">
+            <tr>
+              <th data-i18n="版本">版本</th><td id="app-version"></td>
+              <th>PID</th><td id="app-pid"></td>
+            </tr>
+            <tr>
+              <th data-i18n="运行时长">运行时长</th><td id="app-uptime"></td>
+              <th data-i18n="快照时间">快照时间</th><td id="app-ts"></td>
+            </tr>
+            <tr><th data-i18n="调试接口">调试接口</th><td id="app-http" colspan="3"></td></tr>
+          </table>
+        </section>
+
+
+        <section>
+          <h3><span data-i18n="CPU 系统">CPU 系统</span> / <span data-i18n="内存">内存</span> <span id="sys-sampled" class="sub"></span></h3>
+          <table class="kv">
+            <tr>
+              <th data-i18n="CPU 系统">CPU 系统</th><td id="cpu-system"></td>
+              <th data-i18n="CPU 本进程">CPU 本进程</th><td id="cpu-process"></td>
+            </tr>
+            <tr>
+              <th data-i18n="逻辑核数">逻辑核数</th><td id="cpu-cores"></td><th></th><td></td>
+            </tr>
+            <tr>
+              <th data-i18n="内存 系统已用">内存 系统已用</th><td id="mem-used"></td>
+              <th data-i18n="内存 系统可用">内存 系统可用</th><td id="mem-avail"></td>
+            </tr>
+            <tr>
+              <th data-i18n="本进程 工作集">本进程 工作集</th><td id="mem-ws"></td>
+              <th data-i18n="本进程 私有字节">本进程 私有字节</th><td id="mem-private"></td>
+            </tr>
+          </table>
+          <p class="note" data-i18n="本进程不含 WebView2 子进程（界面渲染在 msedgewebview2.exe 中）。">本进程不含 WebView2 子进程（界面渲染在 msedgewebview2.exe 中）。</p>
+        </section>
+
+        <section>
+          <h3>GPU</h3>
+          <div id="gpu-state" class="state"></div>
+          <table class="grid" id="gpu-table">
+            <colgroup><col class="c-name" /><col class="c-num" /><col class="c-num" /><col class="c-mem" /><col class="c-num" /></colgroup>
+            <thead>
+              <tr>
+                <th data-i18n="适配器">适配器</th>
+                <th data-i18n="整卡占用">整卡占用</th>
+                <th data-i18n="本进程占用">本进程占用</th>
+                <th data-i18n="显存已用 / 总量">显存已用 / 总量</th>
+                <th data-i18n="本进程显存">本进程显存</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </section>
+
+        <section>
+          <h3 data-i18n="音频">音频</h3>
+          <table class="kv">
+            <tr><th data-i18n="结论">结论</th><td id="audio-verdict" colspan="3"></td></tr>
+            <tr><th data-i18n="引擎">引擎</th><td id="audio-engine" colspan="3"></td></tr>
+            <tr><th data-i18n="参考录制">参考录制</th><td id="audio-recorder" colspan="3"></td></tr>
+            <tr><th data-i18n="延时校准">延时校准</th><td id="audio-calib" colspan="3"></td></tr>
+          </table>
+          <!-- 网络只留只读状态行；开关、二维码、远程输入都在网络行卡片里（见 netrow.js） -->
+          <h3 data-i18n="网络">网络</h3>
+          <table class="kv">
+            <tr><th data-i18n="客户端 ⇄ 电脑">客户端 ⇄ 电脑</th><td id="net-status" colspan="3"></td></tr>
+            <tr><th data-i18n="出站水位">出站水位</th><td id="net-subs" colspan="3"></td></tr>
+            <tr><th data-i18n="结论">结论</th><td id="net-verdict" colspan="3"></td></tr>
+            <tr><th data-i18n="Opus 库">Opus 库</th><td id="net-codec" colspan="3"></td></tr>
+          </table>
+        </section>
+      </section>
+
+<script src="i18n.js"></script>
+<script src="jsdebug.js"></script>
+<script src="snapshot.js"></script>
+<script src="debug.js"></script>
+</body>
+</html>
