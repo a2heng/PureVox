@@ -79,14 +79,16 @@ pub(super) fn enumerate_pulse() -> Option<DeviceList> {
         ));
         continue;
       };
-      if let Some(d) = if direction == "input" {
+      let desc = if direction == "input" {
         source_desc.get(name)
       } else {
         sink_desc.get(name)
-      } {
-        if !d.is_empty() && d != "(null)" {
-          info.name = d.clone();
-        }
+      };
+      if let Some(d) = desc
+        && !d.is_empty()
+        && d != "(null)"
+      {
+        info.name = d.clone();
       }
       if direction == "input" {
         info.is_default = default_source.as_deref() == Some(name);
@@ -183,10 +185,9 @@ fn pulse_device_info(v: &Value, direction: &'static str, name: &str) -> Option<D
   let id = if direction == "input" {
     format!("pulse:{name}")
   } else {
-    match card {
-      Some(card) => format!("alsa:plughw:CARD={card},DEV={device}"),
-      None => return None,
-    }
+    // 非 ALSA 输出（蓝牙 / 虚拟 sink）当前明确跳过（见 AGENTS「Linux 设备面」）
+    let card = card?;
+    format!("alsa:plughw:CARD={card},DEV={device}")
   };
   let display = props["node.description"]
     .as_str()
