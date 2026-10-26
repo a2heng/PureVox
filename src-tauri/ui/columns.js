@@ -52,13 +52,25 @@ function renderRunButton() {
 
 /** 行类型名（msgids 必须内联在 T() 里，i18n_lint 才能查缺键） */
 const kindName = (kind) => T(kind === 'input' ? '输入' : kind === 'process' ? '处理' : '输出')
+
+// 行右上角的图标（线性图标，统一 24 视箱 / 1.8 描边，由 CSS 上色）。以前用 ↑ ↓ ✕ 三个
+// 文本字符：基线不齐、叉号还比箭头细一圈，看着很脏。
+const ICON_UP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 14.5l6-6 6 6"/></svg>'
+const ICON_DOWN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5l6 6 6-6"/></svg>'
+const ICON_X = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>'
+const ICON_LOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5.5" y="10.5" width="13" height="9" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>'
 const PROCESS_ORDER = ['denoise', 'tse', 'gain', 'noise_gate', 'compressor', 'limiter', 'expander', 'upward_compressor', 'eq3', 'invert']
+/** 输入行的展示顺序：麦克风 → 网络 → 扬声器 → AEC → 测试音（用户 2026-10-26 定的顺序）。
+ *  注册表里的顺序是历史上「后加的排后面」，界面按常用度重排；**只是排列**，
+ *  不改任何 ptype 语义（默认行仍取 `audio_input`）。输出行注册表顺序即 扬声器 → 网络。 */
+const INPUT_ORDER = ['audio_input', 'remote_mic', 'loopback', 'echo_cancel', 'tone']
 const nodesOf = (kind) => {
   const list = NODES.filter((n) => n.kind === kind)
-  if (kind !== 'process') return list
+  const order = kind === 'process' ? PROCESS_ORDER : kind === 'input' ? INPUT_ORDER : null
+  if (!order) return list
   return list.slice().sort((a, b) => {
-    const ia = PROCESS_ORDER.indexOf(a.ptype)
-    const ib = PROCESS_ORDER.indexOf(b.ptype)
+    const ia = order.indexOf(a.ptype)
+    const ib = order.indexOf(b.ptype)
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
   })
 }
@@ -377,6 +389,26 @@ function rowElement(col, ci, row, ri) {
   const head = document.createElement('div')
   head.className = 'row-head'
 
+  // 行启用开关：**统一放在第一行最左**。以前只有处理行有，而且在第二行（detail）里，
+  // 挤占参数区本来就窄的横向空间，行内一眼也看不出开没开。语义不变 = 挂摘这一行
+  // （不产出 + 放掉这一列对设备的引用），配置全留（DESIGN.md §6.5）。
+  const en = document.createElement('label')
+  en.className = 'row-en'
+  const enCb = document.createElement('input')
+  enCb.type = 'checkbox'
+  // 稳定 id：UIA 自动化（TAURI3.md §3.6）按 AutomationId 点得到，名字里有中文太难匹配
+  enCb.id = `row-en-${ci}-${ri}`
+  enCb.checked = row.enabled !== false
+  enCb.title = T('启用这一行')
+  enCb.setAttribute('aria-label', T('启用这一行'))
+  enCb.addEventListener('change', () => {
+    row.enabled = enCb.checked
+    el.classList.toggle('disabled', !row.enabled)
+    apply()
+  })
+  en.append(enCb)
+  head.appendChild(en)
+
   // 健康点：快照到达后由 shell.js 按 engine_info 上色（前端不判定，AGENTS §1.3）
   const health = document.createElement('span')
   health.className = 'row-dot pending'
@@ -389,53 +421,65 @@ function rowElement(col, ci, row, ri) {
 
   // 类型下拉（两端固定行也可换类型，只是不能删/移动）
   const ptype = select(nodesOf(kind).map((n) => [n.ptype, T(n.label)]), row.ptype, (v) => {
+    const prev = row.ptype
     row.ptype = v
     row.params = {}
     // 无设备的行：测试音（合成）与网络行（网络麦克风 / 网络扬声器）
     if (!needsDevice(kind, v)) row.device = null
+    // 回环行（电脑播放音频）选的是**被回环的输出端点**，与输入设备 ID 不是同一套：
+    // 换到回环行必须复位成 `loopback`，否则会把原来的麦克风 ID 当渲染端点，
+    // 后端 `Initialize` 直接 AUDCLNT_E_WRONG_ENDPOINT_TYPE（0x88890003）→ 应用计划失败。
+    else if (isLoopbackRow(kind, v)) row.device = 'loopback'
+    // 反过来（回环 → 录音输入）也不能留着 `loopback`，那不是输入设备 ID。
+    else if (isLoopbackRow(kind, prev)) row.device = null
     render()
     apply()
   })
   ptype.className = 'ptype'
   head.appendChild(ptype)
 
-  // 动作区常驻（固定行用「固定」标签占位），避免出现/消失改变行高
+  // 动作区常驻。固定行用**虚线框 + 锁**占住同一块位置（宽度按 3 枚图标按钮算），
+  // 这样每张卡右上角的尺寸都一样、右缘对齐；以前是「固定」两个汉字，宽度随字变，
+  // 一看就歪（2026-10-26 用户要求统一）。
   if (fixed) {
     const tag = document.createElement('span')
-    tag.className = 'fixed-tag'
+    tag.className = 'row-actions fixed-slot'
     tag.title = T('固定行（不可移动 / 删除）')
-    tag.innerHTML =
-      '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>'
+    tag.innerHTML = ICON_LOCK
     head.appendChild(tag)
   } else {
     const acts = document.createElement('span')
     acts.className = 'row-actions'
-    const mk = (text, title, fn, disabled) => {
+    const mk = (icon, title, fn, disabled, danger) => {
       const b = document.createElement('button')
-      b.type = 'button'; b.className = 'icon'; b.textContent = text; b.title = title
+      b.type = 'button'
+      b.className = danger ? 'icon danger' : 'icon'
+      b.innerHTML = icon
+      b.title = title
+      b.setAttribute('aria-label', title)
       b.disabled = !!disabled
       b.addEventListener('click', fn)
       return b
     }
-    acts.appendChild(mk('↑', T('上移'), () => {
+    acts.appendChild(mk(ICON_UP, T('上移'), () => {
       const [r] = col.rows.splice(ri, 1)
       col.rows.splice(ri - 1, 0, r)
       render(); apply()
     }, ri - 1 <= 0))
-    acts.appendChild(mk('↓', T('下移'), () => {
+    acts.appendChild(mk(ICON_DOWN, T('下移'), () => {
       const [r] = col.rows.splice(ri, 1)
       col.rows.splice(ri + 1, 0, r)
       render(); apply()
     }, ri + 1 >= last))
-    acts.appendChild(mk('✕', T('删除'), () => {
+    acts.appendChild(mk(ICON_X, T('删除'), () => {
       col.rows.splice(ri, 1)
       render(); apply()
-    }))
+    }, false, true))
     head.appendChild(acts)
   }
   el.appendChild(head)
 
-  // 细节行：输入/输出给设备下拉，处理给启用+参数，其余给提示占位。
+  // 细节行：输入/输出给设备下拉，处理给参数，其余给提示占位（行开关在第一行最左，不在这里）。
   // **媒体行例外**：soundpad / player 的全部控件由 `media.js` 提供（音效网格 / 走带 /
   // 每个音效的音量与热键），这里不能再画一遍通用参数控件，否则同一件事有两个入口。
   const isMediaRow = kind === 'process' && (row.ptype === 'soundpad' || row.ptype === 'player')
@@ -444,42 +488,14 @@ function rowElement(col, ci, row, ri) {
   if (isMediaRow) {
     // 媒体行不画 detail，由 media.js 接管
   } else if (kind === 'process') {
-    const lab = document.createElement('label')
-    lab.className = 'en'
-    const cb = document.createElement('input')
-    cb.type = 'checkbox'
-    cb.checked = row.enabled
-    cb.addEventListener('change', () => {
-      row.enabled = cb.checked
-      apply()
-    })
-    cb.title = T('启用这一行')
-    cb.setAttribute('aria-label', T('启用这一行'))
-    lab.append(cb)
-    detail.appendChild(lab)
     detail.appendChild(paramControls(row, ci, ri, row.ptype === 'tse' ? ['model'] : undefined))
   } else if (kind === 'input' && row.ptype === 'echo_cancel') {
-    // 近端 mic + 直通开关；远端 + 端侧增益在第 3 行
-    detail.appendChild(lbl(T('近端')))
-    detail.appendChild(select(deviceOptions('input', row.device), row.device ?? '', (v) => {
-      row.device = v || null
-      apply()
-    }))
-    const by = document.createElement('label')
-    by.className = 'en'
-    const cb = document.createElement('input')
-    cb.type = 'checkbox'
-    cb.checked = row.params.bypass === '1' || row.params.bypass === 'true'
-    cb.title = T('直通（A/B 对比）')
-    cb.addEventListener('change', () => {
-      row.params.bypass = cb.checked ? '1' : '0'
-      apply()
-    })
-    by.append(cb, document.createTextNode(T('直通')))
-    detail.appendChild(by)
+    // AEC 行的全部控件在下面单独的 AEC 块里画（两列网格：左标签 / 右控件，两只下拉
+    // 左缘对齐）；这里刻意不放东西，免得同一行有两个布局体系。
   } else if (isLoopbackRow(kind, row.ptype)) {
-    // 电脑播放音频：选被回环的输出端点 + 行内增益（系统混音偏响，默认 -6 dB）
+    // 电脑播放音频（扬声器）：选被回环的输出端点 + 行内增益（系统混音偏响，默认 -6 dB）
     if (!row.device) row.device = 'loopback'
+    detail.appendChild(lbl(T('设备')))
     detail.appendChild(select(loopbackOptions(row.device), row.device, (v) => {
       row.device = v
       apply()
@@ -491,6 +507,9 @@ function rowElement(col, ci, row, ri) {
     // 这一行是链路里的一环，不是主角：状态 + 地址 + 一枚小码 + 一个「重启」就够。
     // 详细开关与说明在顶栏「手机」面板里。
   } else if (needsDevice(kind, row.ptype)) {
+    // 设备下拉也要有标签：没有标签时既看不出这一行在选什么，控件也没法跟别行对齐
+    // （以前用 margin-left 硬顶，等于留一大块空白，2026-10-26 用户指出）。
+    detail.appendChild(lbl(T('设备')))
     detail.appendChild(select(deviceOptions(kind, row.device), row.device ?? '', (v) => {
       row.device = v || null
       apply()
@@ -503,41 +522,30 @@ function rowElement(col, ci, row, ri) {
   }
   el.appendChild(detail)
 
-  // AEC 行：远端单独一行；近端增益 / 远端增益 / 延时 / 校准 一行
+  // AEC 行：一律「左标签 / 右控件」，标签列与其它行同宽（见 alignRowLabels）。
+  // 顺序按用户定的直觉：麦克风 → 扬声器 → 增益 → 校准（直通紧跟在校准之后）。
   if (kind === 'input' && row.ptype === 'echo_cancel') {
     el.classList.add('aec')
-    const d2 = document.createElement('div')
-    d2.className = 'detail2'
-    d2.appendChild(lbl(T('远端')))
+    // 麦克风 = 近端（AEC 要清理的那一路）；扬声器 = 远端参考（系统正在放的声音）。
+    detail.appendChild(lbl(T('麦克风')))
+    detail.appendChild(select(deviceOptions('input', row.device), row.device ?? '', (v) => {
+      row.device = v || null
+      apply()
+    }))
+    detail.appendChild(lbl(T('扬声器')))
     // AEC 远端必选：缺省 = 系统默认输出（输出设备的声音就是 AEC 要消除的回声）
     if (!row.params.far_device) row.params.far_device = 'loopback'
-    d2.appendChild(select(farOptions(normalizeLoopback(row.params.far_device)), normalizeLoopback(row.params.far_device), (v) => {
+    detail.appendChild(select(farOptions(normalizeLoopback(row.params.far_device)), normalizeLoopback(row.params.far_device), (v) => {
       row.params.far_device = v
       apply()
     }))
-    el.appendChild(d2)
 
-    const d3 = document.createElement('div')
-    d3.className = 'detail3'
-    d3.appendChild(lbl(T('近端增益')))
-    d3.appendChild(numParam(row, 'mic_gain_db', '-40', '40', '1', 3.2))
-    d3.appendChild(lbl(T('远端增益')))
-    d3.appendChild(numParam(row, 'far_gain_db', '-40', '40', '1', 3.2))
-    d3.appendChild(lbl(T('延时')))
-    const num = document.createElement('input')
-    num.type = 'number'
-    num.min = '-1000'
-    num.max = '1000'
-    num.step = '10'
-    num.style.width = '4em'
-    const dn = Number(row.params.far_delay_ms)
-    num.value = Number.isFinite(dn) ? String(dn) : '0'
-    num.title = T('远端相对近端的延时（ms）')
-    num.addEventListener('change', () => {
-      row.params.far_delay_ms = num.value
-      apply()
-    })
-    d3.appendChild(num)
+    // 增益与延时**跟其它行一样带滑块**（只有数字时右侧大片空白，看着像没做完）：
+    // 复用 paramControls，标签 / 滑块 / 数字 / 单位四列与处理行完全同一套。
+    detail.appendChild(paramControls(row, ci, ri, ['mic_gain_db', 'far_gain_db', 'far_delay_ms']))
+
+    const acts = document.createElement('div')
+    acts.className = 'aec-actions'
     const cal = document.createElement('button')
     cal.type = 'button'
     cal.className = 'primary'
@@ -559,12 +567,26 @@ function rowElement(col, ci, row, ri) {
           cal.textContent = T('校准')
         })
     })
-    d3.appendChild(cal)
-    el.appendChild(d3)
+    acts.appendChild(cal)
+    // 直通（A/B 对比）：紧跟在校准后面，不再挤在「麦克风」那一行。
+    const by = document.createElement('label')
+    by.className = 'en'
+    const cb = document.createElement('input')
+    cb.type = 'checkbox'
+    cb.checked = row.params.bypass === '1' || row.params.bypass === 'true'
+    cb.title = T('直通（A/B 对比）')
+    cb.addEventListener('change', () => {
+      row.params.bypass = cb.checked ? '1' : '0'
+      apply()
+    })
+    by.append(cb, document.createTextNode(T('直通')))
+    acts.appendChild(by)
+    detail.appendChild(acts)
+
     const note = document.createElement('div')
-    note.className = 'detail3 cal-note'
-    note.textContent = T('远端就是 AEC 要消除的那只输出；校准会向它送扫频探针，测出延时并配平两端电平。')
-    el.appendChild(note)
+    note.className = 'cal-note'
+    note.textContent = T('消除麦克风中的扬声器声音。校准时请先关闭音频播放，并把扬声器音量调到正常使用时的音量。')
+    detail.appendChild(note)
   }
 
   // TSE 行：参考路径 + 卡片（当前参考 / 10 秒录音 / 进度 / 完成或失败）
@@ -600,19 +622,14 @@ function columnElement(col, ci) {
 
   const head = document.createElement('div')
   head.className = 'col-head'
-  const colDot = document.createElement('span')
-  colDot.className = 'col-dot idle'
-  colDot.title = T('列状态')
-  head.appendChild(colDot)
-  const title = document.createElement('span')
-  title.textContent = T('列 {n}', { n: ci + 1 })
-  head.appendChild(title)
-  // 列头开关：停用这一列（**不是删除**）——行、设备选择、参数全留，只放掉这一列对设备的引用，
+  // 列开关也放**最前**：与行开关同一条视觉规则（左边 = 开/关这一路），一眼扫得出来。
+  // 停用这一列（**不是删除**）——行、设备选择、参数全留，只放掉这一列对设备的引用，
   // 别的列不受影响（设备由池按引用计数持有，见 DESIGN.md §6.5「启用 / 停用」）。
   const onLabel = document.createElement('label')
   onLabel.className = 'en'
   const on = document.createElement('input')
   on.type = 'checkbox'
+  on.id = `col-en-${ci}`
   on.checked = col.enabled !== false
   on.title = T('停用这一列（保留配置，放掉设备引用）')
   on.addEventListener('change', () => {
@@ -623,6 +640,13 @@ function columnElement(col, ci) {
   on.setAttribute('aria-label', T('启用 / 停用这一列'))
   onLabel.append(on)
   head.appendChild(onLabel)
+  const colDot = document.createElement('span')
+  colDot.className = 'col-dot idle'
+  colDot.title = T('列状态')
+  head.appendChild(colDot)
+  const title = document.createElement('span')
+  title.textContent = T('列 {n}', { n: ci + 1 })
+  head.appendChild(title)
   // 常驻（仅一列时禁用），避免按钮出现/消失
   const del = document.createElement('button')
   del.type = 'button'
@@ -677,7 +701,28 @@ function render() {
     render(); apply()
   })
   host.appendChild(add)
+  alignRowLabels()
   window.__pvShell?.onPlan(plan)
+}
+
+/**
+ * 标签列对齐（纯呈现，无业务语义）：每列取**实测**最宽的标签，写进该列的 `--label-w`，
+ * 于是同一列里所有「左标签 / 右控件」的标签左缘、控件左缘各自成一条线。
+ *
+ * 用 `Range` 量文字本身的宽度，**不要**用 `offsetWidth`：标签是网格项，宽度已经被
+ * 标签列撑满了，量出来永远是列宽，量不出「最宽的那个」。
+ */
+function alignRowLabels() {
+  document.querySelectorAll('#audio-columns .column.audio').forEach((col) => {
+    let w = 0
+    col.querySelectorAll('.lbl, .params .plabel').forEach((el) => {
+      const r = document.createRange()
+      r.selectNodeContents(el)
+      w = Math.max(w, r.getBoundingClientRect().width)
+    })
+    const host = /** @type {HTMLElement} */ (col)
+    if (w > 0) host.style.setProperty('--label-w', `${Math.ceil(w) + 6}px`)
+  })
 }
 
 /**

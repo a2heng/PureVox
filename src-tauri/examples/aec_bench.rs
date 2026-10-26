@@ -34,7 +34,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let gain: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.5);
   let d = (delay_ms * 48.0) as usize;
 
-  let mut session = Session::builder()?
+  let env = ort::environment::init()
+    .with_name("PureVox-aec-bench")
+    .build()?;
+  let mut session = Session::builder(&env)?
     .with_intra_threads(1)?
     .with_inter_threads(1)?
     .with_intra_op_spinning(false)?

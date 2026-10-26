@@ -92,14 +92,14 @@ impl SourceStats {
 pub struct MixPort {
   /// 行把这一列的 hop 推进它（`playback` 那套 `push_hop` 接口不变）
   pub fanout: Arc<Fanout>,
-  /// 注销时用的标号（与 [`Mixer::register`] 的 id 一致）
-  id: String,
+  /// 注销用的**唯一令牌**（不是 `id`！见 [`Mixer::register`] 的注释）
+  token: u64,
   mixer: Arc<MixerInner>,
 }
 
 impl Drop for MixPort {
   fn drop(&mut self) {
-    self.mixer.unregister(&self.id);
+    self.mixer.unregister(self.token);
   }
 }
 
@@ -120,18 +120,26 @@ pub struct SourceStat {
 struct MixerInner {
   sources: Mutex<Vec<Source>>,
   stop: AtomicBool,
+  /// 每次 [`Mixer::register`] 递增的一次性令牌：**注销按令牌、不按 id**。
+  ///
+  /// 2026-10-26 实测的哑巴故障：会话重建是「先建新会话、再停旧会话」，两次注册用的是
+  /// 同一个 id（`c{列}r{行}`，行号不变），而旧的 `MixPort` 在 Drop 时按 id 注销 ——
+  /// 它把**新注册的那一路**一起删掉了，于是混音器从此 0 个源、输出恒为 -160 dBFS
+  /// （界面全绿、波形是直线，重启才恢复）。令牌让「谁的句柄谁注销」，新旧重叠期也安全。
+  next_token: AtomicU64,
 }
 
 impl MixerInner {
-  fn unregister(&self, id: &str) {
+  fn unregister(&self, token: u64) {
     if let Ok(mut g) = self.sources.lock() {
-      g.retain(|s| s.id != id);
+      g.retain(|s| s.token != token);
     }
   }
 }
 
 /// 一路源的运行状态（混音线程独占）。
 struct Source {
+  token: u64,
   id: String,
   ring: Consumer<f32>,
   conv: Converter,
@@ -251,6 +259,7 @@ impl Mixer {
     let inner = Arc::new(MixerInner {
       sources: Mutex::new(Vec::new()),
       stop: AtomicBool::new(false),
+      next_token: AtomicU64::new(1),
     });
     let (i2, out2) = (inner.clone(), out.clone());
     let join = std::thread::Builder::new()
@@ -290,12 +299,14 @@ impl Mixer {
 
   /// 登记一路源：返回给行推 hop 的扇出（行照旧 `push_hop`）。
   pub fn register(&self, id: String) -> MixPort {
+    let token = self.inner.next_token.fetch_add(1, Relaxed);
     let fanout = Arc::new(Fanout::new(format!("混音源：{id}")));
     let ring = fanout.subscribe(&id);
     let conv = Converter::new(SAMPLE_RATE, SAMPLE_RATE, HOP, true)
       .expect("48k→48k 转换器（内部参数固定，不该失败）");
     if let Ok(mut g) = self.inner.sources.lock() {
       g.push(Source {
+        token,
         id: id.clone(),
         ring,
         conv,
@@ -308,7 +319,7 @@ impl Mixer {
     }
     MixPort {
       fanout,
-      id,
+      token,
       mixer: self.inner.clone(),
     }
   }
@@ -355,6 +366,7 @@ mod tests {
     Fixture {
       fan,
       src: Source {
+        token: 0,
         id: id.into(),
         ring,
         conv: Converter::new(SAMPLE_RATE, SAMPLE_RATE, HOP, true).unwrap(),
@@ -427,5 +439,21 @@ mod tests {
       lv_ms <= SRC_TARGET_MS as f32 + 12.0,
       "每拍推一格就不该攒水位，实测 {lv_ms} ms"
     );
+  }
+  /// 会话重建的顺序是「**先建新会话、再停旧会话**」，两边的源用的是同一个 id
+  /// （`c{列}r{行}`，行号不变）。旧句柄 Drop 时若按 id 注销，会把新注册的那一路一起
+  /// 删掉 —— 混音器 0 源、输出恒为 -160 dBFS（2026-10-26 实测的哑巴故障）。
+  #[test]
+  fn rebuild_keeps_new_source() {
+    let out = Arc::new(Fanout::new("测试混音输出"));
+    let mixer = Mixer::spawn(out, "test".into()).unwrap();
+    let old = mixer.register("c0r4".into());
+    let new = mixer.register("c0r4".into());
+    assert_eq!(mixer.stats().len(), 2, "重建重叠期两路都在（旧的还没停）");
+    drop(old);
+    let stats = mixer.stats();
+    assert_eq!(stats.len(), 1, "旧句柄注销后，新的那一路必须还在");
+    drop(new);
+    assert_eq!(mixer.stats().len(), 0);
   }
 }

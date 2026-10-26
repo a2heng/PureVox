@@ -20,6 +20,7 @@
 //! 当前阶段只落了骨架：`Stage` 契约、`Pipeline`、`registry`。列工作线程见后续步骤。
 
 pub mod aec;
+pub mod affinity;
 pub mod calib;
 pub mod components;
 /// 热参数（与模型无关的标量：增益 / 音量）—— 运行中改它不重建会话

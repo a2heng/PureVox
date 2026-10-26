@@ -564,7 +564,8 @@ pub fn models() -> &'static [ModelDesc];
 pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 ```
 
-- 现存：`purevox_denoise_202609c_ep0012.onnx`（现役）、`202609b` / `202609a` / `202606`、
+- 现存：`purevox_denoise_202609b_ep0046.onnx`（现役）、`202606`（旧版对照；`202609a` / `202609c`
+  已于 2026-10-26 删除以减小包体）、
   `purevox_aec_202610_ep0372.onnx`（现役）、`purevox_tse_202609c_ep0201.onnx`（+ `..._ref_encoder.onnx`）。
   **缓存维度从模型输入读，不写死**。
 - 选择存配置（`denoise_model` 等），计划构建时校验文件存在，缺失进 `problems`。

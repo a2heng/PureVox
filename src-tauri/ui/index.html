@@ -180,23 +180,34 @@
       </div>
     </div>
 
-    <!-- 更新面板：查 GitHub Releases → 下载 → 安装（见 update.js / src/update/） -->
+    <!-- 更新面板：查 GitHub Releases → 下载 → 安装（见 update.js / src/update/）。
+         一段一件事：版本对照 / 发布信息 / 下载进度 / 更新说明（可滚）/ 按钮。 -->
     <div id="update" class="panel hidden">
-      <div class="panel-box">
-        <h3 data-i18n="更新">更新</h3>
+      <div class="panel-box update-box">
+        <h3><span data-i18n="更新">更新</span><span id="up-phase" class="up-phase"></span></h3>
         <table class="kv">
-          <tr><th data-i18n="当前版本">当前版本</th><td id="up-cur" colspan="3" class="mono"></td></tr>
-          <tr><th data-i18n="最新版本">最新版本</th><td id="up-latest" colspan="3" class="mono"></td></tr>
+          <tr>
+            <th data-i18n="当前版本">当前版本</th><td id="up-cur" class="mono"></td>
+            <th data-i18n="最新版本">最新版本</th><td id="up-latest" class="mono"></td>
+          </tr>
+          <tr>
+            <th data-i18n="安装方式">安装方式</th><td id="up-kind" class="mono"></td>
+            <th data-i18n="发布日期">发布日期</th><td id="up-date" class="mono"></td>
+          </tr>
+          <tr><th data-i18n="匹配产物">匹配产物</th><td id="up-asset" colspan="3" class="mono"></td></tr>
           <tr><th data-i18n="状态">状态</th><td id="up-state" colspan="3"></td></tr>
         </table>
-        <p class="note" id="up-notes"></p>
+        <div id="up-progress" class="up-progress"><div id="up-bar"></div></div>
+        <div class="up-notes-head">
+          <span data-i18n="更新说明">更新说明</span>
+          <span id="up-notes-len" class="sub"></span>
+        </div>
+        <div id="up-notes" class="up-notes"></div>
         <div class="set-row">
           <button id="up-check" type="button" data-i18n="检查更新">检查更新</button>
-          <button id="up-download" type="button" data-i18n="下载更新">下载更新</button>
+          <button id="up-download" type="button" class="primary" data-i18n="下载更新">下载更新</button>
           <button id="up-install" type="button" data-i18n="安装更新">安装更新</button>
           <button id="up-page" type="button" data-i18n="打开发布页">打开发布页</button>
-        </div>
-        <div class="set-foot">
           <button id="up-close" type="button" data-i18n="关闭">关闭</button>
         </div>
       </div>

@@ -30,11 +30,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map(PathBuf::from)
     .unwrap_or_else(|| {
       PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../models/purevox_denoise_202609c_ep0012.onnx")
+        .join("../models/purevox_denoise_202609b_ep0046.onnx")
     });
   println!("model: {}", path.display());
   let t = Instant::now();
-  let mut session = Session::builder()?.commit_from_file(&path)?;
+  // 与 `infer::build_session` 完全一致：单线程推理 + 关闭自旋。
+  // 默认多线程池会忙等，实测把 1.8 ms 的推理拖到 10 ms 以上（bench 自己踩过这个坑）。
+  let env = ort::environment::init()
+    .with_name("PureVox-bench")
+    .build()?;
+  let mut session = Session::builder(&env)?
+    .with_intra_threads(1)?
+    .with_inter_threads(1)?
+    .with_intra_op_spinning(false)?
+    .commit_from_file(&path)?;
   println!(
     "session ready in {:.0} ms",
     t.elapsed().as_secs_f64() * 1000.0

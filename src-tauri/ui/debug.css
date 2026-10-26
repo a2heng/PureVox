@@ -373,7 +373,6 @@ body.debug-on #debug { display: block; }
 .row.process .badge { background: var(--warn); }
 .row .ptype { flex: 1 1 auto; width: auto; font-weight: 500; }
 .row .row-actions { flex: 0 0 auto; display: inline-flex; gap: 2px; }
-.row .fixed-tag { flex: 0 0 auto; color: var(--faint); font-size: 11px; padding: 0 4px; }
 
 /* 所有细节行统一：flex 纵向容器内的「一条」内容，允许换行 */
 .row .detail,
@@ -1060,7 +1059,7 @@ body {
 .col-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); font-weight: 700; font-size: 13px; }
 .col-head .col-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .col-head .col-idx { font-size: 10px; font-weight: 700; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
-.col-head .en { margin-left: auto; font-size: 11px; }
+.col-head .en { font-size: 11px; }
 .col-head > button { height: 24px; padding: 0 8px; font-size: 11px; color: var(--muted); }
 .col-head > button:hover:not(:disabled) { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .col-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
@@ -1098,6 +1097,60 @@ body {
 .row-dot.warn { background: var(--warn); }
 .row-dot.err { background: var(--danger); }
 .row-dot.pending { background: var(--faint); }
+
+/* 行开关：**所有行统一在第一行最左**，做成 26x14 的小开关（纯 checkbox 太小，
+   分不清开/关）。行级语义 = 挂摘这一行（不产出 + 放掉设备引用）。 */
+.row-en {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  cursor: pointer;
+  line-height: 1;
+}
+.row-en input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 26px;
+  height: 14px;
+  margin: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.row-en input[type="checkbox"]::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--faint);
+  transition: transform 0.15s, background 0.15s;
+}
+.row-en input[type="checkbox"]:checked {
+  background: color-mix(in srgb, var(--ok) 26%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 60%, var(--line));
+}
+.row-en input[type="checkbox"]:checked::after {
+  transform: translateX(12px);
+  background: var(--ok);
+}
+
+/* 数字框紧挨滑块时不再显示上下箭头：粗调已经由滑块承担，箭头只会吃掉数字的宽度
+   （窄列里数字被挤成「…」，读不出来）。AEC 的纯数字框（无滑块）保持原样。 */
+.row .params .param input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.row .params .param input[type="number"]::-webkit-inner-spin-button,
+.row .params .param input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
 .row .badge { font-size: 10px; padding: 2px 7px; border-radius: 999px; letter-spacing: 0.2px; }
 .row.input .badge { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
 .row.process .badge { background: var(--accent-weak); color: var(--accent); }
@@ -1326,8 +1379,7 @@ body.debug-on #debug { display: flex; transform: none; opacity: 1; visibility: v
   min-width: 0;
   margin-right: 92px;
 }
-.row .row-actions,
-.row .fixed-tag {
+.row .row-actions {
   position: absolute;
   right: 0;
   top: 50%;
@@ -1341,19 +1393,59 @@ body.debug-on #debug { display: flex; transform: none; opacity: 1; visibility: v
   color: var(--faint);
 }
 .row .row-actions { gap: 2px; }
-/* 输入/输出行的设备下拉与上面的类型下拉左对齐（不再比类型下拉多出 100px） */
-.row.input > .detail,
-.row.output > .detail {
-  margin-left: calc(3.6em + 21px);
+/* 动作区 = 3 枚 24px 方形图标按钮；固定行用同样宽度的虚线框 + 锁占位，
+   于是每张卡右上角的块尺寸一致、右缘对齐（不再被「固定」两字撑成不同宽度）。 */
+.row .row-actions .icon {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1;
 }
-.row .fixed-tag svg {
-  width: 13px;
-  height: 13px;
+.row .row-actions .icon svg {
+  width: 14px;
+  height: 14px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+.row .row-actions .icon:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line);
+  background: var(--panel);
+}
+.row .row-actions .icon.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--line));
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.row .row-actions .icon:disabled { opacity: 0.3; cursor: default; }
+.row .row-actions .icon:disabled:hover { border-color: transparent; background: transparent; color: var(--faint); }
+.row .row-actions.fixed-slot {
+  width: 80px; /* 3 × 24 + 2 × 4 = 与三枚按钮（含 gap）等宽 */
+  height: 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 6px;
+  justify-content: center;
+}
+.row .row-actions.fixed-slot svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.75;
 }
 .row .lbl {
   min-width: 4.2em;
@@ -1612,10 +1704,11 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: default; }
   white-space: nowrap;
 }
 
-/* 参数用紧凑网格：2 列（约 190px/列），每列「标签 + 滑块 + 数字 + 单位」一条线 */
+/* 参数用紧凑网格：2 列（约 190px/列），每列「标签 + 滑块 + 数字 + 单位」一条线。
+   行开关已移到第一行最左，detail 里只剩参数区，故单列铺满（不再留 auto 列）。 */
 .row.process > .detail {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
 }
 .row .params {
@@ -1679,3 +1772,205 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: default; }
   gap: 4px 8px;
   width: 100%;
 }
+
+/* ---------- 2026-10-26 行内第二行：统一「左标签 / 右控件」两列网格 ----------
+   标签列宽度 = 整列实测最宽标签（columns.js 的 alignRowLabels 写 `--label-w`）。
+   一条规则同时管住：输入/输出设备、模型下拉、AEC 的麦克风/扬声器/增益/校准。
+   - 标签一律**顶到行内容左缘**（不再用 margin-left 硬顶，那会留下一条空白）；
+   - 控件（下拉 / 数字 / 滑块）左缘全部从标签列末端开始，即同一条竖线；
+   - 没有标签的内容（提示 / 说明 / 参数区 / 校准按钮组）跨两列，不占标签列。 */
+.row > .detail,
+.row > .detail2,
+.row.process > .detail {
+  display: grid;
+  grid-template-columns: var(--label-w, 5em) minmax(0, 1fr);
+  gap: 6px 8px;
+  align-items: center;
+  margin-left: 0;
+}
+.row > .detail > .lbl,
+.row > .detail2 > .lbl {
+  min-width: 0;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.row > .detail > select,
+.row > .detail2 > select {
+  width: 100%;
+  min-width: 0;
+  flex: none;
+}
+.row > .detail > input[type="number"],
+.row > .detail > input[type="text"] {
+  width: 100%;
+  max-width: 9em;
+  min-width: 0;
+}
+.row > .detail > .hint,
+.row > .detail > .cal-note,
+.row > .detail > .params,
+.row > .detail2 > .params,
+.row > .detail3,
+.row > .detail > .aec-actions {
+  grid-column: 1 / -1;
+}
+/* AEC 动作行：跨两列、不带标签（「校准」当标签太怪）。**校准居中、直通靠最右**，
+   中间留白自己分配（以前两个控件都挤在右边）。 */
+.row > .detail > .aec-actions {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.row > .detail > .aec-actions > .primary { grid-column: 2; justify-self: center; }
+.row > .detail > .aec-actions > .en { grid-column: 3; justify-self: end; }
+/* 参数网格里每个参数用同一套列宽：标签列 = --label-w，滑块 / 数字 / 单位依次排开。
+   这样「模型」下拉和输入行的设备下拉左缘落在同一条竖线上。 */
+.row .params .param,
+.row .params .param.wide {
+  grid-template-columns: var(--label-w, 5em) minmax(0, 1fr) 3.6em auto;
+}
+.row .params .param .plabel {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* ---------- 2026-10-26 效率导向密度（只压间距/内边距/控件高度） ----------
+   迁移期一屏要同时看：每列 3~6 行卡片 + 调试列，而本机 200% 缩放下只有 ~780 CSS px 宽。
+   这里把「四层嵌套内边距」（页面 → 列 → 卡片 → 行头/细节）全部压到最小可用值，
+   控件高度 28 → 24/22，参数网格从 160px 提到 215px 一列（只有真放得下才并两列，
+   否则滑块被挤到 40px 以下）。**不写任何 height 容器**：高度仍由内容决定
+   （文件头「布局铁律」）。 */
+:root { --col-w: 360px; }
+#shell { grid-template-columns: 176px minmax(0, 1fr); }
+#sidebar { gap: 6px; padding: 8px 8px 6px; }
+#sidebar .brand { gap: 8px; padding: 0 2px 2px; }
+.brand-logo { width: 26px; height: 26px; border-radius: 8px; }
+.brand-logo svg { width: 16px; height: 16px; }
+.brand-text b { font-size: 13px; }
+.brand-text small { font-size: 9.5px; margin-top: 0; }
+#btn-run { height: 30px; font-size: 12px; }
+.side-nav { padding-top: 0; gap: 2px; }
+.side-nav button { height: 24px; font-size: 11.5px; }
+.side-sec { margin: 2px 4px 0; }
+.side-foot { padding-top: 6px; }
+
+#columns { padding: 4px 6px 6px; }
+#audio-columns { gap: 8px; }
+.column.audio { padding: 7px; border-radius: 10px; }
+.col-head { margin-bottom: 5px; padding-bottom: 5px; gap: 6px; font-size: 12px; }
+.col-head > button { height: 22px; padding: 0 6px; font-size: 10.5px; }
+.rows { gap: 4px; }
+.row { padding: 4px 5px 4px 8px; gap: 4px; border-radius: 8px; }
+.row-head { gap: 5px; }
+.row .badge { min-width: 3.1em; padding: 1px 6px; font-size: 10px; }
+.row .ptype { height: 24px; font-size: 12px; }
+.row .row-actions .icon { width: 22px; height: 22px; }
+.row .row-actions.fixed-slot { width: 74px; height: 22px; }
+
+.row > .detail,
+.row > .detail2,
+.row.process > .detail { gap: 4px 6px; }
+.row > .detail > .lbl,
+.row > .detail2 > .lbl { font-size: 10.5px; }
+.row > .detail > select,
+.row > .detail2 > select { height: 24px; font-size: 12px; }
+.row .params { gap: 3px 6px; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); }
+.row .params .param { height: 22px; gap: 3px; }
+.row .params .param .plabel { font-size: 10.5px; }
+.row .params .param input[type="range"] { height: 12px; }
+.row .params .param input[type="number"] { height: 20px; font-size: 10.5px; padding: 0 2px; }
+.row .params .param select,
+.row .params .param input[type="text"] { height: 24px; font-size: 11.5px; }
+.row .params .unit { font-size: 9.5px; }
+.col-foot button { height: 24px; font-size: 11px; }
+
+/* 参数一律**单列**（用户 2026-10-26 定）：两列时每格只有 ~180px，滑块被挤成一小截，
+   拖动几乎不可控；单列后滑块拿满整行宽度，纵向也没有更费（标签与控件同一行）。 */
+.row .params,
+.row .detail .params {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* ---------- 更新面板（2026-10-26）：一段一件事，说明可滚 ----------
+   以前整块挤在一个默认宽度的 `.panel-box` 里、release 说明塞进一个 `<p>`（换行全丢），
+   看着「小气、杂乱、不完整」。这里放宽到 640px、说明区单独成块可滚动。 */
+.update-box {
+  width: min(640px, calc(100vw - 48px));
+  max-height: min(78vh, 720px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.update-box h3 { display: flex; align-items: center; gap: 8px; margin: 0; }
+.up-phase {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--panel-2);
+}
+.up-phase.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.up-phase.na { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.up-phase.busy { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: var(--accent-weak); }
+.update-box .kv th { white-space: nowrap; }
+.update-box .kv td { overflow-wrap: anywhere; }
+.update-box #up-state { color: var(--muted); }
+
+/* 下载进度条：不在下载/已下载时收起来（不占高度） */
+.up-progress {
+  display: none;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.up-progress.on { display: block; }
+#up-bar {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.up-notes-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.up-notes-head .sub { font-weight: 400; color: var(--faint); }
+.up-notes {
+  flex: 1 1 auto;
+  min-height: 96px;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--fg-2);
+  user-select: text;
+}
+.up-note-h { font-weight: 700; color: var(--fg); margin: 2px 0 6px; }
+.up-note-h.h1 { font-size: 13px; }
+.up-note-list { margin: 0 0 8px; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+.up-note-list li { overflow-wrap: anywhere; }
+.up-note-p { margin: 0 0 8px; overflow-wrap: anywhere; }
+.up-note-list li::marker { color: var(--faint); }
+.up-note-empty { margin: 0; color: var(--faint); }
+.update-box .set-row { flex-wrap: wrap; gap: 8px; }
+
+/* 调试列是**抽屉**：宽度跟着视口走。写死 1040px 时（本机 200% 缩放 ≈ 780 CSS px 视口）
+   整页会横向溢出，而 `.panel` 是 `position: fixed; inset: 0` 居中 —— 溢出后它按**加宽的
+   文档**居中，于是「更新」这类对话框整个偏到右边、右侧被裁掉（2026-10-26 实测截图）。 */
+:root { --dbg-w: min(1040px, 48vw); }

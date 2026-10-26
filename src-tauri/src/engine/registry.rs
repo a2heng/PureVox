@@ -117,26 +117,26 @@ static SPECS: &[NodeSpec] = &[
   // 输入行（源）
   NodeSpec {
     ptype: "audio_input",
-    label: "录音输入",
+    label: "麦克风",
     kind: NodeKind::Input,
     params: &[],
   },
   NodeSpec {
     ptype: "tone",
-    label: "测试音 1 kHz",
+    label: "测试音（1kHz 测试用）",
     kind: NodeKind::Input,
     params: &[],
   },
   NodeSpec {
     ptype: "remote_mic",
-    label: "网络麦克风",
+    label: "网络",
     kind: NodeKind::Input,
     // 无参数：不需要虚拟声卡驱动，网络流直接进引擎；全会话只允许一个
     params: &[],
   },
   NodeSpec {
     ptype: "loopback",
-    label: "电脑播放音频",
+    label: "扬声器",
     kind: NodeKind::Input,
     // 无采集设备意义上的「输入」：捕获输出设备正在播放的系统混音（WASAPI loopback /
     // PipeWire monitor）。`device` = `loopback`（系统默认输出）或 `loopback:<端点ID｜sink>`
@@ -154,7 +154,7 @@ static SPECS: &[NodeSpec] = &[
   },
   NodeSpec {
     ptype: "echo_cancel",
-    label: "AEC 回声消除",
+    label: "AEC（回声消除）",
     kind: NodeKind::Input,
     params: &[
       ParamSpec {
@@ -633,13 +633,13 @@ static SPECS: &[NodeSpec] = &[
   // 输出行（汇）
   NodeSpec {
     ptype: "audio_output",
-    label: "音频输出",
+    label: "扬声器",
     kind: NodeKind::Output,
     params: &[],
   },
   NodeSpec {
     ptype: "remote_speaker",
-    label: "网络扬声器",
+    label: "网络",
     kind: NodeKind::Output,
     params: &[],
   },

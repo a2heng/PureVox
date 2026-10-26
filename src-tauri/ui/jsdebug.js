@@ -76,6 +76,12 @@
       setDebug(!document.body.classList.contains('debug-on'))
       setTimeout(checkLayout, 100)
     })
+    // 面板自己的「关闭」按钮：以前没有监听器，点了没反应，只能回顶栏再点一次开关。
+    // 走同一个 setDebug，状态记忆与布局自检保持一致。
+    document.getElementById('dbg-close')?.addEventListener('click', () => {
+      setDebug(false)
+      setTimeout(checkLayout, 100)
+    })
   })
 
   // 布局自检：文档本身不得溢出（滚动只允许发生在音频列区与调试列）；顶栏子元素不得折行/溢出。

@@ -164,7 +164,16 @@ fn open_and_poll(
       )
     };
     unsafe { CoTaskMemFree(Some(mix as *const _)) };
-    init.map_err(|e| format!("初始化回环失败：{e}"))?;
+    // 0x88890003 = AUDCLNT_E_WRONG_ENDPOINT_TYPE：拿到的是录音端点。配置里把麦克风
+    // 的端点 ID 写进了回环行（或 AEC 远端）时就会走到这里；裸 HRESULT 用户看不懂，
+    // 这里翻成「哪一步错、该改成什么」。
+    init.map_err(|e| {
+      if e.code() == windows::core::HRESULT(0x8889_0003u32 as i32) {
+        "初始化回环失败：该设备是录音端点，回环行 / AEC 远端只能选播放（输出）端点".to_string()
+      } else {
+        format!("初始化回环失败：{e}")
+      }
+    })?;
     let capture: IAudioCaptureClient =
       unsafe { client.GetService() }.map_err(|e| format!("获取 IAudioCaptureClient 失败：{e}"))?;
     unsafe { client.Start() }.map_err(|e| format!("启动回环失败：{e}"))?;

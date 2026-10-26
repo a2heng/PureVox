@@ -813,10 +813,14 @@ fn main() {
     .on_window_event(|window, event| match event {
       tauri::WindowEvent::CloseRequested { api, .. } => {
         api.prevent_close();
-        let _ = window.hide();
+        hide_to_tray(window);
       }
-      tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
-        let _ = window.hide();
+      // 最小化：Windows 下最小化会先 `Resized(0x0)` 再 `is_minimized()==true`，
+      // 两个判据都要看（只看 `is_minimized()` 实测会漏，窗口留在任务栏上 —— 2026-10-26）。
+      tauri::WindowEvent::Resized(size)
+        if window.is_minimized().unwrap_or(false) || size.width == 0 || size.height == 0 =>
+      {
+        hide_to_tray(window);
       }
       _ => {}
     })
@@ -919,16 +923,51 @@ fn tray_icon(running: bool) -> Option<tauri::image::Image<'static>> {
 }
 
 /// 显隐主窗口（托盘左键 / 菜单「显示/隐藏」共用）。
+///
+/// **每一步都要有结果可看**（AGENTS §1 调试优先）：找不到窗口、hide/show 失败都写进
+/// `/debug` 的 `ui`，否则用户只会看到「点了没反应」。
 fn toggle_window(app: &tauri::AppHandle) {
-  if let Some(w) = app.get_webview_window("main") {
-    if w.is_visible().unwrap_or(true) {
-      let _ = w.hide();
-    } else {
-      let _ = w.unminimize();
-      let _ = w.show();
-      let _ = w.set_focus();
+  let Some(w) = app.get_webview_window("main") else {
+    push_ui(app, "error", "托盘：找不到主窗口（label=main）".to_string());
+    return;
+  };
+  // 最小化时 `is_visible()` 仍是 true —— 先按「最小化也算隐藏」处理，
+  // 否则点第一下会被当成「已显示」去 hide，看起来毫无反应（2026-10-26 实测）。
+  let minimized = w.is_minimized().unwrap_or(false);
+  let visible = w.is_visible().unwrap_or(false);
+  if visible && !minimized {
+    match w.hide() {
+      Ok(()) => push_ui(app, "info", "托盘：已隐藏主窗口".to_string()),
+      Err(e) => push_ui(app, "error", format!("托盘：隐藏窗口失败：{e}")),
+    }
+  } else {
+    let r = w
+      .unminimize()
+      .and_then(|()| w.show())
+      .and_then(|()| w.set_focus());
+    match r {
+      Ok(()) => push_ui(app, "info", "托盘：已显示主窗口".to_string()),
+      Err(e) => push_ui(app, "error", format!("托盘：显示窗口失败：{e}")),
     }
   }
+}
+
+/// 「收到托盘」= 隐藏窗口（最小化 / 关窗都走这里）。
+fn hide_to_tray(window: &tauri::Window) {
+  let app = window.app_handle();
+  match window.hide() {
+    Ok(()) => push_ui(
+      app,
+      "info",
+      "窗口已收到托盘（最小化 / 关闭都不退出）".to_string(),
+    ),
+    Err(e) => push_ui(app, "error", format!("隐藏窗口失败：{e}")),
+  }
+}
+
+/// 往 `/debug` 的 `ui` 消息流写一行（带日志的场景没有 `app` 之外的东西）。
+fn push_ui(app: &tauri::AppHandle, level: &str, msg: String) {
+  app.state::<SharedHub>().inner().push_ui(level, msg);
 }
 
 /// 托盘菜单（随语言与运行状态重建）。

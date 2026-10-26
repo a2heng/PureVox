@@ -40,14 +40,29 @@ pub fn set_model_dir(dir: PathBuf) {
   let _ = MODEL_DIR.set(dir);
 }
 
+/// 进程级 ONNX Runtime 环境（ort 2.0 rc.15 起 `Session::builder` 必须显式传它）。
+fn ort_env() -> Result<&'static ort::environment::Environment, String> {
+  static ENV: OnceLock<Result<ort::environment::Environment, String>> = OnceLock::new();
+  ENV
+    .get_or_init(|| {
+      ort::environment::init()
+        .with_name("PureVox")
+        .build()
+        .map_err(|e| format!("创建 onnxruntime 环境失败：{e}"))
+    })
+    .as_ref()
+    .map_err(|e| e.clone())
+}
+
 /// 统一 ONNX 会话：单线程推理 + 关闭自旋等待。
 ///
 /// ort/onnxruntime 默认按核数建线程池并忙等（allow_spinning），会占满 CPU 并和音频回调抢核，
 /// 实测把 1 ms 的推理拖到 100 ms。降噪 / AEC / TSE / 参考编码器都走这一条路径。
 pub(crate) fn build_session(path: &Path) -> Result<Session, String> {
   let path = path.to_path_buf();
+  let env = ort_env()?;
   let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    Session::builder()
+    Session::builder(env)
       .map_err(|e| format!("创建 onnxruntime 会话失败：{e}"))?
       .with_intra_threads(1)
       .map_err(|e| format!("设置推理线程数失败：{e}"))?
@@ -281,15 +296,19 @@ pub fn preload_all() {
 }
 
 /// 现役降噪模型（models/ 下的文件名）。
-pub const MODEL_DENOISE: &str = "purevox_denoise_202609c_ep0012.onnx";
+///
+/// 2026-10-26 收模型体积：只留 `202609b`（现役）与 `202606`（旧版对照），
+/// `202609a` / `202609c` 已从 `models/` 删除（包里少 23 MB）。
+pub const MODEL_DENOISE: &str = "purevox_denoise_202609b_ep0046.onnx";
 
 /// 可选降噪模型 (文件名, 界面名)，供界面下拉（DESIGN.md §7）。
 pub fn denoise_models() -> &'static [(&'static str, &'static str)] {
   &[
-    (MODEL_DENOISE, "降噪 202609c（现役）"),
-    ("purevox_denoise_202609b_ep0046.onnx", "降噪 202609b"),
-    ("purevox_denoise_202609a_ep0278.onnx", "降噪 202609a"),
-    ("purevox_denoise_202606_ep0014_op17.onnx", "降噪 202606"),
+    (MODEL_DENOISE, "降噪 202609b（现役）"),
+    (
+      "purevox_denoise_202606_ep0014_op17.onnx",
+      "降噪 202606（旧版）",
+    ),
   ]
 }
 

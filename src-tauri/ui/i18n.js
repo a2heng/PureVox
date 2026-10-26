@@ -35,6 +35,14 @@
     启动: 'Start',
     停止: 'Stop',
     更新: 'Update',
+    安装方式: 'Install kind',
+    发布日期: 'Published',
+    匹配产物: 'Matched asset',
+    更新说明: 'Release notes',
+    重新下载: 'Download again',
+    '{n} 行': '{n} lines',
+    '这个 release 没有更新说明': 'This release has no notes',
+    没有匹配到本机安装方式可用的包: 'No package matched this install kind',
     设置: 'Settings',
     启用全局热键: 'Enable global hotkey',
     录制: 'Record',
@@ -75,7 +83,7 @@
     '录音中… {sec}s（请持续说话）': 'Recording… {sec}s (keep speaking)',
     '请先启动音频处理，再录制参考。': 'Start the audio engine before recording a reference.',
     '完成！参考已生效。': 'Done — the reference is active.',
-    'AI 麦克风降噪': 'AI microphone noise reduction',
+    'AI 麦克风降噪': 'AI MIC noise reduction',
     会话: 'Session',
     音频链: 'Audio chain',
     截屏: 'Screenshot',
@@ -178,8 +186,8 @@
       'The track plays as an endless loop — it wraps back to the start at the end.',
     // AEC 行说明
     校准中: 'Calibrating…',
-    '远端就是 AEC 要消除的那只输出；校准会向它送扫频探针，测出延时并配平两端电平。':
-      'The far device is the output AEC must cancel from; calibration sends a sweep to it to measure the delay and match both ends.',
+    '消除麦克风中的扬声器声音。校准时请先关闭音频播放，并把扬声器音量调到正常使用时的音量。':
+      'Removes the speaker sound picked up by the microphone. Before calibrating, stop any playback and set the speaker volume to the level you normally use.',
     // 调试列（静态小节）
     调试: 'Debug',
     应用: 'App',
@@ -345,14 +353,14 @@
     '推理 均/最大': 'Inference avg/max',
     // Rust 提供的用户可见标签（注册表节点/参数名、模型表、提示音预设）：界面侧经 T()
     // 翻译（中文即 msgid），条目缺失就是漏译——lint E6 直接对 Rust 源校验覆盖。
-    录音输入: 'Audio input',
-    '测试音 1 kHz': 'Test tone 1 kHz',
-    'AEC 回声消除': 'AEC echo cancel',
+    麦克风: 'mic', // 左上角标签列只有几 em 宽，'Microphone' 会把整列撑开
+    // 「设备」在调试列已有同一条（第 331 行），这里不重复，引用同一条翻译。
+    '测试音（1kHz 测试用）': 'Test tone (1 kHz test)',
+    'AEC（回声消除）': 'AEC (echo cancel)',
     降噪: 'Denoise',
     增益: 'Gain',
     '目标说话人 TSE': 'Target speaker TSE',
-    音频输出: 'Audio output',
-    电脑播放音频: 'Computer playback audio',
+    扬声器: 'Speaker',
     音效板: 'Soundpad',
     音乐播放器: 'Music player',
     模型: 'Model',
@@ -364,10 +372,8 @@
     音效: 'Sound',
     曲目: 'Track',
     续播位置: 'Resume at',
-    '降噪 202609c（现役）': 'Denoise 202609c (current)',
-    '降噪 202609b': 'Denoise 202609b',
-    '降噪 202609a': 'Denoise 202609a',
-    '降噪 202606': 'Denoise 202606',
+    '降噪 202609b（现役）': 'Denoise 202609b (current)',
+    '降噪 202606（旧版）': 'Denoise 202606 (legacy)',
     'TSE 202609c（现役）': 'TSE 202609c (current)',
     'AEC 202610（现役）': 'AEC 202610 (current)',
     柔和: 'Soft',

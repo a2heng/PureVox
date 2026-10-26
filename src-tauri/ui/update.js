@@ -50,37 +50,124 @@
 
   const mb = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB')
 
+  /** 阶段 → 状态灯颜色（与 .up-phase 的 class 对应）。 */
+  const PHASE_CLASS = {
+    idle: '', checking: '', uptodate: 'ok', available: 'ok', downloading: 'busy',
+    ready: 'ok', installing: 'busy', installed: 'ok', unsupported: 'na', failed: 'na',
+  }
+
+  /**
+   * 更新说明渲染：release body 是 **Markdown**，以前整段塞进 `textContent` → 换行全没了、
+   * 一堆 `- feat(x): …` 连成一大坨（2026-10-26 用户：「没有换行，杂乱」）。
+   * 这里只认发布说明实际会用到的四种：`#`/`##` 标题、`- ` 列表、空行分段、其余按段落
+   * （`pre-wrap` + `overflow-wrap` 保证长行不撑破面板）。不引第三方 Markdown 解析器。
+   */
+  function renderNotes(text) {
+    const box = $('up-notes')
+    const len = $('up-notes-len')
+    if (!box) return
+    box.replaceChildren()
+    const raw = String(text || '').replace(/\r\n?/g, '\n').trim()
+    if (!raw) {
+      if (len) len.textContent = ''
+      const p = document.createElement('p')
+      p.className = 'up-note-empty'
+      p.textContent = T('这个 release 没有更新说明')
+      box.appendChild(p)
+      return
+    }
+    const lines = raw.split('\n')
+    if (len) len.textContent = T('{n} 行', { n: lines.length })
+    let list = null
+    const flush = () => { list = null }
+    for (const line of lines) {
+      const t = line.trimEnd()
+      if (!t.trim()) { flush(); continue }
+      const h = /^(#{1,3})\s+(.*)$/.exec(t)
+      if (h) {
+        flush()
+        const el = document.createElement('div')
+        el.className = 'up-note-h' + (h[1].length === 1 ? ' h1' : '')
+        el.textContent = h[2]
+        box.appendChild(el)
+        continue
+      }
+      const li = /^[-*]\s+(.*)$/.exec(t)
+      if (li) {
+        if (!list) {
+          list = document.createElement('ul')
+          list.className = 'up-note-list'
+          box.appendChild(list)
+        }
+        const item = document.createElement('li')
+        item.textContent = li[1]
+        list.appendChild(item)
+        continue
+      }
+      flush()
+      const p = document.createElement('p')
+      p.className = 'up-note-p'
+      p.textContent = t.trim()
+      box.appendChild(p)
+    }
+  }
+
   function paint() {
     const cur = $('up-cur')
     if (cur) cur.textContent = st ? st.current_version + (st.current_stamp ? '（' + st.current_stamp + '）' : '') : ''
     const latest = $('up-latest')
     if (latest) latest.textContent = st && st.latest_tag ? st.latest_version + '（' + st.latest_tag + '）' : '—'
+    const kind = $('up-kind')
+    if (kind) kind.textContent = st && st.install_kind ? st.install_kind : '—'
+    const date = $('up-date')
+    if (date) date.textContent = st && st.published_at ? st.published_at.replace('T', ' ').replace('Z', ' UTC') : '—'
+
+    // 匹配到的产物：名字 + 大小（没匹配到就明说，别留空让人自己猜）
+    const asset = $('up-asset')
+    if (asset) {
+      if (!st) asset.textContent = ''
+      else if (st.asset_name) asset.textContent = st.asset_name + (st.asset_size ? ' · ' + mb(st.asset_size) : '')
+      else if (st.latest_tag) asset.textContent = T('没有匹配到本机安装方式可用的包')
+      else asset.textContent = '—'
+    }
+
+    const phase = $('up-phase')
+    if (phase && st) {
+      phase.textContent = PHASE_TEXT[st.phase] ? PHASE_TEXT[st.phase]() : st.phase
+      phase.className = 'up-phase ' + (PHASE_CLASS[st.phase] || '')
+    }
 
     const state = $('up-state')
     if (state && st) {
-      const txt = (PHASE_TEXT[st.phase] ? PHASE_TEXT[st.phase]() : st.phase) +
-        (st.reason ? '：' + st.reason : '')
-      state.textContent = txt
+      state.textContent = (st.reason || '') || (PHASE_TEXT[st.phase] ? PHASE_TEXT[st.phase]() : st.phase)
       state.className = st.phase === 'failed' || st.phase === 'unsupported' ? 'na'
         : st.phase === 'available' || st.phase === 'ready' || st.phase === 'installed' ? 'ok' : ''
     }
 
-    const notes = $('up-notes')
-    if (notes) {
-      // release body 可能很长，只取前几行（GitHub release 说明惯例是首行当标题）
-      notes.textContent = st && st.notes
-        ? String(st.notes).split('\n').slice(0, 8).join('\n').slice(0, 600)
-        : ''
+    // 下载进度：只在下载/已下载时占位，平时收起来（不占高度）
+    const prog = $('up-progress')
+    const bar = $('up-bar')
+    const show = st && (st.phase === 'downloading' || st.phase === 'ready') && st.asset_size > 0
+    if (prog && bar) {
+      prog.classList.toggle('on', !!show)
+      const pct = show ? Math.min(100, (st.received / st.asset_size) * 100) : 0
+      bar.style.width = pct.toFixed(1) + '%'
+      prog.title = show ? `${mb(st.received)} / ${mb(st.asset_size)}（${pct.toFixed(0)}%）` : ''
     }
 
+    renderNotes(st ? st.notes : '')
+
     // 按钮可用性：严格按状态机（不允许跳步，避免对着错误产物操作）
-    const busy = st && (st.phase === 'checking' || st.phase === 'downloading')
+    const busy = st && (st.phase === 'checking' || st.phase === 'downloading' || st.phase === 'installing')
     const bCheck = /** @type {HTMLButtonElement|null} */ ($('up-check'))
     const bDl = /** @type {HTMLButtonElement|null} */ ($('up-download'))
     const bIn = /** @type {HTMLButtonElement|null} */ ($('up-install'))
     const bPage = /** @type {HTMLButtonElement|null} */ ($('up-page'))
     if (bCheck) bCheck.disabled = !!busy
-    if (bDl) bDl.disabled = !!busy || !st || (st.phase !== 'available' && st.phase !== 'failed' && st.phase !== 'ready')
+    if (bDl) {
+      bDl.disabled = !!busy || !st || (st.phase !== 'available' && st.phase !== 'failed')
+      bDl.textContent = st && st.phase === 'ready' ? T('重新下载') : T('下载更新')
+    }
     if (bIn) bIn.disabled = !st || st.phase !== 'ready'
     if (bPage) bPage.disabled = !st || !st.url
   }

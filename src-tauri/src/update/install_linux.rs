@@ -77,6 +77,17 @@ pub fn kind() -> Kind {
 fn detect() -> Kind {
   use tauri::utils::config::BundleType;
   use tauri::utils::platform::bundle_type;
+  // 测试钩子：`PUREVOX_UPDATE_KIND=deb|rpm|appimage` 让**没打标的开发构建**
+  // （直接跑 `target/debug/purevox`）也能走发布版的下载/安装分支 —— 否则 Linux 上
+  // 只能等打完包才发现「更新点了没动静」。
+  if let Some(v) = std::env::var_os("PUREVOX_UPDATE_KIND") {
+    match v.to_string_lossy().to_ascii_lowercase().as_str() {
+      "deb" => return Kind::Deb,
+      "rpm" => return Kind::Rpm,
+      "appimage" | "app" => return Kind::AppImage,
+      _ => {}
+    }
+  }
   match bundle_type() {
     Some(BundleType::Deb) => Kind::Deb,
     Some(BundleType::Rpm) => Kind::Rpm,

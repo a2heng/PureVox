@@ -17,7 +17,7 @@
 
 //! OBS 音频滤镜的 PureVox Stage 实现（参数/默认值/范围对齐 OBS `plugins/obs-filters`）。
 //!
-//! 参考文件（已克隆到 `~/obs-studio`）：
+//! 参考文件（OBS 源码克隆在项目外一层目录：Windows `D:\obs-studio`、Linux `~/obs-studio`）：
 //! - `gain-filter.c`（增益，已有独立 `gain` 行）
 //! - `noise-gate-filter.c`（噪声门）
 //! - `compressor-filter.c`（压缩器）
@@ -55,6 +55,11 @@ fn coef(ms: f32) -> f32 {
     (-1.0 / (SR * ms / 1000.0)).exp()
   }
 }
+/// OBS `detector` 参数：`"peak"` 用逐样本峰值，其余（含缺省 `"RMS"`）用 10 ms RMS。
+fn peak_detector(p: &Params) -> bool {
+  matches!(p.get("detector"), Some(ParamValue::Text(t)) if t.eq_ignore_ascii_case("peak"))
+}
+
 fn num(p: &Params, key: &str, default: f32) -> f32 {
   match p.get(key) {
     Some(ParamValue::Number(n)) => *n as f32,
@@ -251,34 +256,42 @@ pub struct Expander {
   out_gain: f32,
   knee: f32,
   upward: bool,
+  /// 检测器：OBS 的 `detector` 参数（RMS = 10 ms 均方根，peak = 逐样本绝对值）。
+  peak: bool,
   env: f32,
   runave: f32,
   gain_db: f32,
 }
 
+/// 扩展器 / 向上压缩器的构造参数（参数多，收成一个结构体：`clippy::too_many_arguments`，
+/// 也让调用点一眼看出每个数字是哪个旋钮）。
+pub struct ExpanderCfg {
+  pub ratio: f32,
+  pub threshold_db: f32,
+  pub attack_ms: f32,
+  pub release_ms: f32,
+  pub out_db: f32,
+  pub knee: f32,
+  pub upward: bool,
+  pub peak: bool,
+}
+
 impl Expander {
-  pub fn new(
-    ratio: f32,
-    threshold_db: f32,
-    attack_ms: f32,
-    release_ms: f32,
-    out_db: f32,
-    knee: f32,
-    upward: bool,
-  ) -> Self {
-    let ratio = if upward {
-      ratio.clamp(0.0, 1.0)
+  pub fn new(c: ExpanderCfg) -> Self {
+    let ratio = if c.upward {
+      c.ratio.clamp(0.0, 1.0)
     } else {
-      ratio.max(1.0)
+      c.ratio.max(1.0)
     };
     Self {
-      attack: coef(attack_ms),
-      release: coef(release_ms),
-      threshold: threshold_db,
+      attack: coef(c.attack_ms),
+      release: coef(c.release_ms),
+      threshold: c.threshold_db,
       slope: 1.0 - ratio,
-      out_gain: db_to_lin(out_db),
-      knee,
-      upward,
+      out_gain: db_to_lin(c.out_db),
+      knee: c.knee,
+      upward: c.upward,
+      peak: c.peak,
       env: 0.0,
       runave: 0.0,
       gain_db: 0.0,
@@ -295,8 +308,9 @@ impl Stage for Expander {
     }
   }
   fn process(&mut self, frame: &mut [f32], _ctx: &FrameContext) -> Result<(), StageError> {
-    // 10 ms RMS 检测（OBS 默认 RMS；peak 只差一个 abs，参数不影响主要语义）
+    // 检测器（OBS `detector`）：RMS = 10 ms 均方根（默认），peak = 逐样本 |x|。
     let rms_coef = (-100.0 / SR).exp2();
+    let peak = self.peak;
     let attack = self.attack;
     let release = self.release;
     let inv_attack = 1.0 - attack;
@@ -307,7 +321,11 @@ impl Stage for Expander {
     let upward = self.upward;
     for x in frame {
       self.runave = rms_coef * self.runave + (1.0 - rms_coef) * *x * *x;
-      self.env = self.runave.max(0.0).sqrt();
+      self.env = if peak {
+        x.abs()
+      } else {
+        self.runave.max(0.0).sqrt()
+      };
       let env_db = lin_to_db(self.env);
       let diff = threshold - env_db;
       let gain = if upward {
@@ -438,24 +456,26 @@ pub fn stage(ptype: &str, p: &Params) -> Result<Box<dyn Stage>, String> {
       num(p, "threshold", -6.0),
       num(p, "release_time", 60.0),
     )),
-    "expander" => Box::new(Expander::new(
-      num(p, "ratio", 2.0),
-      num(p, "threshold", -40.0),
-      num(p, "attack_time", 10.0),
-      num(p, "release_time", 50.0),
-      num(p, "output_gain", 0.0),
-      0.0,
-      false,
-    )),
-    "upward_compressor" => Box::new(Expander::new(
-      num(p, "ratio", 0.5),
-      num(p, "threshold", -20.0),
-      num(p, "attack_time", 10.0),
-      num(p, "release_time", 50.0),
-      num(p, "output_gain", 0.0),
-      num(p, "knee", 10.0),
-      true,
-    )),
+    "expander" => Box::new(Expander::new(ExpanderCfg {
+      ratio: num(p, "ratio", 2.0),
+      threshold_db: num(p, "threshold", -40.0),
+      attack_ms: num(p, "attack_time", 10.0),
+      release_ms: num(p, "release_time", 50.0),
+      out_db: num(p, "output_gain", 0.0),
+      knee: 0.0,
+      upward: false,
+      peak: peak_detector(p),
+    })),
+    "upward_compressor" => Box::new(Expander::new(ExpanderCfg {
+      ratio: num(p, "ratio", 0.5),
+      threshold_db: num(p, "threshold", -20.0),
+      attack_ms: num(p, "attack_time", 10.0),
+      release_ms: num(p, "release_time", 50.0),
+      out_db: num(p, "output_gain", 0.0),
+      knee: num(p, "knee", 10.0),
+      upward: true,
+      peak: peak_detector(p),
+    })),
     "eq3" => Box::new(Eq3::new(
       num(p, "low", 0.0),
       num(p, "mid", 0.0),
@@ -469,7 +489,7 @@ pub fn stage(ptype: &str, p: &Params) -> Result<Box<dyn Stage>, String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::engine::registry::{ParamValue, Params};
+  use crate::engine::registry::Params;
 
   fn run(mut s: Box<dyn Stage>, amp: f32) {
     let mut frame = vec![amp; 480];

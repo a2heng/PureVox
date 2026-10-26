@@ -302,13 +302,21 @@ pub async fn check() -> Result<Status, String> {
         s.asset_size = 0;
       }
     }
-    // 开发构建没有可比的时间戳 → 不下「已是最新」的结论
-    if version::is_dev() {
-      s.phase = Phase::Idle;
-      s.reason = "开发构建（无 CI 版本戳），不判断更新".into();
-      return;
+    // 开发构建没有可比的时间戳 → **不能**下「已是最新」的结论。
+    //
+    // 但也**不能**就此什么都不做：那样「更新到底能不能用」只能等发版以后赌一次
+    // （2026-10-26：Windows / Linux 两侧都报「不能更新」，而开发构建连查都查不到，
+    // 根本没法复现）。所以开发构建一律按「有新版」处理 —— 界面照常给出最新版本、
+    // 更新说明、产物名，检查 → 下载 → 安装三步都能点，reason 里写清这是测试版逻辑。
+    let dev = version::is_dev();
+    s.phase = if dev {
+      Phase::Available
+    } else {
+      decide(version::STAMP, &latest_stamp)
+    };
+    if dev {
+      s.reason = "开发构建（无 CI 版本戳）：按「有新版」处理，供测试更新流程".into();
     }
-    s.phase = decide(version::STAMP, &latest_stamp);
     // 只有「真有新版」时才值得报「本机这种安装方式没有对应的包」——已是最新时
     // 报这个只会让人以为更新坏了。
     if s.phase == Phase::Available && asset.is_none() {
@@ -317,15 +325,20 @@ pub async fn check() -> Result<Status, String> {
         // 认不出安装方式（没打标的二进制）：结构性不可用，别让用户反复点
         s.phase = Phase::Unsupported;
         s.reason = format!(
-          "认不出本机安装方式（{}），无法自动更新；请到 release 页面手动下载安装",
-          imp::kind_name()
+          "认不出本机安装方式（{}），无法自动更新；请到 release 页面手动下载安装{}",
+          imp::kind_name(),
+          if dev {
+            "（测试版可用环境变量 PUREVOX_UPDATE_KIND 指定安装方式）"
+          } else {
+            ""
+          }
         );
       } else {
         s.phase = Phase::Failed;
         s.reason = format!(
           "这个 release 里没有 {} 安装用的包（找过 {}）",
           imp::kind_name(),
-          suffixes.join(" / ")
+          suffixes.join(", ")
         );
       }
     }

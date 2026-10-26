@@ -902,7 +902,7 @@ fn build_column(
       }
       RowKind::Input if r.ptype == "tone" => {
         // 测试音源（全局共享线程），无需设备
-        row.label = "测试音 1 kHz".into();
+        row.label = "测试音（1kHz 测试用）".into();
         row.source = true;
         row.input = Some(crate::audio::tone::shared().subscribe(&format!("col{idx}row{ri}")));
       }
@@ -929,7 +929,7 @@ fn build_column(
               format!("c{idx}r{ri}"),
             );
           } else {
-            row.label = "网络麦克风".into();
+            row.label = "网络".into();
             row.net_input = Some(crate::net::hub().clone());
           }
         }
@@ -954,7 +954,7 @@ fn build_column(
             .map(|(_, n)| n)
             .unwrap_or_else(|_| id.clone()),
         };
-        row.label = format!("电脑播放音频（{name}）");
+        row.label = format!("扬声器（{name}）");
         row.source = true;
         match loopback::spawn(hub.clone(), target, format!("c{idx}r{ri}")) {
           Ok(cap) => {
@@ -1048,11 +1048,22 @@ fn build_column(
   let rec2 = rec.clone();
   let calib2 = calib.clone();
   let hub3 = hub.clone();
+  // 一个模型一路核（见 `engine/affinity.rs`）：列线程 = 这一列推理的宿主线程，
+  // 从 1 号核开始轮转分配，避免多列的模型被调度到同一个核上互相打断
+  // （2026-10-26：后台 CPU 忙时两列抢核 → 采集环涨到硬顶 → 丢样本）。
+  let core = super::affinity::next_core();
   let join = match std::thread::Builder::new()
-    .name(format!("column-{}", idx + 1))
+    .name(format!("column-{}@cpu{}", idx + 1, core))
     .spawn(move || {
       let _guard = AliveGuard(alive2);
-      let token = threads::ThreadToken::new(format!("column-{}", idx + 1));
+      if let Err(e) = super::affinity::pin_current(core) {
+        events::log(
+          "warn",
+          "engine",
+          format!("第 {} 列绑定 CPU {core} 失败（回到系统调度）：{e}", idx + 1),
+        );
+      }
+      let token = threads::ThreadToken::new(format!("column-{}@cpu{}", idx + 1, core));
       let r = catch_unwind(AssertUnwindSafe(|| {
         run_column(idx, column_on, rows2, stop2, rec2, calib2, hub3, token);
       }));
