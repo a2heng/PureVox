@@ -47,6 +47,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync",
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 # 更新检查：查 GitHub Releases + 下载安装包（reqwest 已随 tauri 进入依赖树，
 # 这里直接复用；TLS 后端与 ort 的 ureq 同一套 native-tls，不新增 C 编译链）
+# 开机自启：官方插件（Windows 写 Run + StartupApproved，任务管理器「启动」页才认；
+# 自带 HKLM→HKCU 回退，不弹 UAC）。版本跟 tauri 3.0.0-alpha.5 对齐。
+tauri-plugin-autostart = "3.0.0-alpha.3"
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "stream",

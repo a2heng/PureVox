@@ -100,13 +100,22 @@
     settings.cue_start = $sel('set-cue-start').value
     settings.cue_stop = $sel('set-cue-stop').value
     settings.start_hidden = $in('set-start-hidden').checked
-    invoke('set_autostart', { on: $in('set-autostart').checked }).catch(() => {})
-    invoke('set_settings', { settings })
+    // 开机自启先落盘（要动注册表）：失败就**不关面板**，原因写在勾选框下面。
+    const wantAuto = $in('set-autostart').checked
+    const hint = $('set-autostart-hint')
+    if (hint) hint.textContent = ''
+    invoke('set_autostart', { on: wantAuto })
       .then(() => {
-        window.__pvDebug?.('设置已保存（热键 ' + settings.hotkey + '）')
-        close()
+        if (hint) hint.textContent = wantAuto ? T('开机自启已开启') : T('开机自启已关闭')
+        return invoke('set_settings', { settings }).then(() => {
+          window.__pvDebug?.('设置已保存（热键 ' + settings.hotkey + '）')
+          close()
+        })
       })
-      .catch((e) => window.__pvDebug?.('保存设置失败：' + e))
+      .catch((e) => {
+        if (hint) hint.textContent = T('开机自启设置失败：') + e
+        window.__pvDebug?.('开机自启设置失败：' + e)
+      })
   }
 
   /** 提示音预设（标签来自 Rust，经 T() 翻译） */

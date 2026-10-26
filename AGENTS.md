@@ -438,7 +438,10 @@ release 构建同样保留（不允许用编译开关剔除）。
   存 `settings.json` 的 `window`（**物理像素**），启动时夹进当前显示器（副屏拔掉也不会丢到屏外），
   运行中每 1.5 s 轮询、变了才落盘。主窗口在 `tauri.conf.json` 里是 `visible:false`，
   `setup` 恢复几何之后再 `show()`（否则会先按默认尺寸闪一下再跳位置）；
-  开机自启（`autostart.rs`，写/删 `HKCU\...\Run`）；**启动/停止**（命令 `set_running`/`get_running`，
+  开机自启（**官方插件** `tauri-plugin-autostart` 3.0.0-alpha：Windows 上是 `auto-launch`，
+  先试 HKLM、非管理员回退 HKCU，**并写 `Explorer\StartupApproved\Run` 的「已启用」标记** ——
+  只写 Run 键时任务管理器的「启动」页会当成被禁用，这就是旧版「开关没功能」的真因，
+  2026-10-26 实测；不弹 UAC；`set_autostart` 失败会停在设置面板里显示原因）；**启动/停止**（命令 `set_running`/`get_running`，
   界面顶栏按钮（启动绿/停止红）、托盘、全局热键共用；快照带 `running`）；**全局热键**（`hotkey.rs`：
   `RegisterHotKey` + 规范串「`Ctrl+Alt+Shift+Win` 顺序」，空串=不监听，注册结果进 `ui`）；
   **提示音**（`cues.rs` 自合成 6 套预设，start 上行 / stop 下行，`PlaySound` SND_MEMORY）；
@@ -757,8 +760,9 @@ release 构建同样保留（不允许用编译开关剔除）。
   不静默失败），功能文件本身只保留共享部分 + `#[cfg] #[path = "…_<平台>.rs"]` 的平台分派；
   **禁止**在一个文件里用 `#[cfg(windows)]` 包住大段平台实现体。现状（全部按此分）：
   `audio/loopback_{windows,linux,other}.rs`、`audio/virtual_mic*.rs`、`hotkey*.rs`、
-  `autostart*.rs`、`cues*.rs`、`net/keys*.rs`、`net/opus_sys*.rs`、`devices*.rs`、
+  `winstate*.rs`、`cues*.rs`、`net/keys*.rs`、`net/opus_sys*.rs`、`devices*.rs`、
   `debug/{mem,gpu}_*.rs`、`openurl_*.rs`。前端同理：`ui/drivers_linux.js` / `ui/drivers_windows.js`。
+  开机自启**不在此列**：`tauri-plugin-autostart` 已是跨平台实现（见 §1.3 外围），不要再手写一份。
 - **但 Python 脚本反过来：尽可能一个 py 跨平台**（上面那条只管 `.rs` 与前端 JS）。理由：脚本
   的平台差异通常只有「产物格式 / 安装方式 / 启动前缀 / 收尾命令」各自三五行，拆成三个文件
   只会让「这件事到底做了哪几步」要跨文件拼起来才看得全；而它们本来就是**每个都要全跑一遍**

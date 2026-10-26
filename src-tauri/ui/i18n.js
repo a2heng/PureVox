@@ -58,6 +58,9 @@
     调试面板: 'Debug panel',
     开发者工具: 'DevTools',
     开机自启: 'Start with Windows',
+    开机自启已开启: 'Start with Windows enabled',
+    开机自启已关闭: 'Start with Windows disabled',
+    '开机自启设置失败：': 'Failed to change start with Windows: ',
     // 列编辑器
     输入: 'Input',
     处理: 'Process',

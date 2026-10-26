@@ -139,6 +139,8 @@
             <span data-i18n="启动自运行并隐藏窗口">启动自运行并隐藏窗口</span>
           </label>
         </div>
+        <!-- 开机自启的结果（失败必须看得见，不许静默）：写注册表失败时停在这里显示原因 -->
+        <p id="set-autostart-hint" class="note"></p>
         <div class="set-row">
           <label class="topcheck">
             <input id="set-hotkey-on" type="checkbox" />

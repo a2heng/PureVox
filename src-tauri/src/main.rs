@@ -19,12 +19,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
-#[cfg(windows)]
-#[path = "autostart_windows.rs"]
-mod autostart;
-#[cfg(not(windows))]
-#[path = "autostart_other.rs"]
-mod autostart;
 // 打开链接的平台实现分文件（AGENTS.md §4）。
 mod config;
 mod cues;
@@ -132,15 +126,23 @@ fn open_debug_window(hub: tauri::State<'_, SharedHub>) -> Result<(), String> {
   }
 }
 
-/// 开机自启开关（写/删当前用户 Run 键）。
+/// 开机自启开关：走官方插件 `tauri-plugin-autostart`（见 `main` 里的 `.plugin(...)`）。
+///
+/// Windows 上是 `auto-launch`：先试 HKLM（非管理员会失败，**不弹 UAC**），再回退 HKCU，
+/// 同时写 `Explorer\StartupApproved\Run` 的「已启用」标记 —— 少了这个标记，任务管理器
+/// 的「启动」页会把条目当成被禁用（手写 Run 键踩过这个坑，2026-10-26）。
 #[tauri::command]
-fn set_autostart(on: bool) -> Result<(), String> {
-  autostart::set(on)
+async fn set_autostart(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+  use tauri_plugin_autostart::ManagerExt;
+  // 注册表/文件读写是阻塞的：别放在主线程（async 命令跑在运行时线程池）。
+  let m = app.autostart();
+  if on { m.enable() } else { m.disable() }.map_err(|e| format!("开机自启设置失败：{e}"))
 }
 
 #[tauri::command]
-fn get_autostart() -> bool {
-  autostart::get()
+fn get_autostart(app: tauri::AppHandle) -> bool {
+  use tauri_plugin_autostart::ManagerExt;
+  app.autostart().is_enabled().unwrap_or(false)
 }
 
 /// 读取当前会话计划。
@@ -768,6 +770,8 @@ fn main() {
 
   tauri::Builder::default()
     .runtime(tauri_runtime_wry::Wry::default())
+    // 开机自启（官方插件；应用名取 package_info，路径取当前 exe）
+    .plugin(tauri_plugin_autostart::Builder::new().build())
     .manage(hub)
     .manage(audio)
     .manage(hotkey_host)
