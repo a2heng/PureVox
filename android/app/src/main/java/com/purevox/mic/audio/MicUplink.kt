@@ -46,6 +46,10 @@ class MicUplink(
     private val onPacket: (ByteArray) -> Unit,
     /** 故障原因（人类可读），界面直接显示。 */
     private val onError: (String) -> Unit,
+    /** 所选麦克风 API 不可用但已回退到 MIC 时的提示（不中断推流）。 */
+    private val onWarning: ((String) -> Unit)? = null,
+    /** `MediaRecorder.AudioSource`；默认 MIC（见 [MicSources] 的常用顺序）。 */
+    private val sourceId: Int = MediaRecorder.AudioSource.MIC,
 ) {
 
     companion object {
@@ -63,6 +67,17 @@ class MicUplink(
     /** 实际生效的采集 PCM 格式。 */
     var recordEncoding: Int = AudioFormat.ENCODING_PCM_16BIT
         private set
+
+    /** 实际生效的麦克风 API（可能与 [sourceId] 不同：不可用时回退到 MIC）。 */
+    var sourceUsed: Int = sourceId
+        private set
+
+    /** 实际生效的麦克风 API 名字（日志 / 诊断用）。 */
+    var sourceName: String = ""
+        private set
+
+    /** 最近一次建流失败的原因（多格式 / 多 API 尝试后的最后一条）。 */
+    private var lastBuildReason: String = ""
 
     /** 实际生效的 Opus 编码器名。 */
     var encoderName: String = ""
@@ -106,12 +121,33 @@ class MicUplink(
         encoder = enc
         encoderName = enc.codecName
 
-        val rec = buildRecord()
-        if (rec == null) {
+        var used = sourceId
+        val picked = buildRecord(sourceId) ?: run {
+            // 所选 API 不可用（无权限 / 机型不支持）→ 回退到 MIC，把原因说出来，不静默。
+            val fallback = buildRecord(MediaRecorder.AudioSource.MIC)
+            if (fallback != null) {
+                used = MediaRecorder.AudioSource.MIC
+                onWarning?.invoke(
+                    context.getString(
+                        com.purevox.mic.R.string.mic_source_fallback,
+                        MicSources.label(context, sourceId),
+                    ),
+                )
+            }
+            fallback
+        }
+        if (picked == null) {
             enc.stop()
             encoder = null
+            onError(
+                "本机 AudioRecord 不支持 ${SAMPLE_RATE} Hz 单声道采集（API=" +
+                    "${MicSources.label(context, sourceId)}）—— $lastBuildReason",
+            )
             return false
         }
+        val rec = picked
+        sourceUsed = used
+        sourceName = MicSources.label(context, used)
         try {
             rec.startRecording()
         } catch (e: Throwable) {
@@ -137,7 +173,7 @@ class MicUplink(
         thread = Thread({ captureLoop(rec, enc) }, "pv-mic").also { it.isDaemon = true; it.start() }
         Log.i(
             TAG,
-            "上行采集启动：${OpusSupport.pcmName(recordEncoding)} @${SAMPLE_RATE}Hz → $encoderName",
+            "上行采集启动：$sourceName · ${OpusSupport.pcmName(recordEncoding)} @${SAMPLE_RATE}Hz → $encoderName",
         )
         return true
     }
@@ -166,7 +202,7 @@ class MicUplink(
 
     // ---------------------------------------------------------------- 内部
 
-    private fun buildRecord(): AudioRecord? {
+    private fun buildRecord(source: Int): AudioRecord? {
         // 先建对象再开录：部分机型上 getMinBufferSize 能报一个正数，但真正
         // new AudioRecord 才暴露底层不支持（state != INITIALIZED / startRecording 失败）。
         // 所以这里两种格式都真建一次，建不成的记下来，取第一个能用的。
@@ -184,14 +220,14 @@ class MicUplink(
                     .setSampleRate(SAMPLE_RATE)
                     .setChannelMask(CHANNEL_MASK)
                     .build()
-                val builder = AudioRecord.Builder()
-                    .setAudioSource(MediaRecorder.AudioSource.MIC)
+                AudioRecord.Builder()
+                    .setAudioSource(source)
                     .setAudioFormat(format)
                     .setBufferSizeInBytes(bufBytes)
-                builder.build()
+                    .build()
             } catch (e: Throwable) {
                 lastReason = "${OpusSupport.pcmName(enc)}：${e.message ?: e.javaClass.simpleName}"
-                Log.w(TAG, "AudioRecord 创建失败（$enc）", e)
+                Log.w(TAG, "AudioRecord 创建失败（source=$source, enc=$enc）", e)
                 continue
             }
             if (rec.state != AudioRecord.STATE_INITIALIZED) {
@@ -202,8 +238,8 @@ class MicUplink(
             recordEncoding = enc
             return rec
         }
-        onError("本机 AudioRecord 不支持 ${SAMPLE_RATE} Hz 单声道采集 —— $lastReason")
-        Log.e(TAG, "没有可用的采集格式：$lastReason")
+        lastBuildReason = "source=$source（${MicSources.label(context, source)}）：$lastReason"
+        Log.e(TAG, "没有可用的采集格式：$lastBuildReason")
         return null
     }
 

@@ -35,31 +35,57 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="12dp">
+        android:padding="16dp">
 
-        <!-- 标题 -->
-        <TextView
-            android:layout_width="wrap_content"
+        <!-- 品牌头图：渐变底 + 大标题 + 实时连接状态。比裸文字标题更像一个应用。 -->
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:letterSpacing="0.06"
-            android:text="@string/app_name"
-            android:textColor="?android:attr/textColorPrimary"
-            android:textSize="22sp"
-            android:textStyle="bold" />
+            android:layout_marginBottom="6dp"
+            android:background="@drawable/bg_hero"
+            android:elevation="2dp"
+            android:orientation="vertical"
+            android:paddingStart="20dp"
+            android:paddingTop="18dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="16dp">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_marginBottom="8dp"
-            android:text="@string/subtitle"
-            android:textColor="?android:attr/textColorSecondary"
-            android:textSize="11sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:letterSpacing="0.08"
+                android:text="@string/app_name"
+                android:textColor="#FFFFFF"
+                android:textSize="26sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/subtitle"
+                android:textColor="#CCE0FF"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/tvHeroStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_chip"
+                android:fontFamily="monospace"
+                android:paddingStart="12dp"
+                android:paddingTop="5dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="5dp"
+                android:text="@string/msg_not_connected"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
 
         <!-- ============================ 连接 ============================ -->
         <com.google.android.material.card.MaterialCardView
-            style="@style/Widget.Material3.CardView.Outlined"
+            style="@style/PvCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp">
@@ -68,7 +94,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <TextView
                     style="@style/PvCardTitle"
@@ -143,7 +169,7 @@
 
         <!-- ============================ 功能 ============================ -->
         <com.google.android.material.card.MaterialCardView
-            style="@style/Widget.Material3.CardView.Outlined"
+            style="@style/PvCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp">
@@ -152,7 +178,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <TextView
                     style="@style/PvCardTitle"
@@ -166,6 +192,34 @@
                     android:text="@string/sw_mic"
                     android:textSize="14sp" />
 
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/tilMicSource"
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:hint="@string/mic_source_label"
+                    app:boxCornerRadiusBottomEnd="14dp"
+                    app:boxCornerRadiusBottomStart="14dp"
+                    app:boxCornerRadiusTopEnd="14dp"
+                    app:boxCornerRadiusTopStart="14dp">
+
+                    <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                        android:id="@+id/spMicSource"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="none"
+                        android:minHeight="52dp" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/mic_source_hint"
+                    android:textColor="?android:attr/textColorSecondary"
+                    android:textSize="11sp" />
+
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/swSpeaker"
                     android:layout_width="match_parent"
@@ -178,7 +232,7 @@
 
         <!-- ========================= 远程输入 ========================= -->
         <com.google.android.material.card.MaterialCardView
-            style="@style/Widget.Material3.CardView.Outlined"
+            style="@style/PvCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp">
@@ -187,7 +241,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <TextView
                     style="@style/PvCardTitle"
@@ -260,7 +314,7 @@
 
         <!-- ========================= 后台保活 ========================= -->
         <com.google.android.material.card.MaterialCardView
-            style="@style/Widget.Material3.CardView.Outlined"
+            style="@style/PvCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp">
@@ -269,7 +323,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <TextView
                     style="@style/PvCardTitle"
@@ -326,7 +380,7 @@
 
         <!-- =========================== 更新 =========================== -->
         <com.google.android.material.card.MaterialCardView
-            style="@style/Widget.Material3.CardView.Outlined"
+            style="@style/PvCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp">
@@ -335,7 +389,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <TextView
                     style="@style/PvCardTitle"

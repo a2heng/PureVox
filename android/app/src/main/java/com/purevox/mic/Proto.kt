@@ -65,6 +65,9 @@ object Proto {
     /** `{"t":"sub"}` —— 订阅电脑音频（电脑当手机音箱）。 */
     fun sub(): String = JSONObject().put("t", "sub").toString()
 
+    /** `{"t":"unsub"}` —— 退订电脑音频（关扬声器时发，服务端不再往没人取的队列里推）。 */
+    fun unsub(): String = JSONObject().put("t", "unsub").toString()
+
     /** `{"t":"text","s":"..."}` —— 手机输入法**已组合**好的文本。 */
     fun text(s: String): String = JSONObject().put("t", "text").put("s", s).toString()
 

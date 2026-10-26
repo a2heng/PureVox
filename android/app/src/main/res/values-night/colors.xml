@@ -27,4 +27,7 @@
     <color name="pv_accent">#9BC2FF</color>
     <color name="pv_blue">#A8C7FA</color>
     <color name="pv_on_blue">#0A1F3A</color>
+    <!-- 暗色主题的头部渐变：更深、对比更低，不刺眼 -->
+    <color name="pv_hero_start">#0B1524</color>
+    <color name="pv_hero_end">#1E4E8C</color>
 </resources>

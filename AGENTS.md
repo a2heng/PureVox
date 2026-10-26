@@ -245,6 +245,15 @@ release 构建同样保留（不允许用编译开关剔除）。
   缓冲水位、欠载/丢包/解码掩盖）两块 + 日志，**默认收起**、标题行点击展开（状态面板不消失，
   只是不再一上来占满屏），「复制诊断」一键把整块塞剪贴板（报问题不必截图）；
   实时量没有样本时写「采样中…」、没连上写「未连接」、没订阅写「未开启」，**不伪造 0**。
+  - **麦克风 API 下拉**（`audio/MicSources.kt`）：按**常用程度**从上到下列出
+    `MIC` / `VOICE_RECOGNITION` / `VOICE_COMMUNICATION` / `CAMCORDER` / `UNPROCESSED` /
+    `VOICE_PERFORMANCE` / `DEFAULT`，末尾是系统专用 / 隐藏 API（`VOICE_CALL` /
+    `VOICE_UPLINK` / `VOICE_DOWNLINK` / `REMOTE_SUBMIX` / `HOTWORD` / `ECHO_REFERENCE` /
+    `FM_TUNER` / `VOICE_COMMUNICATION_SIGNALLING`）。选择存 `micSource`（SharedPreferences），
+    推流中改选择会重启采集；所选 API 建流失败时**自动回退 MIC 并显示原因**，不静默。
+  - **缓冲 / 时钟与网页版同一原则**：`SpeakerDownlink` 是「包队列 + 解码线程 + 样本环形缓冲 +
+    写入线程 + AudioTrack 主时钟」，预缓冲 50 ms（2026-10-27 与网页 AudioWorklet 对齐），
+    欠载补静音、硬顶丢最旧；网页版是先行实验田，安卓照搬同一策略，别各自发明一套。
   - **会话保活**（`service/CaptureService.kt`）：只要「已连接」「正在推流」「连接中」**或界面在前台**
     就把常驻通知挂着（前台服务类型 `microphone|dataSync`，只报在用的那个），通知带「停止推流 / 断开连接」
     两个按钮 —— 按钮发**广播**回界面（`MainActivity` 的 `notifReceiver`），服务不认识协议。

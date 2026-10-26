@@ -47,11 +47,14 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.ArrayAdapter
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.progressindicator.LinearProgressIndicator
+import com.google.android.material.textfield.MaterialAutoCompleteTextView
+import com.purevox.mic.audio.MicSources
 import com.purevox.mic.audio.MicUplink
 import com.purevox.mic.audio.OpusSupport
 import com.purevox.mic.audio.SpeakerDownlink
@@ -147,6 +150,8 @@ class MainActivity : AppCompatActivity() {
      * 学到的必须记住，否则下次启动退回 59123 就「莫名连不上」。
      */
     private var port = Proto.PORT
+    /** 选中的麦克风采集 API（`MediaRecorder.AudioSource`，见 [MicSources]）。 */
+    private var micSourceId: Int = MicSources.ALL[0].id
     private var connState = "未连接"
     private var connecting = false
     private var lastErr = ""
@@ -221,6 +226,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvBuffer: TextView
     private lateinit var btnCopyDiag: Button
     private lateinit var swMic: SwitchCompat
+    private lateinit var spMicSource: MaterialAutoCompleteTextView
+    private lateinit var tvHeroStatus: TextView
     private lateinit var swSpeaker: SwitchCompat
     private lateinit var swRemote: SwitchCompat
     private lateinit var swRemoteText: SwitchCompat
@@ -335,6 +342,20 @@ class MainActivity : AppCompatActivity() {
         swRemoteKeys.setOnCheckedChangeListener { _, _ ->
             applyState()
             updateStatus()
+        }
+
+        spMicSource.setOnItemClickListener { _, _, position, _ ->
+            val id = MicSources.ALL.getOrNull(position)?.id ?: return@setOnItemClickListener
+            if (id == micSourceId) return@setOnItemClickListener
+            micSourceId = id
+            savePrefs()
+            log("麦克风 API：${MicSources.label(this, id)}")
+            // 正在推流时立即换源；关闭状态下只记住，下次开启生效。
+            if (swMic.isChecked && uplink != null) {
+                uplink?.stop()
+                uplink = null
+                applyState()
+            }
         }
 
         etText.addTextChangedListener(object : TextWatcher {
@@ -695,8 +716,8 @@ class MainActivity : AppCompatActivity() {
             "ready · proto=${msg.proto} codec=${msg.codec} rate=${msg.rate} " +
                 "ch=${msg.channels} frame=${msg.frameMs}ms 电脑侧客户端=${msg.clients}",
         )
-        // sub 只由 applyStateInner 发一次（电脑端每收一条 sub 就注册一个新的出站订阅，
-        // 重复发会泄漏订阅），这里不重复发。
+        // sub 由 applyStateInner 在开启扬声器时发；这里不重复发（服务端虽然会替换旧订阅，
+        // 但没必要每次 ready 都发一条）。
         applyState()
         updateButtons()
     }
@@ -761,8 +782,9 @@ class MainActivity : AppCompatActivity() {
         } else if (!speakerOn && downlink != null) {
             downlink?.stop()
             downlink = null
-            // 协议没有退订消息，电脑会继续推包；这里只是不再解码/播放
-            log("电脑音频播放已停止（电脑端仍在推流，协议无退订消息，重连才会停止）")
+            // 有 unsub 就退订，别让电脑继续往没人取的队列里推（水位顶格、白占 CPU）
+            ws?.sendText(Proto.unsub())
+            log("电脑音频播放已停止（已退订）")
         }
 
         remoteTextOn = swRemote.isChecked && swRemoteText.isChecked && ready
@@ -888,6 +910,13 @@ class MainActivity : AppCompatActivity() {
             context = this,
             onPacket = { pkt -> ws?.sendAudio(pkt, pkt.size) },
             onError = { reason -> ui.post { showErr(reason) } },
+            onWarning = { reason ->
+                ui.post {
+                    log(reason)
+                    Toast.makeText(this, reason, Toast.LENGTH_LONG).show()
+                }
+            },
+            sourceId = micSourceId,
         )
         if (!u.start()) {
             CaptureService.stop(this)
@@ -897,8 +926,8 @@ class MainActivity : AppCompatActivity() {
         }
         uplink = u
         log(
-            "麦克风上行已启动：采集 ${OpusSupport.pcmName(u.recordEncoding)} @${MicUplink.SAMPLE_RATE}Hz " +
-                "→ 编码 ${u.encoderName}",
+            "麦克风上行已启动：${u.sourceName} · 采集 ${OpusSupport.pcmName(u.recordEncoding)} " +
+                "@${MicUplink.SAMPLE_RATE}Hz → 编码 ${u.encoderName}",
         )
         return true
     }
@@ -1053,6 +1082,10 @@ class MainActivity : AppCompatActivity() {
         val c = ws
         val enc = uplink
         val dec = downlink
+        tvHeroStatus.text = connState
+        tvHeroStatus.setTextColor(
+            if (c != null) 0xFF9EF0C0.toInt() else 0xFFFFFFFF.toInt(),
+        )
         // 实时量全交给 RtStats（单一来源）：界面只渲染，不自己另算一套
         val net = rt.sample(
             nowMs = System.currentTimeMillis(),
@@ -1383,6 +1416,8 @@ class MainActivity : AppCompatActivity() {
         tvBuffer = findViewById(R.id.tvBuffer)
         btnCopyDiag = findViewById(R.id.btnCopyDiag)
         swMic = findViewById(R.id.swMic)
+        spMicSource = findViewById(R.id.spMicSource)
+        tvHeroStatus = findViewById(R.id.tvHeroStatus)
         swSpeaker = findViewById(R.id.swSpeaker)
         swRemote = findViewById(R.id.swRemote)
         swRemoteText = findViewById(R.id.swRemoteText)
@@ -1415,6 +1450,17 @@ class MainActivity : AppCompatActivity() {
         swRemote.isChecked = p.getBoolean("remote", false)
         swRemoteText.isChecked = p.getBoolean("remoteText", true)
         swRemoteKeys.isChecked = p.getBoolean("remoteKeys", true)
+        micSourceId = p.getInt("micSource", MicSources.ALL[0].id)
+        fillMicSources()
+    }
+
+    /** 麦克风 API 下拉：按 [MicSources.ALL] 的顺序（常用在上）填充，选中上次的选择。 */
+    private fun fillMicSources() {
+        val labels = MicSources.ALL.map { getString(it.labelRes) }
+        spMicSource.setAdapter(
+            ArrayAdapter(this, android.R.layout.simple_list_item_1, labels),
+        )
+        spMicSource.setText(MicSources.label(this, micSourceId), false)
     }
 
     private fun savePrefs() {
@@ -1433,6 +1479,7 @@ class MainActivity : AppCompatActivity() {
             .putBoolean("remote", swRemote.isChecked)
             .putBoolean("remoteText", swRemoteText.isChecked)
             .putBoolean("remoteKeys", swRemoteKeys.isChecked)
+            .putInt("micSource", micSourceId)
             .apply()
     }
 }

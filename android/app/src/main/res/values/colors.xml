@@ -26,4 +26,7 @@
     <color name="pv_accent">#1B3A63</color>
     <!-- 电脑回 err / 本机故障：状态区红字行 -->
     <color name="pv_err">#C62828</color>
+    <!-- 顶部品牌渐变（亮色主题）；暗色在 values-night/colors.xml 覆盖 -->
+    <color name="pv_hero_start">#13294B</color>
+    <color name="pv_hero_end">#2E6BE6</color>
 </resources>

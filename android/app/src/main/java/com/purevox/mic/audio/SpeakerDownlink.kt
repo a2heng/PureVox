@@ -57,8 +57,8 @@ class SpeakerDownlink {
         /** 一次写入的样本数：10 ms @48 kHz（与工程 10 ms hop 网格一致）。 */
         private const val WRITE_CHUNK = 480
 
-        /** 开声前预热水位：40 ms。 */
-        private const val PREBUFFER_SAMPLES = 1920
+        /** 开声前预热水位：50 ms（与网页版同一目标；Android 计时器通常更准，但网络突发仍要兜）。 */
+        private const val PREBUFFER_SAMPLES = 2400
 
         /** 包队列深度：200 包（@10 ms ≈ 2 s），突发兜底。 */
         private const val PACKET_QUEUE = 200

@@ -72,6 +72,24 @@
     <!-- 功能开关 -->
     <string name="sw_mic">手机麦克风 → 电脑</string>
     <string name="sw_speaker">电脑音频 → 手机扬声器</string>
+    <string name="mic_source_label">麦克风 API（采集源）</string>
+    <string name="mic_source_hint">按常用程度从上到下排列；系统专用/隐藏 API 通常没有权限，会自动回退到 MIC。</string>
+    <string name="mic_src_mic">MIC（默认，最常用）</string>
+    <string name="mic_src_voice_recognition">VOICE_RECOGNITION（语音识别）</string>
+    <string name="mic_src_voice_communication">VOICE_COMMUNICATION（通话/降噪）</string>
+    <string name="mic_src_camcorder">CAMCORDER（录像）</string>
+    <string name="mic_src_unprocessed">UNPROCESSED（未处理，API 24+）</string>
+    <string name="mic_src_voice_performance">VOICE_PERFORMANCE（低延迟，API 29+）</string>
+    <string name="mic_src_default">DEFAULT（系统默认）</string>
+    <string name="mic_src_voice_call">VOICE_CALL（通话，需系统权限）</string>
+    <string name="mic_src_voice_uplink">VOICE_UPLINK（上行，需系统权限）</string>
+    <string name="mic_src_voice_downlink">VOICE_DOWNLINK（下行，需系统权限）</string>
+    <string name="mic_src_remote_submix">REMOTE_SUBMIX（内录，需系统权限）</string>
+    <string name="mic_src_hotword">HOTWORD（唤醒词，隐藏 API）</string>
+    <string name="mic_src_echo_reference">ECHO_REFERENCE（回声参考，隐藏 API）</string>
+    <string name="mic_src_fm_tuner">FM_TUNER（FM，隐藏 API）</string>
+    <string name="mic_src_voice_signalling">VOICE_COMMUNICATION_SIGNALLING（隐藏 API）</string>
+    <string name="mic_source_fallback">所选麦克风 API 不可用，已回退到 MIC：%1$s</string>
     <string name="sw_remote">远程输入开关（电脑端默认关闭）</string>
     <string name="sw_remote_text">打字同步（输入法文本 → 电脑）</string>
     <string name="sw_remote_keys">实体键盘（手机按键 → 电脑）</string>
@@ -83,6 +101,7 @@
     <string name="btn_clear">清空</string>
     <string name="msg_sent">已发送 %1$d 个字符</string>
     <string name="msg_send_blocked">未连接，或「远程输入 / 打字同步」未开启</string>
+    <string name="msg_not_connected">未连接</string>
 
     <!-- 后台保活 -->
     <string name="keepalive_desc">应用开着就常驻前台服务通知（带「停止 / 断开」按钮）—— 撤掉通知系统会随手掐掉本进程。再允许「忽略电池优化」，息屏久一点也不会被系统冻结。</string>
