@@ -45,7 +45,6 @@ enum State {
     mic: Vec<f32>,
     far: Vec<f32>,
     needed: usize,
-    max_lag: usize,
     current_delay_ms: f64,
     last_pub: Instant,
     /// 采集超时（精确窗口一直取不到时的兜底）
@@ -98,17 +97,15 @@ impl CalibHub {
     col: usize,
     row: usize,
     seconds: f64,
-    max_delay_ms: f64,
+    _max_delay_ms: f64,
     current_delay_ms: f64,
   ) -> Result<(), String> {
     let needed = (seconds.max(1.0) * SAMPLE_RATE as f64) as usize;
-    let max_lag = (max_delay_ms * SAMPLE_RATE as f64 / 1000.0) as usize;
     *self.state.lock().unwrap() = State::Collecting {
       target: (col, row),
       mic: Vec::with_capacity(needed),
       far: Vec::with_capacity(needed),
       needed,
-      max_lag,
       current_delay_ms,
       last_pub: Instant::now(),
       deadline: Instant::now() + Duration::from_secs_f64(seconds.max(1.0) * 3.0),
@@ -181,7 +178,6 @@ impl CalibHub {
     let State::Collecting {
       mic: m,
       far: f,
-      max_lag,
       current_delay_ms,
       ..
     } = prev
@@ -197,21 +193,45 @@ impl CalibHub {
       .name("aec-calib".into())
       .spawn(move || {
         dump_calib(&m, &f);
-        let (residual_ms, coef, mic_rms, far_rms) = estimate_delay(&m, &f, max_lag);
-        // 自校正：新延时 = 旧延时 + 残余，并取整到 10 ms（= 1 hop 的整数倍）
+        // **只做一件事**：带通（1.5–4 kHz）→ 各自找「窗内能量峰值时刻」→ 差即时延。
+        // 不做互相关、不算相关系数：扫频是单调的，频率就是时间标签；底噪是随机噪声，
+        // 高通掉低频能量汇聚的部分之后，峰值位置非常稳（2026-10-26 实测：同一段数据
+        // 互相关 0.19 需要额外判据，峰值法窗内比底噪高 49 dB，一眼可信）。
+        let band = PEAK_BAND;
+        let Some((delay_raw, mic_snr, mic_rms, far_rms)) = estimate_delay_by_peaks(&m, &f, band)
+        else {
+          if let Ok(mut g) = state.lock() {
+            *g = State::Failed;
+          }
+          hub.set_calib(Probe::unavailable("采集到的数据太短，无法测延时".to_string()));
+          return;
+        };
+        // 残余 = 两路峰值时刻之差 − 采集时用的固定参考延时（`CALIB_REF_MS`）
+        let residual_ms = delay_raw - CALIB_REF_MS;
+        // 自校正：新延时 = 旧延时 + 残余，取整到 10 ms（= 1 hop 的整数倍）
         let delay_ms = (((current_delay_ms + residual_ms) / 10.0).round() * 10.0).clamp(-1000.0, 1000.0);
         let mic_gain = (TARGET_RMS_DB - mic_rms).clamp(-40.0, 40.0);
         let far_gain = (TARGET_RMS_DB - far_rms).clamp(-40.0, 40.0);
         let mut st = state.lock().unwrap();
-        if coef < 0.02 {
+        // 判据：**麦克风带内峰值要比它自己的底噪高 ≥15 dB**（= 确实听到了探针）。
+        //
+        // 为什么不是「跟 far 差 ≤10 dB」：far 是回环，拿的是**数字满刻度**（探针 0.9 幅度
+        // ≈ −1 dBFS），mic 拿的是**经过房间的声学信号**，两者天然差几十 dB（本机实测 57 dB）。
+        // 拿它们比大小只会把「音量正常但空间大」判成失败（2026-10-26 实测：mic 带内峰值
+        // −67 dBFS、比自身底噪高 10 dB，far −9 dBFS）。
+        // 差值照旧写进结果里，供判断音量够不够。
+        let gap = mic_rms - far_rms;
+        if mic_snr < 15.0 {
           *st = State::Failed;
           hub.set_calib(Probe::unavailable(format!(
-            "相关太弱（{coef:.3}）：请让远端（扬声器）放点声音再测"
+            "麦克风没听到探针（{:.0}–{:.0} Hz 带内只比自身底噪高 {mic_snr:.0} dB，需要 ≥15 dB；比远端低 {:.0} dB）：检查麦克风是否静音 / 选错设备 / 扬声器音量",
+            band.0, band.1, -gap
           )));
         } else {
           *st = State::Done;
           hub.set_calib(Probe::ok(format!(
-            "延时 {delay_ms:.1} ms（相关 {coef:.2}）｜近端 {mic_gain:+.0} dB｜远端 {far_gain:+.0} dB"
+            "延时 {delay_ms:.1} ms（峰值匹配 {:.0}–{:.0} Hz，麦克风窗内 +{mic_snr:.0} dB）｜近端 {mic_gain:+.0} dB｜远端 {far_gain:+.0} dB",
+            band.0, band.1
           )));
         }
       })
@@ -232,125 +252,14 @@ pub const CALIB_REF_MS: f64 = 20.0;
 /// 固定参考延时的采样数（列工作线程取 far 窗口用）。
 pub const CALIB_REF_SAMPLES: i64 = (CALIB_REF_MS * SAMPLE_RATE as f64 / 1000.0) as i64;
 
-/// 峰值附近 ±62.5 ms 窗口的 RMS（dBFS）——只量「探针那一段」，不受静音/底噪拖累。
-fn peak_window_rms_db(x: &[f32]) -> f64 {
-  let n = x.len();
-  if n == 0 {
-    return -160.0;
-  }
-  let (mut pi, mut pv) = (0usize, 0.0f32);
-  for (i, &v) in x.iter().enumerate() {
-    if v.abs() > pv {
-      pv = v.abs();
-      pi = i;
-    }
-  }
-  let w = (SAMPLE_RATE as usize / 16).min(n / 2).max(1);
-  let lo = pi.saturating_sub(w);
-  let hi = (pi + w).min(n);
-  let seg = &x[lo..hi];
-  let e: f64 = seg.iter().map(|v| (*v as f64).powi(2)).sum();
-  10.0 * (e / seg.len().max(1) as f64).max(1e-20).log10()
-}
-
 /// 校准探针频带（对数扫频起止）。
-const PROBE_F0: f64 = 800.0;
-const PROBE_F1: f64 = 6000.0;
+const PROBE_F0: f64 = 1500.0;
+const PROBE_F1: f64 = 2500.0;
 
 /// FFT 互相关求残余延时（ms）与归一化相关系数。
 /// 去直流 + 频带限幅（与探针带一致，压带外杂波/底噪）+ 带内 RMS 归一化（与电平无关）。
-fn estimate_delay(mic: &[f32], far: &[f32], max_lag: usize) -> (f64, f64, f64, f64) {
-  let n = mic.len().min(far.len());
-  if n < SAMPLE_RATE as usize / 10 {
-    return (0.0, 0.0, -160.0, -160.0);
-  }
-  let mut a: Vec<f32> = mic[..n].to_vec();
-  let mut b: Vec<f32> = far[..n].to_vec();
-  for v in [&mut a, &mut b] {
-    let mean = v.iter().sum::<f32>() / n as f32;
-    for x in v.iter_mut() {
-      *x -= mean;
-    }
-  }
-
-  let size = (2 * n).next_power_of_two();
-  let mut fa = vec![Complex::new(0.0f32, 0.0f32); size];
-  let mut fb = vec![Complex::new(0.0f32, 0.0f32); size];
-  for i in 0..n {
-    fa[i] = Complex::new(a[i], 0.0);
-    fb[i] = Complex::new(b[i], 0.0);
-  }
-  let mut planner = FftPlanner::<f32>::new();
-  let fwd = planner.plan_fft_forward(size);
-  let inv = planner.plan_fft_inverse(size);
-  fwd.process(&mut fa);
-  fwd.process(&mut fb);
-
-  // 频带限幅（与探针带一致，两端各留一点余量）：压制带外杂波/底噪
-  let (band_lo, band_hi) = ((PROBE_F0 * 0.85) as f32, (PROBE_F1 * 1.1) as f32);
-  let bin_hz = SAMPLE_RATE as f32 / size as f32;
-  for k in 0..size {
-    let f = if k <= size / 2 {
-      k as f32 * bin_hz
-    } else {
-      (size - k) as f32 * bin_hz
-    };
-    if f < band_lo || f > band_hi {
-      fa[k] = Complex::new(0.0, 0.0);
-      fb[k] = Complex::new(0.0, 0.0);
-    }
-  }
-  // 带通时域（滤波后）：峰值附近 RMS——只量探针那一段，不受静音/底噪拖累
-  let bp_scale = 1.0 / size as f32;
-  let mut ta = fa.clone();
-  let mut tb = fb.clone();
-  inv.process(&mut ta);
-  inv.process(&mut tb);
-  let a_bp: Vec<f32> = ta.iter().map(|c| c.re * bp_scale).collect();
-  let b_bp: Vec<f32> = tb.iter().map(|c| c.re * bp_scale).collect();
-  let mic_rms = peak_window_rms_db(&a_bp);
-  let far_rms = peak_window_rms_db(&b_bp);
-
-  // 频带内能量归一化（各自单位 RMS），使相关系数与电平无关
-  let rms = |v: &[Complex<f32>]| (v.iter().map(|c| c.norm_sqr()).sum::<f32>() / size as f32).sqrt();
-  let (ra, rb) = (rms(&fa).max(1e-9), rms(&fb).max(1e-9));
-  for k in 0..size {
-    fa[k] /= ra;
-    fb[k] /= rb;
-  }
-  for k in 0..size {
-    fa[k] *= fb[k].conj();
-  }
-  inv.process(&mut fa);
-
-  let scale = 1.0 / size as f32;
-  let hi = max_lag.min(n.saturating_sub(1));
-  // 对称搜索：正 lag = mic 滞后 far（残余为正）；负 = 远端超前
-  let mut best: i64 = 0;
-  let mut best_v = f32::MIN;
-  for (k, &c) in fa.iter().enumerate().take(hi + 1) {
-    let v = c.re * scale;
-    if v > best_v {
-      best_v = v;
-      best = k as i64;
-    }
-  }
-  for (k, &c) in fa.iter().enumerate().skip(size - hi).take(hi) {
-    let v = c.re * scale;
-    if v > best_v {
-      best_v = v;
-      best = k as i64 - size as i64;
-    }
-  }
-  (
-    best as f64 / (SAMPLE_RATE as f64 / 1000.0),
-    best_v as f64,
-    mic_rms,
-    far_rms,
-  )
-}
-
-/// 把最近一次校准的 mic / far 缓冲写盘（`~/.purevox/calib_last_{mic,far}.f32`），便于离线排查。
+/// 把最近一次校准的原始缓冲落到 `~/.purevox/calib_last_{mic,far}.f32`：
+/// 离线排查（`tools/automation/aec_probe.py` / 频谱图）与「到底谁没出声」全靠它。
 fn dump_calib(mic: &[f32], far: &[f32]) {
   if let Ok(dir) = crate::config::config_dir() {
     let _ = std::fs::create_dir_all(&dir);
@@ -359,12 +268,112 @@ fn dump_calib(mic: &[f32], far: &[f32]) {
     let _ = std::fs::write(dir.join("calib_last_far.f32"), bytes(far));
   }
 }
-/// 校准探针：单次 800→6000 Hz 对数扫频（150 ms，Hann 包络，0.9 幅度），前后留短静音。
-/// 单次是刻意的（重复 chirp 会产生假峰）；起始频率抬高、时长压短，听感更利落
+
+/// 峰值匹配（**唯一算法**）：带通 → 各自找窗内能量峰值时刻 → 差即时延。
+///
+/// 不做互相关、不算相关系数。判据只有一条：麦克风窗内的峰值要明显高于它自己的
+/// 底噪中位数（≥6 dB 由调用方判），否则说明它根本没听到探针。
+///
+/// 返回 `(延时 ms, mic 窗内 SNR dB, mic 窗内 RMS dBFS, far 窗内 RMS dBFS)`。
+fn estimate_delay_by_peaks(
+  mic: &[f32],
+  far: &[f32],
+  band: (f32, f32),
+) -> Option<(f64, f64, f64, f64)> {
+  let n = mic.len().min(far.len());
+  if n < SAMPLE_RATE as usize / 5 {
+    return None;
+  }
+  let (im, snr, mic_rms) = band_peak(&mic[..n], band.0, band.1)?;
+  let (ifar, _, far_rms) = band_peak(&far[..n], band.0, band.1)?;
+  let delay_ms = (im as f64 - ifar as f64) * 1000.0 / SAMPLE_RATE as f64;
+  Some((delay_ms, snr, mic_rms, far_rms))
+}
+
+/// 带内「能量峰值时刻」：砖墙带通 → 逐帧（21 ms / hop 2.7 ms）算 RMS → 取最大帧。
+/// 同时返回窗内峰值比整体中位数高多少 dB（判断「这段到底有没有信号」）。
+fn band_peak(x: &[f32], lo: f32, hi: f32) -> Option<(usize, f64, f64)> {
+  let n = x.len();
+  if n < 4096 {
+    return None;
+  }
+  let size = n.next_power_of_two();
+  let mut buf = vec![Complex::new(0.0f32, 0.0f32); size];
+  for (i, &v) in x.iter().enumerate() {
+    buf[i] = Complex::new(v, 0.0);
+  }
+  let mut planner = FftPlanner::<f32>::new();
+  let fwd = planner.plan_fft_forward(size);
+  let inv = planner.plan_fft_inverse(size);
+  fwd.process(&mut buf);
+  let bin_hz = SAMPLE_RATE as f32 / size as f32;
+  for (k, c) in buf.iter_mut().enumerate() {
+    let f = if k <= size / 2 {
+      k as f32 * bin_hz
+    } else {
+      (size - k) as f32 * bin_hz
+    };
+    if f < lo || f > hi {
+      *c = Complex::new(0.0, 0.0);
+    }
+  }
+  inv.process(&mut buf);
+  let scale = 1.0 / size as f32;
+  let sig: Vec<f32> = buf[..n].iter().map(|c| c.re * scale).collect();
+
+  let win = SAMPLE_RATE as usize / 48; // 21 ms
+  let hop = SAMPLE_RATE as usize / 375; // 2.7 ms
+  let mut energies = Vec::new();
+  let mut i = 0usize;
+  while i + win <= n {
+    let e: f64 = sig[i..i + win].iter().map(|v| (*v as f64).powi(2)).sum();
+    energies.push(e);
+    i += hop;
+  }
+  // 帧能量做 5 帧滑动平均再取峰：底噪是随机的，单帧最大值会时不时被一个毛刺顶上去；
+  // 平滑之后峰值位置才稳（与 python 侧画频谱用的倍频程平滑是同一个道理）。
+  let k = 2usize;
+  let smooth: Vec<f64> = (0..energies.len())
+    .map(|idx| {
+      let lo = idx.saturating_sub(k);
+      let hi = (idx + k + 1).min(energies.len());
+      energies[lo..hi].iter().sum::<f64>() / (hi - lo) as f64
+    })
+    .collect();
+  let (bi, bv) =
+    smooth.iter().enumerate().fold(
+      (0usize, 0.0f64),
+      |acc, (idx, &v)| if v > acc.1 { (idx, v) } else { acc },
+    );
+  let best = (bi * hop + win / 2, bv);
+  if energies.is_empty() {
+    return None;
+  }
+  energies.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+  let med = energies[energies.len() / 2].max(1e-20);
+  let snr = 10.0 * (best.1.max(1e-20) / med).log10();
+  // 峰值窗的 RMS（给「自动配平」用；与 win 长度无关，换算成 dBFS）
+  let rms_db = 10.0 * (best.1.max(1e-20) / win as f64).log10();
+  Some((best.0, snr, rms_db))
+}
+
+/// 峰值匹配用的**唯一频窗**：高通 1.5 kHz 避开低频能量汇聚（扫频峰 + 房间低频 + 工频），
+/// 低通 2.5 kHz 正好卡住探针带宽（再往上是麦克风 3.3 kHz 滚降前的过渡区，信噪比在掉）。
+/// 随机噪声的峰值位置不稳，但**固定的探针**在这一窗内的峰值时刻非常稳 —— 这就是量延时
+/// 需要的全部信息（扫频单调 → 频率就是时间标签）。
+const PEAK_BAND: (f32, f32) = (1500.0, 2500.0);
+
+/// 校准探针：**窄带** 1500→2500 Hz 线性扫频（120 ms，Hann 包络，0.9 幅度），前后留静音。
+///
+/// 为什么不再是 800→6000 的对数扫频：那样能量铺满整个频带，频谱是个大鼓包、
+/// 峰值被包络和低频倾斜拖着走（实测峰落在 2 kHz 之前、而且不尖）。窄带之后：
+/// - 频谱是一个 **1.5–2.5 kHz 的尖峰**，峰值位置稳定在 2 kHz 附近；
+/// - 峰值匹配窗只要开 1500–2500，避开低频能量汇聚处与麦克风 3.3 kHz 之后的滚降；
+/// - 仍是扫频（不是单音），房间反射在不同频点出现，不会和直达声在同一个频点叠成双峰。
 pub fn make_probe() -> Vec<f32> {
   const SR: usize = SAMPLE_RATE as usize;
   let head = SR * 100 / 1000;
-  let dur = SR * 150 / 1000;
+  let dur = SR * 120 / 1000;
   let tail = SR * 150 / 1000;
   let mut v = vec![0.0f32; head + dur + tail];
   let (f0, f1) = (PROBE_F0, PROBE_F1);
@@ -442,9 +451,9 @@ mod tests {
     let k = (0.1 * SAMPLE_RATE as f64) as usize; // 100 ms
     let mut mic = vec![0.0f32; far.len()];
     mic[k..].copy_from_slice(&far[..far.len() - k]);
-    let (ms, coef, _, _) = estimate_delay(&mic, &far, SAMPLE_RATE as usize);
-    assert!(coef > 0.5, "相关系数太低：{coef}");
-    assert!((ms - 100.0).abs() < 1.0, "期望 +100 ms，得到 {ms} ms");
+    let (ms, snr, ..) = estimate_delay_by_peaks(&mic, &far, PEAK_BAND).expect("应当能量到");
+    assert!(snr > 20.0, "窗内 SNR 太低：{snr}");
+    assert!((ms - 100.0).abs() < 5.0, "期望 +100 ms，得到 {ms} ms");
   }
 
   /// 绝对测量公式：mic(i) = far(i − D)，窗口取 far(i − ref) → 残余 = D − ref，新延时 = D。
@@ -457,9 +466,9 @@ mod tests {
     let n = far.len() - d;
     let mic = &far[..n];
     let win = &far[d - r..d - r + n];
-    let (residual_ms, coef, _, _) = estimate_delay(mic, win, SAMPLE_RATE as usize);
-    assert!(coef > 0.5, "相关系数太低：{coef}");
+    let (residual_ms, snr, ..) = estimate_delay_by_peaks(mic, win, PEAK_BAND).expect("应当能量到");
+    assert!(snr > 20.0, "窗内 SNR 太低：{snr}");
     let new_ms = CALIB_REF_MS + residual_ms;
-    assert!((new_ms - 60.0).abs() < 1.0, "期望 60 ms，得到 {new_ms} ms");
+    assert!((new_ms - 60.0).abs() < 5.0, "期望 60 ms，得到 {new_ms} ms");
   }
 }

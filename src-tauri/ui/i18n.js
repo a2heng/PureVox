@@ -429,8 +429,11 @@
     { id: 'cal.compute', zh: '计算中…', en: 'Computing…' },
     {
       id: 'cal.result',
-      zh: '延时 {d} ms（相关 {c}）｜近端 {m} dB｜远端 {f} dB',
-      en: 'Delay {d} ms (corr {c}), near {m} dB, far {f} dB',
+      // 与 `engine/calib.rs` 的完成串**逐字同构**：只多了「峰值匹配频窗」这个占位。
+      // 骨架对不上时前端拿不到 `cal.result`，也就不会回填延时/增益（2026-10-26 踩过：
+      // 改了文案忘了这里，界面上结果出得来、滑块却一动不动）。
+      zh: '延时 {d} ms（峰值匹配 {b0}–{b1} Hz，麦克风窗内 +{s} dB）｜近端 {m} dB｜远端 {f} dB',
+      en: 'Delay {d} ms (peak match {b0}–{b1} Hz, mic +{s} dB in band), near {m} dB, far {f} dB',
     },
   ]
 

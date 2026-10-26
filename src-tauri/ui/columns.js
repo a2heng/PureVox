@@ -549,6 +549,8 @@ function rowElement(col, ci, row, ri) {
     const cal = document.createElement('button')
     cal.type = 'button'
     cal.className = 'primary'
+    // 稳定 id：无人值守验证（`ui.py` / UIA）要能直接点到「校准」
+    cal.id = 'aec-cal'
     cal.textContent = T('校准')
     cal.title = T('送扫频探针：测延时并自动配平近端 / 远端')
     cal.addEventListener('click', () => {
