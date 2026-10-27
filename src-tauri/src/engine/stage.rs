@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Stage 契约（DESIGN.md §3.4）：一帧 = 480 样本（10 ms @48 kHz），就地处理。
+//! Stage 契约（ARCHITECTURE.md §3.4）：一帧 = 480 样本（10 ms @48 kHz），就地处理。
 //!
 //! 契约骨架：`ts` / `StageError::Unavailable` / `name` / `reset` / `release` 由列工作线程与
 //! 行级调试接入后使用，现在先按契约固定形状。

@@ -22,7 +22,7 @@
 //! 新延时 = 参考 + 偏差 = **绝对延时**，与当前存储值无关（若用存储值取窗口，旧值很错时窗口会
 //! 落在探针之外 → 测不到、无法自纠）。
 //!
-//! **结果是一份结构化 `CalibReport`**（AGENTS.md §1.4）：进调试快照 `calib_report`、专用端点
+//! **结果是一份结构化 `CalibReport`**（DEBUG.md §1.4）：进调试快照 `calib_report`、专用端点
 //! `GET /debug/calib`、并落盘 `~/.purevox/calib_last.json`；界面只渲染这份数据。
 //! 原来那句中文串（`calib` 字段）保留向后兼容，但不再是唯一结果。
 //!
@@ -339,7 +339,7 @@ const TARGET_BAND_RMS_DB: f64 = -28.0;
 /// 判据（**只有一个**）：麦克风带内峰值要比它自己的底噪高这么多 dB，才算「听到了探针」。
 const MIC_SNR_MIN_DB: f64 = 15.0;
 
-/// 报告结构版本（AGENTS.md §1.4：只增不改名）。
+/// 报告结构版本（DEBUG.md §1.4：只增不改名）。
 pub const CALIB_SCHEMA_VERSION: u32 = 1;
 
 /// 校准取 far 窗口用的**固定参考延时**（ms）：与当前存储的延时值无关。
@@ -816,7 +816,7 @@ mod tests {
     );
   }
 
-  /// 报告结构（AGENTS §1.4）：带 schema 版本；没测到的值是 null 而不是 0；
+  /// 报告结构（DEBUG.md §1.4）：带 schema 版本；没测到的值是 null 而不是 0；
   /// 带内 / 人声目标与换算偏移都要随报告给出（脚本与 AI 直接读）。
   #[test]
   fn report_json_uses_schema_and_nulls() {

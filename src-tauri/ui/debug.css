@@ -704,7 +704,7 @@ td { padding: 3px 8px 3px 0; overflow: hidden; text-overflow: ellipsis; }
 .netcard-far .netcard-sel { flex: 1 1 8em; }
 /* 网络行里的下拉（网卡 / AEC 远端来源）与全局 `select` 样式**共用同一套外观**：
    这里只调布局（宽度与伸缩），配色 / 边框 / 高度一律不写 —— 另起一套就会和别处的下拉
-   对不上，换主题时也只改得到一半（AGENTS.md §4 的「一个功能只有一条实现路径」同理）。 */
+   对不上，换主题时也只改得到一半（CONTRIBUTING.md 的「一个功能只有一条实现路径」同理）。 */
 .netcard-ifsel { flex: 1 1 12em; min-width: 8em; max-width: 26em; }
 /* 端口框定宽 + 等宽数字（`mono` 已带 `tabular-nums`）：改端口时宽度不能跳，
    否则光标位置会飘。 */
@@ -729,6 +729,58 @@ td { padding: 3px 8px 3px 0; overflow: hidden; text-overflow: ellipsis; }
 .netcard { overflow-wrap: anywhere; }
 .netcard-port-hint { flex: 1 1 6em; font-size: 12px; color: var(--muted); }
 .netcard-port-hint.bad { color: var(--err); }
+
+/* ---------- 可视化插件（处理行 `viz`，ui/viz.js） ----------
+   位置在链路里，画的就是**这一点**的电平与频谱。默认「电平 + 频谱」上下排，
+   高度由内容决定（不写死）。颜色/弹道都在 viz.js 里，CSS 只管盒子。 */
+.vizcard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+}
+.viz-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.viz-label { color: var(--muted); font-size: 12px; flex: 0 0 auto; }
+.viz-mode { min-width: 0; max-width: 16em; }
+.viz-body { position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.viz-vu { width: 100%; height: 22px; display: block; }
+.viz-spec { width: 100%; height: 96px; display: block; background: var(--bg); border-radius: var(--r-sm); }
+.viz-note {
+  position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 12px; background: color-mix(in srgb, var(--bg) 55%, transparent);
+  border-radius: var(--r-sm); pointer-events: none;
+}
+.viz-note.on { display: flex; }
+
+/* ---------- 31 段均衡卡片（equ31，ui/eq.js） ---------- */
+.eqcard { display: flex; flex-direction: column; gap: 6px; padding: 7px 8px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); }
+.eq-head { display: flex; align-items: center; gap: 8px; }
+.eq-title { color: var(--muted); font-size: 12px; flex: 1 1 auto; }
+.eq-canvas { width: 100%; height: 150px; display: block; background: var(--bg);
+  border-radius: var(--r-sm); touch-action: none; cursor: crosshair; }
+.eq-cuts { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.eq-cut-row { display: grid; grid-template-columns: auto minmax(0, 1fr) 4.2em; align-items: center; gap: 6px; }
+.eq-cuts input[type="range"] { width: 100%; min-width: 0; accent-color: var(--accent); }
+.eq-cut-val { min-width: 3.8em; text-align: right; font-size: 11px; }
+/* 上排 6 个内置 + 下排 6 个自定义槽：两行六列、左右对齐 */
+.eq-presets { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+.eq-preset { font-size: 11px; padding: 3px 2px; width: 100%; min-width: 0; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.eq-preset.empty { opacity: 0.55; }
+.eq-preset.sel { outline: 2px solid var(--accent); }
+
+/* AGC 行说明：三个参数各自管什么（面板里解释） */
+.row .detail > .agc-help { grid-column: 1 / -1; width: 100%; max-width: 100%; margin: 2px 0 0;
+  color: var(--muted); font-size: 11px; line-height: 1.5; display: block; white-space: normal; }
+.agc-help > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 调试面板：每路音频**上面电平、下面波形 + 频谱**（不占横向四列的位置） */
+.stream-vu { margin: 6px 0 8px; }
+.stream-vu canvas.vu { width: 100%; height: 22px; display: block; }
 
 /* 滚动条：细一点，别抢视觉 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -1835,6 +1887,7 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: default; }
 }
 .row > .detail > .hint,
 .row > .detail > .cal-note,
+.row > .detail > .agc-help,
 .row > .detail > .params,
 .row > .detail2 > .params,
 .row > .detail3,
@@ -2020,7 +2073,7 @@ input[type="checkbox"]:disabled { opacity: 0.45; cursor: default; }
    通用 `.hidden` 只对块级元素生效，表格行要单独写 display:none 才会真的消失。 */
 .update-box tr.hidden { display: none; }
 
-/* ---------- AEC 校准结果（ui/calib.js，AGENTS.md §1.4）----------
+/* ---------- AEC 校准结果（ui/calib.js，DEBUG.md §1.4）----------
    曲线画在 canvas 上（平滑后的带内能量包络，不是原始波形），数据全部来自
    快照里的 `calib_report`；这里只负责布局与配色。 */
 .calib-box { width: min(820px, 100%); }

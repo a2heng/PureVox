@@ -44,6 +44,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -57,6 +58,8 @@ import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.slider.Slider
 import com.google.android.material.textfield.MaterialAutoCompleteTextView
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.purevox.mic.audio.MicSources
 import com.purevox.mic.audio.MicUplink
 import com.purevox.mic.audio.OpusSupport
@@ -144,6 +147,7 @@ class MainActivity : AppCompatActivity() {
 
     private val ui = Handler(Looper.getMainLooper())
 
+    @Volatile
     private var ws: WsClient? = null
     private var uplink: MicUplink? = null
     private var downlink: SpeakerDownlink? = null
@@ -151,7 +155,7 @@ class MainActivity : AppCompatActivity() {
     private var host = DEFAULT_HOST
 
     /**
-     * 电脑端的端口。**独立于 host 存**，因为它是用户可改的（DESIGN.md §4.1.1），
+     * 电脑端的端口。**独立于 host 存**，因为它是用户可改的（NETWORK.md §4.1.1），
      * 而且改的是**电脑端**那个设置 —— 手机这边只能从地址里学（mDNS / 二维码），
      * 学到的必须记住，否则下次启动退回 59123 就「莫名连不上」。
      */
@@ -217,6 +221,10 @@ class MainActivity : AppCompatActivity() {
 
     // 界面控件
     private lateinit var etHost: EditText
+    /** 电脑端口（默认 59123、可改）。与 [etHost] 分开两格，见 `readTarget`。 */
+    private lateinit var etPort: EditText
+    /** 打开相机扫二维码填地址（`zxing-android-embedded` 自带扫描界面）。 */
+    private lateinit var btnScan: ImageButton
     // 连接做成开关：滑块位置 = 连没连上（不用读文字判状态）
     private lateinit var swConnect: MaterialSwitch
     private lateinit var navBottom: BottomNavigationView
@@ -307,7 +315,7 @@ class MainActivity : AppCompatActivity() {
      * 把手机这一侧的播放 / 采集状态上报给电脑（2 Hz）。
      *
      * 电脑那边看不到手机环的水位、欠载和**实测时钟偏差**；没有这份上报，
-     * 「扬声器为什么还是慢」只能靠猜（AGENTS §1.4）。
+     * 「扬声器为什么还是慢」只能靠猜（DEBUG.md §1.4）。
      */
     private fun reportClientStats() {
         if (!ready) return
@@ -329,6 +337,21 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             applyState()
             updateStatus()
+        }
+
+    /** 扫码结果 → 自动拆成 IP + 端口填好（**不自动连接**：扫到别人的码不该断当前会话）。 */
+    private val scanLauncher =
+        registerForActivityResult(ScanContract()) { result ->
+            val text = result.contents
+            if (text.isNullOrBlank()) return@registerForActivityResult
+            applyScannedTarget(text)
+        }
+
+    /** 相机权限（只在点「扫描」时申请；拒绝也不影响手动输入）。 */
+    private val cameraPermLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) launchScan()
+            else showErr(getString(R.string.msg_scan_camera_denied))
         }
 
     // ---------------------------------------------------------------- 生命周期
@@ -382,7 +405,7 @@ class MainActivity : AppCompatActivity() {
         // 只是掉线、服务还在 → 只重连 WebSocket，不必重新发现（那要等好几秒）
         btnReconnect.setOnClickListener { reconnect() }
 
-        // 三条路并存，谁先成谁上（DESIGN.md §4.1.1）：
+        // 三条路并存，谁先成谁上（NETWORK.md §4.1.1）：
         //
         //   1. **缓存** —— 上次连过的那台。手机和电脑通常在同一网络环境（同一个 Wi-Fi），
         //      地址根本没变，用户**不该每次都等发现**。绝大多数情况走这条，秒连。
@@ -575,6 +598,101 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 读界面上的两个框 → `host[:port]`（默认端口时省略）。
+     *
+     * - IP 框里**粘整条网址**（`https://192.168.1.5:59200/`）仍然可用：这里把端口拆出来
+     *   回填到端口框，用户看得见实际用的是哪个端口；
+     * - 端口只在合法（1~65535）时采用，否则回到 59123 并明确提示；
+     * - 同时更新 `host` / `port` 字段（`savePrefs` 也调它）。
+     */
+    private fun readTarget(): String {
+        val raw = etHost.text.toString().trim()
+        if (raw.isEmpty()) return ""
+        val norm = normalizeTarget(raw)
+        val explicitRaw = explicitPortRaw(norm)
+        val explicit = explicitRaw?.toIntOrNull()?.takeIf { it in 1..65535 }
+        if (explicitRaw != null && explicit == null) {
+            showErr(getString(R.string.msg_port_invalid, explicitRaw))
+        }
+        val typed = etPort.text.toString().trim().toIntOrNull()?.takeIf { it in 1..65535 }
+        val p = explicit ?: typed ?: Proto.PORT
+        val h = if (explicitRaw != null) {
+            // 地址里带了端口：host 只取冒号前那一段（IPv6 保留方括号）
+            if (norm.startsWith("[")) {
+                val close = norm.indexOf(']')
+                if (close > 0) norm.substring(0, close + 1) else norm
+            } else {
+                norm.substringBeforeLast(':')
+            }
+        } else {
+            norm
+        }
+        if (h.isEmpty()) return ""
+        // 回填：粘贴完整网址 / 端口非法时，界面立刻显示真正会用的值
+        etHost.setText(h)
+        etPort.setText(p.toString())
+        host = h
+        port = p
+        return if (p == Proto.PORT) h else "$h:$p"
+    }
+
+    /** `host[:port]` 里显式写的端口原文（没有端口 = null）；不校验合法性。 */
+    private fun explicitPortRaw(norm: String): String? {
+        if (norm.startsWith("[")) {
+            val close = norm.indexOf(']')
+            if (close <= 0) return null
+            return norm.substring(close + 1).removePrefix(":").ifEmpty { null }
+        }
+        if (norm.count { it == ':' } == 1) return norm.substringAfterLast(':').ifEmpty { null }
+        return null
+    }
+
+    /** 点「扫描」：先确认相机权限，再打开扫码界面。 */
+    private fun startScan() {
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) launchScan() else cameraPermLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    private fun launchScan() {
+        val opts = ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            // 自己的取景界面：竖屏 + 正方形四角框（见 PvScanActivity）
+            setCaptureActivity(PvScanActivity::class.java)
+            setPrompt(getString(R.string.scan_prompt))
+            setBeepEnabled(false)
+            setOrientationLocked(false)
+            setBarcodeImageEnabled(false)
+        }
+        try {
+            scanLauncher.launch(opts)
+        } catch (e: Exception) {
+            showErr(getString(R.string.msg_scan_failed, e.message ?: e.javaClass.simpleName))
+            log("扫码启动失败：${e.message}")
+        }
+    }
+
+    /**
+     * 扫到的内容写进两个框。电脑端二维码是 `https://<ip>:<端口>/`，走与粘贴相同的
+     * 归一化：拆出 host + 端口；非法内容明确报错、不改现有输入。
+     */
+    private fun applyScannedTarget(text: String) {
+        val norm = normalizeTarget(text)
+        val explicit = explicitPortRaw(norm)?.toIntOrNull()?.takeIf { it in 1..65535 }
+        val (h, p) = splitTarget(norm)
+        if (h.isEmpty()) {
+            showErr(getString(R.string.msg_scan_failed, text.take(80)))
+            return
+        }
+        etHost.setText(h)
+        etPort.setText((explicit ?: p).toString())
+        log("扫码：${h}:${explicit ?: p} → 自动连接")
+        // 扫完直接连：已经在连/已连着就先拆掉旧会话，再连新地址（同一台电脑也无碍）
+        if (ws != null || connecting) disconnect()
+        connect()
+    }
+
+    /**
      * 把 `host[:port]` 拆成 (host, port)，端口缺失或非法时用默认。
      *
      * **必须拆，不能把整个 target 当 host 传下去**：`Proto.wsUrl` 是 `"wss://$host:$port"`，
@@ -634,12 +752,13 @@ class MainActivity : AppCompatActivity() {
                         updateStatus()
                         return@runOnUiThread
                     }
-                    // **端口必须一起带上**：电脑端的端口是可编辑的（DESIGN.md §4.1.1），
+                    // **端口必须一起带上**：电脑端的端口是可编辑的（NETWORK.md §4.1.1），
                     // mDNS 报的是它在用的那个真实端口。只填 IP 会退回默认 59123，于是用户
                     // 改过端口之后手机这边「怎么都连不上」，而症状完全看不出是端口问题。
-                    val target = if (p > 0) "$h:$p" else h
-                    etHost.setText(target)
-                    etHost.isEnabled = false        // 发现到了就不用手填
+                    etHost.setText(h)
+                    etPort.setText((if (p > 0) p else Proto.PORT).toString())
+                    // **不锁输入框 / 扫描按钮**：发现只是「帮你填好」，用户随时可以改端口
+                    // 或扫另一台电脑的码（锁上会让扫描按钮点了没反应，用户实测 2026-10-27）。
                     connState = getString(R.string.msg_found, name, h, p)
                     updateStatus()
                     // 自动连上：发现即连接，用户什么都不用点
@@ -649,30 +768,25 @@ class MainActivity : AppCompatActivity() {
             onLost = { name ->
                 runOnUiThread {
                     found = false
-                    etHost.isEnabled = true          // 服务没了 → 把手动填的路子还回来
                     if (ws == null) connState = getString(R.string.msg_lost, name)
                     updateStatus()
                 }
             },
             onError = { msg ->
                 runOnUiThread {
-                    etHost.isEnabled = true
                     if (ws == null) connState = msg
                     updateStatus()
                 }
             },
         )
         discovery = d
-        if (!d.available) {
-            etHost.isEnabled = true
-            return
-        }
+        if (!d.available) return
         d.start()
     }
 
     /** 只重连 WebSocket，不重新发现（服务还在时用这个，快得多）。 */
     private fun reconnect() {
-        val target = normalizeTarget(etHost.text.toString())
+        val target = readTarget()
         if (target.isEmpty()) {
             showErr(getString(R.string.msg_no_target))
             return
@@ -690,7 +804,7 @@ class MainActivity : AppCompatActivity() {
     // ---------------------------------------------------------------- 连接
 
     private fun connect() {
-        val target = normalizeTarget(etHost.text.toString())
+        val target = readTarget()
         if (target.isEmpty()) {
             showErr(getString(R.string.msg_no_target))
             return
@@ -737,8 +851,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val wsListener = object : WsClient.Listener {
-        override fun onOpen() {
+        override fun onOpen(client: WsClient) {
             ui.post {
+                if (client !== ws) return@post // 旧连接的迟到回调，丢掉
                 connState = "已连接（等待 ready）"
                 updateButtons()
                 updateStatus()
@@ -746,8 +861,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        override fun onMessage(msg: ServerMsg) {
+        override fun onMessage(client: WsClient, msg: ServerMsg) {
             ui.post {
+                if (client !== ws) return@post
                 when (msg) {
                     is ServerMsg.Ready -> onReady(msg)
                     is ServerMsg.Err -> showErr("电脑：${msg.msg}")
@@ -765,23 +881,34 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        override fun onAudioPacket(seq: Int, tsUs: Int, payload: ByteArray) {
+        override fun onAudioPacket(client: WsClient, seq: Int, tsUs: Int, payload: ByteArray) {
+            // 旧连接可能还在吐最后一包：不能喂给新会话的下行环
+            if (client !== ws) return
             val d = downlink
             // 缓冲在接收方（`audio/PlaybackRing.kt`）：这里只是「解码 → 塞进环」
             if (d != null && speakerOn) d.onPacket(seq, tsUs, payload)
         }
 
-        override fun onPong(id: Long, rtt: Double) {
+        override fun onPong(client: WsClient, id: Long, rtt: Double) {
             // RTT 统计与界面刷新都在主线程做：RtStats 内部不加锁（调用方保证单线程）
-            ui.post { rt.onRtt(rtt) }
+            ui.post {
+                if (client !== ws) return@post
+                rt.onRtt(rtt)
+            }
         }
 
-        override fun onClosed(reason: String) {
-            ui.post { onSessionEnded("电脑关闭了连接：$reason") }
+        override fun onClosed(client: WsClient, reason: String) {
+            ui.post {
+                if (client !== ws) return@post
+                onSessionEnded("电脑关闭了连接：$reason")
+            }
         }
 
-        override fun onFailure(reason: String) {
-            ui.post { onSessionEnded("连接失败：$reason") }
+        override fun onFailure(client: WsClient, reason: String) {
+            ui.post {
+                if (client !== ws) return@post
+                onSessionEnded("连接失败：$reason")
+            }
         }
     }
 
@@ -812,7 +939,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runHealthCheck() {
-        val target = normalizeTarget(etHost.text.toString())
+        val target = readTarget()
         if (target.isNotEmpty()) host = target
         healthText = "自检中…"
         updateStatus()
@@ -1309,7 +1436,7 @@ class MainActivity : AppCompatActivity() {
         tvErr.text = lastErr
         tvErr.visibility = if (lastErr.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
 
-        // ---- 结构化诊断（AGENTS §1.4）：同一份读数同时落盘 + 打 logcat，
+        // ---- 结构化诊断（DEBUG.md §1.4）：同一份读数同时落盘 + 打 logcat，
         // 脚本/AI 不必截图、不必点界面（`adb logcat -s PureVoxDiag:I` / `run-as ... cat files/diag.json`）
         val diagIssue = DiagJson.publish(this, diagJson(net, q, a), System.currentTimeMillis())
         if (diagIssue != null) log(diagIssue)
@@ -1658,6 +1785,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun bindViews() {
         etHost = findViewById(R.id.etHost)
+        etPort = findViewById(R.id.etPort)
+        btnScan = findViewById(R.id.btnScan)
+        btnScan.setOnClickListener { startScan() }
         swConnect = findViewById(R.id.swConnect)
         navBottom = findViewById(R.id.navBottom)
         btnHealth = findViewById(R.id.btnHealth)
@@ -1704,8 +1834,9 @@ class MainActivity : AppCompatActivity() {
         val p = getSharedPreferences(PREFS, MODE_PRIVATE)
         host = p.getString("host", DEFAULT_HOST) ?: DEFAULT_HOST
         port = p.getInt("port", Proto.PORT)
-        // 回填成带端口的完整形式，界面上一眼能看到连的是哪个端口
-        etHost.setText(if (port == Proto.PORT) host else "$host:$port")
+        // 两个框各自回填：端口单独一格，用户随时能改（不再拼成一个字符串）
+        etHost.setText(host)
+        etPort.setText(port.toString())
         swMic.isChecked = p.getBoolean("mic", false)
         swSpeaker.isChecked = p.getBoolean("speaker", false)
         swRemote.isChecked = p.getBoolean("remote", false)
@@ -1725,13 +1856,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun savePrefs() {
-        // 存归一后的 host + 拆出来的端口（别把 `http://…/` 整串存进去）
-        val typed = normalizeTarget(etHost.text.toString())
-        if (typed.isNotEmpty()) {
-            val (h, pt) = splitTarget(typed)
-            host = h
-            port = pt
-        }
+        // 存归一后的 host + 端口（别把 `http://…/` 整串存进去；端口不是默认值时单独存）
+        if (etHost.text.toString().trim().isNotEmpty()) readTarget()
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putString("host", host)
             .putInt("port", port)

@@ -27,10 +27,10 @@
 - CI 与发版流水线已建立（2026-10-07，见 §3.7）：`tests.yml`（门禁）/ `warm-cache.yml`（唯一缓存写入者）/
   `release.yml`（tag → 门禁 → 打包 → `assert_bundle -Smoke` 安装冒烟（7 模型布局）→ gh release）；
   门禁与断言脚本集中在 `tools/automation/`，本机与 CI 跑同一份 `check.py`。
-- **网络（手机 ⇄ 电脑）已实现**（2026-10-08，DESIGN.md §4.1）：axum WebSocket 服务（端口
+- **网络（手机 ⇄ 电脑）已实现**（2026-10-08，NETWORK.md §4.1）：axum WebSocket 服务（端口
   59123，`/ws` + `/health`）。`remote_mic` 输入行（手机麦克风→电脑，**不需要虚拟声卡驱动**，
   进引擎全链可降噪）+ `remote_speaker` 输出行（电脑→手机扬声器）+ 远程输入（手机输入法打字
-  `text` 与手机实体键当全尺寸键盘 `key`，**两件事分开**，开关默认关闭）。协议见 DESIGN.md §4.1。
+  `text` 与手机实体键当全尺寸键盘 `key`，**两件事分开**，开关默认关闭）。协议见 NETWORK.md §4.1。
   - **Opus 零编译链**：不用 `opus` crate（其 `-sys` 要 cmake 编 C 源码），也不用已废弃 5 年的
     `audiopus`；改为运行时 `LoadLibraryExW` + `GetProcAddress` 加载仓库里**预编译 x64**
     `server/opus.dll`（`libopus 1.3.1`，AGENTS §2.5 保留的遗留产物，正好复用）。实测
@@ -54,7 +54,7 @@
   `View.layoutHeight`（应为 `height`）、okio `ByteString.of(ByteArray)` 已废弃（改用 `toByteString()`）、
   以及非公开 API `AudioRecord.Builder.setPerformanceMode`（SDK 里根本没有，删除）。
 - UI 字符串统一管理已落地（2026-10-07）：`i18n.js` 单字典 + `T()` 占位符 + `__pvTpl()` Rust 模板表
-  + `i18n_lint` 门禁（规则见 AGENTS.md §4）。
+  + `i18n_lint` 门禁（规则见 CONTRIBUTING.md）。
 - **Linux 已跑通并出包**（2026-10-08）：本机 Ubuntu 24.04（CI 用 `ubuntu-24.04`）`cargo build` /
   `clippy -D warnings` / `test`（40 项全过）/ `cargo tauri build` 均通过，出 deb / rpm / AppImage；
   `tools/automation/check.py` 跨平台（Windows / Linux / macOS 同一份）。Windows 专有功能在其它平台给
@@ -99,7 +99,7 @@
 - **手机面板从调试面板迁出**为顶栏常驻面板（服务开关 / 远程输入开关 / 本机地址 / 怎么用），
   调试面板只留只读状态行——这就是「放在调试里很奇怪」的来源。
 - **更新检查与更新**（`src/update/`，新增）：GitHub Releases → 查 → 下载 → 静默安装，
-  顶栏「更新」面板 + 调试接口 `update` 段。详见 DESIGN.md §4.2 与 AGENTS.md §1.2。
+  顶栏「更新」面板 + 调试接口 `update` 段。详见 RELEASE.md §4.2 与 DEBUG.md §1.2。
 - **版本号改为「年.月.日」**（如 `26.10.8`）：tag 仍是完整时间戳 `v2026.10.08.1430`，
   更新比较用 tag（`version::STAMP`），同日发两次也分得清。
 - **界面整体重做**（`ui/debug.css`）：去掉所有写死的高度/行数，改 flex 纵向自适应；
@@ -139,7 +139,7 @@
 ## 0.1 2026-10-27 网络音频定案（固定 20 ms）+ Android 打包/界面
 
 **这一轮是把「手机 ⇄ 电脑」的音频通路按实测数据重写成最简形态**，目标是砍掉上一版的
-自适应机制（它反而制造了 ±1500 ppm 颤音与「起播被判成欠载」）。设计写在 DESIGN.md §4.1，
+自适应机制（它反而制造了 ±1500 ppm 颤音与「起播被判成欠载」）。设计写在 NETWORK.md §4.1，
 这里只记结果与坑。
 
 - **设计定案（不变量）**：**只在接收方缓冲，固定 20 ms**；发送方有一个 hop 就发一个，
@@ -164,7 +164,7 @@
 - **本机 debug 包与 CI release 包共存**：debug 构建带 `applicationIdSuffix = ".debug"` +
   `versionNameSuffix = "-debug"`，`app/src/debug/res/values/strings.xml` 把应用名覆盖成
   **PureVox Debug**，产物统一叫 `PureVox-<版本>[-debug]-android-arm64.apk`。
-  原因见 AGENTS §1.2：Android 只允许同签名覆盖安装，以前每版都得先卸载线上包才能调试。
+  原因见 DEBUG.md §1.2：Android 只允许同签名覆盖安装，以前每版都得先卸载线上包才能调试。
 - **16 KB 页对齐**：`libpvopus.so` 用 NDK 27 重建，`llvm-readelf -l` 实测
   `LOAD ... Align 0x4000`；`CMakeLists.txt` 加 `-Wl,-z,max-page-size=16384` +
   `-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON`，`build_opus_android.py` 里加了
@@ -322,7 +322,7 @@ Fedora / Arch / openSUSE 等发行版的包名见 prerequisites 页对应标签�
 
 实测（Ubuntu 24.04）：`cargo build` / `clippy -D warnings` / `test`（40 项全过）/
 `cargo tauri build` 均通过，出 `deb (69 MB)` / `rpm (57 MB)` / `AppImage (141 MB)`。
-运行期还需系统 `libopus0`（网络音频用，见 §1 与 AGENTS §1.2；缺失时降级、不崩）。
+运行期还需系统 `libopus0`（网络音频用，见 §1 与 DEBUG.md §1.2；缺失时降级、不崩）。
 
 ### 3.3 安装 Tauri 3 CLI（Windows 已实测）
 
@@ -367,7 +367,7 @@ Tauri 3 与 2 在骨架上唯一的差别：`main` 里必须 `.runtime(tauri_run
 
 ### 3.5.1 图标生成（**不参与 CI**）
 
-图标是**一次性生成、产物入库**的静态资源：CI 里不重新生成（AGENTS §2.7 的门禁与打包都不碰
+图标是**一次性生成、产物入库**的静态资源：CI 里不重新生成（RELEASE.md 的门禁与打包都不碰
 它），改设计时开发者本地跑一次脚本，把产物提交上去即可。理由是它需要 Pillow 这个宿主能力，
 而打包根本不需要图像库——放进 CI 只会多一个「CI 能跑、本地跑不了」的分叉点。
 
@@ -430,7 +430,7 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
 | `src-tauri/icons/Square{30,44,71,89,107,142,150,284,310}x…Logo.png` + `StoreLogo.png` | Windows Store |
 | `src-tauri/icons/icon.icns`（icp4…ic10） | macOS（配置引用，但本项目不打包 macOS） |
 | `src-tauri/icons/ios/AppIcon.appiconset/` | iOS 的 20 个槽位 + `Contents.json`（见下） |
-| `src-tauri/icons/tray_running.png` / `tray_stopped.png` | 托盘 64px。**运行态 = 蓝渐变底 + 浅蓝 P；停止态 = 暗灰底 + 暗蓝 P** —— 整套一起压暗才有「熄灭」的观感，只压底色的话 P 仍是亮蓝，在暗灰底上比运行时还跳，一眼看不出停了（AGENTS §1.2 托盘）。P 高占 72%：64px 下再小就看不清 |
+| `src-tauri/icons/tray_running.png` / `tray_stopped.png` | 托盘 64px。**运行态 = 蓝渐变底 + 浅蓝 P；停止态 = 暗灰底 + 暗蓝 P** —— 整套一起压暗才有「熄灭」的观感，只压底色的话 P 仍是亮蓝，在暗灰底上比运行时还跳，一眼看不出停了（DEBUG.md §1.2 托盘）。P 高占 72%：64px 下再小就看不清 |
 | `android/app/src/main/res/mipmap-*/` | 五档密度 × `ic_launcher` / `_round`（传统，API < 26）/ `_foreground` / `_monochrome` |
 | `android/app/src/main/res/mipmap-anydpi-v26/{ic_launcher,ic_launcher_round}.xml` | 自适应图标声明（API 26+）：背景 + 前景 + **`<monochrome>`**（Android 13+ 主题图标）；由脚本写出，勿手改 |
 | `android/app/src/main/res/drawable/ic_launcher_bg.xml` | 自适应图标背景层（深蓝竖向渐变，满幅无圆角） |
@@ -478,7 +478,7 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
   hide/show、`RedrawWindow` 全试过，都不解决；两个窗口用**不同**的 `additional_browser_args`
   还会额外触发 `CreateCoreWebView2EnvironmentWithOptions` 的 `0x8007139F`（`ERROR_INVALID_STATE`，
   同一 user data folder 的 environment options 必须一致），失败后留下一个白窗。**结论：别再给调试
-  面板建第二个 webview**，走浏览器 + HTTP（AGENTS §1.1）。
+  面板建第二个 webview**，走浏览器 + HTTP（DEBUG.md §1.1）。
 - **量窗口尺寸要 DPI-aware**：DPR 200%（dpi 192）时，DPI-unaware 进程拿到的 `GetWindowRect`
   是虚拟化过的一半尺寸（1193×936 其实是 2386×1871 物理），据此判断「窗口多大 / 截没截全」
   会全部错位；脚本先 `SetProcessDpiAwarenessContext(-4)`（PER_MONITOR_AWARE_V2）再量。
@@ -546,7 +546,7 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
   （`cargo-tauri`，未命中才 `cargo install tauri-cli --version 钉死`）。
   为什么集中写：GitHub 缓存按触发 ref 分域，各工作流各写各的只会堆出没人回读的重复条目（tag 上尤甚）。
 - **产物断言**（`assert_bundle.py` 是入口，平台差异拆到 `_windows.py` / `_linux.py`，
-  见 AGENTS §4）：
+  见 CONTRIBUTING.md）：
   - Windows：安装包 ≥ 40 MB → NSIS `/S /D=` 静默安装 → 校验 `models\*.onnx` 7/7 →
     启动并轮询 `/debug` 就绪 → 杀进程清残留。
   - Linux：deb ≥ 40 MB → `dpkg-deb -x` 解包 → 校验可执行文件与 `*.onnx` 7/7 →
@@ -554,7 +554,7 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
   - 跨发行版 `tools/automation/test_packages.py`（环境模拟）：容器里**真实安装**——deb→`ubuntu:24.04`
     （apt）、rpm→`fedora:latest`（dnf）、AppImage→本机 `--appimage-extract`；断言可执行文件存在、
     模型 7/7、`ldd` 无缺失。容器运行时用 `docker`（GitHub runner 自带）；本机 `DOCKER=podman`。
-- **UI 字符串门禁** `tools/automation/i18n_lint.js`（`-Gate ui` 内）：规则见 AGENTS.md §4。
+- **UI 字符串门禁** `tools/automation/i18n_lint.js`（`-Gate ui` 内）：规则见 CONTRIBUTING.md。
 - **Python 脚本输出编码**：`tools/automation/` 里的脚本大量打中文（门禁项名、报错原因、
   产物清单），而 **Windows runner 的 Python 默认按控制台代码页 cp1252 输出** —— 一句
   `print("门禁全部通过")` 就是 `UnicodeEncodeError`，而且是**门禁跑完了才炸**，看起来
@@ -583,5 +583,5 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
   无 Lite 变体（见 §3.7）。
 
 已决定：Tk 桌面 UI 与全部旧 Python 代码已从主线删除（2026-10-07）；`legacy-v*/` 两份只读快照
-也已于 **2026-10-27 删除**（AGENTS §2.3），历史行为一律以现行 `DESIGN.md` + AGENTS 为准，
+也已于 **2026-10-27 删除**（AGENTS §2.3），历史行为一律以现行 `ARCHITECTURE.md` + AGENTS 为准，
 要查旧实现只能看 git 历史。

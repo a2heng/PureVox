@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! TSE 参考录音（DESIGN.md §7）：在列工作线程里对「降噪后、TSE 前」的信号取样，
+//! TSE 参考录音（ARCHITECTURE.md §7）：在列工作线程里对「降噪后、TSE 前」的信号取样，
 //! 录满 N 秒后**原样**写 48 kHz 单声道 WAV，并把实测 RMS / 峰值一起报出来。
 //!
 //! **不做音量归一化 / 限幅**（2026-10-26 实测 + legacy 对照）：

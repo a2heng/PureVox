@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 配置持久化：会话计划存 `~/.purevox/session.json`（DESIGN.md §5、§6.2 的目录约定）。
+//! 配置持久化：会话计划存 `~/.purevox/session.json`（ARCHITECTURE.md §5、§6.2 的目录约定）。
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -124,7 +124,7 @@ pub struct AppSettings {
   /// 启动时自动运行引擎并隐藏窗口（收到托盘）
   #[serde(default)]
   pub start_hidden: bool,
-  /// 网络服务监听端口（**固定但可编辑**，DESIGN.md §4.1.11）。默认 `proto::PORT`。
+  /// 网络服务监听端口（**固定但可编辑**，NETWORK.md §4.1.11）。默认 `proto::PORT`。
   /// 改了要重启服务才生效（监听端口变了必须重绑）。
   #[serde(default = "d_net_port")]
   pub net_port: u16,
@@ -140,7 +140,7 @@ pub struct AppSettings {
   pub net_ip: String,
 
   /// 接收方播放环深度（ms）。**手动可调**（手机滑块 / 网页滑块），两侧同步；
-  /// 运行期不做任何自动调整（`DESIGN.md` §4.1.4）。缺省 = 20 ms。
+  /// 运行期不做任何自动调整（`ARCHITECTURE.md` §4.1.4）。缺省 = 20 ms。
   #[serde(default = "d_net_ring_ms")]
   pub net_ring_ms: u32,
 }

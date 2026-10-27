@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 网络子系统（DESIGN.md §4.1）：手机 ⇄ 电脑。
+//! 网络子系统（NETWORK.md §4.1）：手机 ⇄ 电脑。
 //!
 //! 三条互不依赖的能力，共用一个 WebSocket 服务：
 //! 1. `remote_mic` 输入行 —— 网络麦克风：手机麦克风当电脑麦克风（进引擎全链，可降噪）
@@ -53,9 +53,9 @@ pub fn hub() -> Arc<NetHub> {
   HUB.get_or_init(|| Arc::new(NetHub::new())).clone()
 }
 
-/// 服务监听地址：绑**所有**网卡的 59123（DESIGN.md §4.1）。
+/// 服务监听地址：绑**所有**网卡的 59123（NETWORK.md §4.1）。
 ///
-/// 这是用户可见功能，必须让手机能连；与 AGENTS §1.2 只绑 127.0.0.1 的本机调试接口
+/// 这是用户可见功能，必须让手机能连；与 DEBUG.md §1.2 只绑 127.0.0.1 的本机调试接口
 /// 是两回事。远程输入另有独立开关（默认关）。
 const BIND_ADDR: [u8; 4] = [0, 0, 0, 0];
 
@@ -259,7 +259,7 @@ pub fn set_port(p: u16) -> Result<(), String> {
 /// **为什么不复用 `status()` 那句话**：卡片只有几行宽，而 `status()` 把端口、客户端、
 /// 订阅、水位、已发包数、远程输入后端、编解码器路径全串成一大段（调试面板 / AI 要看，
 /// 界面上就是一片读不完的文字）。这里给结构化字段，界面自己排成「就绪 · 1 客户端 · 1 订阅」，
-/// 需要全文时看 `/debug` 的 `net` 段（AGENTS §1.3 单一数据源：判定与数字仍出自 Rust）。
+/// 需要全文时看 `/debug` 的 `net` 段（DEBUG.md §1.3 单一数据源：判定与数字仍出自 Rust）。
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct NetCard {
   pub running: bool,

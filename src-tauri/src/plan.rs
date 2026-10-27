@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 会话计划（DESIGN.md §5）：配置 → 可启动描述，纯数据 + 校验，不做 I/O。
+//! 会话计划（ARCHITECTURE.md §5）：配置 → 可启动描述，纯数据 + 校验，不做 I/O。
 //!
 //! 一列 = 有序的行列表；首行必须是输入、末行必须是输出，中间可任意增删/拖动。
 
@@ -54,7 +54,7 @@ fn default_true() -> bool {
 pub struct ColumnSpec {
   pub rows: Vec<RowSpec>,
   /// 这一列的**启用开关**（列头那个开关）。停用 ≠ 删除：行、设备选择、参数全部保留，
-  /// 只是这一列不产出、并**放掉它对设备的引用**（见 DESIGN.md §6.5「启用 / 停用」）。
+  /// 只是这一列不产出、并**放掉它对设备的引用**（见 ARCHITECTURE.md §6.5「启用 / 停用」）。
   /// 旧配置没有这个字段 → 视为启用（`default_true`）。
   #[serde(default = "default_true")]
   pub enabled: bool,

@@ -26,7 +26,7 @@
   连接与音频**同一页**：它们本来就是一次会话的两半（连上才有麦克风/扬声器可开），
   分成两页反而要来回切。顺序固定为「状态 → 连没连上 → 连去哪 → 开什么」。
 
-  约束不变（AGENTS §1.3）：**不写死高度**，每张卡片 wrap_content；每个页面是一个
+  约束不变（DEBUG.md §1.3）：**不写死高度**，每张卡片 wrap_content；每个页面是一个
   ScrollView，可滚动区域互相独立。
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -162,23 +162,68 @@
                     android:text="@string/sw_connect"
                     android:textSize="14sp" />
 
-                <EditText
-                    android:id="@+id/etHost"
+                <!--
+                  地址拆成**两格**：左边 IP / 主机名，右边端口（默认 59123、可改）。
+                  以前是一个输入框，用户把电脑端口改了之后手机上根本没有地方填端口
+                  （二维码又只能扫一次）；拆开之后粘整条网址也仍然能用（`readTarget`
+                  会把 `https://ip:端口/` 自动拆回两格）。
+                  端口右边是「扫描」：打开相机扫电脑卡片上的二维码，自动填 IP + 端口。
+                -->
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:autofillHints=""
-                    android:background="@drawable/bg_field"
-                    android:hint="@string/hint_host"
-                    android:importantForAutofill="no"
-                    android:inputType="textUri"
-                    android:maxLines="1"
-                    android:minHeight="40dp"
-                    android:padding="10dp"
-                    android:textSize="14sp" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <EditText
+                        android:id="@+id/etHost"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:autofillHints=""
+                        android:background="@drawable/bg_field"
+                        android:hint="@string/hint_host"
+                        android:importantForAutofill="no"
+                        android:inputType="textUri"
+                        android:maxLines="1"
+                        android:minHeight="40dp"
+                        android:padding="10dp"
+                        android:textSize="14sp" />
+
+                    <EditText
+                        android:id="@+id/etPort"
+                        android:layout_width="82dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:autofillHints=""
+                        android:background="@drawable/bg_field"
+                        android:digits="0123456789"
+                        android:hint="@string/hint_port"
+                        android:importantForAutofill="no"
+                        android:inputType="number"
+                        android:maxLength="5"
+                        android:maxLines="1"
+                        android:minHeight="40dp"
+                        android:padding="10dp"
+                        android:text="59123"
+                        android:textSize="14sp" />
+
+                    <ImageButton
+                        android:id="@+id/btnScan"
+                        android:layout_width="44dp"
+                        android:layout_height="44dp"
+                        android:layout_marginStart="2dp"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="@string/btn_scan"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_scan"
+                        android:tint="?attr/colorControlNormal"
+                        android:tooltipText="@string/btn_scan" />
+                </LinearLayout>
 
                 <!--
-                  「发现电脑」与「重新连接」是**两件事**，所以是两个按钮（DESIGN.md §4.1.1）：
+                  「发现电脑」与「重新连接」是**两件事**，所以是两个按钮（NETWORK.md §4.1.1）：
                     发现电脑  = 换了 Wi-Fi / 刚才没搜到 → 停掉 NsdManager 再 discover（要等几秒）
                     重新连接  = 只是掉线、服务还在    → **先拆掉本机已打开的流再重连**（立刻就好）
                   分开是为了让用户在正确的时机做正确的事：只是掉线却去重新发现，会白等那几秒。

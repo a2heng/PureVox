@@ -25,13 +25,12 @@
 //     不该每块卡片都占一行；
 //   - 二维码右边就是按钮 / 开关，不再放一栏说明文字；
 //   - AEC 的模型是**内置的、与独立 AEC 行同一个**（`infer::aec::MODEL_AEC`），
-//     所以这里没有模型下拉（用户 2026-10-27 明确要求），也没有「近端」这个不可改的
+//     所以这里没有模型下拉（模型内置），也没有「近端」这个不可改的
 //     选择器 —— 近端本来就是这一行的网络输入。
 //
 // 与顶栏「手机」面板读的是同一份状态（`net_card` / `net_local_addr` / `net_ifaces`，
 // 都是 `/debug` 的 `net` 段同源）。网络行卡片是**唯一**的手机/客户端操作入口：顶栏
-// 不再有独立的「手机」面板（用户 2026-10-12 明确要求——「手机不要单独的面板，就是
-// 这个网络面板」），没建网络行时想连客户端就只能先把行加上，这是有意的。
+// 不再有独立的「手机」面板（网络行就是唯一的手机入口），没建网络行时想连客户端就只能先把行加上，这是有意的。
 
 ;(function () {
   'use strict'
@@ -188,7 +187,7 @@
     if (!canvas || !window.__pvQr) return
     const running = !!card?.running
     // 服务没跑就不给码：地址是能算出来的，但扫过去连不上。与其给一张必然失败的码，不如
-    // 说清楚为什么没码（AGENTS.md §1.1：不显示伪造 / 无效的值）。
+    // 说清楚为什么没码（DEBUG.md §1.1：不显示伪造 / 无效的值）。
     if (!url || !running) {
       const ctx = canvas.getContext('2d')
       if (ctx) {
@@ -266,7 +265,7 @@
       return b
     }
     // 三个生命周期按钮。**不做「隐藏」，只做「禁用」** —— 禁用时按钮还在原位，卡片
-    // 不会因为服务起停而重排，界面不跳（AGENTS.md §1.1 的固定行数刷新同理）。
+    // 不会因为服务起停而重排，界面不跳（DEBUG.md §1.1 的固定行数刷新同理）。
     const bStart = mk(
       T('启动'),
       'net_start',
@@ -294,7 +293,7 @@
 
     // ---- 2) 地址 + 复制 + 网卡 + 端口（全是一行，能折行） ----
     // 不再写「客户端地址 / 网卡 / 端口」三个标签：它们都是**可调项的标题**，
-    // 每张卡都写一遍只是在挤占横向空间（用户 2026-10-27）。语义放进 title / aria-label。
+    // 每张卡都写一遍只是在挤占横向空间。语义放进 title / aria-label。
     const addrBox = document.createElement('div')
     addrBox.className = 'netcard-addr'
     const url = document.createElement('span')
@@ -405,7 +404,7 @@
       ifSel.value = addrIp
     }
 
-    // ---- 3) 二维码在左，**按钮在右边**（用户 2026-10-27：右边只放能点的东西） ----
+    // ---- 3) 二维码在左，**按钮在右边**（右边只放能点的东西） ----
     const qrBox = document.createElement('div')
     qrBox.className = 'netqr'
     const canvas = document.createElement('canvas')
@@ -420,7 +419,7 @@
     sideActs.className = 'netqr-acts'
 
     // 证书：网页版的麦克风靠 `getUserMedia`，它只在**安全上下文**里可用，所以必须走
-    // https（DESIGN.md §4.1.12）。装一次 CA 之后手机就永久不再报警告。
+    // https（NETWORK.md §4.1.12）。装一次 CA 之后手机就永久不再报警告。
     const caBtn = document.createElement('button')
     caBtn.type = 'button'
     caBtn.className = 'netcard-ca'
@@ -453,7 +452,7 @@
       }
     })
 
-    // 远程输入开关：打字 + 全尺寸键盘。默认关闭（局域网无鉴权，AGENTS.md §1.2）。
+    // 远程输入开关：打字 + 全尺寸键盘。默认关闭（局域网无鉴权，DEBUG.md §1.2）。
     const riBox = document.createElement('label')
     riBox.className = 'en netcard-remote'
     const cb = document.createElement('input')
@@ -598,7 +597,7 @@
     // 增益 / 延时 / 直通：**与独立 `echo_cancel` 行完全同一份控件**（`columns.js` 的
     // 参数渲染器），范围 / 步进 / 单位都一致。复制一套到自己这里就是漂移的根源。
     // 明确排除 `aec`（开关在二维码右边）与 `far_device`（上面那只下拉），也不给
-    // `model`（内置模型，与 AEC 行同一个，用户 2026-10-27 要求不给选）。
+    // `model`（内置模型，与 AEC 行同一个，不给选）。
     aecBox.appendChild(
       window.__pvParams
         ? window.__pvParams.controls(row, ci, ri, [
@@ -649,7 +648,7 @@
     }
     syncAec()
 
-    // ---- 重绘（2 Hz，AGENTS.md §1.1：不卡 UI）----
+    // ---- 重绘（2 Hz，DEBUG.md §1.1：不卡 UI）----
     const paint = () => {
       const c = card
       const running = !!c?.running

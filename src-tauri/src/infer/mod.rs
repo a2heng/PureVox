@@ -111,7 +111,7 @@ pub(crate) fn cache_dim(session: &Session, name: &str) -> Result<usize, String> 
 }
 
 // ---------------------------------------------------------------------------
-// 模型池：同一个模型文件只加载一次，多行/多次重建复用（DESIGN.md §7）
+// 模型池：同一个模型文件只加载一次，多行/多次重建复用（ARCHITECTURE.md §7）
 // ---------------------------------------------------------------------------
 
 /// 每个模型文件最多缓存几个会话（够多列并发用；超出就丢弃，不再无限涨）。
@@ -298,7 +298,7 @@ pub fn preload_all() {
 /// `202609a` / `202609c` 已从 `models/` 删除（包里少 23 MB）。
 pub const MODEL_DENOISE: &str = "purevox_denoise_202609b_ep0046.onnx";
 
-/// 可选降噪模型 (文件名, 界面名)，供界面下拉（DESIGN.md §7）。
+/// 可选降噪模型 (文件名, 界面名)，供界面下拉（ARCHITECTURE.md §7）。
 pub fn denoise_models() -> &'static [(&'static str, &'static str)] {
   &[
     (MODEL_DENOISE, "降噪 202609b（现役）"),

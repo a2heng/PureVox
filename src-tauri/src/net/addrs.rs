@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 枚举本机可供局域网直连的网卡（DESIGN.md §4.1）。
+//! 枚举本机可供局域网直连的网卡（NETWORK.md §4.1）。
 //!
 //! **为什么要枚举而不是只报一个地址**：原来的 `net_local_addr()` 用 UDP
 //! `connect("8.8.8.8:80")` 的技巧，只能拿到**默认路由那张网卡**的地址。一台机器上
@@ -29,7 +29,7 @@
 //! 蓝牙共享、热点共享、VPN、虚拟网卡全都是能直连的可用网卡，按类型过滤反而会把
 //! 有用的滤掉；`desc` 里带「VPN」「WSL」这类字样，用户自己认得出。
 //!
-//! 平台实现按 AGENTS.md §4 拆文件：`addrs_windows.rs` / `addrs_unix.rs` /
+//! 平台实现按 CONTRIBUTING.md 拆文件：`addrs_windows.rs` / `addrs_unix.rs` /
 //! `addrs_other.rs`。都不引新依赖：Windows 用已在树里的 `windows` crate（只加 feature），
 //! Unix 用已在树里的 `libc::getifaddrs`。
 

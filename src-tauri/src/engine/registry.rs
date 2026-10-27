@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 节点注册表（DESIGN.md §3.5）：界面与 SessionPlan 只能通过它发现节点类型；
+//! 节点注册表（ARCHITECTURE.md §3.5）：界面与 SessionPlan 只能通过它发现节点类型；
 //! `create_stage` 是处理类组件的唯一实例化入口。
 //!
 //! 规格字段（label / kind / params）供界面与 SessionPlan 使用，随后续步骤接入。
@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use super::stage::Stage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // 预留：输入/输出/可视化节点由后续步骤接入（DESIGN.md §4）
+#[allow(dead_code)] // 预留：输入/输出/可视化节点由后续步骤接入（ARCHITECTURE.md §4）
 pub enum NodeKind {
   Input,
   Process,
@@ -93,7 +93,12 @@ pub struct NodeSpec {
 pub fn is_hot(ptype: &str, key: &str) -> bool {
   matches!(
     (ptype, key),
-    ("gain", "gain_db") | ("loopback", "volume_db")
+    ("gain", "gain_db")
+      | ("loopback", "volume_db")
+      | ("agc", "target_db")
+      | ("agc", "speed")
+      | ("agc", "floor_db")
+      | ("eq31", "settings")
   )
 }
 
@@ -136,9 +141,9 @@ static SPECS: &[NodeSpec] = &[
     // 参数分两组：`aec` 是**这一行自带的去回声开关**（近端锁死为网络输入，界面只给开关），
     // 其余五项与独立 `echo_cancel` 行同名同义，勾上 AEC 后才用得上。
     // **没有 `model`**：网络 AEC 与 AEC 行用**同一个内置模型**（`infer::aec::MODEL_AEC`），
-    // 不给用户选（用户 2026-10-27 明确要求：模型本来就是内置的，别再占 UI）。
+    // 不给用户选（模型内置，界面不给选）。
     params: &[
-      // 去回声开关：勾上 = 这一行的网络麦克风先过 AEC 再进列（DESIGN.md §4）。
+      // 去回声开关：勾上 = 这一行的网络麦克风先过 AEC 再进列（ARCHITECTURE.md §4）。
       ParamSpec {
         key: "aec",
         label: "AEC（回声消除）",
@@ -574,39 +579,54 @@ static SPECS: &[NodeSpec] = &[
       },
     ],
   },
+  // 31 段标准均衡（ISO 1/3 倍频程）。DSP 用 `biquad` crate（见 components/eq31.rs）；
+  // 参数只有一份 JSON `settings`：整条曲线一次写（热参数，不重建会话），界面由
+  // `ui/eq.js` 独占（31 个可拖柱子 + 曲线 + 预设），这里不给通用滑块。
   NodeSpec {
-    ptype: "eq3",
-    label: "3 段均衡器",
+    ptype: "eq31",
+    label: "31 段均衡",
+    kind: NodeKind::Process,
+    params: &[ParamSpec {
+      key: "settings",
+      label: "均衡设置",
+      kind: ParamKind::Text { default: "{}" },
+    }],
+  },
+  // 自动增益：DSP 用 `dagc` crate（见 components/agc.rs）；三个参数都是热参数，
+  // 拖动时实时生效（界面用通用参数控件即可）。
+  NodeSpec {
+    ptype: "agc",
+    label: "自动增益 AGC",
     kind: NodeKind::Process,
     params: &[
       ParamSpec {
-        key: "low",
-        label: "低频",
+        key: "target_db",
+        label: "目标电平",
         kind: ParamKind::Number {
-          lo: -20.0,
-          hi: 20.0,
-          default: 0.0,
-          step: 0.1,
+          lo: -40.0,
+          hi: 0.0,
+          default: -20.0,
+          step: 1.0,
         },
       },
       ParamSpec {
-        key: "mid",
-        label: "中频",
+        key: "speed",
+        label: "跟随速度",
         kind: ParamKind::Number {
-          lo: -20.0,
-          hi: 20.0,
-          default: 0.0,
-          step: 0.1,
+          lo: 0.0001,
+          hi: 0.01,
+          default: 0.001,
+          step: 0.0001,
         },
       },
       ParamSpec {
-        key: "high",
-        label: "高频",
+        key: "floor_db",
+        label: "底噪门限",
         kind: ParamKind::Number {
-          lo: -20.0,
-          hi: 20.0,
-          default: 0.0,
-          step: 0.1,
+          lo: -80.0,
+          hi: -20.0,
+          default: -55.0,
+          step: 1.0,
         },
       },
     ],
@@ -616,6 +636,26 @@ static SPECS: &[NodeSpec] = &[
     label: "极性反转",
     kind: NodeKind::Process,
     params: &[],
+  },
+  // 可视化：不改变信号，只在本行**所在位置**取电平与频谱（ARCHITECTURE.md §4）。
+  // `mode` 只决定界面画哪个（电平 / 频谱 / 两者），引擎两侧都算、都发布，所以改它
+  // **不需要重建会话**（界面走 `persist_plan`，见 `ui/viz.js`）。
+  NodeSpec {
+    ptype: "viz",
+    label: "可视化",
+    kind: NodeKind::Process,
+    params: &[ParamSpec {
+      key: "mode",
+      label: "显示内容",
+      kind: ParamKind::Choice {
+        default: "both",
+        options: &[
+          ("both", "电平 + 频谱"),
+          ("vu", "电平（VU）"),
+          ("spectrum", "频谱"),
+        ],
+      },
+    }],
   },
   // ---- OBS 音频滤镜（参数默认值 / 范围 / 步进与 ~/obs-studio/plugins/obs-filters 对齐） ----
   NodeSpec {
@@ -734,17 +774,47 @@ pub fn get_spec(ptype: &str) -> Option<&'static NodeSpec> {
   SPECS.iter().find(|s| s.ptype == ptype)
 }
 
-/// 实例化处理类组件（输入/输出/可视化不是 Stage，由 L0 实现）。
+/// 实例化处理类组件（输入/输出不是 Stage，由 L0 实现）。
 /// `media`：音效板 / 播放器的媒体槽位（运行时命令通道，见 `engine::media`）。
 /// `hot`：热参数登记口（只有带热参数的行会用；见 [`crate::engine::hot`]）。
+/// `loc`：本行在会话里的位置（列, 行, 代次）——可视化插件用它给测量值定位。
 pub fn create_stage(
   ptype: &str,
   params: &Params,
   media: Option<std::sync::Arc<super::media::MediaSlot>>,
   hot: &mut super::hot::HotSink,
+  loc: (usize, usize, u64),
 ) -> Result<Box<dyn Stage>, String> {
   let spec = get_spec(ptype).ok_or_else(|| format!("未知节点类型 {ptype}"))?;
   match spec.ptype {
+    "viz" => Ok(Box::new(super::viz::VizStage::new(super::viz::VizLoc {
+      col: loc.0,
+      row: loc.1,
+      generation: loc.2,
+    }))),
+    "eq31" => {
+      let settings = match params.get("settings") {
+        Some(ParamValue::Text(t)) => {
+          crate::engine::hot::EqSettings::from_json(t).map_err(|e| format!("31 段均衡参数：{e}"))?
+        }
+        _ => crate::engine::hot::EqSettings::default(),
+      };
+      let cell = hot.eq(&settings);
+      Ok(Box::new(super::components::eq31::Eq31Stage::new(cell)))
+    }
+    "agc" => {
+      let num = |k: &str, d: f64| match params.get(k) {
+        Some(ParamValue::Number(n)) => *n,
+        Some(ParamValue::Text(t)) => t.trim().parse().unwrap_or(d),
+        _ => d,
+      };
+      let target = hot.gain("target_db", num("target_db", -20.0));
+      let speed = hot.gain("speed", num("speed", 0.001));
+      let floor = hot.gain("floor_db", num("floor_db", -55.0));
+      Ok(Box::new(super::components::agc::AgcStage::new(
+        target, speed, floor,
+      )?))
+    }
     "denoise" => {
       let model = match params.get("model") {
         Some(ParamValue::Text(t)) => t.clone(),

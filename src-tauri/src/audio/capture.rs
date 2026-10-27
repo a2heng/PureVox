@@ -20,7 +20,7 @@
 //! 数据源（cpal 回调 / WASAPI 轮询）只做下混单声道 + 写 rtrb 无锁环 + 原子计数；
 //! 工作线程 [`worker`] 读环 → [`ToHops`] 重采样并切 hop → [`Meter`] 测量 → 每 200 ms
 //! 发布到 DebugHub，并把 hop 推入本源的扇出（列工作线程作为该列的一个输入行订阅）。
-//! 处理链不在这里：见 `engine::session`（DESIGN.md §3.3）。
+//! 处理链不在这里：见 `engine::session`（ARCHITECTURE.md §3.3）。
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, mpsc};
@@ -543,6 +543,8 @@ pub(super) fn worker<K>(
         waveform: m.waveform,
         spectrum_db: m.spectrum_db,
         spectrum_bin_hz: SPECTRUM_BIN_HZ,
+        spectrum_bands_db: m.spectrum_bands_db,
+        spectrum_band_hz: crate::dsp::bands::BAND_HZ,
       };
       super::health::annotate(&mut st);
       hub.set_stream(st);

@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 局域网 HTTPS 的自签 CA 与服务器证书（DESIGN.md §4.1.11）。
+//! 局域网 HTTPS 的自签 CA 与服务器证书（NETWORK.md §4.1.11）。
 //!
 //! **为什么必须 HTTPS**：`navigator.mediaDevices.getUserMedia()` 只在**安全上下文**
 //! 里可用。`http://192.168.x.x` 不是安全上下文，浏览器会**直接拒绝**麦克风请求，

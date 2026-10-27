@@ -15,9 +15,11 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 处理组件（`Stage` 实现）。新增组件见 DESIGN.md §9。
+//! 处理组件（`Stage` 实现）。新增组件见 ARCHITECTURE.md §9。
 
+pub mod agc;
 pub mod denoise;
+pub mod eq31;
 pub mod gain;
 pub mod obs_dsp;
 pub mod player;

@@ -52,7 +52,7 @@ import com.purevox.mic.Proto
  * [clockPpm] 用 `AudioTrack.getPlaybackHeadPosition()`（硬件实际播出的帧数）对
  * `System.nanoTime()` 做差分：这就是「手机音频时钟 vs 电脑时钟」的真实偏差，
  * 随 `st` 上报给电脑，`/debug` 的 `net.client.clock_ppm` 直接能读。
- * 它也是伺服要吃掉的那个量 —— 先量，再决定要不要调参（AGENTS §1.4）。
+ * 它也是伺服要吃掉的那个量 —— 先量，再决定要不要调参（DEBUG.md §1.4）。
  */
 class SpeakerDownlink(
     /**

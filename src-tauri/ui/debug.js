@@ -248,69 +248,21 @@ function drawWave(cv, wave) {
   g.stroke()
 }
 
-const SPEC_MIN = -140, SPEC_MAX = 0
-function drawSpectrum(cv, spec, binHz, nativeRate) {
-  const [g, w, h, dpr] = fitCanvas(cv)
-  g.clearRect(0, 0, w, h)
-  const left = 36 * dpr
-  const pw = Math.max(1, w - left)
-  const maxHz = binHz * (spec.length - 1 || 480)
-  g.font = `${9 * dpr}px Consolas, monospace`
-  g.fillStyle = cssVar('--muted')
-  g.strokeStyle = cssVar('--line')
-  // 上下限标尺（dBFS 0 ~ -140，每 20 dB 一格）
-  for (let v = 0; v >= SPEC_MIN; v -= 20) {
-    const y = h - ((v - SPEC_MIN) / (SPEC_MAX - SPEC_MIN)) * h
-    g.beginPath()
-    g.moveTo(left, y)
-    g.lineTo(w, y)
-    g.stroke()
-    g.fillText(String(v), 2 * dpr, Math.min(h - 1, Math.max(8 * dpr, y + 3 * dpr)))
-  }
-  // 横轴（频率，每 4 kHz）
-  for (let f = 4000; f < maxHz; f += 4000) {
-    const x = left + (f / maxHz) * pw
-    g.beginPath()
-    g.moveTo(x, 0)
-    g.lineTo(x, h)
-    g.stroke()
-    g.fillText(`${f / 1000}k`, x + 2 * dpr, h - 3 * dpr)
-  }
-  const nyq = nativeRate / 2
-  if (nyq < maxHz) {
-    const x = left + (nyq / maxHz) * pw
-    g.strokeStyle = cssVar('--warn')
-    g.setLineDash([4 * dpr, 3 * dpr])
-    g.beginPath()
-    g.moveTo(x, 0)
-    g.lineTo(x, h)
-    g.stroke()
-    g.setLineDash([])
-    g.fillStyle = cssVar('--warn')
-    g.fillText(T('原生奈奎斯特 {f}k', { f: (nyq / 1000).toFixed(2) }), x + 3 * dpr, 12 * dpr)
-  }
-  if (!spec.length) return
-  g.strokeStyle = cssVar('--ok')
-  g.beginPath()
-  spec.forEach((v, k) => {
-    const x = left + (k / (spec.length - 1)) * pw
-    const y = h - ((Math.max(SPEC_MIN, v) - SPEC_MIN) / (SPEC_MAX - SPEC_MIN)) * h
-    k ? g.lineTo(x, y) : g.moveTo(x, y)
-  })
-  g.stroke()
-}
-
 function makeStreamCard(s) {
   const card = document.createElement('div')
   card.className = 'stream'
   card.innerHTML =
-    '<h4></h4><div class="stream-body">' +
+    '<h4></h4>' +
+    // **上：电平，下：波形 + 频谱**（不占横向空间）。
+    // 电平条独行、铺满整张卡；下面仍是四列（两张参数表在左，波形、频谱在右）。
+    '<div class="stream-vu"><canvas class="vu"></canvas></div>' +
+    '<div class="stream-body">' +
     // 四个直接子项 = 四列（比例 2:2:3:3）：两张参数表（各一套标签+数值）在左，波形、频谱在右。
     // 参数表不要再套一层容器：套了之后 .stream-body 只有 3 个子项，第二列会整列空着。
     '<table class="kv"><tbody></tbody></table>' +
     '<table class="kv"><tbody></tbody></table>' +
     `<figure><figcaption>${T(isOut(s) ? '波形（48 kHz，最近 50 ms，送入重采样前）' : '波形（48 kHz，最近 50 ms）')}</figcaption><canvas class="wave"></canvas></figure>` +
-    `<figure><figcaption>${T('平均频谱（0 ~ 24 kHz，-140 ~ 0 dBFS）')}</figcaption><canvas class="spec"></canvas></figure>` +
+    `<figure><figcaption>${T('频谱（ISO 61 段，20 Hz ~ 20 kHz，对数轴，0 ~ -90 dBFS）')}</figcaption><canvas class="spec"></canvas></figure>` +
     '</div>'
   const half = Math.ceil(STREAM_FIELDS.length / 2)
   card.querySelectorAll('tbody').forEach((tb, col) => {
@@ -340,7 +292,11 @@ function renderAudio(audio) {
     const tds = card.querySelectorAll('td')   // 两张参数表按列顺序依次排列，顺序与 makeStreamCard 一致
     STREAM_FIELDS.forEach(([, f], j) => { const [t, c] = f(s); put(tds[j], t, c) })
     drawWave(card.querySelector('.wave'), s.waveform)
-    drawSpectrum(card.querySelector('.spec'), s.spectrum_db, s.spectrum_bin_hz, isOut(s) ? Infinity : s.sample_rate)
+    // 电平与频谱都用 `viz.js` 的**同一份绘制**（主窗口的插件也是它）。
+    // 没数据时传 null / 空数组：不画伪造的 0 dB（DEBUG.md §1.1）。
+    const peak = s.peak_dbfs && s.peak_dbfs.state === 'ok' ? s.peak_dbfs.value : null
+    window.__pvViz?.vu(card.querySelector('.vu'), peak)
+    window.__pvViz?.spectrum(card.querySelector('.spec'), s.spectrum_bands_db || [])
   })
 }
 

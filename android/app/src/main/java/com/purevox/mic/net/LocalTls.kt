@@ -28,7 +28,7 @@ import javax.net.ssl.X509TrustManager
 import javax.net.ssl.HttpsURLConnection
 
 /**
- * 局域网自签证书的放行范围（DESIGN.md §4.1.1）。
+ * 局域网自签证书的放行范围（NETWORK.md §4.1.1）。
  *
  * **为什么需要它**：电脑端的服务是 HTTPS，而证书是每台机器自己签的（`~/.purevox/ca/`），
  * 手机系统信任库里没有。若要求用户先把 CA 装进系统，纯本地工具就多了一步非做不可的

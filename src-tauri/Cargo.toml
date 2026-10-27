@@ -27,6 +27,10 @@ rust-version = "1.95"
 [build-dependencies]
 tauri-build = { version = "3.0.0-alpha.4", features = [] }
 
+[features]
+# 需要真实声卡的测量（时钟 ppm）：默认不编译，手动 `cargo test --features hw-tests`
+hw-tests = []
+
 [dependencies]
 tauri = { version = "3.0.0-alpha.5", features = ["tray-icon", "image-png"] }
 # devtools：WebView2 开发者工具（JS 交互式调试；迁移期 release 也保留，见 AGENTS.md §1）
@@ -57,6 +61,11 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 # 调试频谱
 rustfft = "6"
+# 31 段均衡（EQ）：社区维护的 biquad（MIT/Apache-2.0，RBJ Audio EQ Cookbook 系数 +
+# Direct Form 1，运行中重调系数不重置状态）——**不自己写滤波器算法**。
+biquad = "0.6"
+# 自动增益（AGC）：dagc（MIT/Apache-2.0，论文实现），10 ms 帧直接喂。
+dagc = "0.1"
 # 媒体库导入：解码任意常见音频 → 归一为 48k 单声道 WAV（纯 Rust，不引入 C 编译链；
 # 与 Opus 运行时加载同一纪律）。
 # 注意 symphonia 的 feature 分两类：**容器**（format）与**解码器**（codec），缺一不可：

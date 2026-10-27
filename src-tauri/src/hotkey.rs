@@ -230,7 +230,7 @@ impl Hotkeys {
   }
 }
 
-// 平台实现分文件（AGENTS.md §4）：Windows 用 `RegisterHotKey`，其它平台明确不可用。
+// 平台实现分文件（CONTRIBUTING.md）：Windows 用 `RegisterHotKey`，其它平台明确不可用。
 #[cfg(windows)]
 #[path = "hotkey_windows.rs"]
 mod imp;

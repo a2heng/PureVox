@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 实时音频链路的公共件（DESIGN.md §4.1）：帧头 + **固定深度播放环** + 到达统计。
+//! 实时音频链路的公共件（NETWORK.md §4.1）：帧头 + **固定深度播放环** + 到达统计。
 //!
 //! ## 这一版为什么这么小
 //!
@@ -36,7 +36,7 @@
 //! PLC 策略必须逐字对齐（各自的注释都指回这里）。
 //!
 //! 统计全部只做**观测**：`jitter`、`max_gap`、`late`、`trim`、`plc` 都不参与控制
-//! （AGENTS §1.4：测量不花钱，看得见才谈得上判断）。
+//! （DEBUG.md §1.4：测量不花钱，看得见才谈得上判断）。
 
 use std::collections::VecDeque;
 use std::sync::OnceLock;
@@ -53,7 +53,7 @@ pub const HDR_LEN: usize = 8;
 ///
 /// 依据：实测局域网到达抖动 0.4~0.9 ms（这是 20 倍余量）、晶振差 25 ppm
 /// （20 ms 要 13 min 才漂满一格）。改这个值必须同步改 `audio/Rt.kt` 与网页 worklet，
-/// 以及 `DESIGN.md` §4.1.4。
+/// 以及 `ARCHITECTURE.md` §4.1.4。
 pub const RING_MS: f64 = 20.0;
 
 /// 溢出阈值 = 深度 + 一格：超过就裁掉最旧一格（保延迟有界）。
@@ -128,7 +128,7 @@ pub struct PlayoutStats {
   pub late: u64,
 }
 
-/// 固定深度播放环：**唯一的缓冲**（DESIGN.md §4.1.4）。
+/// 固定深度播放环：**唯一的缓冲**（NETWORK.md §4.1.4）。
 ///
 /// 不重采样：取出来的就是送进去的样本（顺序不变、样本不变）。唯一的「修饰」是
 /// 欠载时的 PLC / 淡出，以及溢出时丢掉最旧一格。

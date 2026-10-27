@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! AEC 行（DESIGN.md §4）：一个输入行 =「一路 mic + 一路 far」。
+//! AEC 行（ARCHITECTURE.md §4）：一个输入行 =「一路 mic + 一路 far」。
 //!
 //! far 参考只喂模型、不进信号路径：far 采集的 hop 由 [`spawn_far_pump`] 灌进 2 s 采样网格，
 //! 列工作线程按「mic 采样序号 − far_delay」从网格取一段作为 far_hop。理想窗口未就绪时，
@@ -31,7 +31,7 @@ use crate::audio::fanout::Fanout;
 use crate::audio::{HOP, SAMPLE_RATE, WorkerHandle};
 use crate::infer::aec::Aec;
 
-/// far 历史网格容量（2 s @48 kHz，DESIGN.md §8）。
+/// far 历史网格容量（2 s @48 kHz，ARCHITECTURE.md §8）。
 pub const FAR_HIST_SAMPLES: usize = 48_000 * 2;
 
 /// 48 kHz 采样网格（环形）：按绝对采样序号读写，支持取任意历史窗口。
@@ -182,7 +182,7 @@ pub const NET_FAR: &str = "network";
 /// 网络近端就长得跟任何采集设备一模一样，`spawn_far_pump` 与 AEC 主循环**一个字都不用改**
 /// —— 与 `spawn_far_pump` 同一个套路。
 ///
-/// **节拍用绝对时刻**（`next += 10ms`，再睡到 `next`，AGENTS.md §1.2）：近端与远端必须
+/// **节拍用绝对时刻**（`next += 10ms`，再睡到 `next`，DEBUG.md §1.2）：近端与远端必须
 /// 在**同一个线程的同一次 tick** 上各取一格，两条时间轴才会锁在一起；两个各自
 /// `sleep(10ms)` 的线程会各自漂，`far_delay_ms` 这个标量就永远对不上。
 pub fn spawn_net_pumps(

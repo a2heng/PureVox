@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 网络回环测试（DESIGN.md §4.1）：起**真的** axum 服务，用**真的** WebSocket 客户端对接。
+//! 网络回环测试（NETWORK.md §4.1）：起**真的** axum 服务，用**真的** WebSocket 客户端对接。
 //!
 //! 与单元测试的分工：单元测试（各模块 `mod tests`）验证纯逻辑——协议解析、缓冲边界、
 //! 键码映射；这里验证**接线**：路由、握手、版本协商、订阅广播速率、远程输入开关真的会生效。
@@ -154,7 +154,7 @@ mod inner {
     assert_eq!(status, 404, "未知路径应 404");
   }
 
-  /// 握手成功回 `ready`；协议版本不符回 `err`（DESIGN.md §4.1）。
+  /// 握手成功回 `ready`；协议版本不符回 `err`（NETWORK.md §4.1）。
   #[tokio::test]
   async fn handshake_and_version_negotiation() {
     let (addr, _hub) = serve().await;
@@ -180,7 +180,7 @@ mod inner {
     assert!(err.contains("协议版本不符"), "拒绝原因要明确：{err}");
   }
 
-  /// 远程输入默认关：文本与按键都必须被拒，且原因可读（DESIGN.md §4.1）。
+  /// 远程输入默认关：文本与按键都必须被拒，且原因可读（NETWORK.md §4.1）。
   #[tokio::test]
   async fn remote_input_refused_until_enabled() {
     let (addr, _hub) = serve().await;

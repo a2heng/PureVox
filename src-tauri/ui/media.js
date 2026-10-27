@@ -17,18 +17,18 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// 媒体处理行的界面（DESIGN.md §4）：音效板 `soundpad` 与音乐播放器 `player`。
+// 媒体处理行的界面（ARCHITECTURE.md §4）：音效板 `soundpad` 与音乐播放器 `player`。
 //
 // 二者都是**处理行**（不是输入行）：在自身链位置把媒体样本与信号相加。
 // 播放 / 暂停 / seek / 音量走 `media_command` 实时命令（**不重建会话**），
 // 只有增删音效、换曲才是结构性变更 → `apply_plan`。
 //
-// 变更分类（与 DESIGN.md §5 一致，界面必须照此表现给用户）：
+// 变更分类（与 ARCHITECTURE.md §5 一致，界面必须照此表现给用户）：
 //   热参数（拖动即生效，不卡顿）：音量、进度拖动
 //   结构性（落盘 + 重建会话）：增删音效、改热键、换曲
 //
 // 行状态（`media_status`）用一个全局 2 Hz 轮询刷新所有挂载中的媒体行；
-// 语言切换时按 `pv-langchange` 重绘（动态文字必须可重放，AGENTS.md §4）。
+// 语言切换时按 `pv-langchange` 重绘（动态文字必须可重放，CONTRIBUTING.md）。
 ;(function () {
   'use strict'
   const { invoke } = window.__TAURI__.core

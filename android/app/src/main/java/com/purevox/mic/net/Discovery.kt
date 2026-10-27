@@ -24,7 +24,7 @@ import android.os.Build
 import android.util.Log
 
 /**
- * 局域网自动发现（DESIGN.md §4.1.1）。
+ * 局域网自动发现（NETWORK.md §4.1.1）。
  *
  * 用系统自带的 `NsdManager`（零依赖、零权限），找电脑端广播的 `_purevox._tcp.local.`。
  *

@@ -215,4 +215,7 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     // 明文 ws:// —— 没有 TLS 依赖，也没有证书信任绕过（新版协议就是明文 + usesCleartextTraffic）
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // 二维码扫描（「扫描」按钮）：自带相机预览与解码界面，纯 Java、不引 NDK。
+    // 只用来把电脑端卡片的二维码内容（`https://<ip>:<端口>/`）读进地址栏。
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

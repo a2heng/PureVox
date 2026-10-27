@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 增益组件（DESIGN.md §4 处理行）：就地乘一个增益（dB）。不做限幅/AGC。
+//! 增益组件（ARCHITECTURE.md §4 处理行）：就地乘一个增益（dB）。不做限幅/AGC。
 //!
 //! **热参数**：增益单元格是 [`HotGain`]（`engine/hot.rs`），[`Stage::process`] 每 hop 读一次
 //! —— 界面拖动增益**不重建会话**，下一 hop 就是新值。

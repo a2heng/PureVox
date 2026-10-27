@@ -23,15 +23,16 @@
 //! - 差 < 30 ppm：20 ms 的缓冲 11 分钟才漂满一格，一次 10 ms 的修正可以忽略不计；
 //! - 差 200 ppm（廉价晶振 / HAL 重采样）：100 s 就漂满，必须闭环。
 //!
-//! 这些测试**要真设备**，默认忽略（`#[ignore]`），手动跑：
+//! 这些测试**要真设备**，默认不编译（`#[cfg(feature = "hw-tests")]`），手动跑：
 //!
 //! ```text
-//! cargo test clock_probe -- --ignored --nocapture --test-threads=1
+//! cargo test --features hw-tests clock_probe -- --nocapture --test-threads=1
 //! ```
 //!
-//! 只写静音、不动系统音量、不碰用户设置（AGENTS §1.3「不许动系统的音量 / 静音」）。
+//! 只写静音、不动系统音量、不碰用户设置（DEBUG.md §1.3「不许动系统的音量 / 静音」）。
 
 #[cfg(test)]
+#[cfg_attr(not(feature = "hw-tests"), allow(unused_imports, dead_code))]
 mod inner {
   use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
   // cpal 0.18 的 `name()` 在 `DeviceTrait` 上（下游还有别的 `name`，导入要显式）
@@ -53,7 +54,7 @@ mod inner {
   /// 这就是 `audio/playback.rs` 里伺服要吸收的那个差，也是「网络扬声器」这条链上
   /// **电脑这一侧**的时钟差（另一侧是手机，只能在手机上量，见 `st` 的 `clock_ppm`）。
   #[test]
-  #[ignore = "要真设备；手动跑：cargo test clock_probe -- --ignored --nocapture"]
+  #[cfg(feature = "hw-tests")]
   fn output_device_clock_ppm() {
     let host = cpal::default_host();
     let Some(dev) = host.default_output_device() else {
@@ -106,7 +107,7 @@ mod inner {
 
   /// **输入设备**的采样时钟 vs 系统时钟（同一颗晶振的两个方向常常不一样）。
   #[test]
-  #[ignore = "要真设备；手动跑：cargo test clock_probe -- --ignored --nocapture"]
+  #[cfg(feature = "hw-tests")]
   fn input_device_clock_ppm() {
     let host = cpal::default_host();
     let Some(dev) = host.default_input_device() else {
@@ -159,7 +160,7 @@ mod inner {
   /// **现状**：网络出站已经**不再用定时器**（引擎每出一 hop 就发一包），所以这条只用来
   /// 说明「为什么当初 sleep 循环只能产 64 包/s」这类历史问题，不再影响现役链路。
   #[test]
-  #[ignore = "耗时约 2 s；手动跑"]
+
   fn sleep_accuracy() {
     for (label, period) in [("1 ms", 1u64), ("10 ms", 10)] {
       let n = 200u32;

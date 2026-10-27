@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 校准探针的平台播放。实现按平台分文件（AGENTS.md §4）。
+//! 校准探针的平台播放。实现按平台分文件（CONTRIBUTING.md）。
 //!
 //! [`NATIVE`] = 本平台能否把探针**直送指定的输出 sink**（Linux → `probe_linux.rs` 用
 //! `pacat`；Windows 不行，回环探针走 cpal 输出端点）。`play` 只在 `NATIVE` 时有意义。

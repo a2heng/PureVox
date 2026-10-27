@@ -343,6 +343,8 @@ fn run(
         waveform: m.waveform,
         spectrum_db: m.spectrum_db,
         spectrum_bin_hz: SPECTRUM_BIN_HZ,
+        spectrum_bands_db: m.spectrum_bands_db,
+        spectrum_band_hz: crate::dsp::bands::BAND_HZ,
       };
       super::health::annotate(&mut st);
       hub.set_stream(st);

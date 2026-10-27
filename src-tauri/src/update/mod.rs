@@ -27,7 +27,7 @@
 //! 报「开发构建」而不是拿 Cargo 的 0.1.0 去比。
 //!
 //! 状态机（[`Phase`]）单一实例挂在全局（与 `NetHub` / `MediaHub` 同款），
-//! 同时进调试接口 `/debug` 的 `update` 段（AGENTS.md §1.2）。
+//! 同时进调试接口 `/debug` 的 `update` 段（DEBUG.md §1.2）。
 //! 下载在后台线程跑（带进度），**不进音频线程**；安装是平台实现（分文件）。
 
 use std::sync::{Mutex, OnceLock};
@@ -107,7 +107,7 @@ pub struct Status {
   pub received: u64,
   /// 下载完成的本地路径（`Ready` 时非空）
   pub saved_path: String,
-  /// 失败 / 不支持的原因（Rust 诊断文本，按 AGENTS.md §4 边界不上 i18n）
+  /// 失败 / 不支持的原因（Rust 诊断文本，按 CONTRIBUTING.md 边界不上 i18n）
   pub reason: String,
 }
 
@@ -570,7 +570,7 @@ impl Status {
   }
 }
 
-// 平台实现分文件（AGENTS.md §4）：静默安装的方式各平台不同，
+// 平台实现分文件（CONTRIBUTING.md）：静默安装的方式各平台不同，
 // 共享部分（查 / 下载 / 版本比较）都在本文件。
 #[cfg(windows)]
 #[path = "install_windows.rs"]

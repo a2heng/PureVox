@@ -99,7 +99,7 @@ impl Default for SystemInfo {
   }
 }
 
-// 平台实现分文件（AGENTS.md §4）：私有字节 / GPU 采样。
+// 平台实现分文件（CONTRIBUTING.md）：私有字节 / GPU 采样。
 #[cfg(windows)]
 #[path = "gpu_windows.rs"]
 mod gpu;

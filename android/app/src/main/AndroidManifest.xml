@@ -27,6 +27,7 @@
     WAKE_LOCK                         推流期间不熄屏（音频线程）
     REQUEST_INSTALL_PACKAGES           应用内更新：把下载好的 APK 交给系统安装器
     REQUEST_IGNORE_BATTERY_OPTIMIZATIONS  应用内更新/推流：请求忽略电池优化（保活）
+    CAMERA                            扫码填地址（只在点「扫描」时打开相机，可拒绝）
 
   组件：
     CaptureService   前台服务（microphone + dataSync），常驻通知带「停止 / 断开」按钮
@@ -47,6 +48,12 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- 保活：请求把本应用排除出电池优化（由用户在系统弹窗里确认） -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 扫码填地址：相机只在点「扫描」时用；没有相机也能手动输入 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
 
     <uses-feature
         android:name="android.hardware.microphone"
@@ -60,6 +67,14 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.PureVox"
         android:usesCleartextTraffic="true">
+
+        <!-- 扫码：竖屏 + 正方形四角取景框（PvScanActivity 只替换库的取景层） -->
+        <activity
+            android:name=".PvScanActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.PureVox.Scan" />
 
         <activity
             android:name=".MainActivity"

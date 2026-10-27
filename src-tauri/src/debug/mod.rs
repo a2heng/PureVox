@@ -90,7 +90,7 @@ impl Health {
 /// 一行（输入 / 处理 / 输出）的结构化状态。
 ///
 /// 这是「异常 N」的替代品：界面与脚本不用再解析中文概要串，直接按
-/// `columns[].rows[].health` 上色、按 `state` 定位（AGENTS §1.3 单一数据源）。
+/// `columns[].rows[].health` 上色、按 `state` 定位（DEBUG.md §1.3 单一数据源）。
 #[derive(Clone, Debug, Serialize)]
 pub struct RowInfo {
   pub index: usize,
@@ -234,6 +234,10 @@ pub struct StreamInfo {
   /// 最近一个发布周期的平均频谱（dBFS，481 个 bin，NFFT = 960）
   pub spectrum_db: Vec<f32>,
   pub spectrum_bin_hz: f32,
+  /// 平均频谱的**对数 64 段**（dBFS，20 Hz ~ 20 kHz，`dsp::bands` 的唯一映射）：
+  /// 调试面板画柱用它，不再在前端把 481 个线性 bin 折一遍（DEBUG.md §1.3）。
+  pub spectrum_bands_db: Vec<f32>,
+  pub spectrum_band_hz: [f32; 2],
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -269,11 +273,14 @@ pub struct DebugSnapshot {
   pub recorder: Probe<String>,
   /// AEC 延时校准状态/结果（人话串，向后兼容）
   pub calib: Probe<String>,
-  /// AEC 校准的结构化结果（AGENTS.md §1.4：同一份进 `/debug/calib` 并落盘
+  /// AEC 校准的结构化结果（DEBUG.md §1.4：同一份进 `/debug/calib` 并落盘
   /// `~/.purevox/calib_last.json`；界面画图与回填都读它，不再解析上面那句串）
   pub calib_report: Probe<crate::engine::calib::CalibReport>,
-  /// 网络（手机 ⇄ 电脑，DESIGN.md §4.1）：端口、客户端数、进出计数、远程输入开关、Opus 探测
+  /// 网络（手机 ⇄ 电脑，NETWORK.md §4.1）：端口、客户端数、进出计数、远程输入开关、Opus 探测
   pub net: crate::net::hub::NetStats,
+  /// 可视化插件（处理行 `viz`）：每行当前位置的电平 + 64 段对数频谱
+  /// （与 `viz_snapshot` 命令、`GET /debug/viz` 同一份）
+  pub viz: crate::engine::viz::VizSnapshot,
   /// 更新检查（GitHub Releases）：阶段、本机版本 / 最新 tag、下载进度、失败原因
   pub update: crate::update::Status,
   /// Linux 虚拟麦克风（PipeWire）状态；非 Linux 或不可用时为 unavailable + 原因
@@ -521,7 +528,7 @@ impl DebugHub {
           .streams
           .values()
           .any(|s| s.device_id == d.id && s.direction == d.direction);
-        // 设备池：引用数与逐源状态（DESIGN.md §6.5「必须看得见」）
+        // 设备池：引用数与逐源状态（ARCHITECTURE.md §6.5「必须看得见」）
         let pool = crate::audio::device_pool::hub().stat(&d.id);
         d.refs = pool.refs;
         d.mix_sources = pool.sources;
@@ -586,6 +593,7 @@ impl DebugHub {
       calib: st_calib,
       calib_report: st_calib_report,
       net: crate::net::hub().stats(),
+      viz: crate::engine::viz::snapshot(),
       update: crate::update::status(),
       virtual_mic: st_virtual_mic,
     }

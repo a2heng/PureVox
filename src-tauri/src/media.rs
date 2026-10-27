@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 媒体库（DESIGN.md §4）：音效板 / 音乐播放器的文件**导入**与库管理。
+//! 媒体库（ARCHITECTURE.md §4）：音效板 / 音乐播放器的文件**导入**与库管理。
 //!
 //! **入库唯一实现** [`import`]：任意来源文件（界面文件选择给出的字节）一律
 //! symphonia 解码 → 下混单声道 → 重采样 48 kHz → 写 16-bit WAV 落库，

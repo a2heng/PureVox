@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 网页版客户端（DESIGN.md §4.1）：网络行卡片里的二维码指向这里。
+//! 网页版客户端（NETWORK.md §4.1）：网络行卡片里的二维码指向这里。
 //!
 //! **为什么要有**：二维码扫的是**网页地址**（`http://<ip>:59123/`），不是 `ws://`
 //! ——扫 `ws://` 手机只会把它当一串文本，什么也不会发生。网页版的功能与 APK 对等：
@@ -232,7 +232,7 @@ const pingAt = {};
 const rttEl = document.getElementById('rtt');
 
 // ---- 网页自己的音频时钟偏差：AudioContext 的播放时钟 vs performance.now ----
-// 实测（DESIGN.md §4.1.1）设备晶振差只有几十 ppm，这里让浏览器把自己的偏差报上来，
+// 实测（NETWORK.md §4.1.1）设备晶振差只有几十 ppm，这里让浏览器把自己的偏差报上来，
 // /debug 的 `net.client.clock_ppm` 直接可读 —— 与安卓用 getPlaybackHeadPosition 是同一件事。
 let webClockPpm = NaN;
 let lastClockSample = null;
@@ -273,7 +273,7 @@ function worklet() {
       for(let i=0;i<c.length;i++){this.buf[this.n++]=c[i];
         if(this.n===480){const o=this.buf.slice(0);this.port.postMessage(o);this.n=0;}}}
     return true;}}
-  // 下行播放：**环形队列 + 固定 20 ms 深度**（DESIGN.md §4.1.4）。不能每包起一个 AudioBufferSource：
+  // 下行播放：**环形队列 + 固定 20 ms 深度**（NETWORK.md §4.1.4）。不能每包起一个 AudioBufferSource：
   // Windows 的 10 ms 定时器实际按 15.6 ms 触发，包成串到达，20 ms 的「按包起播」
   // 会周期性断 2~6 ms（1 kHz 测试音实测 8 秒内 8 次，能量从 99.9% 掉到 93.8%）。
   class S extends AudioWorkletProcessor{
@@ -335,7 +335,7 @@ function worklet() {
 /** 麦克风在**拿到权限之前**就注定拿不到的原因（空串 = 可以试）。 */
 function micBlockReason() {
   // `getUserMedia` 只在安全上下文里可用。`http://192.168.x.x` 不是安全上下文，浏览器
-  // 直接拒绝，**没有任何绕过办法** —— 所以二维码必须指向 https（DESIGN.md §4.1.11）。
+  // 直接拒绝，**没有任何绕过办法** —— 所以二维码必须指向 https（NETWORK.md §4.1.11）。
   if (!window.isSecureContext)
     return '当前页面不是安全上下文，浏览器禁止使用麦克风。必须用 https:// 打开' +
            '（用 http:// 时无论怎么点都没用；电脑上启动服务后扫码即可）';

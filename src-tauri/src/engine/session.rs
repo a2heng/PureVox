@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 会话：按 [`Plan`] 构建并运行若干独立的列（DESIGN.md §3、§5）。
+//! 会话：按 [`Plan`] 构建并运行若干独立的列（ARCHITECTURE.md §3、§5）。
 //!
 //! 每列一个工作线程：系统时钟每 10 ms 自上而下执行该列的行——
 //! 输入行取 1 hop 并按列内输入数等权混合、处理行就地处理、输出行把当前信号推给该行扇出。
@@ -48,7 +48,7 @@ use crate::recorder::{Phase, RecorderHub};
 const TICK: Duration = Duration::from_millis(10);
 /// 列概要发布周期。
 const PUBLISH: Duration = Duration::from_millis(200);
-/// 行输入环水位：目标 2 hop，超过 4 hop 丢最旧（DESIGN.md §8）。
+/// 行输入环水位：目标 2 hop，超过 4 hop 丢最旧（ARCHITECTURE.md §8）。
 const ROW_TARGET: usize = 2 * HOP;
 const ROW_CAP: usize = 4 * HOP;
 /// 运行期重新打开设备的退避下限 / 上限（**绝不在音频 tick 里直接开设备**）。
@@ -71,7 +71,7 @@ struct Row {
   unconfigured: bool,
   /// 这一行是否是**配置好的输入源**（与当前租约是否拿到无关）。
   /// 列内混合系数用它计数，而不是用「活着的租约数」——否则一个设备打不开，
-  /// 其余输入会突然 +6 dB（DESIGN.md §3.2 明确要求按配置的输入数）。
+  /// 其余输入会突然 +6 dB（ARCHITECTURE.md §3.2 明确要求按配置的输入数）。
   source: bool,
   /// 处理行：本行推理耗时 EMA / 最大（ms），进调试概要
   inf_ms: f32,
@@ -113,7 +113,7 @@ struct Row {
   out_failures: u32,
   /// AEC 输入行：mic 读端 + far 历史 + 本行模型状态
   aec: Option<AecRow>,
-  /// `remote_mic` 输入行：网络入站队列（DESIGN.md §4.1）
+  /// `remote_mic` 输入行：网络入站队列（NETWORK.md §4.1）
   net_input: Option<Arc<crate::net::NetHub>>,
   /// 处理行
   stage: Option<Box<dyn Stage>>,
@@ -142,6 +142,8 @@ pub struct Session {
   /// 热参数单元格：`(列, 行, 参数名) → 值`。`set_hot_param` 写它，行工作线程下一 hop 生效
   /// （见 `engine/hot.rs`：热参数**不重建会话**）。
   hot: std::collections::HashMap<(usize, usize, String), Arc<crate::engine::hot::HotGain>>,
+  /// EQ 行的整条曲线单元格：`(列, 行) → HotEq`（无锁原子，见 `engine/hot.rs`）
+  hot_eq: std::collections::HashMap<(usize, usize), Arc<crate::engine::hot::HotEq>>,
   /// 本次构建的媒体槽位代次（提交/回滚由 `AudioManager` 决定）
   pub media_gen: u64,
   /// 本次构建的引擎代次（进调试快照）
@@ -173,8 +175,12 @@ impl Session {
     // 媒体槽位按代次注册：构建成功由 `AudioManager` 提交，失败/回滚只删自己这一代。
     // **绝不在这里 clear()**：先建后停期间旧会话的媒体控件必须仍然可用。
     let media_gen = media::hub().begin();
+    // 可视化帧按**引擎代次**换代：新会话开始时清旧帧，旧会话线程（先建后停期间还在跑）
+    // 的发布带旧代次，会被快照过滤掉。
+    crate::engine::viz::hub().begin(generation);
     let mut columns = Vec::new();
     let mut hot = std::collections::HashMap::new();
+    let mut hot_eq = std::collections::HashMap::new();
     for (i, spec) in plan.columns.iter().enumerate() {
       columns.push(build_column(
         &hub,
@@ -185,7 +191,9 @@ impl Session {
         &rec,
         &calib,
         &mut hot,
+        &mut hot_eq,
         media_gen,
+        generation,
         // 只有多列时才绑核（见 `run_column` 里的说明）：单列绑核只会被钉到忙核上
         plan.columns.len() > 1,
       ));
@@ -238,6 +246,7 @@ impl Session {
         publisher_stop,
         publisher,
         hot,
+        hot_eq,
         media_gen,
         generation,
       },
@@ -251,6 +260,18 @@ impl Session {
   pub fn set_hot_param(&self, col: usize, row: usize, key: &str, value: f32) -> Option<()> {
     let cell = self.hot.get(&(col, row, key.to_string()))?;
     cell.set_db(value);
+    Some(())
+  }
+
+  /// 运行中改一整条 EQ 曲线（不重建会话）：写 `HotEq` 单元格，列线程下一 hop 看到新版本。
+  pub fn set_hot_eq(
+    &self,
+    col: usize,
+    row: usize,
+    settings: &crate::engine::hot::EqSettings,
+  ) -> Option<()> {
+    let cell = self.hot_eq.get(&(col, row))?;
+    cell.set(settings);
     Some(())
   }
 
@@ -458,7 +479,7 @@ fn ring_drop_note(dropped: u64, rate: &crate::debug::Probe<f64>) -> String {
 
 /// 从行输入环取一个 hop。
 ///
-/// 水位超过 [`ROW_CAP`] 就丢最旧、降到 [`ROW_TARGET`]（DESIGN.md §8）—— 顺带把丢了多少
+/// 水位超过 [`ROW_CAP`] 就丢最旧、降到 [`ROW_TARGET`]（ARCHITECTURE.md §8）—— 顺带把丢了多少
 /// 报出来：丢样本发生在 10 ms 网格之外，**不报出来就只是一句「声音卡」**。
 /// 返回 `(是否取到 hop, 本轮丢弃的样本数)`。
 fn take_hop(cons: &mut Consumer<f32>, out: &mut [f32; HOP]) -> (bool, usize) {
@@ -734,7 +755,9 @@ fn build_column(
   rec: &Arc<RecorderHub>,
   calib: &Arc<CalibHub>,
   hot: &mut std::collections::HashMap<(usize, usize, String), Arc<crate::engine::hot::HotGain>>,
+  hot_eq: &mut std::collections::HashMap<(usize, usize), Arc<crate::engine::hot::HotEq>>,
   media_gen: u64,
+  generation: u64,
   pin_core: bool,
 ) -> ColumnRuntime {
   let mut rows: Vec<Row> = Vec::new();
@@ -906,7 +929,7 @@ fn build_column(
         row.input = Some(crate::audio::tone::shared().subscribe(&format!("col{idx}row{ri}")));
       }
       RowKind::Input if r.ptype == "remote_mic" => {
-        // 网络麦克风：不需要虚拟声卡驱动，网络流直接进引擎（DESIGN.md §4.1）
+        // 网络麦克风：不需要虚拟声卡驱动，网络流直接进引擎（NETWORK.md §4.1）
         // 允许一个：入站是单队列，多行会互相抢样本
         //
         // **勾了 AEC（`params.aec == "1"`）时**（2026-10-12 加）：不再是直通，而是建
@@ -970,7 +993,7 @@ fn build_column(
           Ok(name) => {
             row.label = name;
             row.source = true;
-            // 设备由**池**持有（同一设备多列共用一条采集流），行只拿租约（DESIGN.md §6.5）
+            // 设备由**池**持有（同一设备多列共用一条采集流），行只拿租约（ARCHITECTURE.md §6.5）
             row.device = Some(dev.to_string());
             row.pooled_input = true;
             crate::engine::session::apply_input_lease(&mut row, hub, idx, ri);
@@ -985,7 +1008,13 @@ fn build_column(
           _ => None,
         };
         row.media_slot = slot.clone();
-        match registry::create_stage(&r.ptype, &to_params(&r.params), slot, &mut sink) {
+        match registry::create_stage(
+          &r.ptype,
+          &to_params(&r.params),
+          slot,
+          &mut sink,
+          (idx, ri, generation),
+        ) {
           Ok(st) => {
             row.label = registry::get_spec(&r.ptype)
               .map(|s| s.label.to_string())
@@ -1006,7 +1035,7 @@ fn build_column(
           Err(e) => row.error = Some(e),
           Ok((_, name)) => {
             row.label = name;
-            // 输出也由池持有：一个设备**一条**混音，本行只是往里登记一路源（DESIGN.md §6.5）
+            // 输出也由池持有：一个设备**一条**混音，本行只是往里登记一路源（ARCHITECTURE.md §6.5）
             row.device = Some(dev.to_string());
             row.pooled_output = true;
             crate::engine::session::apply_output_lease(&mut row, hub, idx, ri);
@@ -1036,6 +1065,9 @@ fn build_column(
     // 热参数单元格收进会话（(列,行,参数名) 寻址；见 `engine/hot.rs`）
     for (key, cell) in sink.take() {
       hot.insert((idx, ri, key), cell);
+    }
+    if let Some(cell) = sink.take_eq() {
+      hot_eq.insert((idx, ri), cell);
     }
     rows.push(row);
   }
@@ -1158,7 +1190,7 @@ fn run_column(
     {
       let mut g = rows.lock().unwrap();
       // 混合系数按**配置的输入源**计数（`source`），不是按当前拿到租约的数量：
-      // 一个设备打不开时，其余输入不该突然被抬高 6 dB（DESIGN.md §3.2）。
+      // 一个设备打不开时，其余输入不该突然被抬高 6 dB（ARCHITECTURE.md §3.2）。
       let n_inputs = g
         .iter()
         .filter(|r| r.kind == RowKind::Input && r.enabled && r.source)
@@ -1414,7 +1446,8 @@ fn run_column(
             r.output.as_ref().map(|f| f.max_level_ms())
           };
           let dropped_per_s = r.ring_drop_rate.push(now, r.ring_dropped);
-          let has_model = r.kind == RowKind::Process || r.aec.is_some();
+          // 可视化行走的是同一个 Stage，但它没有模型：别把它算进「推理耗时」那一栏
+          let has_model = (r.kind == RowKind::Process && r.ptype != "viz") || r.aec.is_some();
           let inference_ms_avg = if has_model && r.inf_ms > 0.0 {
             Probe::ok(r.inf_ms)
           } else if has_model {

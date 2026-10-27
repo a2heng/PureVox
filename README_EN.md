@@ -40,7 +40,7 @@ client), virtual drivers, media rows, in-app updates and packaging are all in pl
 
 - Downloads: [Releases](https://github.com/a2heng/PureVox/releases) (version = year.month.day).
 - The previous implementation (Python + Tkinter) is gone; use `git log` if you need it.
-- Docs: [DESIGN.md](DESIGN.md) (Chinese), [TAURI3.md](TAURI3.md) (Tauri 3 notes), [AGENTS.md](AGENTS.md).
+- Docs: [AGENTS.md](AGENTS.md) (Chinese), [TAURI3.md](TAURI3.md) (Tauri 3 notes), [AGENTS.md](AGENTS.md).
 
 ## Quick start
 

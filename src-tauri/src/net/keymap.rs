@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 手机实体键 → Windows 全尺寸键盘映射（DESIGN.md §4.1 的 `key`）。
+//! 手机实体键 → Windows 全尺寸键盘映射（NETWORK.md §4.1 的 `key`）。
 //!
 //! 手机端只透传 Android `KeyEvent.getKeyCode()`，映射与注入都在电脑端做，与手机固件无关。
 //!

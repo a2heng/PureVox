@@ -201,7 +201,7 @@ pub fn play(preset: &str, kind: &str) {
     .ok();
 }
 
-// 平台实现分文件（AGENTS.md §4）：Windows 用 `PlaySound`；其它平台无提示音。
+// 平台实现分文件（CONTRIBUTING.md）：Windows 用 `PlaySound`；其它平台无提示音。
 #[cfg(windows)]
 #[path = "cues_windows.rs"]
 mod plat;

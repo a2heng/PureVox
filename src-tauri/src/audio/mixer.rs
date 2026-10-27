@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 输出设备的混音（DESIGN.md §6.5）：**N 个源 → 一个设备**。
+//! 输出设备的混音（ARCHITECTURE.md §6.5）：**N 个源 → 一个设备**。
 //!
 //! 设备侧（打开设备 / 唯一主时钟 / 设备环 / 输出流的伺服与丢弃）全部交给既有的
 //! [`super::playback`]：混音器把「多源相加后的 48k hop 流」推进一条 [`Fanout`]，`playback`
@@ -155,7 +155,7 @@ struct Source {
 impl Source {
   /// 一拍：源环 → 转换器 → 累计器 → 相加进 `mixed`。
   fn pull(&mut self, mixed: &mut [f32; HOP], dt_s: f64) {
-    // ① 源环硬顶：超过就丢最旧到目标（过时样本不慢慢放出去 —— DESIGN.md §8.3）
+    // ① 源环硬顶：超过就丢最旧到目标（过时样本不慢慢放出去 —— ARCHITECTURE.md §8.3）
     let cap = ms_to_samples(SRC_CAP_MS);
     let target = ms_to_samples(SRC_TARGET_MS);
     let lv = self.ring.slots();

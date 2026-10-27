@@ -20,7 +20,7 @@
 // 顶栏「更新」面板（状态机在 `src/update/`，数据源是本仓库 GitHub Releases）。
 //
 // 三步：**检查 → 下载 → 安装**，每一步只在前一步的状态下可点；进度与失败原因
-// 直接显示（Rust 侧 reason 是诊断文本，按 AGENTS.md §4 边界不上 i18n）。
+// 直接显示（Rust 侧 reason 是诊断文本，按 CONTRIBUTING.md 边界不上 i18n）。
 // 面板打开时顺手查一次，关着时不打扰；`update_status` 2 Hz 轮询刷新下载进度。
 
 ;(function () {

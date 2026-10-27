@@ -19,7 +19,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
-// 打开链接的平台实现分文件（AGENTS.md §4）。
+// 打开链接的平台实现分文件（CONTRIBUTING.md）。
 mod config;
 mod cues;
 mod debug;
@@ -186,7 +186,7 @@ async fn set_row_param(
 }
 
 /// 热参数落盘（不重建会话）：音量 / 续播位置等改动用它 + 对应的媒体运行时命令
-/// （DESIGN.md §5：热参数下发给运行中的实例，不重启）。
+/// （ARCHITECTURE.md §5：热参数下发给运行中的实例，不重启）。
 #[tauri::command]
 async fn persist_plan(plan: Plan, mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<(), String> {
   let mgr = mgr.inner().clone();
@@ -507,10 +507,45 @@ fn net_status() -> String {
 }
 
 /// 网络卡片用的紧凑状态（结构化）：界面只排「就绪 · 1 客户端 · 1 订阅」这种短句，
-/// 全文与大段计数留在 `/debug` 与上面的 `net_status`（AGENTS §1.3 单一数据源）。
+/// 全文与大段计数留在 `/debug` 与上面的 `net_status`（DEBUG.md §1.3 单一数据源）。
 #[tauri::command]
 fn net_card() -> net::NetCard {
   net::card()
+}
+
+/// 31 段 EQ 的频响曲线（界面画曲线用；**与音频路径同一套 biquad 系数**）。
+///
+/// `settings` 是界面当前的 JSON（拖动中也传，不必先落盘）；`points` 建议 160~320。
+/// 返回的频率点是对数分布（20 Hz ~ 20 kHz），界面直接折线画。
+#[derive(serde::Serialize)]
+struct EqCurve {
+  schema_version: u32,
+  hz: Vec<f32>,
+  db: Vec<f32>,
+}
+
+#[tauri::command]
+fn eq_curve(settings: String, points: Option<usize>) -> Result<EqCurve, String> {
+  let s = engine::hot::EqSettings::from_json(&settings)?;
+  let n = points.unwrap_or(220).clamp(32, 512);
+  let hz: Vec<f32> = (0..n)
+    .map(|i| 20.0 * 1000f32.powf(i as f32 / (n - 1) as f32))
+    .collect();
+  let db = engine::components::eq31::response_db(&s, &hz);
+  Ok(EqCurve {
+    schema_version: 1,
+    hz,
+    db,
+  })
+}
+
+/// 可视化插件的测量快照（每 hop 更新；界面按 10 Hz 取）。
+///
+/// 与 `/debug` 的 `viz` 段、`GET /debug/viz` 是**同一份** `VizSnapshot`
+/// （`engine::viz::snapshot`），界面只画、不算。
+#[tauri::command]
+fn viz_snapshot() -> engine::viz::VizSnapshot {
+  engine::viz::snapshot()
 }
 
 /// 服务是否在跑（界面按钮用布尔，别去 `net_status` 的中文串里匹配）。
@@ -594,7 +629,7 @@ fn net_ifaces() -> Vec<net::addrs::NetIface> {
 ///
 /// 服务绑的是 `0.0.0.0:port`，所有网卡本来就都在服务里；选子网只是决定**把哪个地址
 /// 告诉客户端**。为这个重启会把已连着的客户端全踢掉，而实际什么都没变
-/// （DESIGN.md §4.1.11）。
+/// （NETWORK.md §4.1.11）。
 #[tauri::command]
 fn net_select_ip(ip: String) -> Result<String, String> {
   let ip = ip.trim();
@@ -908,7 +943,7 @@ fn main() {
     // 最小化 / 关闭都收到托盘（不退出）
     .on_window_event(|window, event| match event {
       tauri::WindowEvent::CloseRequested { api, .. } => {
-        // 调试窗口正常关闭；只有主窗口收到托盘（AGENTS §1.1：调试是独立窗口）
+        // 调试窗口正常关闭；只有主窗口收到托盘（DEBUG.md §1.1：调试是独立窗口）
         if window.label() != "main" {
           return;
         }
@@ -959,6 +994,8 @@ fn main() {
       net_restart,
       net_status,
       net_card,
+      viz_snapshot,
+      eq_curve,
       net_running,
       net_set_remote_input,
       net_local_addr,

@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 处理链（DESIGN.md §3.2）：按顺序对同一帧就地处理；只此一处实现链式调用。
+//! 处理链（ARCHITECTURE.md §3.2）：按顺序对同一帧就地处理；只此一处实现链式调用。
 //!
 //! `reset` / `release` 由列工作线程的行/会话重启路径调用（后续步骤）。
 #![allow(dead_code)]

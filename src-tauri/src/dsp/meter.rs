@@ -16,7 +16,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! 调试测量（在工作线程中运行，不在音频回调里）：电平、波形、平均频谱、速率。
-//! 频谱 FFT 窗长 2×HOP = 960（AGENTS.md 第 3 节），每个 hop 一帧、发布周期内功率平均。
+//!
+//! **两个频谱窗，各管一件事**：
+//! - `spectrum_db`（481 bin）：960 点 = 2×HOP（AGENTS §3 的信号路径窗），每 hop 一帧、
+//!   发布周期内功率平均 —— 兼容字段，线性画法用；
+//! - `spectrum_bands_db`（64 段对数）：**4800 点（100 ms，10 Hz 一格）**，只用于显示，
+//!   低频才分得开（见 `dsp::bands` 的说明）。它不参与音频处理，也不改变 10 ms hop 网格。
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -27,6 +32,7 @@ use rustfft::{Fft, FftPlanner};
 
 use crate::audio::{HOP, SAMPLE_RATE};
 use crate::debug::Probe;
+use crate::dsp::bands::BandAnalyzer;
 
 const NFFT: usize = 2 * HOP;
 const BINS: usize = NFFT / 2 + 1;
@@ -48,6 +54,8 @@ pub struct MeterOutput {
   pub rms_dbfs: Probe<f32>,
   pub waveform: Vec<f32>,
   pub spectrum_db: Vec<f32>,
+  /// 对数 61 段（ISO 1/6 倍频程，20 Hz ~ 20 kHz；界面直接画柱）
+  pub spectrum_bands_db: Vec<f32>,
 }
 
 pub struct Meter {
@@ -62,6 +70,8 @@ pub struct Meter {
   peak: f32,
   sumsq: f64,
   samples: u64,
+  band_analyzer: BandAnalyzer,
+  bands_buf: Vec<f32>,
 }
 
 impl Meter {
@@ -83,6 +93,8 @@ impl Meter {
       peak: 0.0,
       sumsq: 0.0,
       samples: 0,
+      band_analyzer: BandAnalyzer::new(),
+      bands_buf: Vec::new(),
     }
   }
 
@@ -109,6 +121,7 @@ impl Meter {
     }
     self.frames += 1;
     self.prev_hop.copy_from_slice(hop);
+    self.band_analyzer.on_hop(hop, &mut self.bands_buf);
   }
 
   /// 取出本发布周期的统计并清零累加器。
@@ -121,7 +134,7 @@ impl Meter {
         Probe::ok(db((self.sumsq / self.samples as f64).sqrt())),
       )
     };
-    let spectrum = if self.frames == 0 {
+    let spectrum: Vec<f32> = if self.frames == 0 {
       Vec::new()
     } else {
       self
@@ -140,6 +153,7 @@ impl Meter {
       rms_dbfs: rms,
       waveform: self.wave.iter().copied().collect(),
       spectrum_db: spectrum,
+      spectrum_bands_db: self.bands_buf.clone(),
     }
   }
 }
@@ -162,6 +176,21 @@ impl RateMeter {
   }
 
   pub fn push(&mut self, now: Instant, total: u64) -> Probe<f64> {
+    // **计数器会不会变小**：会。网络断开时 `NetHub::client_disconnected` 会清空入站环
+    // （`Playout::reset`），`rx_packets` / `rx_hops` 等累计值随之归零；本窗口里存着的
+    // 起点比现在的 total 还大，`total - f0` 就会 **u64 下溢 panic**。
+    //
+    // 这个 panic 的位置极其恶劣：它首先发生在 tokio 线程（`net::status`），随后 2 Hz 的
+    // 主线程轮询（`net_card` / `debug_snapshot`）再次触发 —— 主线程 panic 穿过 WebView2
+    // 回调就是 `panic in a function that cannot unwind` → **整个 exe 秒退**
+    // （2026-10-27 实测：手机点「重新连接」即复现）。
+    //
+    // 处理：计数器回退 = 计了一轮新的，**丢掉旧窗口重新起算**，返回「采集中」。
+    if let Some(&(_, last)) = self.hist.back()
+      && total < last
+    {
+      self.hist.clear();
+    }
     self.hist.push_back((now, total));
     while self.hist.len() > 2 && now.duration_since(self.hist[0].0) > Self::WINDOW {
       self.hist.pop_front();
@@ -171,6 +200,35 @@ impl RateMeter {
     if dt < 0.5 {
       return Probe::Pending;
     }
-    Probe::ok((total - f0) as f64 / dt)
+    // 上面的重置保证 `total >= f0`；再兜一次底，速率尺子永远不能把进程带走。
+    Probe::ok(total.saturating_sub(f0) as f64 / dt)
+  }
+}
+
+#[cfg(test)]
+mod rate_tests {
+  use super::RateMeter;
+  use crate::debug::Probe;
+  use std::time::{Duration, Instant};
+
+  /// 计数器被重置（断开客户端清入站）后不能下溢 panic：重新起窗口，先报采集中。
+  #[test]
+  fn counter_reset_does_not_underflow() {
+    let mut m = RateMeter::new();
+    let t0 = Instant::now();
+    m.push(t0, 1000);
+    m.push(t0 + Duration::from_secs(1), 1100);
+    let before = m.push(t0 + Duration::from_secs(1), 1200);
+    assert!(matches!(before, Probe::Ok { .. }), "{before:?}");
+    // 断开 → 计数归零，再继续走
+    assert!(matches!(
+      m.push(t0 + Duration::from_secs(2), 0),
+      Probe::Pending
+    ));
+    let after = m.push(t0 + Duration::from_secs(3), 100);
+    assert!(matches!(after, Probe::Ok { .. }), "{after:?}");
+    if let Probe::Ok { value } = after {
+      assert!((value - 100.0).abs() < 1e-6, "新窗口速率：{value}");
+    }
   }
 }

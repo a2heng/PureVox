@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// TSE 参考音频卡片（DESIGN.md §7）。
+// TSE 参考音频卡片（ARCHITECTURE.md §7）。
 //
 // 行为对齐 legacy `uitk/dialogs.py::open_tse_dialog`：
 // - 参考语音固定为 `~/.purevox/tse_reference.wav`，界面**不给路径输入**（用户 2026-10-26
@@ -148,7 +148,7 @@
     return true
   }
 
-  /** 2 Hz 快照：只更新正在录音的卡片（不自己另算状态，AGENTS §1.3）。 */
+  /** 2 Hz 快照：只更新正在录音的卡片（不自己另算状态，DEBUG.md §1.3）。 */
   function onSnapshot(s) {
     const rec = s && s.recorder
     if (!rec) return

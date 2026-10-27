@@ -15,14 +15,14 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 网络中枢（DESIGN.md §4.1）：**两个方向各一个固定深度环** + 远程输入开关 + 全量统计。
+//! 网络中枢（NETWORK.md §4.1）：**两个方向各一个固定深度环** + 远程输入开关 + 全量统计。
 //!
 //! - 入站（手机 → 电脑）：网络任务塞样本，列工作线程按 10 ms 节拍取（[`Playout`]）。
 //! - 出站（电脑 → 手机）：引擎推一个 hop，连接任务**立刻**编码发走（**没有队列、没有定时器**）。
 //!   缓冲只在接收方（手机上的环）。
 //!
 //! 所有计数都只做**观测**：`jitter` / `max_gap` / `late` / `trim` / `plc` 都不参与控制
-//! （AGENTS §1.4：看得见才谈得上判断）。
+//! （DEBUG.md §1.4：看得见才谈得上判断）。
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
@@ -98,7 +98,7 @@ impl Outbound {
       sent: Arc::new(AtomicU64::new(0)),
       dropped: Arc::new(AtomicU64::new(0)),
     };
-    self.subs.lock().unwrap().push((
+    lock(&self.subs).push((
       id,
       SubHandle {
         tx,
@@ -109,12 +109,12 @@ impl Outbound {
   }
 
   fn unsubscribe(&self, id: u64) {
-    self.subs.lock().unwrap().retain(|(sid, _)| *sid != id);
+    lock(&self.subs).retain(|(sid, _)| *sid != id);
   }
 
   /// 引擎线程调用：**非阻塞**地把这一 hop 交给每一路订阅。
   fn push_hop(&self, hop: &[f32]) {
-    let subs = self.subs.lock().unwrap();
+    let subs = lock(&self.subs);
     for (_, h) in subs.iter() {
       if h.stat.pending.load(Relaxed) >= MAX_PENDING_HOPS as u64 {
         h.stat.dropped.fetch_add(1, Relaxed);
@@ -128,34 +128,25 @@ impl Outbound {
   }
 
   fn count(&self) -> usize {
-    self.subs.lock().unwrap().len()
+    lock(&self.subs).len()
   }
 
   fn pending_hops(&self) -> u64 {
-    self
-      .subs
-      .lock()
-      .unwrap()
+    lock(&self.subs)
       .iter()
       .map(|(_, h)| h.stat.pending.load(Relaxed))
       .sum()
   }
 
   fn sum_dropped(&self) -> u64 {
-    self
-      .subs
-      .lock()
-      .unwrap()
+    lock(&self.subs)
       .iter()
       .map(|(_, h)| h.stat.dropped.load(Relaxed))
       .sum()
   }
 
   fn stats(&self) -> Vec<TxSubStat> {
-    self
-      .subs
-      .lock()
-      .unwrap()
+    lock(&self.subs)
       .iter()
       .map(|(_, h)| TxSubStat {
         pending_hops: h.stat.pending.load(Relaxed),
@@ -187,7 +178,7 @@ pub struct ClientReport {
   pub at_ms: u64,
 }
 
-/// 网络统计（`/debug` 的 `net` 段）。**字段只增不改名**（AGENTS §1.2）。
+/// 网络统计（`/debug` 的 `net` 段）。**字段只增不改名**（DEBUG.md §1.2）。
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct NetStats {
   pub port: u16,
@@ -315,6 +306,17 @@ impl Default for NetStats {
   }
 }
 
+/// 锁中毒也继续用（不 `unwrap`）。
+///
+/// **为什么**：网络线程里任何一次 panic 都会把 `Mutex` 变成中毒状态；而 `net_card` /
+/// `debug_snapshot` 是**同步 Tauri 命令、跑在主线程**，在那里 `unwrap` 中毒锁会直接
+/// `panic in a function that cannot unwind` → 整个 exe 退出（2026-10-27「点重新连接
+/// 电脑秒退」就是这么炸的）。音频/网络统计不是一致性不变量，中毒后继续读数永远好过让
+/// 进程死掉 —— 真正的故障原因由 panic hook 记进事件日志。
+fn lock<'a, T>(m: &'a Mutex<T>) -> std::sync::MutexGuard<'a, T> {
+  m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// 环深度的合法区间与步进：**10~200 ms，按 10 ms 步进**（与手机滑块、网页滑块同一套规则）。
 ///
 /// 放在这里做唯一实现：三条入口（手机 `settarget` / 网页命令 / 落盘读回）都调它，
@@ -347,7 +349,7 @@ pub struct NetHub {
   client_caps: Mutex<Option<String>>,
   rates: Mutex<NetRates>,
   /// 接收方播放环深度（ms）。**手动可调、两侧同步**，但运行期绝不自动改
-  /// （`DESIGN.md` §4.1.4 的「不做自适应」依然成立：这里是用户设定的固定值）。
+  /// （`ARCHITECTURE.md` §4.1.4 的「不做自适应」依然成立：这里是用户设定的固定值）。
   ring_ms: AtomicU32,
   /// 环深度变化广播：任一侧改了立刻通知所有客户端（它们要跟着改 UI 与环）。
   target_tx: broadcast::Sender<u32>,
@@ -513,7 +515,7 @@ impl NetHub {
 
   pub fn set_remote_input(&self, on: bool) {
     self.remote_input.store(on, Relaxed);
-    self.stats.lock().unwrap().remote_input = on;
+    lock(&self.stats).remote_input = on;
   }
 
   pub fn remote_input(&self) -> bool {
@@ -546,7 +548,7 @@ impl NetHub {
     q.push(samples, now);
     let st = q.stats();
     drop(q);
-    let mut s = self.stats.lock().unwrap();
+    let mut s = lock(&self.stats);
     s.rx_packets = st.packets;
     s.rx_samples += samples.len() as u64;
     s.rx_trims = st.trims;
@@ -563,7 +565,7 @@ impl NetHub {
     q.pull(out);
     let st = q.stats();
     drop(q);
-    let mut s = self.stats.lock().unwrap();
+    let mut s = lock(&self.stats);
     s.rx_hops = st.hops;
     s.rx_underruns = st.underruns;
     s.rx_plc = st.plc;
@@ -643,7 +645,7 @@ impl NetHub {
   }
 
   pub fn count_tx_packet(&self) {
-    self.stats.lock().unwrap().tx_packets += 1;
+    lock(&self.stats).tx_packets += 1;
   }
 
   /// 待发 hop 数（样本口径）：正常 0。
@@ -660,13 +662,13 @@ impl NetHub {
   // ---- 连接与统计 ----
 
   pub fn client_connected(&self) {
-    let mut s = self.stats.lock().unwrap();
+    let mut s = lock(&self.stats);
     s.clients += 1;
     s.last_error = None;
   }
 
   pub fn client_disconnected(&self) {
-    let mut s = self.stats.lock().unwrap();
+    let mut s = lock(&self.stats);
     s.clients = s.clients.saturating_sub(1);
     drop(s);
     self
@@ -677,15 +679,15 @@ impl NetHub {
   }
 
   pub fn set_last_error(&self, e: impl Into<String>) {
-    self.stats.lock().unwrap().last_error = Some(e.into());
+    lock(&self.stats).last_error = Some(e.into());
   }
 
   pub fn set_rtt(&self, ms: f64) {
-    self.stats.lock().unwrap().rtt_ms = Some(ms);
+    lock(&self.stats).rtt_ms = Some(ms);
   }
 
   pub fn count_key(&self, injected: bool) {
-    let mut s = self.stats.lock().unwrap();
+    let mut s = lock(&self.stats);
     if injected {
       s.keys_injected += 1;
     } else {
@@ -694,7 +696,7 @@ impl NetHub {
   }
 
   pub fn count_chars(&self, n: usize) {
-    self.stats.lock().unwrap().chars_typed += n as u64;
+    lock(&self.stats).chars_typed += n as u64;
   }
 
   /// 出站结论（推来即发，所以只看「有没有积压 / 丢没丢」）。
@@ -760,7 +762,7 @@ impl NetHub {
 
   /// 调试快照用的统计克隆（同时带上 opus 库探测）。
   pub fn stats(&self) -> NetStats {
-    let mut s = self.stats.lock().unwrap().clone();
+    let mut s = lock(&self.stats).clone();
     s.port = self.port();
     s.running = self.is_running();
     s.subs = self.sub_count();

@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// UI 字符串统一管理门禁（AGENTS.md §4；与 tsc 同挂 check.ps1 -Gate ui，CI 同源跑同一份）。
+// UI 字符串统一管理门禁（CONTRIBUTING.md；与 tsc 同挂 check.ps1 -Gate ui，CI 同源跑同一份）。
 //   E1 裸中文上屏：ui/*.js / index.html 里没走三入口（data-i18n / T() / __pvTpl 模板）的中文；
 //   E2 缺键：T('msgid')（含 STREAM_FIELDS 延迟标签）的 msgid 不在 i18n.js 的 EN 字典；
 //   E3 缺键：data-i18n 值不在 EN 字典（en 会静默回退中文 = 漏译）；

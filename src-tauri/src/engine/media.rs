@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 媒体控制中枢（DESIGN.md §4）：音效板 / 播放器的**运行时命令**与状态快照。
+//! 媒体控制中枢（ARCHITECTURE.md §4）：音效板 / 播放器的**运行时命令**与状态快照。
 //!
 //! 播放/停止/seek/音量不是计划参数（改它们不重建会话）：界面经 Tauri 命令把
 //! [`MediaCmd`] 投递到按 (列, 行) 寻址的 [`MediaSlot`]，由列工作线程里的 Stage

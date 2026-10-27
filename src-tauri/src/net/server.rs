@@ -15,12 +15,12 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! WebSocket 服务（DESIGN.md §4.1）：一个端口承载三条能力。
+//! WebSocket 服务（NETWORK.md §4.1）：一个端口承载三条能力。
 //!
 //! - `/` 网页版客户端（二维码指向这里，扫码即开）；`/ws` 音频 + 控制；`/health` 局域网自检
 //! - 每连接一份 Opus 编解码器；断开即销毁
 //! - **出站推来即发**：引擎每出一个 hop，这里的发送任务立刻编码发走 —— 服务端**没有定时器、
-//!   没有队列**（缓冲只在接收方，DESIGN.md §4.1.2/§4.1.4）。没有信号就没有包：
+//!   没有队列**（缓冲只在接收方，NETWORK.md §4.1.2/§4.1.4）。没有信号就没有包：
 //!   客户端的 AudioTrack 自己就是时钟，不需要服务端发静音包「保节拍」。
 //!
 //! ## v3 新增的两件东西
@@ -28,7 +28,7 @@
 //! 1. **音频帧头 8 字节**（`seq` + 发送方 µs）——收端据此判丢包 / 乱序、算单向延迟；
 //!    丢包用 Opus 的 PLC 补（`Decoder::decode_plc`），**不是**在缓冲里补静音。
 //! 2. **时钟同步 `sync` / `syncreply` / `offset`**——NTP 四时戳，保留最小 RTT 样本，
-//!    于是「单向延迟」是**量出来的**，不是猜的（AGENTS §1.4）。
+//!    于是「单向延迟」是**量出来的**，不是猜的（DEBUG.md §1.4）。
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -248,7 +248,7 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
   //
   // 为什么不在服务端做定时器 + 队列：那等于在「引擎时钟」和「定时器时钟」之间再插一级
   // 缓冲，延迟白送、还要用伺服去追两套时钟。缓冲只需要在**接收方**（手机的播放环）：
-  // 网络抖动和手机晶振差都在那里被吸收（DESIGN.md §4.1）。
+  // 网络抖动和手机晶振差都在那里被吸收（NETWORK.md §4.1）。
   let (sub_tx, mut sub_rx) = mpsc::channel::<Option<OutboundSub>>(4);
   let (out_o, hub_o) = (out_tx.clone(), hub.clone());
   let send_task = tokio::spawn(async move {
@@ -332,7 +332,7 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
     loop {
       tick.tick().await;
       let t0 = super::rt::now_us32();
-      sync_state.lock().unwrap().pending = Some((id, t0));
+      sync_state.lock().unwrap_or_else(|e| e.into_inner()).pending = Some((id, t0));
       if sync_out
         .send(Out::Text(ServerMsg::Sync { id, t0 }.to_text()))
         .is_err()
@@ -499,7 +499,11 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
           }
           Ok(ClientMsg::SyncReply { id, t0, t1, t2 }) => {
             // 只认「正在等的那一轮」的应答：乱序 / 重传的旧应答会把偏移算歪
-            let pending = sync.lock().unwrap().pending.map(|(pid, _)| pid);
+            let pending = sync
+              .lock()
+              .unwrap_or_else(|e| e.into_inner())
+              .pending
+              .map(|(pid, _)| pid);
             if pending != Some(id) {
               continue;
             }
@@ -508,7 +512,7 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
             let rtt = us_diff(t3, t0) - us_diff(t2, t1);
             let off = (us_diff(t1, t0) + us_diff(t2, t3)) / 2;
             if (0..500_000).contains(&rtt) {
-              let mut g = sync.lock().unwrap();
+              let mut g = sync.lock().unwrap_or_else(|e| e.into_inner());
               // 保留**最小 RTT** 样本（排队最少 = 最接近真实偏移）；
               // 只有明显更好（>1 ms）才替换，避免拥塞抖动把偏移带着来回跳。
               let better = match g.best {
@@ -576,8 +580,11 @@ fn ready(hub: &NetHub) -> ServerMsg {
     codec: "opus",
     rate: SAMPLE_RATE,
     header_bytes: HDR_LEN as u32,
-    // 客户端播放环的建议目标：出站没有服务端缓冲了，缓冲只在接收方（见 hub 的 OutboundSub）
-    target_ms: crate::net::rt::RING_MS as u32,
+    // 客户端播放环的深度：**必须是电脑当前设置的那个值**（`hub.ring_ms()`），不能写死
+    // 常量。写死 20 的后果：手机断开重连后 `ready` 把它拉回 20 ms，用户之前调好的
+    // 60/90 ms 就丢了（2026-10-27 用户反馈「重连后抖动默认 20，不继承之前的设置」）。
+    // 值由电脑侧持久化（`settings.json` 的 `net_ring_ms`），手机只照它执行。
+    target_ms: hub.ring_ms(),
     channels: 1,
     frame_ms: FRAME_MS,
     clients: hub.stats().clients,
@@ -589,6 +596,18 @@ mod tests {
   use super::*;
   use crate::net::opus_sys::{Decoder, Encoder, MAX_PACKET_BYTES};
   use crate::net::rt::AudioHeader;
+
+  /// `ready` 下发的环深度必须是**电脑当前设置**（重连不能把手机的 20/90 ms 拉回默认 20）。
+  #[test]
+  fn ready_reports_the_current_ring_target() {
+    let hub = NetHub::new();
+    hub.set_ring_ms(90);
+    match ready(&hub) {
+      ServerMsg::Ready { target_ms, .. } => assert_eq!(target_ms, 90),
+      other => panic!("ready 必须回 Ready：{other:?}"),
+    }
+    hub.set_ring_ms(20);
+  }
 
   /// 端到端（不经真实网络）：PC 编码器 → 解码器 → 入站缓冲 → hop。
   /// 验证「一包 = 一 hop」这条契约在真实 libopus 上成立，且带帧头时载荷偏移正确。

@@ -23,6 +23,12 @@
     <!-- 标题区 -->
     <string name="subtitle">远程麦克风 · 扬声器 · 键盘客户端</string>
     <string name="hint_host">电脑 IP 或主机名（可直接粘电脑端复制的网址）</string>
+    <string name="hint_port">端口</string>
+    <string name="btn_scan">扫描电脑上的二维码</string>
+    <string name="scan_prompt">对准电脑「网络」卡片上的二维码</string>
+    <string name="msg_scan_failed">二维码里没有可用的地址：%1$s</string>
+    <string name="msg_scan_camera_denied">没有相机权限，无法扫码（也可以手动填 IP 和端口）</string>
+    <string name="msg_port_invalid">端口 %1$s 无效，已改回默认 59123</string>
     <string name="btn_connect">连接</string>
     <!-- 品牌字标的后半截：头图里「彩色 P + ureVox」拼成 PureVox。品牌名，不翻译。 -->
     <string name="wordmark_tail" translatable="false">ureVox</string>

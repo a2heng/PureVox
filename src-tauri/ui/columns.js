@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// 音频列编辑器（DESIGN.md §3、§5）：编辑会话计划并应用。
+// 音频列编辑器（ARCHITECTURE.md §3、§5）：编辑会话计划并应用。
 // 每列自上而下是「固定输入行 + 可增删/拖动的中间行 + 固定输出行」；列与列独立。
 // 任何结构性改动都会重建会话（当前阶段的取舍：应用即重启）。
 ;(() => {
@@ -62,8 +62,8 @@ const ICON_UP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 14.5l6-
 const ICON_DOWN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9.5l6 6 6-6"/></svg>'
 const ICON_X = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>'
 const ICON_LOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5.5" y="10.5" width="13" height="9" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>'
-const PROCESS_ORDER = ['denoise', 'tse', 'gain', 'noise_gate', 'compressor', 'limiter', 'expander', 'upward_compressor', 'eq3', 'invert']
-/** 输入行的展示顺序：麦克风 → 网络 → 扬声器 → AEC → 测试音（用户 2026-10-26 定的顺序）。
+const PROCESS_ORDER = ['denoise', 'tse', 'gain', 'noise_gate', 'compressor', 'limiter', 'expander', 'upward_compressor', 'eq31', 'invert', 'agc', 'viz']
+/** 输入行的展示顺序：麦克风 → 网络 → 扬声器 → AEC → 测试音（按常用度排列）。
  *  注册表里的顺序是历史上「后加的排后面」，界面按常用度重排；**只是排列**，
  *  不改任何 ptype 语义（默认行仍取 `audio_input`）。输出行注册表顺序即 扬声器 → 网络。 */
 const INPUT_ORDER = ['audio_input', 'remote_mic', 'loopback', 'echo_cancel', 'tone']
@@ -179,6 +179,14 @@ function paintStatus() {
       }
     }
   }
+}
+
+/** 只落盘、不重建（显示选项 / 媒体音量这类纯界面参数用）。 */
+function persistPlan() {
+  invoke('persist_plan', { plan }).catch((e) => {
+    setStatus([String(e)])
+    window.__pvDebug?.('保存计划失败：' + e)
+  })
 }
 
 function apply() {
@@ -392,7 +400,7 @@ function rowElement(col, ci, row, ri) {
 
   // 行启用开关：**统一放在第一行最左**。以前只有处理行有，而且在第二行（detail）里，
   // 挤占参数区本来就窄的横向空间，行内一眼也看不出开没开。语义不变 = 挂摘这一行
-  // （不产出 + 放掉这一列对设备的引用），配置全留（DESIGN.md §6.5）。
+  // （不产出 + 放掉这一列对设备的引用），配置全留（ARCHITECTURE.md §6.5）。
   const en = document.createElement('label')
   en.className = 'row-en'
   const enCb = document.createElement('input')
@@ -410,7 +418,7 @@ function rowElement(col, ci, row, ri) {
   en.append(enCb)
   head.appendChild(en)
 
-  // 健康点：快照到达后由 shell.js 按 engine_info 上色（前端不判定，AGENTS §1.3）
+  // 健康点：快照到达后由 shell.js 按 engine_info 上色（前端不判定，DEBUG.md §1.3）
   const health = document.createElement('span')
   health.className = 'row-dot pending'
   head.appendChild(health)
@@ -484,12 +492,33 @@ function rowElement(col, ci, row, ri) {
   // **媒体行例外**：soundpad / player 的全部控件由 `media.js` 提供（音效网格 / 走带 /
   // 每个音效的音量与热键），这里不能再画一遍通用参数控件，否则同一件事有两个入口。
   const isMediaRow = kind === 'process' && (row.ptype === 'soundpad' || row.ptype === 'player')
+  // 可视化行：控件与画布由 `viz.js` 独占（模式下拉 + 电平 / 频谱），这里不画通用参数
+  const isVizRow = kind === 'process' && row.ptype === 'viz'
+  // 31 段均衡：曲线 / 柱子 / 预设由 eq.js 独占（不给通用滑块，否则 31 个数字框会把行撑爆）
+  const isEqRow = kind === 'process' && row.ptype === 'eq31'
   const detail = document.createElement('div')
   detail.className = 'detail'
   if (isMediaRow) {
     // 媒体行不画 detail，由 media.js 接管
+  } else if (isVizRow || isEqRow) {
+    // 可视化 / 31 段均衡由各自模块接管
   } else if (kind === 'process') {
     detail.appendChild(paramControls(row, ci, ri, row.ptype === 'tse' ? ['model'] : undefined))
+    if (row.ptype === 'agc') {
+      // 三行短说明（一整段长文在窄卡片里会挤成竖排，所以分三行）
+      const h = document.createElement('div')
+      h.className = 'agc-help'
+      for (const line of [
+        T('目标电平：输出响度（-20 正常 / -14 更响）'),
+        T('跟随速度：0.001 稳 / 0.01 快'),
+        T('底噪门限：-55 默认（环境吵用 -45）'),
+      ]) {
+        const row = document.createElement('div')
+        row.textContent = line
+        h.appendChild(row)
+      }
+      detail.appendChild(h)
+    }
   } else if (kind === 'input' && row.ptype === 'echo_cancel') {
     // AEC 行的全部控件在下面单独的 AEC 块里画（两列网格：左标签 / 右控件，两只下拉
     // 左缘对齐）；这里刻意不放东西，免得同一行有两个布局体系。
@@ -602,7 +631,7 @@ function rowElement(col, ci, row, ri) {
 
   // TSE 行：参考语音的录制 / 文件夹入口全部由 `tse.js` 独占（与 media.js 同一纪律：
   // 一件事只有一个入口）。这里**不画参考路径输入框**——参考固定为
-  // `~/.purevox/tse_reference.wav`（用户 2026-10-26 明确要求）。
+  // `~/.purevox/tse_reference.wav`。
   if (kind === 'process' && row.ptype === 'tse') {
     if (window.__pvTse?.attach(el, ci, ri, row, { apply, running: () => running })) {
       el.classList.add('tse-row')
@@ -621,6 +650,15 @@ function rowElement(col, ci, row, ri) {
   if (isMediaRow && window.__pvMedia?.attach(el, ci, ri, row, { apply })) {
     el.classList.add('media')
   }
+
+  // 可视化（vu + 频谱）：画布与 10 Hz 轮询都在 `viz.js`；模式只落盘不重建。
+  if (isVizRow && window.__pvViz?.attach(el, ci, ri, row, { apply, persist: persistPlan })) {
+    el.classList.add('viz')
+  }
+  // 31 段均衡：曲线 + 拖柱子 + 预设（写入走热参数，不重建会话）。
+  if (isEqRow && window.__pvEq?.attach(el, ci, ri, row, { apply, persist: persistPlan })) {
+    el.classList.add('eq')
+  }
   return el
 }
 
@@ -633,7 +671,7 @@ function columnElement(col, ci) {
   head.className = 'col-head'
   // 列开关也放**最前**：与行开关同一条视觉规则（左边 = 开/关这一路），一眼扫得出来。
   // 停用这一列（**不是删除**）——行、设备选择、参数全留，只放掉这一列对设备的引用，
-  // 别的列不受影响（设备由池按引用计数持有，见 DESIGN.md §6.5「启用 / 停用」）。
+  // 别的列不受影响（设备由池按引用计数持有，见 ARCHITECTURE.md §6.5「启用 / 停用」）。
   const onLabel = document.createElement('label')
   onLabel.className = 'en'
   const on = document.createElement('input')
@@ -698,6 +736,7 @@ function render() {
   // 整表重渲染：先让 media.js 丢掉对旧 DOM 的引用（2 Hz 状态轮询按挂载表走）
   window.__pvMedia?.reset()
   window.__pvNetRow?.reset()
+  window.__pvViz?.reset()
   window.__pvTse?.reset()
   host.replaceChildren(...plan.columns.map((c, i) => columnElement(c, i)))
 
@@ -820,7 +859,7 @@ window.__pvOnSnapshot = (s) => {
     paintRecCal()
   }
 
-  // 结构化校准报告（AGENTS.md §1.4）：**唯一回填依据**，UI 不再解析中文串。
+  // 结构化校准报告（DEBUG.md §1.4）：**唯一回填依据**，UI 不再解析中文串。
   // 同一份报告只回填一次（created_ms 变化才动参数，2 Hz 轮询会重复送达）。
   const cr = s.calib_report
   if (cr && cr.state === 'ok' && cr.value) {

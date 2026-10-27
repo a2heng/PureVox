@@ -105,6 +105,29 @@ interface Window {
     ): boolean
     reset(): void
   }
+  /** 31 段均衡卡片（eq.js 注册）：曲线 + 可拖柱子 + 低切/高切 + 预设 */
+  __pvEq?: {
+    attach(
+      el: HTMLElement,
+      ci: number,
+      ri: number,
+      row: any,
+      hooks?: { apply?: () => void; persist?: () => void }
+    ): boolean
+  }
+  /** 可视化（viz.js 注册）：处理行 `viz` 的卡片 + 调试面板复用的电平 / 频谱绘制 */
+  __pvViz?: {
+    attach(
+      el: HTMLElement,
+      ci: number,
+      ri: number,
+      row: any,
+      hooks?: { apply?: () => void; persist?: () => void }
+    ): boolean
+    reset(): void
+    vu(canvas: HTMLCanvasElement | null, peakDb: number | null): void
+    spectrum(canvas: HTMLCanvasElement | null, bands: number[]): void
+  }
   // 语言切换后各模块重渲染：在 document 上监听 'pv-langchange'（i18n.js 派发）
 }
 

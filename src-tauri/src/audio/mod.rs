@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 音频子系统（DESIGN.md §1）：L0 设备与流 + 会话（多列）。
+//! 音频子系统（ARCHITECTURE.md §1）：L0 设备与流 + 会话（多列）。
 //!
 //! 输入采集线程（原生→48k hop）→ 列工作线程（混合 + 处理链）→ 输出播放线程。
 
@@ -23,7 +23,7 @@ pub mod capture;
 /// 实测时钟（设备 vs 系统）：只在测试里编译，见模块注释。
 #[cfg(test)]
 mod clock_probe;
-/// 设备池（DESIGN.md §6.5）：每个 `(设备, 角色)` 只打开一次 + 引用计数
+/// 设备池（ARCHITECTURE.md §6.5）：每个 `(设备, 角色)` 只打开一次 + 引用计数
 pub mod device_pool;
 pub mod fanout;
 pub mod health;
@@ -203,7 +203,7 @@ impl AudioManager {
 
   /// 启动：按当前计划构建并运行会话。返回逐行问题。
   ///
-  /// **先建后停**（DESIGN.md §6.5 的差异重启）：设备由 `device_pool` 按引用计数持有，
+  /// **先建后停**（ARCHITECTURE.md §6.5 的差异重启）：设备由 `device_pool` 按引用计数持有，
   /// 先建才能让「没变的设备」**复用同一条流**（不关不重开 → 其它列的 `started_at` 都不动）。
   /// 从前必须「先停旧会话再建新会话」是因为 ALSA 排他 —— 现在排他由池的单开 + 引用计数承担；
   /// 而设备 id 是本仓库自己枚举出来的（同一硬件永远是同一个 id），换了 id 就是换了 PCM，
@@ -264,6 +264,8 @@ impl AudioManager {
     self.hub.set_running(false);
     // 显式停引擎才清媒体槽位与列概要（`Session::stop` 自己不清：先建后停时会误伤新会话）
     crate::engine::media::hub().clear();
+    // 可视化帧同理：停引擎后界面显示「会话未运行」，而不是冻在最后一帧
+    crate::engine::viz::hub().clear();
     self.hub.set_engine_stopped();
   }
 
@@ -610,6 +612,41 @@ impl AudioManager {
       }
       r.ptype.clone()
     };
+    // EQ 的整条曲线（31 段 + 切点）是**一个 JSON 热参数**：一次写完整条，
+    // 不逐段落盘、也不重建会话。校验/规范化在 `EqSettings::from_json`。
+    if ptype == "eq31" && key == "settings" {
+      let settings = crate::engine::hot::EqSettings::from_json(value)?;
+      let json = settings.to_json();
+      let mut g = self.state.lock().unwrap();
+      if let Some(r) = g
+        .plan
+        .columns
+        .get_mut(col)
+        .and_then(|c| c.rows.get_mut(row))
+      {
+        r.params.insert(key.to_string(), json);
+      }
+      let plan = g.plan.clone();
+      let running = g.session.is_some();
+      let result = match g.session.as_ref() {
+        Some(s) => s.set_hot_eq(col, row, &settings).ok_or_else(|| {
+          format!(
+            "第 {} 列第 {} 行没有登记 EQ 单元格（内部错误）",
+            col + 1,
+            row + 1
+          )
+        }),
+        None => Ok(()),
+      };
+      drop(g);
+      if running {
+        config::save_plan_debounced(plan);
+      } else {
+        let _ = config::save_plan(&plan);
+      }
+      return result;
+    }
+
     // 取值约束来自注册表（界面有 min/max，后端不能信界面）
     let (lo, hi, _) = crate::engine::registry::number_spec(&ptype, key)
       .ok_or_else(|| format!("{ptype} 的 {key} 不是数值参数"))?;
@@ -651,7 +688,7 @@ impl AudioManager {
     result
   }
 
-  /// 热参数落盘（**不重建会话**，DESIGN.md §5）：音量 / 续播位置等改动用它。
+  /// 热参数落盘（**不重建会话**，ARCHITECTURE.md §5）：音量 / 续播位置等改动用它。
   /// 同时更新内存计划，保证 `get_plan` 与运行中实例一致。
   pub fn persist_plan(&self, plan: Plan) -> Result<(), String> {
     let _rebuild = self.rebuild.lock().unwrap();

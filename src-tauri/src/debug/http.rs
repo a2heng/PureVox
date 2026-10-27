@@ -20,7 +20,7 @@
 //! 并发处理：每个连接一个短线程（调试口请求量小，但**一个慢客户端不能堵住其它人**；
 //! 从前单线程顺序处理，一个不读响应的 curl 就能让面板/脚本一起超时）。
 //!
-//! 端点（AGENTS §1.2）：
+//! 端点（DEBUG.md §1.2）：
 //! - `/debug` 汇总（`?full=0` 去掉波形/频谱，给脚本轮询）
 //! - `/debug/system` / `/debug/audio` / `/debug/devices`
 //! - `/debug/logs?limit=N` 事件日志
@@ -44,7 +44,7 @@ use serde_json::{Value, json};
 
 use super::{DEBUG_HTTP_PORT, Probe, SharedHub, events, metrics};
 
-const ENDPOINTS: [&str; 10] = [
+const ENDPOINTS: [&str; 11] = [
   "/debug",
   "/debug/system",
   "/debug/audio",
@@ -53,6 +53,7 @@ const ENDPOINTS: [&str; 10] = [
   "/debug/metrics",
   "/debug/plan",
   "/debug/calib",
+  "/debug/viz",
   "/debug/bundle",
   "/debug/ui",
 ];
@@ -72,6 +73,7 @@ fn static_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
     "/debug/ui/i18n.js" => (JS, include_bytes!("../../ui/i18n.js")),
     "/debug/ui/snapshot.js" => (JS, include_bytes!("../../ui/snapshot.js")),
     "/debug/ui/jsdebug.js" => (JS, include_bytes!("../../ui/jsdebug.js")),
+    "/debug/ui/viz.js" => (JS, include_bytes!("../../ui/viz.js")),
     _ => return None,
   })
 }
@@ -137,6 +139,10 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
         for s in &mut snap.audio.streams {
           s.waveform.clear();
           s.spectrum_db.clear();
+          s.spectrum_bands_db.clear();
+        }
+        for f in &mut snap.viz.frames {
+          f.bands_db.clear();
         }
       }
       ("200 OK", serde_json::to_value(&snap).unwrap_or(Value::Null))
@@ -154,6 +160,7 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
         for s in &mut snap.audio.streams {
           s.waveform.clear();
           s.spectrum_db.clear();
+          s.spectrum_bands_db.clear();
         }
       }
       (
@@ -210,6 +217,13 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
           snap.ts,
           snap.uptime_ms,
         ),
+      )
+    }
+    "/debug/viz" => {
+      let snap = hub.snapshot();
+      (
+        "200 OK",
+        head(json!({ "viz": snap.viz }), snap.ts, snap.uptime_ms),
       )
     }
     "/debug/bundle" => {

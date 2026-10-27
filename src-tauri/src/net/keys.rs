@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 手机远程输入 → 电脑键鼠注入（DESIGN.md §4.1）。
+//! 手机远程输入 → 电脑键鼠注入（NETWORK.md §4.1）。
 //!
 //! **两件事分开**（协议里的 `text` 与 `key`）：
 //! - [`inject_text`]：已组合好的字符串，逐个 UTF-16 码元用 `KEYEVENTF_UNICODE` 注入。
@@ -23,7 +23,7 @@
 //! - [`inject_key`]：按 [`crate::net::keymap`] 的扫描码映射注入，支持修饰键、方向键、
 //!   小键盘、扩展键。
 //!
-//! **平台实现分文件**（AGENTS.md §4）：`keys_windows.rs` 用 `SendInput`；
+//! **平台实现分文件**（CONTRIBUTING.md）：`keys_windows.rs` 用 `SendInput`；
 //! `keys_other.rs` 未实现，返回明确原因（Linux 需 `uinput` / XTEST，macOS 需 CGEvent），
 //! **不静默失败**。
 

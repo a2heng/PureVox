@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 音效板组件（DESIGN.md §4 处理行）：在自身链位置把播放中的音效与信号相加。
+//! 音效板组件（ARCHITECTURE.md §4 处理行）：在自身链位置把播放中的音效与信号相加。
 //!
 //! 移植 legacy `SoundPadPlugin` 的语义：
 //! - 音效整段入内存（库内 48k 单声道 WAV，短音效起播零延迟），首次播放才读文件；

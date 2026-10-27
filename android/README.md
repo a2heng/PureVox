@@ -78,7 +78,7 @@ app/src/main/cpp/                重建 `libpvopus.so` 的源码（`pv_opus.cpp`
 app/src/main/jniLibs/arm64-v8a/libpvopus.so    libopus 1.5.2 + 转发层，预编译入库
 ```
 
-## 音频链路（与电脑端同一套规则，DESIGN.md §4.1）
+## 音频链路（与电脑端同一套规则，NETWORK.md §4.1）
 
 ```text
 电脑 → 手机：WS 收包（8 字节帧头）→ Opus 解码 → 播放环（固定 20 ms）→ AudioTrack 阻塞写 → 扬声器
@@ -110,7 +110,7 @@ app/src/main/jniLibs/arm64-v8a/libpvopus.so    libopus 1.5.2 + 转发层，预�
   （`audio/OpusSupport.kt` 里那句「探测」因此**只剩诊断**，不是第二条实现路径。）
 * **不做「无条件信任所有证书」**：见下节 —— 只对私有网段放宽。
 
-## 传输与证书（DESIGN.md §4.1.12）
+## 传输与证书（NETWORK.md §4.1.12）
 
 电脑端**只监听 HTTPS**，证书是**每台机器自己签的**（CA + 叶证书两级，存 `~/.purevox/ca/`）。
 

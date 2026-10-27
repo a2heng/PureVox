@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Opus 编解码（DESIGN.md §4.1）。
+//! Opus 编解码（NETWORK.md §4.1）。
 //!
 //! **不引入 C 编译链**：`libopus` 在运行时动态加载（与旧实现 `opuslib` 同一路子）——
 //! Windows 加载随包的预编译 x64 `opus.dll`（`LoadLibraryExW` + `GetProcAddress`），
@@ -25,7 +25,7 @@
 //!
 //! 帧长：PC 侧固定 10 ms（`rate/100` 样本 @48 kHz = 480，正好一个 hop）；接收端允许
 //! 任意帧长（2.5~60 ms），按**样本数累积**后由 [`Decoder::take_hop`] 切回 hop，
-//! 因此引擎侧的 10 ms 网格（DESIGN.md §2）不受 Android 侧 20 ms 帧影响。
+//! 因此引擎侧的 10 ms 网格（ARCHITECTURE.md §2）不受 Android 侧 20 ms 帧影响。
 //!
 //! ABI 事实（实测 libopus 1.3.1 x64）：`opus_encoder_get_size` / `opus_decoder_get_size`
 //! 是**兼容桩，恒返回 0**（头文件里真函数是 `..._get_size2` 的宏）。故本模块**不查大小**，
@@ -36,7 +36,7 @@ use std::ffi::{CStr, CString, c_char, c_float, c_int, c_void};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-// 平台加载实现分文件（AGENTS.md §4）：Windows = `opus_sys_windows.rs`（LoadLibraryExW +
+// 平台加载实现分文件（CONTRIBUTING.md）：Windows = `opus_sys_windows.rs`（LoadLibraryExW +
 // 随包 `opus.dll`），Linux = `opus_sys_linux.rs`（dlopen 系统 `libopus.so`），
 // 其它平台 = `opus_sys_other.rs`（明确不可用）。
 #[cfg(windows)]
@@ -85,7 +85,7 @@ pub const MAX_PACKET_BYTES: usize = 1275;
 
 static API: OnceLock<Api> = OnceLock::new();
 
-/// 库状态探针（AGENTS §1.2：新模块必须上报自身状态）：`Ok(version)` / `Err(原因)`。
+/// 库状态探针（DEBUG.md §1.2：新模块必须上报自身状态）：`Ok(version)` / `Err(原因)`。
 pub fn probe() -> Result<String, String> {
   api().map(|a| a.version_string())
 }

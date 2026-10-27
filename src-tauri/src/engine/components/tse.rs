@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! TSE 组件：把 `infer::tse::Tse` 包成 `Stage`（DESIGN.md §3.4、§7）。
+//! TSE 组件：把 `infer::tse::Tse` 包成 `Stage`（ARCHITECTURE.md §3.4、§7）。
 //! 参考语音在加载时一次性编码；没有参考则直通（状态经 `Stage::status` 进调试接口）。
 
 use std::path::Path;
@@ -29,7 +29,7 @@ pub struct TseStage {
 }
 
 impl TseStage {
-  /// 参考语音固定为 `~/.purevox/tse_reference.wav`（界面不给路径设置，见 DESIGN.md §7）。
+  /// 参考语音固定为 `~/.purevox/tse_reference.wav`（界面不给路径设置，见 ARCHITECTURE.md §7）。
   pub fn load(model_file: &str) -> Result<Self, String> {
     let mut engine = Tse::load(model_file)?;
     let path = crate::config::default_tse_reference();

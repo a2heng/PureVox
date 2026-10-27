@@ -51,7 +51,7 @@ mod inner {
 
   #[test]
   fn interval_rate_is_100hz() {
-    // std 线程模拟列工作线程的绝对节拍（DESIGN.md §3.3）
+    // std 线程模拟列工作线程的绝对节拍（ARCHITECTURE.md §3.3）
     let mut next = Instant::now() + Duration::from_millis(10);
     let mut count = 0u64;
     let start = Instant::now();

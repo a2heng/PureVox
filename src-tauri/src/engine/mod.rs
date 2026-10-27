@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! L2 引擎：列与行、信号装配、插件链（DESIGN.md §3）。
+//! L2 引擎：列与行、信号装配、插件链（ARCHITECTURE.md §3）。
 //!
 //! 当前阶段只落了骨架：`Stage` 契约、`Pipeline`、`registry`。列工作线程见后续步骤。
 
@@ -25,9 +25,11 @@ pub mod calib;
 pub mod components;
 /// 热参数（与模型无关的标量：增益 / 音量）—— 运行中改它不重建会话
 pub mod hot;
-/// 媒体控制中枢（音效板 / 播放器的运行时命令与状态，DESIGN.md §4）
+/// 媒体控制中枢（音效板 / 播放器的运行时命令与状态，ARCHITECTURE.md §4）
 pub mod media;
 pub mod pipeline;
 pub mod registry;
 pub mod session;
 pub mod stage;
+/// 可视化插件：处理行 `viz` 的测量与全局中枢（ARCHITECTURE.md §4）
+pub mod viz;

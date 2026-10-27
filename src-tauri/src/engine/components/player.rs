@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 音乐播放器组件（DESIGN.md §4 处理行）：流式解码 + 首尾相连环流。
+//! 音乐播放器组件（ARCHITECTURE.md §4 处理行）：流式解码 + 首尾相连环流。
 //!
 //! 移植 legacy `MusicPlayerPlugin` 的语义：
 //! - 后台解码线程 → 3 秒有界环形缓冲 → 音频线程每 hop（10 ms）取 480 样本，

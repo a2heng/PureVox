@@ -65,23 +65,28 @@ class WsClient(
 ) {
 
     interface Listener {
-        /** WebSocket 握手完成（此时已自动发出 `hello`，`ready` 随后到达）。 */
-        fun onOpen()
+        /**
+         * 所有回调都带 `client`：**界面上可能已经换了一条新连接**，而旧连接关闭 / 失败
+         * 的回调总是晚一步到达。调用方必须用 `client !== 当前连接` 把旧事件丢掉，
+         * 否则「重连 / 扫码切电脑」会被旧回调当成新会话结束（用户 2026-10-27 实测：
+         * 第二次重连 / 第二次扫码直接断开）。
+         */
+        fun onOpen(client: WsClient)
 
         /** 收到非 `pong` / `sync` / `offset` 的文本消息。 */
-        fun onMessage(msg: ServerMsg)
+        fun onMessage(client: WsClient, msg: ServerMsg)
 
         /** 收到一个音频包（**已去掉 8 字节帧头**）。数组是本类新分配的，可安全跨线程持有。 */
-        fun onAudioPacket(seq: Int, tsUs: Int, payload: ByteArray)
+        fun onAudioPacket(client: WsClient, seq: Int, tsUs: Int, payload: ByteArray)
 
         /** `pong` 回来，算好的往返时延（ms）。 */
-        fun onPong(id: Long, rttMs: Double)
+        fun onPong(client: WsClient, id: Long, rttMs: Double)
 
         /** 正常或被对端关闭。 */
-        fun onClosed(reason: String)
+        fun onClosed(client: WsClient, reason: String)
 
         /** 链路层失败（连不上、被拒、读写异常）。 */
-        fun onFailure(reason: String)
+        fun onFailure(client: WsClient, reason: String)
     }
 
     companion object {
@@ -242,7 +247,7 @@ class WsClient(
     private fun onPong(id: Long) {
         val sent = pendingPings.remove(id) ?: return
         val ms = (System.nanoTime() - sent) / 1_000_000.0
-        listener.onPong(id, ms)
+        listener.onPong(this@WsClient, id, ms)
         // 协议规定：RTT 由客户端算好后上报，电脑调试界面直接读
         sendText(Proto.rtt(ms))
     }
@@ -256,7 +261,7 @@ class WsClient(
             offsetUs.set(Long.MIN_VALUE)
             sendText(Proto.hello())
             startPing()
-            listener.onOpen()
+            listener.onOpen(this@WsClient)
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -269,7 +274,7 @@ class WsClient(
                     sendText(Proto.syncReply(msg.id, msg.t0, t1, Proto.nowUs()))
                 }
                 is ServerMsg.Offset -> offsetUs.set(msg.us)
-                else -> listener.onMessage(msg)
+                else -> listener.onMessage(this@WsClient, msg)
             }
         }
 
@@ -281,7 +286,7 @@ class WsClient(
             val payload = raw.copyOfRange(Proto.HDR_BYTES, raw.size)
             rxPackets.incrementAndGet()
             rxBytes.addAndGet(raw.size.toLong())
-            listener.onAudioPacket(seq, ts, payload)
+            listener.onAudioPacket(this@WsClient, seq, ts, payload)
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -296,14 +301,14 @@ class WsClient(
             opened = false
             stopPing()
             val why = if (reason.isNullOrEmpty()) "电脑关闭了连接（code=$code）" else reason
-            listener.onClosed(why)
+            listener.onClosed(this@WsClient, why)
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             opened = false
             stopPing()
             Log.w(TAG, "WebSocket 失败", t)
-            listener.onFailure(describe(t))
+            listener.onFailure(this@WsClient, describe(t))
         }
     }
 

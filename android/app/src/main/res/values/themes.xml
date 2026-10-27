@@ -19,6 +19,15 @@
 -->
 <resources>
     <!-- 日夜跟随系统（DayNight），亮/暗自动切换。 -->
+    <!-- 扫码页：全屏黑底（相机预览铺满），状态栏 / 导航栏透明 -->
+    <style name="Theme.PureVox.Scan" parent="Theme.PureVox">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
     <style name="Theme.PureVox" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/pv_blue</item>
         <item name="colorOnPrimary">@color/pv_on_blue</item>

@@ -19,7 +19,7 @@
 //!
 //! 用已在树里的 `windows` crate（只加 `Win32_NetworkManagement_IpHelper` /
 //! `Win32_NetworkManagement_Ndis` 两个 feature），**不引新依赖、不新增 C 编译链**
-//! —— 和 opus 运行时加载是同一套取舍（AGENTS.md §1.2）。
+//! —— 和 opus 运行时加载是同一套取舍（DEBUG.md §1.2）。
 
 use std::net::{Ipv4Addr, UdpSocket};
 

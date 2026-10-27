@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-// AEC 校准结果面板（AGENTS.md §1.4）：**只渲染 Rust 的 `calib_report`**。
+// AEC 校准结果面板（DEBUG.md §1.4）：**只渲染 Rust 的 `calib_report`**。
 //
 // 唯一数据源是快照里的 `calib_report`（= `GET /debug/calib` = `~/.purevox/calib_last.json`）；
 // 本文件不重算峰值、不算延时、不改增益。曲线是报告里的平滑带内能量包络（不是原始波形），

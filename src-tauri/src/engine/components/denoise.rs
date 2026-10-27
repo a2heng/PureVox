@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 降噪组件：把 `infer::denoise::Denoise` 包成 `Stage`（DESIGN.md §3.4）。
+//! 降噪组件：把 `infer::denoise::Denoise` 包成 `Stage`（ARCHITECTURE.md §3.4）。
 //! 一帧 480 样本进，480 出；流式缓存由引擎实例持有。
 
 use crate::engine::stage::{FrameContext, Stage, StageError};
