@@ -238,7 +238,11 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
   let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Out>();
   // 订阅状态由收任务写、编码任务读
   let sub: Arc<Mutex<Option<(u64, OutboundSub)>>> = Arc::new(Mutex::new(None));
-  let (sub_out, out_o, hub_o) = (sub.clone(), out_tx.clone(), hub.clone());
+  // 没有订阅者时编码任务**睡觉**，不要空转 100 次/s（手机只连不用扬声器时的耗电大头）
+  let sub_ready = Arc::new(tokio::sync::Notify::new());
+  let (sub_out, out_o, hub_o, sub_wake) =
+    (sub.clone(), out_tx.clone(), hub.clone(), sub_ready.clone());
+  let wake_in_task = sub_wake.clone();
 
   // 出站：10 ms 绝对节拍 → 取 hop → Opus 编码
   let encoder_task = tokio::spawn(async move {
@@ -251,6 +255,13 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
     let period = Duration::from_nanos(10_000_000);
     let mut next = tokio::time::Instant::now() + period;
     loop {
+      // 没有订阅者就等通知，不占 CPU / 唤醒次数
+      let notified = wake_in_task.notified();
+      if sub_out.lock().unwrap().is_none() {
+        notified.await;
+        next = tokio::time::Instant::now() + period;
+        continue;
+      }
       // 等到下一个网格时刻；落后超过一拍就重新对齐，不补发积压
       loop {
         let now = tokio::time::Instant::now();
@@ -349,14 +360,19 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
             // 否则出站列表里会多留一条没人消费的队列，水位顶格、白占 CPU。
             if let Some((old_id, _)) = sub.lock().unwrap().take() {
               hub.unsubscribe_tx(old_id);
+              super::pacer_release();
             }
             let (id, s) = hub.subscribe_tx();
             *sub.lock().unwrap() = Some((id, s));
+            // 只有真的有订阅者时才把 Windows 定时器精度提到 1 ms（见 net/mod.rs PACER）
+            super::pacer_acquire();
+            sub_wake.notify_one();
             reply = Some(ready(&hub));
           }
           Ok(ClientMsg::Unsub) => {
             if let Some((id, _)) = sub.lock().unwrap().take() {
               hub.unsubscribe_tx(id);
+              super::pacer_release();
             }
             reply = Some(ready(&hub));
           }
@@ -406,6 +422,7 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
   // 已排队的 err 真正冲出去）—— 直接 abort 会把「协议版本不符」这类 err 吞掉。
   if let Some((id, _)) = sub.lock().unwrap().take() {
     hub.unsubscribe_tx(id);
+    super::pacer_release();
   }
   encoder_task.abort();
   drop(out_tx);

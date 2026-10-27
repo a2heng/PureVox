@@ -182,6 +182,8 @@ class MainActivity : AppCompatActivity() {
     /** 前台会话服务当前是否在跑 / 是否含麦克风类型（避免每次对账都重发通知）。 */
     private var svcRunning = false
     private var svcMic = false
+    /** 通知服务当前是否真的有音频流（决定 WakeLock）。 */
+    private var svcAudio = false
 
     /**
      * 界面是否在前台（onStart→onStop）。
@@ -806,24 +808,27 @@ class MainActivity : AppCompatActivity() {
      */
     private fun syncSessionService(force: Boolean = false) {
         val mic = uplink != null
+        val audio = mic || downlink != null
         val keep = ready || mic || connecting || visible
         if (!keep) {
             if (svcRunning) {
                 CaptureService.stop(this)
                 svcRunning = false
                 svcMic = false
+                svcAudio = false
             }
             return
         }
-        if (!force && svcRunning && svcMic == mic) return
+        if (!force && svcRunning && svcMic == mic && svcAudio == audio) return
         svcRunning = true
         svcMic = mic
+        svcAudio = audio
         val text = when {
             mic -> getString(R.string.notif_default)
             ready -> getString(R.string.notif_connected)
             else -> getString(R.string.notif_idle)
         }
-        CaptureService.update(this, text, mic)
+        CaptureService.update(this, text, mic, audio)
         updateKeepalive()
     }
 
@@ -903,9 +908,10 @@ class MainActivity : AppCompatActivity() {
 
     /** 起上行：先起前台服务（Android 9+ 后台麦克风的前提），再开 AudioRecord。 */
     private fun startUplink(): Boolean {
-        CaptureService.start(this, getString(R.string.notif_starting), mic = true)
+        CaptureService.start(this, getString(R.string.notif_starting), mic = true, audio = true)
         svcRunning = true
         svcMic = true
+        svcAudio = true
         val u = MicUplink(
             context = this,
             onPacket = { pkt -> ws?.sendAudio(pkt, pkt.size) },
@@ -922,6 +928,7 @@ class MainActivity : AppCompatActivity() {
             CaptureService.stop(this)
             svcRunning = false
             svcMic = false
+            svcAudio = false
             return false
         }
         uplink = u
@@ -940,6 +947,7 @@ class MainActivity : AppCompatActivity() {
         CaptureService.stop(this)
         svcRunning = false
         svcMic = false
+        svcAudio = false
         ws?.disconnect()
         ws = null
         ready = false

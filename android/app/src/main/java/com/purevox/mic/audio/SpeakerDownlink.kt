@@ -59,11 +59,13 @@ class SpeakerDownlink {
         /** 环形缓冲 = 2^14 样本（约 341 ms），满了丢最旧（硬顶延迟，不无限涨）。 */
         private const val RING_SAMPLES = 1 shl 14
 
-        /** 一次写入的样本数：10 ms @48 kHz（与工程 10 ms hop 网格一致）。 */
-        private const val WRITE_CHUNK = 480
+        /** 一次写入的样本数：**20 ms** @48 kHz。10 ms 会把写线程唤醒 100 次/s，
+         *  20 ms 减半（长时间运行省电），环水位仍是 50 ms，延迟不变。 */
+        private const val WRITE_CHUNK = 960
 
-        /** 开声前预热水位：60 ms（网络 jitter 已测到 22 ms，留 60 ms 吸收）。 */
-        private const val PREBUFFER_SAMPLES = 2880
+        /** 开声前预热水位：50 ms（网页版实验值；服务端已把 10 ms 定时器提到 1 ms，
+         *  包不再按 15.6 ms 成串，50 ms 足够吸收 Wi-Fi jitter）。 */
+        private const val PREBUFFER_SAMPLES = 2400
 
         /** 包队列深度：300 包（@10 ms ≈ 3 s），突发兜底。 */
         private const val PACKET_QUEUE = 300

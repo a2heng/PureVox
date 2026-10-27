@@ -252,10 +252,10 @@ release 构建同样保留（不允许用编译开关剔除）。
     `FM_TUNER` / `VOICE_COMMUNICATION_SIGNALLING`）。选择存 `micSource`（SharedPreferences），
     推流中改选择会重启采集；所选 API 建流失败时**自动回退 MIC 并显示原因**，不静默。
   - **缓冲 / 时钟与网页版同一原则**：`SpeakerDownlink` 是「包队列 + 解码线程 + 样本环形缓冲 +
-    写入线程 + AudioTrack 主时钟」，预缓冲 **60 ms**、AudioTrack 底层缓冲 **80 ms**，**不开
-    `PERFORMANCE_MODE_LOW_LATENCY`**（它会把底层缓冲压到 10~20 ms，网络一抖就欠载），
-    音频线程 `THREAD_PRIORITY_URGENT_AUDIO`；欠载补静音、硬顶丢最旧。网页版是先行实验田，
-    安卓照搬同一策略，别各自发明一套。
+    写入线程 + AudioTrack 主时钟」；环预缓冲 **50 ms**、硬顶 341 ms，AudioTrack 底层 **40 ms**
+    （两者别叠成 200 ms），输出走 **stereo + `PERFORMANCE_MODE_LOW_LATENCY`（SDK>=26）**
+    的低延迟快通路（mono/普通缓冲作为回退），音频线程 `THREAD_PRIORITY_URGENT_AUDIO`；
+    欠载补静音、硬顶丢最旧。网页版是先行实验田，安卓照搬同一策略，别各自发明一套。
   - **会话保活**（`service/CaptureService.kt`）：只要「已连接」「正在推流」「连接中」**或界面在前台**
     就把常驻通知挂着（前台服务类型 `microphone|dataSync`，只报在用的那个），通知带「停止推流 / 断开连接」
     两个按钮 —— 按钮发**广播**回界面（`MainActivity` 的 `notifReceiver`），服务不认识协议。

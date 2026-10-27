@@ -75,6 +75,10 @@ class CaptureService : Service() {
         /** 本条通知是否包含 `microphone` 前台服务类型。 */
         const val EXTRA_MIC = "mic"
 
+        /** 当前是否真的有音频在跑（mic 或 speaker）；只有这时才持 WakeLock。
+         *  仅仅「连着/界面在前台」不需要 CPU 常亮 —— 通知挂着即可。 */
+        const val EXTRA_AUDIO = "audio"
+
         const val CHANNEL_ID = "purevox_mic_stream"
         const val NOTIFICATION_ID = 1001
 
@@ -106,21 +110,22 @@ class CaptureService : Service() {
 
         private const val WAKE_LOCK_TAG = "PureVoxMic:AudioWakeLock"
 
-        fun start(ctx: Context, text: String, mic: Boolean) =
-            deliver(ctx, ACTION_START, text, mic)
+        fun start(ctx: Context, text: String, mic: Boolean, audio: Boolean) =
+            deliver(ctx, ACTION_START, text, mic, audio)
 
-        fun update(ctx: Context, text: String, mic: Boolean) =
-            deliver(ctx, ACTION_UPDATE, text, mic)
+        fun update(ctx: Context, text: String, mic: Boolean, audio: Boolean) =
+            deliver(ctx, ACTION_UPDATE, text, mic, audio)
 
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, CaptureService::class.java))
         }
 
-        private fun deliver(ctx: Context, action: String, text: String, mic: Boolean) {
+        private fun deliver(ctx: Context, action: String, text: String, mic: Boolean, audio: Boolean) {
             val intent = Intent(ctx, CaptureService::class.java).apply {
                 this.action = action
                 putExtra(EXTRA_TEXT, text)
                 putExtra(EXTRA_MIC, mic)
+                putExtra(EXTRA_AUDIO, audio)
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -144,6 +149,10 @@ class CaptureService : Service() {
     @Volatile
     private var micActive = false
 
+    /** 当前是否真的有音频流（决定持不持 WakeLock）。 */
+    @Volatile
+    private var audioActive = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -156,7 +165,8 @@ class CaptureService : Service() {
             ACTION_START, ACTION_UPDATE -> {
                 val text = intent.getStringExtra(EXTRA_TEXT) ?: getString(R.string.notif_default)
                 micActive = intent.getBooleanExtra(EXTRA_MIC, false)
-                acquireWakeLock()
+                audioActive = intent.getBooleanExtra(EXTRA_AUDIO, micActive)
+                if (audioActive) acquireWakeLock() else releaseWakeLock()
                 startForegroundCompat(text, micActive)
             }
             ACTION_STOP -> {
