@@ -40,7 +40,8 @@ object Proto {
     const val HEALTH_PATH = "/health"
 
     /** 音频参数（协议硬约定，改动要同步电脑端）。 */
-    const val CODEC = "audio/opus"
+    /** 协议里的 codec 字段（电脑端 `ServerMsg::Ready` 发的是 `"opus"`，不是 MIME）。 */
+    const val CODEC = "opus"
     const val SAMPLE_RATE = 48000
     const val CHANNELS = 1
 

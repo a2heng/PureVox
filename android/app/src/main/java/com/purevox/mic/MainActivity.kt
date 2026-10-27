@@ -1160,10 +1160,19 @@ class MainActivity : AppCompatActivity() {
                         "欠载 ${dec.underruns}（${fmt1(net.underrunPps)}/s）" +
                             " · 丢包 ${dec.dropped}（${fmt1(net.droppedPps)}/s）" +
                             " · 掩盖 ${dec.concealed}（${fmt1(net.concealedPps)}/s）" +
+                            " · 底层欠载 ${dec.deviceUnderruns}" +
                             (dec.lastError?.let { " · $it" } ?: "")
                     },
                 ),
             )
+            if (dec != null) {
+                append(
+                    row(
+                        getString(R.string.diag_latency),
+                        "环 ${bufferedMs} ms · 底层 ${dec.trackBufferMs} ms",
+                    ),
+                )
+            }
             append(row(getString(R.string.diag_audio), "${a.label} · ${a.detail}"))
         }
 

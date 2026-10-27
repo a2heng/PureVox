@@ -22,6 +22,7 @@ package com.purevox.mic.audio
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.Build
 import android.os.Process
 import android.util.Log
 import java.util.concurrent.ArrayBlockingQueue
@@ -48,24 +49,28 @@ class SpeakerDownlink {
         private const val TAG = "PureVoxSpk"
 
         const val SAMPLE_RATE = OpusEncoder.SAMPLE_RATE
-        private const val CHANNEL_MASK = AudioFormat.CHANNEL_OUT_MONO
+        /** **立体声**：很多机型的低延迟快通路只对 stereo 生效；mono 会被丢到深缓冲
+         *  （听感就是「延迟一截」）。下行仍按单声道处理，写 AudioTrack 时复制成左右两路。 */
+        private const val CHANNEL_MASK = AudioFormat.CHANNEL_OUT_STEREO
+        private const val CHANNEL_MASK_MONO = AudioFormat.CHANNEL_OUT_MONO
+        private const val OUT_CHANNELS = 2
         private const val PCM_ENCODING = AudioFormat.ENCODING_PCM_FLOAT
 
-        /** 环形缓冲 = 2^16 样本（约 1.36 s），满了丢最旧。 */
-        private const val RING_SAMPLES = 1 shl 16
+        /** 环形缓冲 = 2^14 样本（约 341 ms），满了丢最旧（硬顶延迟，不无限涨）。 */
+        private const val RING_SAMPLES = 1 shl 14
 
         /** 一次写入的样本数：10 ms @48 kHz（与工程 10 ms hop 网格一致）。 */
         private const val WRITE_CHUNK = 480
 
-        /** 开声前预热水位：60 ms。网页版实验田 50 ms 已 0 欠载；安卓再加 10 ms 余量。 */
+        /** 开声前预热水位：60 ms（网络 jitter 已测到 22 ms，留 60 ms 吸收）。 */
         private const val PREBUFFER_SAMPLES = 2880
 
         /** 包队列深度：300 包（@10 ms ≈ 3 s），突发兜底。 */
         private const val PACKET_QUEUE = 300
 
-        /** AudioTrack 底层缓冲：80 ms（float 单声道 = 480 × 4 × 8 字节）。
-         *  关键是**别开 LOW_LATENCY**：它会把底层缓冲压到 10~20 ms，网络一抖就欠载。 */
-        private const val TRACK_BUFFER_MS = 80
+        /** AudioTrack 底层缓冲：40 ms（float 立体声）。真正的 jitter buffer 是上面的环；
+         *  底层只负责写线程调度，**不要**再叠 80 ms（那就是纯延迟）。 */
+        private const val TRACK_BUFFER_MS = 40
 
         private const val PREBUFFER_WAIT_MS = 500L
 
@@ -82,6 +87,9 @@ class SpeakerDownlink {
 
     private var decoder: OpusDecoder? = null
     private var track: AudioTrack? = null
+    /** 实际打开的通道数（优先 stereo 走低延迟快通路；不支持时回退 mono）。 */
+    @Volatile
+    private var outChannels = OUT_CHANNELS
     private var decodeThread: Thread? = null
     private var writeThread: Thread? = null
 
@@ -227,44 +235,72 @@ class SpeakerDownlink {
 
     fun bufferedMs(): Float = bufferedSamples() * 1000f / SAMPLE_RATE
 
+    /** AudioTrack 自己的欠载次数（API 24；与上面的环欠载是两件事）。 */
+    val deviceUnderruns: Int
+        get() = try { track?.getUnderrunCount() ?: 0 } catch (e: Throwable) { 0 }
+
+    /** AudioTrack 实际申请的底层缓冲（ms）。 */
+    val trackBufferMs: Int
+        get() = try { (track?.getBufferSizeInFrames() ?: 0) * 1000 / SAMPLE_RATE } catch (e: Throwable) { 0 }
+
     // ---------------------------------------------------------------- 内部
 
     private fun openTrack(): AudioTrack? {
-        return try {
-            val minBytes = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_MASK, PCM_ENCODING)
-            // 至少 200 ms：网络下行不是本地播放，缓冲小于网络抖动必然欠载
-            val bytes = maxOf(if (minBytes > 0) minBytes else 0,
-                WRITE_CHUNK * 4 * (TRACK_BUFFER_MS / 10))
-            val attrs = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build()
-            val format = AudioFormat.Builder()
-                .setEncoding(PCM_ENCODING)
-                .setSampleRate(SAMPLE_RATE)
-                .setChannelMask(CHANNEL_MASK)
-                .build()
-            // **不要 setPerformanceMode(LOW_LATENCY)**：它会让系统把底层缓冲压到很小
-            // （实测某些机型只剩 10~20 ms），网络包一抖就欠载，1 kHz 听起来就是咔哒。
-            // 网络下行本来就有 50~80 ms 缓冲，低延迟模式没有收益，只有风险。
-            val at = AudioTrack.Builder()
-                .setAudioAttributes(attrs)
-                .setAudioFormat(format)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(bytes)
-                .build()
-            if (at.state != AudioTrack.STATE_INITIALIZED) {
-                lastError = "AudioTrack 初始化失败（48 kHz 单声道 float 输出不被支持）"
+        // 顺序 = 延迟从低到高：stereo 低延迟（快通路）→ stereo 普通 → mono 低延迟 → mono 普通。
+        // 有些机型 mono 进不了快通路，有些机型不支持低延迟；**不能一条路失败就没声音**。
+        val variants = listOf(
+            Triple(CHANNEL_MASK, 2, true),
+            Triple(CHANNEL_MASK, 2, false),
+            Triple(CHANNEL_MASK_MONO, 1, true),
+            Triple(CHANNEL_MASK_MONO, 1, false),
+        )
+        var lastReason = "未知"
+        for ((mask, channels, lowLatency) in variants) {
+            try {
+                val minBytes = AudioTrack.getMinBufferSize(SAMPLE_RATE, mask, PCM_ENCODING)
+                if (minBytes <= 0) {
+                    lastReason = "getMinBufferSize($channels ch) = $minBytes"
+                    continue
+                }
+                // 40 ms；底层缓冲只吸收写线程调度，不承担网络 jitter（那是环的事）
+                val bytes = maxOf(minBytes, WRITE_CHUNK * 4 * channels * (TRACK_BUFFER_MS / 10))
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                val format = AudioFormat.Builder()
+                    .setEncoding(PCM_ENCODING)
+                    .setSampleRate(SAMPLE_RATE)
+                    .setChannelMask(mask)
+                    .build()
+                val builder = AudioTrack.Builder()
+                    .setAudioAttributes(attrs)
+                    .setAudioFormat(format)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setBufferSizeInBytes(bytes)
+                if (lowLatency && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                }
+                val at = builder.build()
+                if (at.state == AudioTrack.STATE_INITIALIZED) {
+                    outChannels = channels
+                    Log.i(
+                        TAG,
+                        "AudioTrack 打开：${channels}ch · ${if (lowLatency) "低延迟" else "普通"} · " +
+                            "底层 ${bytes * 1000 / (SAMPLE_RATE * 4 * channels)} ms",
+                    )
+                    return at
+                }
+                lastReason = "$channels ch/${if (lowLatency) "低延迟" else "普通"}：state=${at.state}"
                 at.release()
-                null
-            } else {
-                at
+            } catch (e: Throwable) {
+                lastReason = "$channels ch/${if (lowLatency) "低延迟" else "普通"}：${e.message ?: e.javaClass.simpleName}"
+                Log.w(TAG, "AudioTrack 创建失败（$channels ch, lowLatency=$lowLatency）", e)
             }
-        } catch (e: Throwable) {
-            lastError = "AudioTrack 创建失败：${e.message ?: e.javaClass.simpleName}"
-            Log.e(TAG, "AudioTrack 创建失败", e)
-            null
         }
+        lastError = "AudioTrack 创建失败：$lastReason"
+        Log.e(TAG, lastError ?: "AudioTrack 创建失败")
+        return null
     }
 
     private fun decodeLoop(dec: OpusDecoder) {
@@ -288,8 +324,8 @@ class SpeakerDownlink {
 
     private fun writeLoop(at: AudioTrack) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-        val chunk = FloatArray(WRITE_CHUNK)
-        val silence = FloatArray(WRITE_CHUNK)
+        val chunk = FloatArray(WRITE_CHUNK * outChannels)
+        val silence = FloatArray(WRITE_CHUNK * outChannels)
         try {
             // 预热：先攒够水位再开声，避免起播一段断音
             val deadline = System.currentTimeMillis() + PREBUFFER_WAIT_MS
@@ -303,7 +339,7 @@ class SpeakerDownlink {
             at.play()
             while (running) {
                 if (bufferedSamples() >= WRITE_CHUNK) {
-                    readInto(chunk)
+                    readIntoOut(chunk)
                     writeFully(at, chunk)
                 } else {
                     // 欠载：补静音，绝不停写 —— 播放时钟必须不断
@@ -340,18 +376,25 @@ class SpeakerDownlink {
         }
     }
 
-    private fun readInto(dst: FloatArray) {
+    /** 从环里取 480 个单声道样本，按实际通道数展开（stereo 左右相同）写进 [dst]。 */
+    private fun readIntoOut(dst: FloatArray) {
+        val ch = outChannels
         var idx = (rIdx.get() and (RING_SAMPLES - 1).toLong()).toInt()
         var pk = 0f
-        for (i in dst.indices) {
+        for (i in 0 until WRITE_CHUNK) {
             val v = ring[idx]
-            dst[i] = v
+            if (ch == 2) {
+                dst[i * 2] = v
+                dst[i * 2 + 1] = v
+            } else {
+                dst[i] = v
+            }
             val a = if (v < 0f) -v else v
             if (a > pk) pk = a
             idx++
             if (idx == RING_SAMPLES) idx = 0
         }
-        rIdx.addAndGet(dst.size.toLong())
+        rIdx.addAndGet(WRITE_CHUNK.toLong())
         peak = pk
     }
 }

@@ -66,6 +66,7 @@
     <string name="status_up">上行</string>
     <string name="status_down">下行</string>
     <string name="status_play">播放</string>
+    <string name="diag_latency">延迟</string>
     <string name="status_opus">Opus 探测</string>
     <string name="status_health">自检　</string>
 
