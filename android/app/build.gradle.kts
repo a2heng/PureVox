@@ -154,6 +154,44 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            // ── 与 CI 的 release 包共存 ─────────────────────────────────────────
+            // 两个包的**签名必然不同**：release 用 `PV_KEYSTORE` 里的固定密钥（§2.6），debug 用
+            // AGP 自动生成的 debug keystore（`~/.android/debug.keystore`）。Android 只允许
+            // **同签名的包**覆盖安装，包名相同而签名不同时系统直接拒绝（「应用未安装 / 签名不一致」）
+            // —— 于是调试就得先把手机上 CI 装的 release 卸载掉，装回来又得重新下 20 MB。
+            //
+            // 加包名后缀让两者成为**两个独立应用**：可以同时装、同时跑，各自独立的偏好与数据
+            // （调试包的设置不会污染正在用的 release）。副作用是包名变成
+            // `com.purevox.mic.debug` —— 所有 `packageName` 都是运行期取的，FileProvider 的
+            // authority 用的是 `${applicationId}.fileprovider`（manifest 里），会自动跟着变。
+            //
+            // 注意：调试包点「检查更新」仍会下载**同名 release 的** APK（更新源就是本仓库的
+            // release 列表），装上去是另一只应用而不是覆盖自己 —— 想更新 release 就去装那次
+            // 下载的结果，想在调试包里验升级流程就手动 adb install。这是刻意保留的真实链路。
+            applicationIdSuffix = ".debug"
+            // 界面「更新」卡片显示的是 versionName，带上 -debug 才不会把调试包当成线上版本。
+            versionNameSuffix = "-debug"
+        }
+    }
+
+    // ── APK 文件名 ──────────────────────────────────────────────────────────────
+    // 默认名 `app-debug.apk` / `app-release.apk` 只差一个单词：手机上同时装着调试包与 CI 的
+    // release 包时，从下载目录里挑哪一个装基本靠猜。统一成与 CI 产物相同的形状
+    // （`PureVox-<版本>-android-arm64.apk`，见 tools/automation/release_stage.sh）。
+    //
+    // **debug 的 -debug 后缀由 `versionNameSuffix` 带进来**，不要在这里再拼一次
+    // （否则 `PureVox-1.0-debug-debug-…`）：`versionName` 已经是 `1.0-debug`，于是调试包
+    // 自然叫 `PureVox-1.0-debug-android-arm64.apk`，CI 的 `PureVox-<年.月.日>-android-arm64.apk`
+    // 永远不会有这个后缀。
+    //
+    // 用 v1 变体 API 的 `outputFileName`：AGP 8.7 的 `androidComponents` 新 API 里 **没有**
+    // 改 APK 文件名的入口（`VariantOutput` 只有 versionCode / versionName / enabled），
+    // 所以这里只能走已弃用但仍在的 `applicationVariants`。AGP 9 删掉它时同步迁移。
+    applicationVariants.all {
+        val pvApkName = "PureVox-${versionName}-android-arm64.apk"
+        outputs.forEach {
+            (it as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = pvApkName
         }
     }
 

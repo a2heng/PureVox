@@ -417,8 +417,18 @@ jobs:
         run: |
           # 文件名用 `.apk`（点），artifact 名用 `-apk`（短横线）—— 与 Windows / Linux 那几档
           # 一致，也与发版时统一重命名成的 `…-android-arm64.apk` 对得上。
-          mv android/app/build/outputs/apk/release/app-release.apk \
-             "PureVox-Android-arm64-${{ env.STAMP }}.apk"
+          #
+          # **别写死 `app-release.apk`**：AGP 的默认产物名已经被 `app/build.gradle.kts` 改成
+          # `PureVox-<版本>-android-arm64.apk`（debug 是 `PureVox-<版本>-debug-android-arm64.apk`，
+          # 见那里的「APK 文件名」段）。写死旧名字的后果是这条 mv 直接
+          # 「No such file」，而且**只在打 tag 时才暴露**（那条路平时不跑）。
+          shopt -s nullglob
+          apks=(android/app/build/outputs/apk/release/PureVox-*-android-arm64.apk)
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::预期恰好 1 个 release APK，实际 ${#apks[@]} 个：${apks[*]:-（一个都没有）}"
+            exit 1
+          fi
+          mv "${apks[0]}" "PureVox-Android-arm64-${{ env.STAMP }}.apk"
 
       # **确证产物真的可安装**：签名 + 对齐缺一不可。
       #  · 签名：「assembleRelease 成功」不等于「签名生效了」—— gradle 完全可以静默出
