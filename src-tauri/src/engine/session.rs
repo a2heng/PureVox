@@ -1259,7 +1259,7 @@ fn run_column(
                 }
               }
             } else if let Some(net) = r.net_input.as_ref() {
-              // 网络麦克风：按引擎 10 ms 节拍从网络队列取一个 hop（欠载补静音）
+              // 网络麦克风：按引擎 10 ms 节拍从**入站环**取一格（欠载补 PLC / 淡出，见 net/rt.rs）
               net.take_rx_hop(&mut tmp);
               for i in 0..HOP {
                 acc[i] += tmp[i] * k;

@@ -198,7 +198,7 @@ pub fn spawn_net_pumps(
       let mut next = Instant::now();
       let mut rx = [0.0f32; HOP];
       while !stop2.load(Relaxed) {
-        // 近端：入站队列按引擎节拍取（欠载补静音，与 remote_mic 行同一条路）
+        // 近端：入站环按引擎节拍取（欠载 PLC / 淡出，与 remote_mic 行同一条路）
         net.take_rx_hop(&mut rx);
         near.push_hop(&rx);
         // 远端：本 tick 推给客户端的那一格。同一列没挂 `remote_speaker` 时它不动，
