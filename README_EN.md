@@ -39,7 +39,7 @@ servoing, denoise / TSE / AEC, OBS filters, device pool and mixing, networking (
 client), virtual drivers, media rows, in-app updates and packaging are all in place.
 
 - Downloads: [Releases](https://github.com/a2heng/PureVox/releases) (version = year.month.day).
-- Previous implementation (Python + Tkinter): `legacy-v2026.09.30.1944/`, read-only archive, not built.
+- The previous implementation (Python + Tkinter) is gone; use `git log` if you need it.
 - Docs: [DESIGN.md](DESIGN.md) (Chinese), [TAURI3.md](TAURI3.md) (Tauri 3 notes), [AGENTS.md](AGENTS.md).
 
 ## Quick start

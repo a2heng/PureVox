@@ -274,11 +274,34 @@ class MainActivity : AppCompatActivity() {
 
     private val ticker = object : Runnable {
         override fun run() {
+            reportClientStats()
             updateStatus()
             // 保活状态跟着刷：挂了 / 没挂上（带原因）随时看得到
             updateKeepalive()
             ui.postDelayed(this, STATUS_INTERVAL_MS)
         }
+    }
+
+    /**
+     * 把手机这一侧的播放 / 采集状态上报给电脑（2 Hz）。
+     *
+     * 电脑那边看不到手机环的水位、欠载和**实测时钟偏差**；没有这份上报，
+     * 「扬声器为什么还是慢」只能靠猜（AGENTS §1.4）。
+     */
+    private fun reportClientStats() {
+        if (!ready) return
+        val d = downlink ?: return
+        ws?.sendText(
+            Proto.stats(
+                levelMs = d.levelMs,
+                targetMs = d.targetMs,
+                underruns = d.underruns,
+                concealed = d.concealed,
+                late = d.late,
+                oneWayMs = if (d.oneWayMs.isNaN()) null else d.oneWayMs,
+                clockPpm = if (d.clockPpm.isNaN()) null else d.clockPpm,
+            ),
+        )
     }
 
     private val permissionLauncher =
@@ -676,15 +699,18 @@ class MainActivity : AppCompatActivity() {
                     is ServerMsg.Ready -> onReady(msg)
                     is ServerMsg.Err -> showErr("电脑：${msg.msg}")
                     is ServerMsg.Pong -> Unit
+                    // 时钟同步由 WsClient 自己处理（它要回 syncreply、存 offset），界面不需要知道
+                    is ServerMsg.Sync, is ServerMsg.Offset -> Unit
                     is ServerMsg.Other -> log("未识别的消息 t=${msg.type}")
                 }
                 updateStatus()
             }
         }
 
-        override fun onAudioPacket(packet: ByteArray) {
+        override fun onAudioPacket(seq: Int, tsUs: Int, payload: ByteArray) {
             val d = downlink
-            if (d != null && speakerOn) d.enqueue(packet)
+            // 缓冲在接收方（`audio/PlaybackRing.kt`）：这里只是「解码 → 塞进环」
+            if (d != null && speakerOn) d.onPacket(seq, tsUs, payload)
         }
 
         override fun onPong(id: Long, rtt: Double) {
@@ -771,7 +797,8 @@ class MainActivity : AppCompatActivity() {
 
         speakerOn = swSpeaker.isChecked && ready
         if (speakerOn && downlink == null) {
-            val d = SpeakerDownlink()
+            // 单向延迟要用电脑算出的时钟偏移（`sync`/`offset`，还没测出来时返回 null）
+            val d = SpeakerDownlink(clockOffsetUs = { ws?.clockOffsetUs })
             if (d.start()) {
                 downlink = d
                 ws?.sendText(Proto.sub())
@@ -914,7 +941,7 @@ class MainActivity : AppCompatActivity() {
         svcAudio = true
         val u = MicUplink(
             context = this,
-            onPacket = { pkt -> ws?.sendAudio(pkt, pkt.size) },
+            onPacket = { pkt, tsUs -> ws?.sendAudio(pkt, pkt.size, tsUs) },
             onError = { reason -> ui.post { showErr(reason) } },
             onWarning = { reason ->
                 ui.post {
@@ -1134,7 +1161,7 @@ class MainActivity : AppCompatActivity() {
         pbDownLevel.progress = rt.levelPercent(downPeak)
         tvDownLevel.text = if (dec == null) "未开启" else dbfs(downPeak)
 
-        val bufferedMs = dec?.bufferedMs()?.toInt() ?: 0
+        val bufferedMs = dec?.levelMs?.toInt() ?: 0
         pbBuffer.progress = (bufferedMs * 100 / BUFFER_FULL_MS).coerceIn(0, 100)
         tvBuffer.text = if (dec == null) "未开启" else "$bufferedMs ms"
 
@@ -1177,7 +1204,10 @@ class MainActivity : AppCompatActivity() {
                 append(
                     row(
                         getString(R.string.diag_latency),
-                        "环 ${bufferedMs} ms · 底层 ${dec.trackBufferMs} ms",
+                        "环 ${bufferedMs}/${dec.targetMs.toInt()} ms · " +
+                            "单向 ${if (dec.oneWayMs.isNaN()) "测量中" else fmt1(dec.oneWayMs) + " ms"} · " +
+                            "底层 ${dec.trackBufferMs} ms · " +
+                            "时钟 ${if (dec.clockPpm.isNaN()) "采样中" else "%+.0f ppm".format(dec.clockPpm)}",
                     ),
                 )
             }

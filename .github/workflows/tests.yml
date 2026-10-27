@@ -5,7 +5,7 @@
 #   - 缓存全部 restore-only，唯一写入者是 warm-cache.yml（也手动）；
 #   - 键与版本的唯一来源是 tools/automation/versions.env（本文件只组合，不硬编码版本）；
 #   - 门禁实现只有一处 tools/automation/check.py（Python，跨平台唯一实现）；
-#   - legacy-v*/ 快照不参与 CI（AGENTS.md 维护准则 3）。
+#   - `*.md` 改动不参与 CI。
 name: 测试（只跑门禁，手动触发）
 
 on:

@@ -31,7 +31,7 @@
 OBS 滤镜、设备池与混音、网络（含 Android 客户端）、虚拟驱动、媒体行、更新与打包都已落地。
 
 - 下载：见 [Releases](https://github.com/a2heng/PureVox/releases)（版本号 = 年.月.日）。
-- 旧实现（Python + Tkinter）：`legacy-v2026.09.30.1944/`，只读归档，不参与构建。
+- 旧实现（Python + Tkinter）已删除；需要时用 `git log` 查历史。
 - 设计： [DESIGN.md](DESIGN.md)；平台与工具链现状：[TAURI3.md](TAURI3.md)；协作约定：[AGENTS.md](AGENTS.md)。
 
 ## 快速开始

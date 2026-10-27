@@ -365,7 +365,7 @@
     box.appendChild(netBox)
 
     // 3) 装 CA 证书的按钮。网页版的麦克风靠 `getUserMedia`，它只在**安全上下文**里可用，
-    //    所以必须走 https（DESIGN.md §4.1.1）。装一次 CA 之后手机就永久不再报警。
+    //    所以必须走 https（DESIGN.md §4.1.11）。装一次 CA 之后手机就永久不再报警。
     //    按钮放在这里而不是「设置」里，因为它和地址、端口是同一件事：地址决定去哪台机器。
     const caBtn = document.createElement('button')
     caBtn.type = 'button'

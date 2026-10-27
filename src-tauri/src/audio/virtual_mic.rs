@@ -20,7 +20,7 @@
 //! （Windows 用 VB-CABLE，Rust 侧无实现）/ `virtual_mic_other.rs`（其它平台不可用）。
 //!
 //! Linux 架构（单一生产者 + 双出口，照搬 legacy
-//! `legacy-v2026.09.30.1944/pvplatform/system/_posix.py`）：
+//! 与旧 Python 实现一致（快照已删除）：
 //!   1. 单声道 null-sink `purevox_out`（`pw-cli create-node adapter`）—— 唯一写入口，
 //!      PureVox 的降噪音频输出到它；
 //!   2. 它的内置 monitor `purevox_out.monitor` 就是宽口径虚拟麦克风（Audacity /

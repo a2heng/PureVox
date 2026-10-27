@@ -41,6 +41,7 @@ use super::{HOP, SAMPLE_RATE, WorkerHandle};
 use crate::debug::{Probe, SharedHub, StreamInfo, now_ms};
 use crate::dsp::meter::{Meter, RateMeter, SPECTRUM_BIN_HZ};
 use crate::dsp::resampler::Converter;
+use crate::dsp::servo::Servo;
 
 /// 48k 源缓冲目标水位（伺服设定点，也是预热量）。
 const TARGET_MS: f64 = 40.0;
@@ -50,12 +51,6 @@ const CAP_MS: f64 = 300.0;
 const DEVICE_RING_MS: usize = 30;
 const POLL_PERIOD: Duration = Duration::from_millis(2);
 
-/// 伺服参数：闭环约为二阶，时间常数约 5 s、阻尼约 0.7（误差单位 ms）。
-const KP: f64 = 2.0e-4;
-const KI: f64 = 2.0e-5;
-const ADJ_LIMIT: f64 = 0.03;
-/// 水位 EMA 时间常数。
-const EMA_TAU_S: f64 = 1.0;
 /// 比例更新周期。
 const RATIO_PERIOD: Duration = Duration::from_millis(50);
 
@@ -137,44 +132,6 @@ pub fn spawn(
       stop.store(true, Relaxed);
       Err("打开设备超时（5 s）".into())
     }
-  }
-}
-
-/// PI 时钟伺服：输入环水位（ms），输出比例修正量 adj（正 = 消耗更快）。
-///
-/// 设定点由调用方给：输出设备那条链挂在 **48k 源环**（`TARGET_MS` = 40 ms），混音里每一路源挂在
-/// **自己的累计器**（约一格）—— 同一条控制律，两处只是被控对象不同（见 `audio/mixer.rs`）。
-pub(super) struct Servo {
-  target_ms: f64,
-  ema_ms: f64,
-  integral: f64,
-  pub(super) adj: f64,
-}
-
-impl Servo {
-  pub(super) fn new(target_ms: f64) -> Self {
-    Servo {
-      target_ms,
-      ema_ms: target_ms,
-      integral: 0.0,
-      adj: 0.0,
-    }
-  }
-
-  /// 预热完成 / 重同步后，从设定点重新起算水位（保留积分项 = 已学到的速率差）。
-  fn reset_level(&mut self) {
-    self.ema_ms = self.target_ms;
-  }
-
-  pub(super) fn update(&mut self, level_ms: f64, dt_s: f64) {
-    let a = (dt_s / EMA_TAU_S).min(1.0);
-    self.ema_ms += a * (level_ms - self.ema_ms);
-    let e = self.ema_ms - self.target_ms;
-    self.integral += e * dt_s;
-    // 抗饱和：积分项单独不超过限幅
-    let i_lim = ADJ_LIMIT / KI;
-    self.integral = self.integral.clamp(-i_lim, i_lim);
-    self.adj = (KP * e + KI * self.integral).clamp(-ADJ_LIMIT, ADJ_LIMIT);
   }
 }
 
@@ -313,7 +270,7 @@ fn run(
         // adj>0 = 水位高于目标 = 要消耗更快。比例是「输出/输入」，FixedAsync::Input 下每读 1 hop(480)
         // 产出 ~480*ratio 个设备样本，故 48k 环的消耗速率 = 100/ratio hop/s：
         // ratio 越大 → 读 hop 越慢 → 48k 环越满。要排水位就得 ratio<1 → 用 (1.0 - adj)。
-        if let Err(e) = conv.set_relative_ratio(1.0 - servo.adj) {
+        if let Err(e) = conv.set_relative_ratio(1.0 - servo.adj()) {
           worker_error = Some(e);
         }
       }
@@ -360,7 +317,7 @@ fn run(
         measured_output_rate: out_rate.push(now, stats.frames.load(Relaxed)),
         resampler: conv.description().to_string(),
         resampler_delay_ms: conv.delay_frames() as f64 * 1000.0 / dev_rate as f64,
-        asrc_adjust_ppm: Probe::ok(servo.adj * 1e6),
+        asrc_adjust_ppm: Probe::ok(servo.adj() * 1e6),
         callbacks,
         callback_frames: stats.callback_frames(),
         frames_in: consumed,

@@ -45,7 +45,9 @@
     节拍诊断 `net/diag.rs`。Android 客户端用系统自带 `MediaCodec`（`audio/opus`），
     **无 JNI / 无 NDK**；明文 `ws://` + `usesCleartextTraffic`。
 - Android 客户端已能构建并运行（2026-10-08）：`./gradlew assembleDebug`（JDK17 + SDK 34）出
-  `app-debug.apk`，`adb install` + 启动成功。**发版走 `assembleRelease` + 签名**（凭据走环境变量、
+  `PureVox-1.0-debug-android-arm64.apk`（debug 包名带 `.debug` 后缀、应用名 **PureVox Debug**，
+  与 CI 的 release 包**共存**互不覆盖，见 `android/README.md`「debug 包与 CI 的 release 包共存」），
+  `adb install` + 启动成功。**发版走 `assembleRelease` + 签名**（凭据走环境变量、
   keystore 在仓库外，见 `android/README.md`；CI 缺 secret 直接失败，不发未签名包）。修掉了一批从未编译过的 Kotlin 错误：
   `MediaCodec.queueInputBuffer` 少传 `flags`、`AudioRecord.read(float[])` 少传 `readMode`、
   `MediaCodecInfo` 上不存在的 `isFormatSupported`（应取 `getCapabilitiesForType(MIME)`）、
@@ -477,7 +479,7 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
     - **Android**：JDK17 + `install_android_sdk.py` + 从 `gh secret` 还原签名 keystore →
       `./gradlew assembleRelease` → **签名 release APK**（`PV_REQUIRE_SIGNING=1`，缺 secret 当场失败）。
     - tag 时 `release_notes.py`（上一 tag 区间）+ `gh release create` 附带全部产物；手动只打包、不建 release。
-  - **没有 Lite 变体**（Lite 已取消；遗留资产已收进只读快照 `legacy-v2026.09.30.1944/`）。
+  - **没有 Lite 变体**（Lite 已取消，遗留资产已删除）。
 - **缓存纪律**：`tests.yml` / `release.yml` 全部 `actions/cache/restore`（无 save）；键与版本唯一来源 =
   `tools/automation/versions.env`（`CACHE_GEN` / `RUST_TOOLCHAIN` / `TCLI_VER` / `TS_VER` / `NODE_VER` /
   `LINUX_RUNNER` / `JDK_VER` / `ANDROID_PLATFORM` / `ANDROID_BUILD_TOOLS`），工作流只组合

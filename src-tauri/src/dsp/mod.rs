@@ -19,3 +19,4 @@
 
 pub mod meter;
 pub mod resampler;
+pub mod servo;

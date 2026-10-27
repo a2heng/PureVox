@@ -14,8 +14,8 @@
 >   SessionPlan、设备生命周期与热插拔、模型生命周期、内存管理、扩展指南、实施顺序）。
 >   **实现与 DESIGN.md 冲突时以 DESIGN.md 为准**；改设计先改它再改代码。**开工前先读**。
 > - `TAURI3.md`：Tauri 3 现状、文档来源与固化方式、版本锚点、编译步骤、踩坑。**开工前先读**。
-> - `legacy-v2026.09.30.1944/`：旧实现最后版本（含当时的 AGENTS.md / DESIGN.md / 使用手册），
->   实现任何功能前先在这里查清旧行为与设计意图。
+> 旧实现的只读快照（`legacy-v*/`）已按要求于 2026-10-27 **删除**：历史行为一律以现行
+> `DESIGN.md` + 本文件为准，不再有可查的旧代码。
 
 ---
 
@@ -66,9 +66,12 @@ release 构建同样保留（不允许用编译开关剔除）。
   **新代码读 `calib_report`**：结构化、带 `schema_version` 与曲线，见 1.4），以及
   `virtual_mic`（Linux 虚拟驱动状态：sink / 真源是否已创建；非 Linux 为 `unavailable` + 原因）。
 - 另有 `net`（手机 ⇄ 电脑，DESIGN.md §4.1）：服务端口、已连接客户端数、订阅音频数、
-  进出包与样本计数、进／出站水位、欠载与丢弃数、已注入按键与字符数、客户端自测 RTT、
-  `remote_input` 开关状态、最近错误原因，以及 `codec`（Opus 版本 + 实际加载到的
-  `opus.dll` 路径；加载不到时为 `unavailable` + 原因）。
+  进出包与样本计数、**每方向的水位/深度/抖动（EMA + 最坏）/最大到达间隔**、
+  **实测单向延迟**（NTP 偏移 + 帧头时间戳）、欠载 / PLC / 裁剪 / 空环到达 / 丢包计数、
+  出站每路的待发 hop 与丢弃数、**客户端自报**（环水位、欠载、掩盖、时钟偏差 ppm）、
+  时钟偏移估计、RTT、已注入按键与字符数、`remote_input` 开关、最近错误原因，以及
+  `codec`（Opus 版本 + 实际加载到的 `opus.dll` 路径）。判定在 Rust 一侧算
+  （`hub.rs` 的 `rx_verdict`/`tx_verdict`），面板只渲染。
 - 另有 `update`（更新检查，DESIGN.md §4.2）：阶段（`idle` / `checking` / `up_to_date` /
   `available` / `downloading` / `ready` / `installing` / `installed` / `unsupported` / `failed`）、
   本机显示版本与构建时间戳、**本机安装方式 `install_kind`**（`appimage` / `deb` / `rpm` /
@@ -176,8 +179,8 @@ release 构建同样保留（不允许用编译开关剔除）。
   界面也不再提供「未选择」。**远端是否接受裸输出设备 ID 按平台**（`devices::loopback_accepts_device_id`）：
   Windows = WASAPI 端点可以（`loopback:<端点>` 或裸端点 ID），Linux = **只认 `loopback` / `loopback:<Pulse sink>`**
   （填 ALSA 设备 ID 会拼出 `<id>.monitor` 这种无效 monitor，far 永远取不到）。
-- **网络（手机 ⇄ 电脑）**（`src-tauri/src/net/`，协议 / 卡片 / TLS 见 DESIGN.md §4.1、§4.1.1、
-  §4.1.2）：一个 axum 服务绑 `0.0.0.0`，默认端口 **59123**（界面可改，持久化到
+- **网络（手机 ⇄ 电脑）**（`src-tauri/src/net/`，协议 / 卡片 / TLS 见 DESIGN.md §4.1、§4.1.11、
+  §4.1.12）：一个 axum 服务绑 `0.0.0.0`，默认端口 **59123**（界面可改，持久化到
   `~/.purevox/settings.json`），路径 `/ws`（另有 `/health` 自检、`/ca-cert` 下载 CA、
   `/libopus-wasm.js` 给网页版、`/` 是网页版客户端）。三条能力共用一条连接：
   `remote_mic` 输入行（手机麦克风→电脑，**不需要虚拟声卡驱动**，直接进引擎可降噪）、
@@ -186,7 +189,7 @@ release 构建同样保留（不允许用编译开关剔除）。
   命令 `net_start` / `net_stop` / `net_restart` / `net_status` / `net_running` /
   `net_set_remote_input` / `net_set_port` / `net_ifaces` / `net_select_ip` / `net_local_addr` /
   `net_ca_pem`；状态进快照 `net` 段。
-  - **只监听 HTTPS，证书自签（CA + 叶两级）**（DESIGN.md §4.1.2）：网页版客户端的麦克风靠
+  - **只监听 HTTPS，证书自签（CA + 叶两级）**（DESIGN.md §4.1.12）：网页版客户端的麦克风靠
     `getUserMedia`，它**只在安全上下文里可用**，`http://<局域网IP>` 浏览器直接拒绝、**没有
     任何绕过办法**。CA（10 年）与叶证书（397 天，SAN 覆盖 `localhost` + 当前全部可直连 IPv4，
     换网络重签）存 `~/.purevox/ca/`；**必须两级**——Android 的「安装证书 → CA 证书」只接受
@@ -220,18 +223,23 @@ release 构建同样保留（不允许用编译开关剔除）。
     JNI 边界上做 float↔int16 转换（libopus 只吃 `opus_int16`；`OPUS_SET_INPUT_SIGNATURE`
     那套只在自定义构建里有，标准构建走 `OPUS_SET_LSB_DEPTH(16)`），Java 侧仍是
     `FloatArray` 全链路，转换只发生一次。
-  - **主时钟在引擎侧**：网络任务只把解码后的样本塞进队列（进出各有界：目标 50 ms、
-    硬顶 80 ms，超限丢最旧），由列工作线程按自己的 10 ms 节拍取；欠载补静音。
-    **硬顶不够，必须还会「慢慢回到目标」**（`net/hub.rs` 的 `CAP_HOPS`/`TARGET_HOPS`/`catchup`）：
-    两个方向的推/取都是各自 10 ms 定时器，水位是**随机游走** —— 一次**会话重建**（换列、改设备、
-    打开设备重试）期间没人取、手机却一直在推，水位就一次性垫高，之后推取同速**再也降不回来**。
-    实测 2026-10-18：手机麦克风本该 10~50 ms，**加一列之后一直拖 230 ms**（用户报的「一开串流
-    麦克风就延迟」其实是「每次重建都把水位垫高一截」，跟串流本身无关）；同一处 `IN_CAP` 还曾被写成
-    `SAMPLE_RATE / 100 * 80` = 38400 样本 = **800 ms**（本意 80 ms，差 10 倍）→ 上限一律由 hop 派生。
-    取舍：收敛只在超出目标时发生，每 1 s 多丢 1 个 hop（听感是偶发一跳），换来稳定在目标附近的延迟；
-    水位在目标以内**一点不丢**（有单测钉住）。
-  - **出站节拍用绝对时刻**（`next += 10ms` 再 `sleep_until(next)`），不要
-    `sleep(10ms - 本轮已用)`：后者实测只产 ~64 包/s（列工作线程与反馈端同理，§3.3）。
+  - **每个方向只有一处缓冲，且在接收方**（DESIGN.md §4.1.4）：入站环固定 **20 ms**，
+    出站**没有队列**——引擎每出一个 hop，连接任务立刻编码发走（服务端不再有定时器）。
+    接收方一个固定深度的环同时吸收网络抖动与两端晶振差；运行期只有两种动作：
+    **超了丢一格（10 ms）、空了补一格（PLC / 淡出）**。
+    **不做任何运行期自适应**（不按抖动调深度、不做 PI 伺服、不重采样）：实测晶振差
+    −24/−29 ppm、局域网抖动 0.4~1 ms、10 ms 绝对节拍误差 0.0%（`audio/clock_probe.rs`），
+    25 ppm 的漂移约 13 分钟才需要修正一格；前两版按抖动自适应 + 变速重采样，实测反而
+    摆出 ±1500 ppm 颤音、起播被误判成欠载。**网络差就是效果差，不为坏网络做补偿。**
+  - **发送节奏**：出站用「推来即发」（`OutboundSub::recv()`），**没有 10 ms 定时器**；
+    上行是手机每读满 480 样本就发一包。定时器 + 队列正是旧版 20~50 ms 延迟的来源。
+    两端的 `TCP_NODELAY` 必须开（10 ms 一包、几十字节，Nagle 会攒成串）。
+  - **端口 / Windows 定时器精度**：出站不再需要 1 ms 定时器精度，`pacer_*` 已删除；
+    别再因为「音频要准」把 `timeBeginPeriod` 加回服务端（那只在测试脚本里需要）。
+  - **测量是设计的一部分**（AGENTS §1.4）：音频帧头 8 字节（`seq` + 发送方 µs），
+    `sync`/`syncreply`/`offset` 做 NTP 四时戳估时钟偏移，客户端 2 Hz 上报 `st`
+    （环水位/欠载/掩盖/晚到/单向延迟/**自己实测的音频时钟 ppm**）。结论进 `/debug` 的
+    `net` 段与手机「诊断 → 音频」，判定只在 Rust 一侧算（`hub.rs` 的 `rx_verdict`/`tx_verdict`）。
   - **按键注入**（`net/keys.rs`）：`SendInput` + **Set 1 扫描码**（不是虚拟键码，能走真实
     键盘布局并区分左右修饰键）；文本用 `KEYEVENTF_UNICODE` 逐 UTF-16 码元注入（中文、emoji
     都能打，且不经过电脑端输入法）。映射表在 `net/keymap.rs`（105 键，Android 键码常量
@@ -245,6 +253,16 @@ release 构建同样保留（不允许用编译开关剔除）。
   缓冲水位、欠载/丢包/解码掩盖）两块 + 日志，**默认收起**、标题行点击展开（状态面板不消失，
   只是不再一上来占满屏），「复制诊断」一键把整块塞剪贴板（报问题不必截图）；
   实时量没有样本时写「采样中…」、没连上写「未连接」、没订阅写「未开启」，**不伪造 0**。
+  - **本机调试包与 CI 的 release 包共存**（2026-10-27）：debug 构建带
+    `applicationIdSuffix = ".debug"` + `versionNameSuffix = "-debug"`，源集
+    `app/src/debug/res/values/strings.xml` 把应用名覆盖成 **PureVox Debug**，APK 产物统一命名为
+    `PureVox-<版本>[-debug]-android-arm64.apk`（`versionNameSuffix` 带出 `-debug`，别在文件名里
+    再拼一次）。**原因**：Android 只允许同签名的包覆盖安装，而 release 用固定密钥、debug 用 AGP
+    生成的 debug keystore，包名相同时**必须卸载线上包才能调试**（装回来还要重下一次）。换包名后
+    两者是两个独立应用（独立偏好与数据），`packageName` 全是运行期取的、FileProvider 的
+    authority 写的是 `${applicationId}.fileprovider`，所以跟着自动变。**别改回同名**，
+    也别忘了 `release.yml` 的 Stage APK 步骤按新文件名 glob（写死 `app-release.apk` 只在打 tag
+    时才炸）。调试包点「检查更新」仍拉 release 的包，装上去是**第二只应用**，这是刻意的真实链路。
   - **麦克风 API 下拉**（`audio/MicSources.kt`）：按**常用程度**从上到下列出
     `MIC` / `VOICE_RECOGNITION` / `VOICE_COMMUNICATION` / `CAMCORDER` / `UNPROCESSED` /
     `VOICE_PERFORMANCE` / `DEFAULT`，末尾是系统专用 / 隐藏 API（`VOICE_CALL` /
@@ -324,7 +342,7 @@ release 构建同样保留（不允许用编译开关剔除）。
 - **桌面声音输入（`loopback` 输入行）**：`device` = `loopback`（系统默认输出）或
   `loopback:<渲染端点ID｜sink 名>`（按平台，同 AEC 远端取值规则），复用 AEC 的回环采集
   （`audio/loopback.rs`）；行内增益 `volume_db`（-30~6 dB，默认 -6 dB，系统混音偏响）。
-- **手机 / 客户端的入口 = 网络行卡片（`ui/netrow.js`，DESIGN.md §4.1.1）**：顶栏**没有**独立的
+- **手机 / 客户端的入口 = 网络行卡片（`ui/netrow.js`，DESIGN.md §4.1.11）**：顶栏**没有**独立的
   「手机」面板——网络麦克风 / 网络扬声器那两类行就是全部的手机操作入口（没建网络行就先加行）。
   卡片分三层职责，**不要混**：① **服务本身**（状态灯 + 状态串、`启动` / `停止` / `重启服务`）；
   ② **面向客户端的地址**（网卡下拉 + 可编辑端口，二维码 / 复制 / 网址都跟着选中的地址走；
@@ -535,14 +553,13 @@ release 构建同样保留（不允许用编译开关剔除）。
 
 1. **一个功能只有一条实现路径**。有多种做法时只保留一种并写进文档，被替代的实现直接删除，不留备选。
 2. **先扩展，再新建**：先看已有函数/模块能否扩展，确认不能才新建。
-3. **legacy 快照只读冻结**：`legacy-v2026.08.20.1943/`（音频链条化重构前）与
-   `legacy-v2026.09.30.1944/`（Tauri 迁移前最后的 Tk 版本；现役实现不再引用的旧二进制也
-   集中收纳在这里，见 §2.5）禁止修改、删除，不参与构建、CI、打包、测试及任何批量改动
-   （格式化、换行符归一、重命名等一律绕过）。只读查阅。
+3. **不再保留旧实现快照**：`legacy-v*/` 两个只读归档已按要求删除（2026-10-27）。
+   由此产生的两条纪律：① 想查「旧行为」只能看 git 历史（`git show <old>:path`），
+   工作树里**没有**第二份实现可以照抄；② 现役树里**不许**再堆积用不到的旧资产
+   （见 §2.5）——删掉的东西就别以「以后可能用得上」为由留一份。
 4. **当前不写用户更新日志**：旧的 `about/changelog.md` 已随旧实现归档；开发进度记在 `TAURI3.md`。
    新版具备用户可见功能后再恢复更新日志，届时在本节写明位置。
-5. **旧实现遗留二进制**（新实现不再引用的一律收进只读快照 `legacy-v2026.09.30.1944/`，
-   现役树里只留仍在用的）：
+5. **遗留二进制：只剩仍在用的**（不再有「收进快照备查」这条路，不用就删）：
    - **现役引用**：`server/opus.dll`（Windows 网络 Opus，运行时加载，见 §1.2）、
      `android/app/src/main/jniLibs/arm64-v8a/libpvopus.so`（Android 网络 Opus，内含
      libopus 1.5.2 静态库 + `android/app/src/main/cpp/pv_opus.cpp` 的 JNI 转发层，
@@ -550,10 +567,10 @@ release 构建同样保留（不允许用编译开关剔除）。
      `android/app/src/main/cpp/third_party/opus/{include/*.h, arm64-v8a/libopus.a}`（同上，编译输入）、
      `android/gradle/wrapper/gradle-wrapper.jar`（Android 客户端构建，**勿替换**）、
      `assets/icons/audio_icon_base.png`（`cargo tauri icon` 源图）。
-   - **已收进快照**（新实现不引用，现役树里对应文件已删除，只存快照备查）：
+   - **已删除**（现役实现不引用，2026-10-27 随快照一起清掉）：
      `assets/icons/{audio_icon.ico, tray_running.ico, tray_stopped.ico, lite_tray.ico, lite_tray.png}`、
      `assets/fonts/ark-pixel-12px-monospaced-zh_cn.ttf`、`html/wasm/libopus-encoder.wasm.min.wasm`。
-     现役图标是 `src-tauri/icons/`、界面用系统字体（不捆绑字体文件），与旧资产**无重复**。
+     现役图标是 `src-tauri/icons/`、界面用系统字体（不捆绑字体文件）。
 6. **发版 tag**：主线 `v<yyyy.MM.dd.HHmm>`。CI 失败、从未生成 release 的 tag 必须删除
    （`git tag -d <tag> && git push origin :refs/tags/<tag>`），否则会截断下一个 release 的提交记录。
    **应用/包版本号 = 年.月.日**：由 `tools/automation/version.py`（唯一实现，跨平台）从 tag
@@ -620,7 +637,7 @@ release 构建同样保留（不允许用编译开关剔除）。
       `update/mod.rs` 的两个单测也从 `release_stage.sh` 读产物名：一个查命名互不重叠，
       另一个查**每个产物名都落在运行期 `ASSET_SUFFIXES` 认的后缀里** —— 后缀对不上不会
       报任何错，只是自动更新静默失效，用户只看到「永远有新版本」。
-       **没有 Lite 变体**（其遗留资产已收进只读快照 `legacy-v2026.09.30.1944/`，见 §2.5）。
+       **没有 Lite 变体**（遗留资产已删除，见 §2.5）。
    - **缓存纪律**：`tests.yml` / `release.yml` 只 restore、不写缓存；键为
      `purevox-<RUNNER_OS>-<发行版>-<桶>-<CACHE_GEN>-<Cargo.lock 哈希>`，**发行版段来自
      `versions.env` 的 `LINUX_CACHE_TAG`**（`runs-on:` 写死，发行版静态已知，不在 runner 上探测 ——
@@ -644,7 +661,7 @@ release 构建同样保留（不允许用编译开关剔除）。
    - **Linux 系统依赖**（本机与 CI 同）：`libwebkit2gtk-4.1-dev libssl-dev libxdo-dev
      librsvg2-dev libgtk-3-dev libasound2-dev pkg-config file rpm`（wry→WebKitGTK、
      cpal→ALSA、rpmbuild→rpm）；运行期还需系统 `libopus0`（缺时网络音频降级，见 §1.2）。
-   - `legacy-*/` 快照与 `*.md` 改动不进 CI。
+   - `*.md` 改动不进 CI。
   - **Linux 基线 = ubuntu-24.04，打包与门禁都用它（唯一一档，不分双轨）**：
     glibc 的版本化符号**单方向兼容** —— 新 glibc 必定保留全部旧版本标签（实测 2.43 的
     libm 同时带 `log10f@GLIBC_2.2.5` 与 `log10f@@GLIBC_2.43`），所以「老基线编的包在新

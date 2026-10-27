@@ -361,17 +361,47 @@ function renderNet(net) {
       `${T('出站 {n} 包/s', { n: rateNum(net.tx_packets_per_s) })} ｜ ${T('进站 {n} 包/s', { n: rateNum(net.rx_packets_per_s) })} ｜ ` +
       `${T('往返时延 {n}', { n: rtt })} ｜ ${T('远程输入')} ${ri}`,
   )
-  // 逐路订阅水位：合计数看不出「是谁在拖」（AGENTS.md 1.2）
+  // 逐路订阅：出站**没有缓冲**（推来即发），所以这里看的是「有没有积压 / 丢没丢」；
+  // 真正的水位在客户端那一侧，由客户端 2 Hz 上报（`net.client`）—— 一处缓冲，一处报数。
   const subs = net.tx_subs
-    .map((x, i) => `${i + 1}# ${x.level_ms.toFixed(0)} ms` + (x.full ? T('（顶格）') : ''))
+    .map(
+      (x, i) =>
+        `${i + 1}# ` +
+        T('待发 {n} hop', { n: x.pending_hops }) +
+        (x.dropped ? T('（丢 {n}）', { n: x.dropped }) : ''),
+    )
     .join('  ')
-  const [dt, dc] = rawRate(net.tx_dropped, net.tx_dropped_per_s)
-  const [dr] = rawRate(net.rx_dropped, net.rx_dropped_per_s)
-  put(
-    $('net-subs'),
-    `${subs || T('没有订阅')} ｜ ${T('上限 {n} ms', { n: net.tx_cap_ms.toFixed(0) })} ｜ ${T('出站丢样本')} ${dt} ｜ ${T('进站丢样本')} ${dr}`,
-    dc,
-  )
+  const [, dc] = rawRate(net.tx_dropped, net.tx_dropped_per_s)
+  // 上行（手机 → 电脑）：单向延迟 + 接收环水位/目标 + jitter
+  const upLat =
+    net.rx_latency_ms == null
+      ? T('（测时延中）')
+      : net.rx_latency_ms.toFixed(1) + ' ms'
+  const up = `${T('上行')} ${upLat} ｜ ` +
+    T('水位 {a}/{b} ms', {
+      a: net.rx_level_ms.toFixed(0),
+      b: net.rx_target_ms.toFixed(0),
+    }) +
+    // jitter / 最大间隔 / 裁剪 / 欠载 / PLC / 丢包：**全量**摆出来（测量不花钱）
+    ` ｜ jitter ${net.rx_jitter_ms.toFixed(1)}/${net.rx_worst_jitter_ms.toFixed(1)} ms` +
+    ` ｜ ${T('最大间隔 {n} ms', { n: net.rx_max_gap_ms.toFixed(0) })}` +
+    (net.rx_trims ? ' ｜ ' + T('裁 {n} 格', { n: net.rx_trims }) : '') +
+    (net.rx_underruns ? ' ｜ ' + T('欠载 {n}', { n: net.rx_underruns }) : '') +
+    (net.rx_plc ? ' ｜ ' + T('PLC {n}', { n: net.rx_plc }) : '') +
+    (net.rx_lost ? ' ｜ ' + T('丢包 {n}', { n: net.rx_lost }) : '') +
+    (net.rx_late ? ' ｜ ' + T('空环到达 {n}', { n: net.rx_late }) : '')
+  // 下行（电脑 → 手机）：客户端自己那一环 —— 延迟真正的落点
+  const c = net.client
+  const down = c
+    ? `${T('手机环')} ${c.level_ms.toFixed(0)}/${c.target_ms.toFixed(0)} ms` +
+      (c.one_way_ms == null ? '' : ' ｜ ' + T('下行 {n} ms', { n: c.one_way_ms.toFixed(1) })) +
+      (c.underruns ? ' ｜ ' + T('欠载 {n}', { n: c.underruns }) : '') +
+      (c.concealed ? ' ｜ ' + T('掩盖 {n}', { n: c.concealed }) : '') +
+      (c.clock_ppm == null
+        ? ' ｜ ' + T('时钟偏差测时中')
+        : ' ｜ ' + T('时钟 {n} ppm', { n: c.clock_ppm.toFixed(0) }))
+    : T('（客户端未上报）')
+  put($('net-subs'), `${subs || T('没有订阅')} ｜ ${up} ｜ ${down}`, dc)
   putHealth($('net-verdict'), { state: 'ok', value: net.verdict })
   putProbe($('net-codec'), net.codec, (v) => v)
 }

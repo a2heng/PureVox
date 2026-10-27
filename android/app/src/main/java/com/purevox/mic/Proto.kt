@@ -24,15 +24,29 @@ import org.json.JSONObject
 /**
  * 电脑端 WebSocket 协议的唯一镜像（对应 `src-tauri/src/net/proto.rs`）。
  *
- * 这里只做「拼 JSON / 解 JSON」，不含任何状态 —— 状态都在 `net/WsClient.kt` 与
- * `MainActivity.kt`。字段只增不改，与电脑端保持一致。
+ * 这里只做「拼 JSON / 解 JSON / 拼 8 字节帧头」，不含任何状态 —— 状态在
+ * `net/WsClient.kt`、`audio/SpeakerDownlink.kt`、`audio/MicUplink.kt`。
  *
- * 传输：**TLS**（`wss://` —— 电脑端只监听 HTTPS，自签证书的放行规则见 `net/LocalTls.kt`），
- * 二进制帧 = 一个 Opus 包（无头），文本帧 = 本文件的消息。
+ * ## 协议 3 与「帧头 + 时间戳」
+ *
+ * 音频包 = **8 字节帧头 + 一个 Opus 包**（大端）：
+ *
+ * ```text
+ *   0        4        8
+ *   | seq u32| ts u32 | Opus 载荷…
+ * ```
+ *
+ * - `seq`：每个方向独立的包序号，用来判丢包 / 重复；
+ * - `ts`：发送方的单调时钟（**微秒**，u32，71.6 分钟回绕）。收端靠它 + 时钟偏移
+ *   （`sync`/`syncreply` 估出来）算**单向延迟** —— 没有它，「延迟到底多少毫秒」
+ *   只能靠猜。回绕比较一律用 [usDiff]。
+ *
+ * 缓冲**只在接收方**：电脑 → 手机这条路上，电脑每出一个 10 ms hop 就发一包，
+ * 手机上唯一的播放环（`audio/Rt.kt`）负责吸收网络抖动与两端晶振差。
  */
 object Proto {
     /** 协议版本；必须等于电脑端的 `proto::PROTO`，否则电脑回 `err` 并断开。 */
-    const val VERSION = 1
+    const val VERSION = 3
 
     /** 端口与路径（沿用旧实现）。 */
     const val PORT = 59123
@@ -48,8 +62,14 @@ object Proto {
     /** 上行建议码率（bit/s）；电脑端出站也是 32 k。 */
     const val BITRATE = 32000
 
+    /** 帧头字节数（电脑端 `ready.header_bytes` 会再报一遍，两边都要对）。 */
+    const val HDR_BYTES = 8
+
+    /** 帧 = 10 ms @48 kHz。 */
+    const val FRAME_SAMPLES = 480
+
     /**
-     * WebSocket 地址。**必须是 `wss://`**：电脑端的服务是 HTTPS（DESIGN.md §4.1.1）。
+     * WebSocket 地址。**必须是 `wss://`**：电脑端的服务是 HTTPS（DESIGN.md §4.1.2）。
      *
      * 为什么必须 HTTPS：`getUserMedia` 之类要「安全上下文」，而 `http://<局域网IP>` 不是；
      * 更根本的是**编解码器放在浏览器里**，非安全上下文下浏览器直接禁用。同样地，
@@ -60,13 +80,13 @@ object Proto {
     /** 自检地址，同样走 HTTPS。 */
     fun healthUrl(host: String, port: Int = PORT): String = "https://$host:$port$HEALTH_PATH"
 
-    /** `{"t":"hello","proto":1}` —— 连上必须先握手，电脑回 `ready` 才算可用。 */
+    /** `{"t":"hello","proto":3}` —— 连上必须先握手，电脑回 `ready` 才算可用。 */
     fun hello(): String = JSONObject().put("t", "hello").put("proto", VERSION).toString()
 
     /** `{"t":"sub"}` —— 订阅电脑音频（电脑当手机音箱）。 */
     fun sub(): String = JSONObject().put("t", "sub").toString()
 
-    /** `{"t":"unsub"}` —— 退订电脑音频（关扬声器时发，服务端不再往没人取的队列里推）。 */
+    /** `{"t":"unsub"}` —— 退订电脑音频（关扬声器时发）。 */
     fun unsub(): String = JSONObject().put("t", "unsub").toString()
 
     /** `{"t":"text","s":"..."}` —— 手机输入法**已组合**好的文本。 */
@@ -81,6 +101,75 @@ object Proto {
 
     /** `{"t":"rtt","ms":7.5}` —— 时延由手机算（它才是发 ping 的一方），上报给电脑调试界面。 */
     fun rtt(ms: Double): String = JSONObject().put("t", "rtt").put("ms", ms).toString()
+
+    /**
+     * `{"t":"st",…}` —— 手机侧播放 / 采集状态，2 Hz 上报。
+     *
+     * 为什么手机要报：**缓冲在接收方**（DESIGN.md §4.1），电脑那一侧看不到手机环的水位、
+     * 欠载、以及手机音频时钟实测偏差。没有这份上报，「为什么还是慢」只能靠猜。
+     */
+    fun stats(
+        levelMs: Double,
+        targetMs: Double,
+        underruns: Long,
+        concealed: Long,
+        late: Long,
+        oneWayMs: Double?,
+        clockPpm: Double?,
+    ): String {
+        val o = JSONObject()
+            .put("t", "st")
+            .put("level_ms", round3(levelMs))
+            .put("target_ms", round3(targetMs))
+            .put("underruns", underruns)
+            .put("concealed", concealed)
+            .put("late", late)
+        if (oneWayMs != null) o.put("one_way_ms", round3(oneWayMs))
+        if (clockPpm != null) o.put("clock_ppm", round3(clockPpm))
+        return o.toString()
+    }
+
+    /** `{"t":"syncreply",…}` —— 对电脑 `sync` 的 NTP 四时戳应答。三个时间戳都是手机时钟（µs）。 */
+    fun syncReply(id: Long, t0: Int, t1: Int, t2: Int): String = JSONObject()
+        .put("t", "syncreply")
+        .put("id", id)
+        .put("t0", t0)
+        .put("t1", t1)
+        .put("t2", t2)
+        .toString()
+
+    /** 拼 8 字节帧头（大端）。 */
+    fun header(seq: Int, tsUs: Int): ByteArray {
+        val b = ByteArray(HDR_BYTES)
+        b[0] = (seq ushr 24).toByte()
+        b[1] = (seq ushr 16).toByte()
+        b[2] = (seq ushr 8).toByte()
+        b[3] = seq.toByte()
+        b[4] = (tsUs ushr 24).toByte()
+        b[5] = (tsUs ushr 16).toByte()
+        b[6] = (tsUs ushr 8).toByte()
+        b[7] = tsUs.toByte()
+        return b
+    }
+
+    fun readU32(b: ByteArray, at: Int): Int =
+        ((b[at].toInt() and 0xFF) shl 24) or
+            ((b[at + 1].toInt() and 0xFF) shl 16) or
+            ((b[at + 2].toInt() and 0xFF) shl 8) or
+            (b[at + 3].toInt() and 0xFF)
+
+    /**
+     * 带符号的 u32 微秒差（跨回绕有效）。
+     *
+     * u32 微秒 71.6 分钟回绕一次；直接相减会在回绕点变成 ±40 亿。转成 Int 相减即得
+     * 「按 2^32 回绕」的带符号差（±35 分钟以内都精确），与 Rust 的 `rt::us_diff` 等价。
+     */
+    fun usDiff(now: Int, then: Int): Int = now - then
+
+    /** 单调时钟的微秒（帧头用）：`System.nanoTime()` 是单调的，与电脑的 offset 无关。 */
+    fun nowUs(): Int = ((System.nanoTime() / 1_000L) and 0xFFFF_FFFFL).toInt()
+
+    private fun round3(v: Double): Double = Math.round(v * 1000.0) / 1000.0
 }
 
 /**
@@ -88,7 +177,9 @@ object Proto {
  *
  * - [Ready]：握手或 `sub` 后都会收到；**收到之前不播放、不推流**。
  * - [Pong]：`ping` 的回声，RTT 由 [net.WsClient] 计算。
- * - [Err]：电脑的拒绝/故障原文（例如「远程输入未开启（界面开关）」），**必须显示给用户**。
+ * - [Sync]：电脑的时钟探测（`t0` = 电脑时钟 µs），必须回 [Proto.syncReply]。
+ * - [Offset]：电脑算出的时钟偏移（手机 − 电脑，µs），用来把下行帧头换成单向延迟。
+ * - [Err]：电脑的拒绝/故障原文，**必须显示给用户**。
  */
 sealed class ServerMsg {
     data class Ready(
@@ -97,10 +188,18 @@ sealed class ServerMsg {
         val rate: Int,
         val channels: Int,
         val frameMs: Int,
+        /** 音频帧头字节数（v3 = 8）。客户端按它切 Opus 载荷。 */
+        val headerBytes: Int,
+        /** 电脑建议的**手机播放环目标水位**（ms）—— 缓冲只在接收方，目标值跟着算法走。 */
+        val targetMs: Int,
         val clients: Int,
     ) : ServerMsg()
 
     data class Pong(val id: Long) : ServerMsg()
+
+    data class Sync(val id: Long, val t0: Int) : ServerMsg()
+
+    data class Offset(val us: Long) : ServerMsg()
 
     data class Err(val msg: String) : ServerMsg()
 
@@ -124,9 +223,13 @@ sealed class ServerMsg {
                     rate = o.optInt("rate", 0),
                     channels = o.optInt("channels", 0),
                     frameMs = o.optInt("frame_ms", 0),
+                    headerBytes = o.optInt("header_bytes", Proto.HDR_BYTES),
+                    targetMs = o.optInt("target_ms", 20),
                     clients = o.optInt("clients", 0),
                 )
                 "pong" -> Pong(o.optLong("id", -1L))
+                "sync" -> Sync(o.optLong("id", -1L), o.optInt("t0", 0))
+                "offset" -> Offset(o.optLong("us", 0L))
                 "err" -> Err(o.optString("msg"))
                 else -> Other(o.optString("t"))
             }

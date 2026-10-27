@@ -67,8 +67,47 @@ except ImportError:  # pragma: no cover - 工具入口
     sys.exit("缺少 numpy：python -m pip install numpy（与 tools/automation/aec_probe.py 相同）")
 
 SCHEMA = 1
+
+
+def client_us() -> int:
+    """本进程的单调时钟（µs，u32 回绕）——与客户端的帧头同一口径。"""
+    return int(time.perf_counter() * 1_000_000) & 0xFFFFFFFF
+
+
+# Windows 的 sleep 粒度默认 15.6 ms：不提升的话，**测试发送端自己**就会把 10 ms 序列
+# 变成「憋 30 ms 再连发 3 包」，量到的 gap 全是假象（实测 34~41 ms，而链路真实值是 1~2 ms）。
+# 只影响本进程，退出时恢复（`finally`）。
+_TIMER_RAISED = False
+
+
+def _raise_timer() -> None:
+    global _TIMER_RAISED
+    if sys.platform.startswith("win") and not _TIMER_RAISED:
+        try:
+            import ctypes
+
+            ctypes.windll.winmm.timeBeginPeriod(1)
+            _TIMER_RAISED = True
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _lower_timer() -> None:
+    global _TIMER_RAISED
+    if _TIMER_RAISED:
+        try:
+            import ctypes
+
+            ctypes.windll.winmm.timeEndPeriod(1)
+        except Exception:  # noqa: BLE001
+            pass
+        _TIMER_RAISED = False
+
+
 SR = 48000
 HOP = 480
+PROTO = 3
+HDR = 8  # 音频帧头：seq u32 + 发送方 µs u32（大端），见 src-tauri/src/net/rt.rs
 TONE_HZ = 1000.0
 TONE_AMP = 0.1  # -20 dBFS
 TONE_THEORY = 2 * math.pi * TONE_HZ / SR * TONE_AMP
@@ -298,6 +337,21 @@ class Wss:
     def send_text(self, text: str) -> None:
         self._send(0x1, text.encode("utf-8"))
 
+    def handle_control(self, text: str) -> dict | None:
+        """处理后台控制消息：**必须对 `sync` 回 `syncreply`**，否则服务端估不出时钟偏移，
+        `/debug` 的 `rx_latency_ms` 永远是 null（人就会以为「单向延迟测不出来」）。"""
+        try:
+            m = json.loads(text)
+        except Exception:  # noqa: BLE001
+            return None
+        if m.get("t") == "sync":
+            t1 = client_us()
+            self.send_text(json.dumps({
+                "t": "syncreply", "id": m.get("id", 0), "t0": int(m.get("t0", 0)),
+                "t1": t1, "t2": client_us(),
+            }))
+        return m
+
     def send_binary(self, data: bytes) -> None:
         self._send(0x2, data)
 
@@ -422,6 +476,19 @@ def log_tail(path: Path, n: int = 40) -> str:
         return ""
 
 
+def debug_net(timeout: float = 2.0) -> dict | None:
+    """读 `/debug` 的 `net` 段（AGENTS §1.2 的本机只读接口，明文 47821）。
+
+    音频指标（脚本自己量的）与端点计数（App 自己量的）**不是同一份数据**：
+    两边一起落进 JSON，出问题时才能分清「是链路不好」还是「我们哪里算错了」。
+    """
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:47821/debug", timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8")).get("net")
+    except Exception:  # noqa: BLE001 - 端口被别的实例占着 / 已退出都算「拿不到」
+        return None
+
+
 def health(port: int, ctx: ssl.SSLContext, timeout: float = 2.0) -> dict:
     url = f"https://127.0.0.1:{port}/health"
     with urllib.request.urlopen(url, timeout=timeout, context=ctx) as r:
@@ -464,27 +531,40 @@ def collect(port: int, seconds: float, opus_path: Path | None) -> dict:
     pcm: list[np.ndarray] = []
     plens: list[int] = []
     texts: list[str] = []
+    seqs: list[int] = []
+    off_us = None
+    live = None
     first_pkt = None
     try:
-        ws.send_text(json.dumps({"t": "hello", "proto": 1}))
+        ws.send_text(json.dumps({"t": "hello", "proto": PROTO}))
         ws.send_text(json.dumps({"t": "sub"}))
         t_sub = time.time()
         while True:
             op, data = ws.recv(timeout=3)
             now = time.time()
             if op == 0x1:
-                texts.append(data.decode("utf-8", "replace"))
+                t = data.decode("utf-8", "replace")
+                texts.append(t)
+                m = ws.handle_control(t)
+                if m and m.get("t") == "offset":
+                    off_us = m.get("us")
                 continue
             if first_pkt is None:
                 first_pkt = now
             if now - t_sub >= seconds:
                 break
-            pkts.append(data)
+            if len(data) <= HDR:
+                continue
+            hdr_seq = int.from_bytes(data[0:4], "big")
+            seqs.append(hdr_seq)
+            pkts.append(data[HDR:])
             arrivals.append(now)
             if dec is not None:
-                d = dec.decode(data)
+                d = dec.decode(data[HDR:])
                 pcm.append(d)
                 plens.append(int(d.size))
+        # 断开之前抓一次端点状态：断开会清空接收环，之后再读就是全 0
+        live = debug_net()
     finally:
         if dec is not None:
             dec.close()
@@ -496,6 +576,9 @@ def collect(port: int, seconds: float, opus_path: Path | None) -> dict:
         "texts": texts,
         "samples": samples,
         "packet_samples": plens,
+        "seqs": seqs,
+        "clock_offset_us": off_us,
+        "live_net": live,
         "opus_error": opus_err,
         "first_packet_ms": round((first_pkt - t0) * 1000.0, 1) if first_pkt else None,
         "elapsed_s": round(time.time() - t0, 3),
@@ -520,26 +603,37 @@ def collect_roundtrip(port: int, seconds: float, opus_path: Path | None) -> dict
     def sender() -> None:
         frame = np.empty(HOP, dtype=np.float32)
         nxt = time.perf_counter()
+        seq = 0
         try:
             while not stop.is_set():
                 for i in range(HOP):
                     frame[i] = TONE_AMP * math.sin(phase[0])
                     phase[0] = (phase[0] + step) % (2.0 * math.pi)
-                tx.send_binary(tx_enc.encode(frame))
+                pkt = tx_enc.encode(frame)
+                # 8 字节帧头（seq + 采集时刻 µs）：与服务端同一口径
+                ts = int(time.perf_counter() * 1_000_000) & 0xFFFFFFFF
+                tx.send_binary(seq.to_bytes(4, "big") + ts.to_bytes(4, "big") + pkt)
+                seq += 1
                 sent[0] += 1
                 nxt += 0.010
-                d = nxt - time.perf_counter()
-                if d > 0:
-                    time.sleep(d)
-                elif d < -0.2:
+                # **细粒度等待**：直接 sleep(剩余) 在 Windows 上会被抬到 15.6 ms 粒度，
+                # 于是发送端自己就把 10 ms 序列变成「憋 30 ms 再连发 3 包」——实测到的
+                # gap 36~41 ms 就是这么来的，会把链路本身的抖动判得比实际差得多。
+                while True:
+                    d = nxt - time.perf_counter()
+                    if d <= 0:
+                        break
+                    time.sleep(min(d, 0.001))
+                if time.perf_counter() - nxt > 0.2:
                     nxt = time.perf_counter()
         except Exception as e:  # noqa: BLE001
             send_err[0] = f"{type(e).__name__}: {e}"
 
+    _raise_timer()
     try:
-        rx.send_text(json.dumps({"t": "hello", "proto": 1}))
+        rx.send_text(json.dumps({"t": "hello", "proto": PROTO}))
         rx.send_text(json.dumps({"t": "sub"}))
-        tx.send_text(json.dumps({"t": "hello", "proto": 1}))
+        tx.send_text(json.dumps({"t": "hello", "proto": PROTO}))
         thread = threading.Thread(target=sender, name="pv-test-tx", daemon=True)
         thread.start()
         pkts: list[bytes] = []
@@ -547,23 +641,33 @@ def collect_roundtrip(port: int, seconds: float, opus_path: Path | None) -> dict
         pcm: list[np.ndarray] = []
         plens: list[int] = []
         texts: list[str] = []
+        off_us = None
+        live = None
         first_pkt = None
         while True:
             op, data = rx.recv(timeout=3)
             now = time.time()
             if op == 0x1:
-                texts.append(data.decode("utf-8", "replace"))
+                t = data.decode("utf-8", "replace")
+                texts.append(t)
+                m = rx.handle_control(t)
+                if m and m.get("t") == "offset":
+                    off_us = m.get("us")
                 continue
             if first_pkt is None:
                 first_pkt = now
             if now - t0 >= seconds:
                 break
-            pkts.append(data)
+            if len(data) <= HDR:
+                continue
+            pkts.append(data[HDR:])
             arrivals.append(now)
-            d = recv_dec.decode(data)
+            d = recv_dec.decode(data[HDR:])
             pcm.append(d)
             plens.append(int(d.size))
+        live = debug_net()
     finally:
+        _lower_timer()
         stop.set()
         try:
             if "thread" in locals():
@@ -581,6 +685,8 @@ def collect_roundtrip(port: int, seconds: float, opus_path: Path | None) -> dict
         "texts": texts,
         "samples": samples,
         "packet_samples": plens,
+        "clock_offset_us": off_us,
+        "live_net": live,
         "opus_error": "",
         "first_packet_ms": round((first_pkt - t0) * 1000.0, 1) if first_pkt else None,
         "elapsed_s": round(time.time() - t0, 3),
@@ -701,7 +807,10 @@ def analyze(samples: np.ndarray, packet_samples: list[int], arrivals: list[float
     if samples.size == 0:
         return out
 
-    skip = min(samples.size, int(SR * 0.2))
+    # 跳过**起播瞬态**：流刚开始时接收环还没填满（服务端在补 PLC、客户端在预缓冲），
+    # 那几百毫秒的样本本来就不是稳态。以前只跳 0.2 s，频谱窗口正好压在瞬态上，
+    # 于是把正常的起播判成「频率错 / 99% 噪声」（2026-10-27 用二分法定位）。
+    skip = min(samples.size, int(SR * max(1.5, min(3.0, samples.size / SR * 0.2))))
     x = samples[skip:]
     out["skip_ms"] = round(skip / SR * 1000.0, 1)
     out["rms_dbfs"] = round(db(float(np.sqrt(np.mean(x * x)))), 2)
@@ -949,6 +1058,8 @@ def main() -> int:
             stream = analyze(got["samples"], got["packet_samples"], got["arrivals"], got["packets"])
             stream["first_packet_ms"] = got["first_packet_ms"]
             stream["texts"] = got["texts"]
+            # 客户端与服务端的时钟偏移（`sync`/`syncreply` 估出来的）：单向延迟靠它
+            stream["clock_offset_us"] = got.get("clock_offset_us")
             stream["opus_error"] = got["opus_error"]
             if args.mode == "roundtrip":
                 stream["sent_packets"] = got.get("sent_packets")
@@ -959,13 +1070,16 @@ def main() -> int:
                 result["server"] = health(port, ctx)
             except Exception as e:  # noqa: BLE001
                 result["server"] = {"error": str(e)}
+            # 端点全量计数（App 自己量的那一份）；音频指标是脚本量的，两边都落盘
+            result["endpoint"] = {"net": got.get("live_net") or debug_net()}
             srv = result.get("server") or {}
-            drops = int(srv.get("tx_dropped") or 0) + int(srv.get("rx_dropped") or 0)
-            if ok and drops > 0:
+            # 只看**出站**：`rx_dropped` 现在是「环溢出裁剪的样本数」，启动时裁一格是
+            # 设计行为（DESIGN.md §4.1.4），不该判失败；真正要红的是「发不出去」。
+            tx_drops = int(srv.get("tx_dropped") or 0)
+            if ok and tx_drops > 0:
                 ok, code = False, "dropped"
-                text = (f"服务端统计到丢弃：tx_dropped={srv.get('tx_dropped')}，"
-                        f"rx_dropped={srv.get('rx_dropped')}（队列顶格）")
-                suggest = "看 /health 的 tx_subs.level_ms；客户端取数太慢或出站节拍被阻塞"
+                text = f"服务端出站丢 hop：tx_dropped={tx_drops}"
+                suggest = "看 /debug 的 net.tx_subs；发送任务被调度慢或有客户端不取数据"
             out = args.out or (home / "received.wav")
             if got["samples"].size:
                 result["dump"] = write_outputs(out, got["samples"])

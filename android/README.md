@@ -30,7 +30,7 @@
 | 证书 | 电脑**自签**（CA + 叶证书两级，存 `~/.purevox/ca/`）；手机系统信任库里没有 → 见「传输与证书」 |
 | 发现 | 电脑端 mDNS 广播 **`_purevox._tcp.local.`**（随服务启停），客户端用系统 `NsdManager` 找 |
 | 自检 | `GET https://<host>:59123/health`（不需要连上 ws） |
-| 握手 | 客户端 → `{"t":"hello","proto":1}`；电脑回 `{"t":"ready",…}` |
+| 握手 | 客户端 → `{"t":"hello","proto":3}`；电脑回 `{"t":"ready",…}`（含 `header_bytes`/`target_ms`） |
 | 音频 | **二进制帧 = 一个 Opus 包（无头）**，48 kHz 单声道，帧长固定 **10 ms（480 样本）** |
 | 控制 | 文本帧 = JSON，判别字段 `t` |
 
@@ -61,7 +61,8 @@ app/src/main/java/com/purevox/mic/
 │   ├── OpusEncoder.kt           上行编码（帧长自己定：固定 10 ms = 480 样本一包）
 │   ├── OpusDecoder.kt           下行解码（输出帧长按实际样本数，不假设）
 │   ├── MicUplink.kt             AudioRecord 采集 + 编码线程
-│   └── SpeakerDownlink.kt       包队列 + 解码线程 + 样本环形缓冲 + AudioTrack 写入线程
+│   └── SpeakerDownlink.kt       收包即解码 → 播放环 → AudioTrack 阻塞写（唯一主时钟）
+│   └── Rt.kt                    播放环（固定 20 ms，与 src-tauri/src/net/rt.rs 逐行镜像）
 ├── service/
 │   └── CaptureService.kt        会话前台服务（常驻通知 + WakeLock；通知按钮发广播回界面）
 └── update/
@@ -76,6 +77,23 @@ Native 侧（**Gradle 不编译**，只是入库产物 + 备查源码）：
 app/src/main/cpp/                重建 `libpvopus.so` 的源码（`pv_opus.cpp` 的 JNI 转发层）
 app/src/main/jniLibs/arm64-v8a/libpvopus.so    libopus 1.5.2 + 转发层，预编译入库
 ```
+
+## 音频链路（与电脑端同一套规则，DESIGN.md §4.1）
+
+```text
+电脑 → 手机：WS 收包（8 字节帧头）→ Opus 解码 → 播放环（固定 20 ms）→ AudioTrack 阻塞写 → 扬声器
+手机 → 电脑：AudioRecord 480 样本阻塞读 → Opus 编码 → 加帧头（seq + 采集时刻）→ WS 发送
+```
+
+- **只有一处缓冲**：`audio/Rt.kt` 的播放环。深度是**常量 20 ms**，运行期只有两种动作：
+  超了丢一格（10 ms）、空了补一格（Opus **PLC**，还空就淡出重复上一格）。**不做重采样、
+  不做自适应、不按抖动调深度** —— 实测晶振差只有 ±25 ppm、局域网抖动 <1 ms。
+- **写 AudioTrack 的线程就是主时钟**：阻塞写自然按设备时钟推进，没有第二个定时器。
+- **时钟偏差是量出来的**：`SpeakerDownlink.clockPpm` 用 `getPlaybackHeadPosition()`
+  （硬件实际播出的帧数）对 `System.nanoTime()` 差分，2 Hz 随 `st` 上报给电脑，
+  `/debug` 的 `net.client.clock_ppm` 直接可读。
+- **`TCP_NODELAY`**：`net/WsClient.kt` 用自定义 `SocketFactory` 交出已设 `tcpNoDelay` 的
+  socket（10 ms 一包、几十字节，Nagle 会把它们攒成串）。
 
 ## 没有的东西（刻意的）
 
@@ -92,7 +110,7 @@ app/src/main/jniLibs/arm64-v8a/libpvopus.so    libopus 1.5.2 + 转发层，预�
   （`audio/OpusSupport.kt` 里那句「探测」因此**只剩诊断**，不是第二条实现路径。）
 * **不做「无条件信任所有证书」**：见下节 —— 只对私有网段放宽。
 
-## 传输与证书（DESIGN.md §4.1.2）
+## 传输与证书（DESIGN.md §4.1.12）
 
 电脑端**只监听 HTTPS**，证书是**每台机器自己签的**（CA + 叶证书两级，存 `~/.purevox/ca/`）。
 
@@ -172,13 +190,42 @@ GitHub Releases，**与电脑端更新检查同一份数据**。
 
 ```bash
 cd android
-./gradlew :app:assembleDebug      # 产物 app/build/outputs/apk/debug/app-debug.apk
-./gradlew :app:assembleRelease    # 产物 app/build/outputs/apk/release/app-release.apk
+./gradlew :app:assembleDebug      # 产物 …/apk/debug/PureVox-1.0-debug-android-arm64.apk
+./gradlew :app:assembleRelease    # 产物 …/apk/release/PureVox-<版本>-android-arm64.apk
 ```
+
+产物名由 `app/build.gradle.kts` 的「APK 文件名」段统一成与 CI 相同的形状
+（`release_stage.sh` 发出去的也是 `PureVox-<版本>-android-arm64.apk`）——**debug 的
+`-debug` 段来自 `versionNameSuffix`**，不是文件名里另拼的。别把这条当成可有可无的整洁癖：
+`app-debug.apk` / `app-release.apk` 只差一个词，手机上两只应用并存时基本靠猜。
 
 需要 JDK 17 与 Android SDK（`compileSdk 34`）——**不需要 NDK / CMake**（Opus 是预编译入库的
 `.so`，见上）。`gradle/wrapper/gradle-wrapper.jar` 已入库，不要替换；
 `gradle-wrapper.properties` 钉的是 Gradle 8.9（AGP 8.7.3 的最低要求）。
+
+### debug 包与 CI 的 release 包共存
+
+调试包**不覆盖**线上包，两者可以同时装在手机上：
+
+| | debug（本机 `assembleDebug`） | release（CI 发出去的） |
+| --- | --- | --- |
+| 包名 | `com.purevox.mic.debug` | `com.purevox.mic` |
+| 签名 | AGP 自动生成的 debug keystore | `PV_KEYSTORE` 里的固定密钥 |
+| 应用名 | **PureVox Debug** | PureVox |
+| APK 文件名 | `PureVox-<版本>-debug-android-arm64.apk` | `PureVox-<版本>-android-arm64.apk` |
+| 偏好 / 数据 | 独立（互不污染） | 独立 |
+
+**为什么必须换包名**：Android 只允许**同签名**的包覆盖安装，com.purevox.mic 的 debug 包与
+release 包签名必然不同 —— 包名相同时系统直接拒绝（「应用未安装 / 签名不一致」），于是每次
+调试都得先卸载手机上正在用的 release，装回来又得重新下一次。加 `.debug` 后缀让它们成为
+两个独立应用，各自安装/升级互不影响。
+
+跟着变的东西都不用单独配置：`packageName` 全是运行期取的（设置页的 intent、
+`FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider")` 都自动对），manifest 里
+FileProvider 的 authority 写的是 `${applicationId}.fileprovider`。
+
+**调试包点「检查更新」仍会下载 release 的 APK**（更新源就是本仓库的 Release 列表），装上去
+是**加了第二只应用**而不是覆盖自己 —— 这是刻意保留的真实链路，用来在调试包里验下载/安装流程。
 
 CI 打包时会传 `-PpvVersion=<年.月.日>` 与 `-PpvVersionCode=<ACODE>`（见
 `tools/automation/version.py`）：**应用内更新靠 `versionCode` 判新旧**，本机不带参数就退回

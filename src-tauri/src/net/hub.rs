@@ -15,190 +15,112 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 网络中枢（DESIGN.md §4.1、§8）：进出两条有界缓冲 + 远程输入开关 + 统计。
+//! 网络中枢（DESIGN.md §4.1）：**两个方向各一个固定深度环** + 远程输入开关 + 全量统计。
 //!
-//! **主时钟在引擎侧**：网络任务只负责「解码后把样本塞进队列」，由列工作线程按自己的
-//! 10 ms 节拍取走（DESIGN.md §2/§3.3）。网络抖动因此被缓冲吸收，不会传导成 hop 节奏抖动；
-//! 缓冲欠载时列线程补静音（与设备采集缺帧同一种处理）。
+//! - 入站（手机 → 电脑）：网络任务塞样本，列工作线程按 10 ms 节拍取（[`Playout`]）。
+//! - 出站（电脑 → 手机）：引擎推一个 hop，连接任务**立刻**编码发走（**没有队列、没有定时器**）。
+//!   缓冲只在接收方（手机上的环）。
 //!
-//! 两个方向都是**有界**的：目标 50 ms、硬顶 80 ms，超限丢最旧（保新）。
+//! 所有计数都只做**观测**：`jitter` / `max_gap` / `late` / `trim` / `plc` 都不参与控制
+//! （AGENTS §1.4：看得见才谈得上判断）。
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::audio::{HOP, SAMPLE_RATE};
+use crate::audio::HOP;
 use crate::dsp::meter::RateMeter;
+use crate::net::rt::{Playout, PlayoutStats, RING_MS};
 
-/// 两个方向队列的**硬顶**（hop 数）：8 hop = 80 ms。
-const CAP_HOPS: usize = 8;
-/// 两个方向队列的**目标水位**（hop 数）：5 hop = 50 ms（DESIGN.md §4.1）。
+/// 发送交接格的上限（hop 数）：**只是防呆**。
 ///
-/// 为什么光有硬顶不够：两个方向的「生产」与「消费」都是**各自的 10 ms 定时器**
-/// （列工作线程 / 出站编码任务 / 手机端），速率几乎相等但不完全相等，水位因此是
-/// **随机游走**：一旦因为某次停顿涨上去（最典型的是**会话重建** —— 换列、改设备、
-/// 打开设备重试最长 3 s，这段时间没人取、手机却一直在推），之后取速率与推速率相同，
-/// **水位再也降不下来**。实测（2026-10-18）：手机麦克风本该 10~50 ms，加一列之后
-/// 一直拖 230 ms ——「一开电脑声音串流麦克风就变延迟」的真实原因不是串流本身，
-/// 而是**每次重建都会把水位垫高一截**。
-///
-/// 所以取的时候要**慢慢把水位拉回目标**：每 [`CATCHUP_TAKES`] 次取、且水位超目标时，
-/// 多丢 1 个 hop（= 1 s 丢 10 ms）。只有超出目标时才发生，听感是偶发的一跳，
-/// 换回来的是**稳定在目标附近**的延迟。
-const TARGET_HOPS: usize = 5;
-/// 收敛节拍：每取这么多次检查一次水位（100 × 10 ms = 1 s）。
-const CATCHUP_TAKES: u64 = 100;
-/// 入站队列上限（样本数）。**必须由 hop 派生**：早先写成
-/// `SAMPLE_RATE / 100 * 80` = 38400 样本 = **800 ms**（本意是 80 ms，差 10 倍），
-/// 于是水位可以在 800 ms 内随便涨，配合上一条的「降不下来」= 永久延迟。
-const IN_CAP: usize = CAP_HOPS * HOP;
+/// 正常恒为 0 —— 引擎每出一 hop，发送任务立刻编码发走。连接任务偶尔被调度慢
+/// （GC / 别的任务抢核）时不能把引擎线程堵住，所以留一个极小的缓冲；
+/// 4 hop = 40 ms，超过就丢新的并计数（客户端从 seq 缺口也看得见）。
+const MAX_PENDING_HOPS: usize = 4;
 
-/// 入站样本队列（手机 → 电脑）。多生产者（多个连接）、单消费者（一列的 `remote_mic` 行）。
-#[derive(Default, Debug)]
-pub struct SampleQueue {
-  buf: VecDeque<f32>,
-  /// 取了多少次（收敛节拍用）
-  takes: u64,
+/// 一路出站订阅的统计（中枢出 `/debug`，与发送任务共享）。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct TxSubStat {
+  /// 待发 hop 数（正常 0）：>0 说明发送任务被调度慢了
+  pub pending_hops: u64,
+  /// 这一路累计发出的包数
+  pub sent: u64,
+  /// 交接格顶格时丢掉的 hop 数（每个 = 10 ms 音频）
+  pub dropped: u64,
 }
 
-impl SampleQueue {
-  /// 追加解码后的样本；超过上限丢最旧。
-  pub fn push(&mut self, samples: &[f32]) -> u64 {
-    self.buf.extend(samples.iter().copied());
-    let mut dropped = 0u64;
-    while self.buf.len() > IN_CAP {
-      self.buf.pop_front();
-      dropped += 1;
-    }
-    dropped
-  }
-
-  /// 取一个 hop；不足返回 `(false, 丢弃数)`（调用方补静音）。
-  ///
-  /// 返回的第二个值是为**收敛水位**而丢掉的样本（见 [`catchup`]），调用方计入丢弃统计。
-  pub fn take_hop(&mut self, out: &mut [f32]) -> (bool, u64) {
-    let dropped = catchup(&mut self.buf, &mut self.takes);
-    if self.buf.len() < out.len() {
-      return (false, dropped);
-    }
-    for (i, slot) in out.iter_mut().enumerate() {
-      *slot = self.buf[i];
-    }
-    self.buf.drain(..out.len());
-    (true, dropped)
-  }
-
-  /// 水位（样本数），进调试接口。
-  pub fn level(&self) -> usize {
-    self.buf.len()
-  }
-}
-
-/// 队列收敛：每次取之前调用一次。水位超过目标时，按 [`CATCHUP_TAKES`] 节拍多丢 1 个 hop。
-///
-/// 返回本次为收敛丢掉的最旧样本数（0 = 没丢）。两个方向共用同一套策略：
-/// 硬顶（[`CAP_HOPS`]）由 `push` 兜住、目标（[`TARGET_HOPS`]）由这里慢慢拉回来。
-fn catchup(buf: &mut VecDeque<f32>, takes: &mut u64) -> u64 {
-  *takes = takes.wrapping_add(1);
-  // 用 `is_multiple_of` 而不是 `% … != 0`：后者是 clippy 的 `manual_is_multiple_of`，
-  // 门禁带 `-D warnings`，会直接判失败。
-  if !(*takes).is_multiple_of(CATCHUP_TAKES) {
-    return 0;
-  }
-  let target = TARGET_HOPS * HOP;
-  if buf.len() <= target {
-    return 0;
-  }
-  let drop = HOP.min(buf.len() - target);
-  for _ in 0..drop {
-    buf.pop_front();
-  }
-  drop as u64
-}
-
-/// 出站 hop 队列（电脑 → 手机）：一订阅者一条。
-#[derive(Default)]
-struct HopQueue {
-  buf: VecDeque<f32>,
-  /// 取了多少次（收敛节拍用）
-  takes: u64,
-}
-
-impl HopQueue {
-  fn push(&mut self, hop: &[f32]) -> u64 {
-    self.buf.extend(hop.iter().copied());
-    let mut dropped = 0u64;
-    while self.buf.len() > CAP_HOPS * HOP {
-      self.buf.pop_front();
-      dropped += 1;
-    }
-    dropped
-  }
-
-  fn take_hop(&mut self, out: &mut [f32]) -> (bool, u64) {
-    let dropped = catchup(&mut self.buf, &mut self.takes);
-    if self.buf.len() < out.len() {
-      return (false, dropped);
-    }
-    for (i, slot) in out.iter_mut().enumerate() {
-      *slot = self.buf[i];
-    }
-    self.buf.drain(..out.len());
-    (true, dropped)
-  }
-
-  fn level(&self) -> usize {
-    self.buf.len()
-  }
-}
-
-/// 一个订阅者的句柄（连接任务持有）。
-pub struct OutboundSub {
-  q: Arc<Mutex<HopQueue>>,
-  /// 该订阅者累计被丢掉的样本（超硬顶 + 收敛；进调试接口）
+/// 一路订阅的**统计**句柄（**故意不含 `tx`**：接收端攥着发送端的话，退订后通道永不关闭）。
+#[derive(Clone)]
+struct SubStat {
+  pending: Arc<AtomicU64>,
+  sent: Arc<AtomicU64>,
   dropped: Arc<AtomicU64>,
 }
 
+struct SubHandle {
+  tx: tokio::sync::mpsc::UnboundedSender<Vec<f32>>,
+  stat: SubStat,
+}
+
+/// 一路出站订阅（连接任务持有）。
+pub struct OutboundSub {
+  rx: tokio::sync::mpsc::UnboundedReceiver<Vec<f32>>,
+  stat: SubStat,
+}
+
 impl OutboundSub {
-  /// 取一个 hop 准备发送；欠载返回 false（发送静音包，保持时钟不断）。
-  pub fn take_hop(&self, out: &mut [f32]) -> bool {
-    let (got, dropped) = self.q.lock().unwrap().take_hop(out);
-    if dropped > 0 {
-      self.dropped.fetch_add(dropped, Relaxed);
-    }
-    got
+  /// 等下一个 hop。`None` = 订阅已移除。
+  pub async fn recv(&mut self) -> Option<Vec<f32>> {
+    let hop = self.rx.recv().await?;
+    self.stat.pending.fetch_sub(1, Relaxed);
+    Some(hop)
+  }
+
+  pub fn note_sent(&self) {
+    self.stat.sent.fetch_add(1, Relaxed);
   }
 }
 
 struct Outbound {
-  subs: Mutex<Vec<(u64, Arc<Mutex<HopQueue>>)>>,
+  subs: Mutex<Vec<(u64, SubHandle)>>,
   next_id: AtomicU64,
-  dropped: AtomicU64,
 }
 
 impl Outbound {
   fn subscribe(&self) -> (u64, OutboundSub) {
     let id = self.next_id.fetch_add(1, Relaxed);
-    let q = Arc::new(Mutex::new(HopQueue::default()));
-    let dropped = Arc::new(AtomicU64::new(0));
-    self.subs.lock().unwrap().push((id, q.clone()));
-    (id, OutboundSub { q, dropped })
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let stat = SubStat {
+      pending: Arc::new(AtomicU64::new(0)),
+      sent: Arc::new(AtomicU64::new(0)),
+      dropped: Arc::new(AtomicU64::new(0)),
+    };
+    self.subs.lock().unwrap().push((
+      id,
+      SubHandle {
+        tx,
+        stat: stat.clone(),
+      },
+    ));
+    (id, OutboundSub { rx, stat })
   }
 
   fn unsubscribe(&self, id: u64) {
     self.subs.lock().unwrap().retain(|(sid, _)| *sid != id);
   }
 
+  /// 引擎线程调用：**非阻塞**地把这一 hop 交给每一路订阅。
   fn push_hop(&self, hop: &[f32]) {
     let subs = self.subs.lock().unwrap();
-    if subs.is_empty() {
-      return;
-    }
-    for (_, q) in subs.iter() {
-      let d = q.lock().unwrap().push(hop);
-      if d > 0 {
-        self.dropped.fetch_add(d, Relaxed);
+    for (_, h) in subs.iter() {
+      if h.stat.pending.load(Relaxed) >= MAX_PENDING_HOPS as u64 {
+        h.stat.dropped.fetch_add(1, Relaxed);
+        continue;
+      }
+      h.stat.pending.fetch_add(1, Relaxed);
+      if h.tx.send(hop.to_vec()).is_err() {
+        h.stat.pending.fetch_sub(1, Relaxed);
       }
     }
   }
@@ -206,82 +128,116 @@ impl Outbound {
   fn count(&self) -> usize {
     self.subs.lock().unwrap().len()
   }
+
+  fn pending_hops(&self) -> u64 {
+    self
+      .subs
+      .lock()
+      .unwrap()
+      .iter()
+      .map(|(_, h)| h.stat.pending.load(Relaxed))
+      .sum()
+  }
+
+  fn sum_dropped(&self) -> u64 {
+    self
+      .subs
+      .lock()
+      .unwrap()
+      .iter()
+      .map(|(_, h)| h.stat.dropped.load(Relaxed))
+      .sum()
+  }
+
+  fn stats(&self) -> Vec<TxSubStat> {
+    self
+      .subs
+      .lock()
+      .unwrap()
+      .iter()
+      .map(|(_, h)| TxSubStat {
+        pending_hops: h.stat.pending.load(Relaxed),
+        sent: h.stat.sent.load(Relaxed),
+        dropped: h.stat.dropped.load(Relaxed),
+      })
+      .collect()
+  }
 }
 
-/// 一路出站订阅（一个客户端）的即时状态。
+/// 客户端上报的**自己那侧**状态（`st` 控制消息，2 Hz）。
 ///
-/// 为什么要**逐路**报：`tx_level` 是几路订阅的合计数，两路订阅（一路正常的手机 + 一路
-/// 连过但没在取数据的客户端）合起来只看得到一个数字 ——「是谁在拖」看不出来。
-/// 实测（2026-10-18）：一路顶格的订阅每推一 hop 就丢一 hop，丢样本速率等于整条音频的
-/// 生产速率（≈ 48 kHz），另一路正常的订阅其实一点没丢。合计数会把人引到错误的方向。
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct TxSubStat {
-  /// 队列水位（ms）：客户端取走之前攒了多少 = 该客户端的额外时延
+/// 手机 / 网页的最后一跳（AudioTrack / AudioWorklet）在客户端上，服务端看不见；
+/// 没有这份上报，「扬声器为什么还是慢」只能靠猜。
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct ClientReport {
+  /// 客户端播放环的水位 / 深度（ms）——深度应该恒等于 [`RING_MS`]
   pub level_ms: f32,
-  /// 是否顶格（`tx_cap_ms` 上限）——顶格就是「这个客户端没在取数据」
-  pub full: bool,
+  pub target_ms: f32,
+  /// 欠载 / PLC 掩盖 / 来晚的包（累计）
+  pub underruns: u64,
+  pub concealed: u64,
+  pub late: u64,
+  /// 客户端实测的**单向延迟**（电脑发出 → 收到并开始播，ms）
+  pub one_way_ms: Option<f64>,
+  /// 客户端实测的**音频时钟偏差**（ppm，正 = 客户端比电脑快）；测不出来就不带
+  pub clock_ppm: Option<f64>,
+  /// 上报时刻（电脑时钟 ms，只用于判断新鲜度）
+  pub at_ms: u64,
 }
 
-/// 网络统计（进调试接口 `/debug` 的 `net` 段）。
+/// 网络统计（`/debug` 的 `net` 段）。**字段只增不改名**（AGENTS §1.2）。
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct NetStats {
-  /// WebSocket 监听端口
   pub port: u16,
-  /// 服务是否在监听（界面顶栏的开关状态；不在监听时下面那些数都是上一次的）
   pub running: bool,
-  /// 已连接客户端数
   pub clients: usize,
-  /// 已订阅电脑音频的客户端数
   pub subs: usize,
-  /// 手机 → 电脑：收到的 Opus 包数
+
+  // ---- 入站（手机 → 电脑）----
   pub rx_packets: u64,
-  /// 手机 → 电脑：解出的样本数
   pub rx_samples: u64,
-  /// 手机 → 电脑：因超出 80 ms 上限丢弃的样本数
-  pub rx_dropped: u64,
-  /// 手机 → 电脑：入站缓冲水位（样本）
   pub rx_level: usize,
-  /// 入站已取走的 hop 数（= 引擎消费）
+  pub rx_level_ms: f32,
+  pub rx_target_ms: f32,
   pub rx_hops: u64,
-  /// 入站欠载次数（缓冲空，补静音）
   pub rx_underruns: u64,
-  /// 电脑 → 手机：发出的 Opus 包数
+  pub rx_plc: u64,
+  pub rx_trims: u64,
+  pub rx_dropped: u64,
+  pub rx_late: u64,
+  pub rx_lost: u64,
+  pub rx_jitter_ms: f32,
+  pub rx_worst_jitter_ms: f32,
+  pub rx_max_gap_ms: f32,
+  pub rx_latency_ms: Option<f64>,
+  pub rx_verdict: crate::debug::Health,
+
+  // ---- 出站（电脑 → 手机）----
   pub tx_packets: u64,
-  /// 电脑 → 手机：出站队列水位合计（样本）
   pub tx_level: usize,
-  /// 电脑 → 手机：因超出 80 ms 上限丢弃的样本数
-  pub tx_dropped: u64,
-  /// 电脑 → 手机：列工作线程累计推给客户端的 hop 数（= 0 说明没有一行「网络扬声器」在送信号）
-  pub tx_hops: u64,
-  /// 电脑 → 手机：每路订阅分别的水位（合计数看不出是谁在拖，见 [`TxSubStat`]）
-  pub tx_subs: Vec<TxSubStat>,
-  /// 电脑 → 手机：出站队列硬顶（ms）
   pub tx_cap_ms: f32,
-  /// 出站结论（Rust 侧单一判定，面板与 HTTP 接口渲染同一份）
+  pub tx_hops: u64,
+  pub tx_dropped: u64,
+  pub tx_subs: Vec<TxSubStat>,
   pub verdict: crate::debug::Health,
-  /// 电脑 → 手机：发出 Opus 包的实测速率（包/s，3 s 窗口）
-  pub tx_packets_per_s: crate::debug::Probe<f64>,
-  /// 手机 → 电脑：收到 Opus 包的实测速率（包/s，3 s 窗口）
-  pub rx_packets_per_s: crate::debug::Probe<f64>,
-  /// 电脑 → 手机：出站丢弃的实测速率（样本/s，3 s 窗口）
-  pub tx_dropped_per_s: crate::debug::Probe<f64>,
-  /// 手机 → 电脑：入站丢弃的实测速率（样本/s，3 s 窗口）
-  pub rx_dropped_per_s: crate::debug::Probe<f64>,
-  /// 已注入的按键事件数
-  pub keys_injected: u64,
-  /// 未映射而忽略的手机按键数
-  pub keys_unmapped: u64,
-  /// 已注入的文本字符数（UTF-16 码元）
-  pub chars_typed: u64,
-  /// 最近一次往返时延（ms）
+
+  // ---- 客户端上报 ----
+  pub client: Option<ClientReport>,
+  pub clock_offset_us: Option<i64>,
   pub rtt_ms: Option<f64>,
-  /// 远程输入开关（打字 + 全尺寸键盘）
+
+  // ---- 速率（3 s 窗口）----
+  pub tx_packets_per_s: crate::debug::Probe<f64>,
+  pub rx_packets_per_s: crate::debug::Probe<f64>,
+  pub rx_trims_per_s: crate::debug::Probe<f64>,
+
+  // ---- 远程输入 / 其它 ----
+  pub keys_injected: u64,
+  pub keys_unmapped: u64,
+  pub chars_typed: u64,
   pub remote_input: bool,
-  /// 最近一次错误原因
   pub last_error: Option<String>,
-  /// 库状态：Opus 版本 + 加载到的 dll 路径
   pub codec: crate::debug::Probe<String>,
-  /// 最近一个网页版客户端上报的浏览器能力（安全上下文 / 采集 / Opus 编解码）
   pub client_caps: Option<String>,
 }
 
@@ -294,25 +250,37 @@ impl Default for NetStats {
       subs: 0,
       rx_packets: 0,
       rx_samples: 0,
-      rx_dropped: 0,
       rx_level: 0,
+      rx_level_ms: 0.0,
+      rx_target_ms: RING_MS as f32,
       rx_hops: 0,
       rx_underruns: 0,
+      rx_plc: 0,
+      rx_trims: 0,
+      rx_dropped: 0,
+      rx_late: 0,
+      rx_lost: 0,
+      rx_jitter_ms: 0.0,
+      rx_worst_jitter_ms: 0.0,
+      rx_max_gap_ms: 0.0,
+      rx_latency_ms: None,
+      rx_verdict: crate::debug::Health::ok("网络服务未启动"),
       tx_packets: 0,
       tx_level: 0,
-      tx_dropped: 0,
+      tx_cap_ms: 0.0,
       tx_hops: 0,
+      tx_dropped: 0,
       tx_subs: Vec::new(),
-      tx_cap_ms: tx_cap_ms(),
       verdict: crate::debug::Health::ok("网络服务未启动"),
+      client: None,
+      clock_offset_us: None,
+      rtt_ms: None,
       tx_packets_per_s: crate::debug::Probe::Pending,
       rx_packets_per_s: crate::debug::Probe::Pending,
-      tx_dropped_per_s: crate::debug::Probe::Pending,
-      rx_dropped_per_s: crate::debug::Probe::Pending,
+      rx_trims_per_s: crate::debug::Probe::Pending,
       keys_injected: 0,
       keys_unmapped: 0,
       chars_typed: 0,
-      rtt_ms: None,
       remote_input: false,
       last_error: None,
       codec: crate::debug::Probe::Pending,
@@ -321,61 +289,27 @@ impl Default for NetStats {
   }
 }
 
-/// 出站队列硬顶（ms）：hop = 10 ms，与 `CAP_HOPS` 同源。
-fn tx_cap_ms() -> f32 {
-  (CAP_HOPS * HOP) as f32 * 1000.0 / SAMPLE_RATE as f32
-}
-
-/// 速率窗口：`stats()` 每次推进一格（3 s 窗口，见 [`RateMeter`]）。
-///
-/// 放在中枢里而不是调试层：`/health` 与列概要也会调 `stats()`，多一个采样点只会让
-/// 窗口更密；窗口太短时 `RateMeter` 自己报 `pending`（界面显示「采集中…」，不编数字）。
 struct NetRates {
   rx_packets: RateMeter,
   tx_packets: RateMeter,
-  rx_dropped: RateMeter,
-  tx_dropped: RateMeter,
-}
-
-impl NetRates {
-  fn new() -> Self {
-    NetRates {
-      rx_packets: RateMeter::new(),
-      tx_packets: RateMeter::new(),
-      rx_dropped: RateMeter::new(),
-      tx_dropped: RateMeter::new(),
-    }
-  }
+  rx_trims: RateMeter,
 }
 
 /// 网络中枢：引擎与网络任务之间唯一的共享状态。
 pub struct NetHub {
-  /// 入站样本（手机 → 电脑），由 `remote_mic` 输入行消费
-  inbound: Mutex<SampleQueue>,
-  /// 出站 hop（电脑 → 手机）
+  inbound: Mutex<Playout>,
   outbound: Outbound,
-  /// 远程输入总开关（默认关，界面显式开启才接受 `text` / `key`）
   remote_input: AtomicBool,
-  /// 统计计数（只有持锁者写，调试读时克隆）
   stats: Mutex<NetStats>,
-  /// **刚推给客户端的那个 hop**（网络麦克风卡勾了 AEC 时的「远端」参考源）。
-  ///
-  /// 为什么单独留一格而不让 AEC 去订阅出站：出站是**按订阅者各存一份**
-  /// （`OutboundSub`），AEC 要的是「这一 tick 我们发了什么」这一个事实，与有几个
-  /// 客户端无关；而且出站 hop 由列工作线程在同一 10 ms 节拍上推，所以这一格与引擎
-  /// hop 同源 —— AEC 的 `FarHistory` 序号网格才对得上。
+  client: Mutex<Option<ClientReport>>,
+  offset_us: AtomicI64,
+  has_offset: AtomicBool,
+  /// **刚推给客户端的那个 hop**（网络麦克风勾了 AEC 时的「远端」参考源）
   tx_last: Mutex<([f32; HOP], u64)>,
   running: AtomicBool,
-  /// 实际监听端口。默认 `proto::PORT`，界面可改（DESIGN.md §4.1.1）。
-  ///
-  /// 之所以是运行时值而不是常量：端口被别的程序占掉时，用户要能换一个。改完走
-  /// `net_restart` 重绑 —— 端口是绑定那一刻定死的，改字段本身不会换掉已开的监听。
   port: AtomicU16,
-  /// 本机 CA 证书 PEM（服务启动时写入，供「下载证书」与调试接口）
   ca_pem: Mutex<Option<String>>,
-  /// 最近一个网页版客户端上报的浏览器能力
   client_caps: Mutex<Option<String>>,
-  /// 进出包 / 丢样本的实测速率（见 [`NetRates`]）
   rates: Mutex<NetRates>,
 }
 
@@ -388,20 +322,26 @@ impl Default for NetHub {
 impl NetHub {
   pub fn new() -> Self {
     NetHub {
-      inbound: Mutex::new(SampleQueue::default()),
+      inbound: Mutex::new(Playout::new(RING_MS)),
       outbound: Outbound {
         subs: Mutex::new(Vec::new()),
         next_id: AtomicU64::new(1),
-        dropped: AtomicU64::new(0),
       },
       remote_input: AtomicBool::new(false),
-      tx_last: Mutex::new(([0.0f32; HOP], 0u64)),
       stats: Mutex::new(NetStats::default()),
+      client: Mutex::new(None),
+      offset_us: AtomicI64::new(0),
+      has_offset: AtomicBool::new(false),
+      tx_last: Mutex::new(([0.0f32; HOP], 0u64)),
       running: AtomicBool::new(false),
       port: AtomicU16::new(crate::net::proto::PORT),
       ca_pem: Mutex::new(None),
       client_caps: Mutex::new(None),
-      rates: Mutex::new(NetRates::new()),
+      rates: Mutex::new(NetRates {
+        rx_packets: RateMeter::new(),
+        tx_packets: RateMeter::new(),
+        rx_trims: RateMeter::new(),
+      }),
     }
   }
 
@@ -409,16 +349,21 @@ impl NetHub {
 
   pub fn set_running(&self, v: bool) {
     self.running.store(v, Relaxed);
+    if !v {
+      self
+        .inbound
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .reset();
+      *self.client.lock().unwrap_or_else(|e| e.into_inner()) = None;
+      self.has_offset.store(false, Relaxed);
+    }
   }
 
   pub fn is_running(&self) -> bool {
     self.running.load(Relaxed)
   }
 
-  // ---- 监听端口（可编辑，见 DESIGN.md §4.1.1）----
-
-  /// 下次 `start()` 要绑的端口。**不是当前已绑的端口** —— 改这个字段本身不会换掉
-  /// 已开的监听，得配一次 `restart()`。
   pub fn port(&self) -> u16 {
     self.port.load(Relaxed)
   }
@@ -427,8 +372,6 @@ impl NetHub {
     self.port.store(v, Relaxed);
   }
 
-  /// 本机 CA 证书 PEM（`~/.purevox/ca/ca.crt`）。服务启动时写进去，供界面「下载证书」按钮
-  /// 与调试接口用；没启动服务就没有（此时界面该说「先启动服务」，不是给一个空按钮）。
   pub fn set_ca_pem(&self, pem: String) {
     if let Ok(mut slot) = self.ca_pem.lock() {
       *slot = Some(pem);
@@ -439,16 +382,14 @@ impl NetHub {
     self.ca_pem.lock().ok().and_then(|p| p.clone())
   }
 
-  /// 最近一个网页版客户端上报的浏览器能力（`/report-caps`）。`None` = 还没有客户端连过。
   pub fn set_client_caps(&self, s: String) {
     if let Ok(mut slot) = self.client_caps.lock() {
       *slot = Some(s);
     }
   }
 
-  // ---- 远程输入开关 ----
+  // ---- 远程输入 ----
 
-  /// 远程输入（打字 + 全尺寸键盘）总开关。**默认关**，界面一键开关。
   pub fn set_remote_input(&self, on: bool) {
     self.remote_input.store(on, Relaxed);
     self.stats.lock().unwrap().remote_input = on;
@@ -458,39 +399,82 @@ impl NetHub {
     self.remote_input.load(Relaxed)
   }
 
-  // ---- 入站（手机 → 电脑） ----
+  // ---- 时钟偏移（`sync`/`syncreply` 估出来，只用于把单向延迟算给人看）----
 
-  /// 网络任务：塞入解码后的样本。
-  pub fn push_rx(&self, samples: &[f32]) {
-    let dropped = self.inbound.lock().unwrap().push(samples);
-    let mut s = self.stats.lock().unwrap();
-    s.rx_packets += 1;
-    s.rx_samples += samples.len() as u64;
-    s.rx_dropped += dropped;
+  pub fn set_clock_offset(&self, us: i64) {
+    self.offset_us.store(us, Relaxed);
+    self.has_offset.store(true, Relaxed);
   }
 
-  /// 列工作线程（`remote_mic` 行）：按 10 ms 节拍取一个 hop；欠载补静音并计数。
-  pub fn take_rx_hop(&self, out: &mut [f32]) {
-    let (got, dropped) = self.inbound.lock().unwrap().take_hop(out);
-    let mut s = self.stats.lock().unwrap();
-    if got {
-      s.rx_hops += 1;
+  pub fn clock_offset(&self) -> Option<i64> {
+    if self.has_offset.load(Relaxed) {
+      Some(self.offset_us.load(Relaxed))
     } else {
-      out.fill(0.0);
-      s.rx_underruns += 1;
+      None
     }
-    s.rx_dropped += dropped;
-    s.rx_level = self.inbound.lock().unwrap().level();
   }
 
-  /// 入站缓冲水位（样本）。
-  pub fn rx_level(&self) -> usize {
-    self.inbound.lock().unwrap().level()
+  // ---- 入站 ----
+
+  pub fn push_rx(&self, samples: &[f32]) {
+    self.push_rx_at(samples, Instant::now())
   }
 
-  // ---- 出站（电脑 → 手机） ----
+  fn push_rx_at(&self, samples: &[f32], now: Instant) {
+    let mut q = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
+    q.push(samples, now);
+    let st = q.stats();
+    drop(q);
+    let mut s = self.stats.lock().unwrap();
+    s.rx_packets = st.packets;
+    s.rx_samples += samples.len() as u64;
+    s.rx_trims = st.trims;
+    s.rx_dropped = st.dropped;
+    s.rx_late = st.late;
+  }
 
-  /// 列工作线程（`remote_speaker` 行）：按位置 tap 推一个 hop。
+  pub fn take_rx_hop(&self, out: &mut [f32]) {
+    self.take_rx_hop_at(out)
+  }
+
+  fn take_rx_hop_at(&self, out: &mut [f32]) {
+    let mut q = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
+    q.pull(out);
+    let st = q.stats();
+    drop(q);
+    let mut s = self.stats.lock().unwrap();
+    s.rx_hops = st.hops;
+    s.rx_underruns = st.underruns;
+    s.rx_plc = st.plc;
+  }
+
+  /// 记一次入站 PLC（服务端按 seq 缺口补帧时调）。
+  pub fn note_rx_plc(&self) {
+    self
+      .inbound
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .note_plc();
+  }
+
+  /// 记一次入站单向延迟（µs，`sync` 偏移 + 帧头时间戳算出来的）。
+  pub fn note_rx_latency(&self, us: i64) {
+    if let Ok(mut s) = self.stats.lock() {
+      s.rx_latency_ms = Some(us as f64 / 1000.0);
+    }
+  }
+
+  /// 记一次入站丢包（seq 缺口，已用 PLC 补）。**不动音频缓冲**。
+  pub fn note_rx_lost(&self, n: u64) {
+    if n > 0
+      && let Ok(mut s) = self.stats.lock()
+    {
+      s.rx_lost += n;
+    }
+  }
+
+  // ---- 出站 ----
+
   pub fn push_tx_hop(&self, hop: &[f32]) {
     if let Ok(mut slot) = self.tx_last.lock() {
       let n = HOP.min(hop.len());
@@ -503,8 +487,6 @@ impl NetHub {
     self.outbound.push_hop(hop);
   }
 
-  /// 读「刚推给客户端的 hop」。返回 `(样本, 累计 hop 数)`；`count` 每推一 hop 变 1，
-  /// 用来判断这一格是不是新的（AEC 的网络远端泵按它决定要不要再灌一格历史）。
   pub fn tx_last(&self) -> ([f32; HOP], u64) {
     *self.tx_last.lock().unwrap_or_else(|e| e.into_inner())
   }
@@ -525,16 +507,15 @@ impl NetHub {
     self.stats.lock().unwrap().tx_packets += 1;
   }
 
-  /// 出站订阅的水位（样本）合计：>0 说明有客户端消费偏慢（界面与调试接口用）。
+  /// 待发 hop 数（样本口径）：正常 0。
   pub fn tx_level(&self) -> usize {
-    self
-      .outbound
-      .subs
-      .lock()
-      .unwrap()
-      .iter()
-      .map(|(_, q)| q.lock().unwrap().level())
-      .sum()
+    self.outbound.pending_hops() as usize * HOP
+  }
+
+  // ---- 客户端上报（`st`）----
+
+  pub fn set_client_report(&self, r: ClientReport) {
+    *self.client.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
   }
 
   // ---- 连接与统计 ----
@@ -548,6 +529,12 @@ impl NetHub {
   pub fn client_disconnected(&self) {
     let mut s = self.stats.lock().unwrap();
     s.clients = s.clients.saturating_sub(1);
+    drop(s);
+    self
+      .inbound
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .reset();
   }
 
   pub fn set_last_error(&self, e: impl Into<String>) {
@@ -571,30 +558,8 @@ impl NetHub {
     self.stats.lock().unwrap().chars_typed += n as u64;
   }
 
-  /// 逐路出站订阅水位（见 [`TxSubStat`]）。
-  fn tx_sub_stats(&self) -> Vec<TxSubStat> {
-    let cap = CAP_HOPS * HOP;
-    self
-      .outbound
-      .subs
-      .lock()
-      .unwrap()
-      .iter()
-      .map(|(_, q)| {
-        let lv = q.lock().unwrap().level();
-        TxSubStat {
-          level_ms: lv as f32 * 1000.0 / SAMPLE_RATE as f32,
-          full: lv >= cap,
-        }
-      })
-      .collect()
-  }
-
-  /// 出站结论：把「几路订阅 / 谁顶格 / 丢了多少 / 到底有没有在推」翻成一句人话。
-  ///
-  /// 单一判定处（面板与 HTTP 接口渲染同一份），与音频流的 `health` 同一个思路。
-  fn tx_verdict(&self, subs: &[TxSubStat], dropped: u64, hops: u64) -> crate::debug::Health {
-    let cap = tx_cap_ms();
+  /// 出站结论（推来即发，所以只看「有没有积压 / 丢没丢」）。
+  fn tx_verdict(&self, subs: &[TxSubStat], hops: u64) -> crate::debug::Health {
     if subs.is_empty() {
       return crate::debug::Health::ok(
         "没有客户端在收电脑音频（「网络扬声器」那一行还没有订阅者）",
@@ -606,44 +571,96 @@ impl NetHub {
         subs.len()
       ));
     }
-    let full = subs.iter().filter(|s| s.full).count();
-    if full > 0 {
+    let dropped: u64 = subs.iter().map(|s| s.dropped).sum();
+    let pending: u64 = subs.iter().map(|s| s.pending_hops).sum();
+    if pending > 0 {
       return crate::debug::Health::warn(format!(
-        "{} 路订阅里 {} 路顶格（上限 {cap:.0} ms，累计丢 {dropped} 个样本）：这个客户端没在取数据，把它换到前台或断开",
-        subs.len(),
-        full
+        "{} 路订阅里有 {pending} 个 hop 还没发出去（发送任务被调度慢了？）",
+        subs.len()
       ));
     }
-    let max = subs.iter().map(|s| s.level_ms).fold(0.0f32, f32::max);
-    crate::debug::Health::ok(format!(
-      "{} 路订阅正常：水位最大 {max:.0} ms（上限 {cap:.0} ms）",
-      subs.len()
-    ))
+    if dropped > 0 {
+      return crate::debug::Health::warn(format!(
+        "{} 路订阅正常，但累计丢了 {dropped} 个 hop（每个 10 ms）",
+        subs.len()
+      ));
+    }
+    crate::debug::Health::ok(format!("{} 路订阅正常：推来即发，无积压", subs.len()))
+  }
+
+  /// 入站结论：单向延迟 + 水位 + 抖动/间隔 + 丢包/裁剪，一起给人话。
+  fn rx_verdict(&self, st: &PlayoutStats, lost: u64, lat: Option<f64>) -> crate::debug::Health {
+    if st.packets == 0 {
+      return crate::debug::Health::ok("还没有收到网络麦克风的数据");
+    }
+    let mut parts = Vec::new();
+    if let Some(l) = lat {
+      parts.push(format!("单向 {l:.0} ms"));
+    }
+    parts.push(format!("水位 {:.0}/{:.0} ms", st.level_ms, st.target_ms));
+    parts.push(format!("抖动 {:.1} ms", st.jitter_ms));
+    if st.max_gap_ms > 20.0 {
+      parts.push(format!("最大间隔 {:.0} ms", st.max_gap_ms));
+    }
+    if lost > 0 {
+      parts.push(format!("丢 {lost} 包"));
+    }
+    if st.trims > 0 {
+      parts.push(format!("裁 {} 格", st.trims));
+    }
+    if st.underruns > 0 {
+      parts.push(format!("欠载 {}", st.underruns));
+    }
+    let text = parts.join("，");
+    if st.underruns > 0 || lost > 0 || st.trims > 0 {
+      crate::debug::Health::warn(text)
+    } else {
+      crate::debug::Health::ok(text)
+    }
   }
 
   /// 调试快照用的统计克隆（同时带上 opus 库探测）。
   pub fn stats(&self) -> NetStats {
     let mut s = self.stats.lock().unwrap().clone();
-    // 端口报「下次会绑的那个」：服务没开时这就是用户填的值，比报常量有用
     s.port = self.port();
     s.running = self.is_running();
     s.subs = self.sub_count();
-    s.rx_level = self.rx_level();
     s.remote_input = self.remote_input();
-    s.tx_dropped = self.outbound.dropped.load(Relaxed);
+
+    let in_st = self
+      .inbound
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .stats();
+    s.rx_level_ms = in_st.level_ms as f32;
+    s.rx_level = (in_st.level_ms * crate::audio::SAMPLE_RATE as f64 / 1000.0) as usize;
+    s.rx_target_ms = in_st.target_ms as f32;
+    s.rx_jitter_ms = in_st.jitter_ms as f32;
+    s.rx_worst_jitter_ms = in_st.worst_jitter_ms as f32;
+    s.rx_max_gap_ms = in_st.max_gap_ms as f32;
+    s.rx_hops = in_st.hops;
+    s.rx_underruns = in_st.underruns;
+    s.rx_plc = in_st.plc;
+    s.rx_trims = in_st.trims;
+    s.rx_dropped = in_st.dropped;
+    s.rx_late = in_st.late;
+    s.rx_verdict = self.rx_verdict(&in_st, s.rx_lost, s.rx_latency_ms);
+
     s.tx_level = self.tx_level();
     s.tx_hops = self.tx_last.lock().map(|v| v.1).unwrap_or(0);
-    s.tx_cap_ms = tx_cap_ms();
-    let subs = self.tx_sub_stats();
-    s.verdict = self.tx_verdict(&subs, s.tx_dropped, s.tx_hops);
-    s.tx_subs = subs;
+    s.tx_cap_ms = 0.0; // 出站无缓冲（字段保留）
+    s.tx_dropped = self.outbound.sum_dropped();
+    s.tx_subs = self.outbound.stats();
+    s.verdict = self.tx_verdict(&s.tx_subs, s.tx_hops);
+
+    s.client = self.client.lock().ok().and_then(|c| c.clone());
+    s.clock_offset_us = self.clock_offset();
     {
       let now = Instant::now();
       let mut r = self.rates.lock().unwrap_or_else(|e| e.into_inner());
       s.rx_packets_per_s = r.rx_packets.push(now, s.rx_packets);
       s.tx_packets_per_s = r.tx_packets.push(now, s.tx_packets);
-      s.rx_dropped_per_s = r.rx_dropped.push(now, s.rx_dropped);
-      s.tx_dropped_per_s = r.tx_dropped.push(now, s.tx_dropped);
+      s.rx_trims_per_s = r.rx_trims.push(now, s.rx_trims);
     }
     s.codec = match super::opus_sys::probe() {
       Ok(v) => {
@@ -660,159 +677,151 @@ impl NetHub {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::time::Duration;
 
-  #[test]
-  fn inbound_queue_keeps_hop_alignment() {
-    let mut q = SampleQueue::default();
-    let mut hop = [0.0f32; HOP];
-    // 不满一个 hop 时不返回
-    q.push(&[1.0; 100]);
-    assert!(!q.take_hop(&mut hop).0);
-    // 补足后正好出一个 hop
-    q.push(&[2.0; HOP - 100]);
-    assert!(q.take_hop(&mut hop).0);
-    // 前 100 个是 1.0（新追加的部分），其余 380 个是 2.0
-    assert!(hop[..100].iter().all(|x| *x == 1.0), "旧样本应原样保留");
-    assert!(hop[100..].iter().all(|x| *x == 2.0), "新样本应接在后面");
-    assert!(!q.take_hop(&mut hop).0);
+  /// 模拟时钟：每步 10 ms（与真实 hop 节拍一致）。
+  struct Clock(Instant);
+  impl Clock {
+    fn new() -> Self {
+      Clock(Instant::now())
+    }
+    fn step(&mut self) -> Instant {
+      self.0 += Duration::from_millis(10);
+      self.0
+    }
   }
 
   #[test]
-  fn inbound_queue_is_bounded_and_drops_oldest() {
-    let mut q = SampleQueue::default();
-    let dropped = q.push(&vec![7.0; IN_CAP + 1000]);
-    assert_eq!(dropped, 1000);
-    assert_eq!(q.level(), IN_CAP);
-    let mut hop = [0.0f32; HOP];
-    assert!(q.take_hop(&mut hop).0);
-    // 丢的是最旧的：剩下的全是新值
-    assert!(hop.iter().all(|x| *x == 7.0));
-  }
-
-  /// 硬顶必须由 hop 派生：曾经写成 `SAMPLE_RATE / 100 * 80` = 38400 样本 = 800 ms
-  /// （本意 80 ms），水位能在 800 ms 内随便涨 —— 手机麦克风「永久延迟」的直接原因。
-  #[test]
-  fn inbound_cap_is_eighty_ms() {
-    assert_eq!(IN_CAP, 3840, "上限 = 8 hop = 80 ms");
-    assert_eq!(IN_CAP * 1000 / SAMPLE_RATE as usize, 80);
-  }
-
-  /// 水位超目标时**慢慢**拉回目标：每 1 s 多丢 1 个 hop，不是一次性砍掉。
-  /// 这是「会话重建把水位垫高之后还能降回来」的唯一机制（2026-10-18）。
-  #[test]
-  fn outbound_queue_catches_up_to_target() {
+  fn rx_priming_then_playback_is_exact() {
     let hub = NetHub::new();
-    let (_id, sub) = hub.subscribe_tx();
-    // 先垫到一个「重建之后」的水位：硬顶（8 hop）
-    let hop = [1.0f32; HOP];
-    for _ in 0..CAP_HOPS {
-      hub.push_tx_hop(&hop);
+    let mut c = Clock::new();
+    let mut hop = [9.0f32; HOP];
+    hub.take_rx_hop_at(&mut hop);
+    assert!(hop.iter().all(|x| *x == 0.0), "起播前是静音");
+    assert_eq!(hub.stats().rx_underruns, 0, "起播前的静音不算欠载");
+    for _ in 0..2 {
+      hub.push_rx_at(&[0.5; HOP], c.step());
     }
-    assert_eq!(hub.stats().tx_level, CAP_HOPS * HOP);
-    // 模拟实时流：每次取之前推 1 个 hop，水位本应恒定
-    let mut out = [0.0f32; HOP];
-    for i in 0..(CATCHUP_TAKES * 3) {
-      hub.push_tx_hop(&hop);
-      assert!(sub.take_hop(&mut out));
-      let _ = i;
-    }
-    let lv = hub.stats().tx_level;
-    assert!(
-      lv <= TARGET_HOPS * HOP,
-      "3 s 后水位应回到目标以内，实测 {lv} 样本"
-    );
-    assert!(hub.stats().tx_dropped >= HOP as u64, "收敛丢弃要计入统计");
+    hub.take_rx_hop_at(&mut hop);
+    assert!(hop.iter().all(|x| (*x - 0.5).abs() < 1e-6), "样本必须原样");
   }
 
-  /// 用户实测场景（2026-10-18）：「**只要再开一列**麦克风就变延迟」。
-  ///
-  /// 机制：加列 = 会话重建 → 这段时间没有行在取，而手机一直在推 → 水位一次性垫高，
-  /// 重建后推速 = 取速，**水位再也降不回来**（实测一直是 800 ms 硬顶：`rx_level` 38400）。
-  /// 修复：超硬顶立刻裁到硬顶，之后按 1 s 1 hop 收回目标；水位在目标以内一点不丢。
   #[test]
-  fn inbound_recovers_after_session_rebuild() {
+  fn inbound_steady_state_is_lossless() {
     let hub = NetHub::new();
-    // 重建期间 3 s 没人取（手机照推）
-    for _ in 0..300 {
-      hub.push_rx(&[1.0; HOP]);
-    }
-    assert_eq!(
-      hub.stats().rx_level,
-      CAP_HOPS * HOP,
-      "超硬顶立刻裁到硬顶（不再允许涨到 800 ms）"
-    );
-    // 重建完：取 1 推 1 的实时流
+    let mut c = Clock::new();
     let mut out = [0.0f32; HOP];
-    let mut silent = 0;
-    for _ in 0..(CATCHUP_TAKES * 4) {
-      hub.push_rx(&[1.0; HOP]);
-      hub.take_rx_hop(&mut out);
-      if out.iter().all(|x| *x == 0.0) {
-        silent += 1;
-      }
+    for _ in 0..2 {
+      hub.push_rx_at(&[0.3; HOP], c.step());
+    }
+    for _ in 0..2000 {
+      let now = c.step();
+      hub.push_rx_at(&[0.3; HOP], now);
+      hub.take_rx_hop_at(&mut out);
     }
     let s = hub.stats();
-    assert_eq!(silent, 0, "水位一直在目标之上，不该补静音");
+    assert_eq!(s.rx_underruns, 0, "稳态不该欠载");
+    assert_eq!(s.rx_trims, 0, "稳态不该裁剪");
+    assert_eq!(s.rx_hops, 2000);
     assert!(
-      s.rx_level <= TARGET_HOPS * HOP,
-      "4 s 内水位应回到目标以内，实测 {} 样本",
-      s.rx_level
-    );
-    assert!(
-      s.rx_dropped >= (CAP_HOPS - TARGET_HOPS) as u64 * HOP as u64,
-      "收回目标的丢弃要计入统计（面板上看得到）"
+      s.rx_level_ms <= (RING_MS + 10.0) as f32,
+      "水位应贴住固定深度：{:.1} ms",
+      s.rx_level_ms
     );
   }
 
-  /// 水位在目标以内时**一点都不许丢**（收敛只在超出目标时发生）。
-  #[test]
-  fn queue_does_not_drop_below_target() {
-    let mut q = SampleQueue::default();
-    let mut out = [0.0f32; HOP];
-    let mut dropped = 0u64;
-    for _ in 0..(CATCHUP_TAKES * 2) {
-      q.push(&[0.5; HOP]); // 推 1 取 1：水位恒为 1 hop（< 目标）
-      let (got, d) = q.take_hop(&mut out);
-      assert!(got);
-      dropped += d;
-    }
-    assert_eq!(dropped, 0, "水位没超目标就不该丢样本");
-  }
-
-  #[test]
-  fn outbound_queue_is_bounded_per_subscriber() {
+  #[tokio::test]
+  async fn outbound_pushes_immediately() {
     let hub = NetHub::new();
-    let (_id, sub) = hub.subscribe_tx();
-    let hop = [1.0f32; HOP];
-    for _ in 0..(CAP_HOPS + 3) {
-      hub.push_tx_hop(&hop);
+    let (id, mut sub) = hub.subscribe_tx();
+    hub.push_tx_hop(&[0.25; HOP]);
+    let hop = tokio::time::timeout(Duration::from_millis(50), sub.recv())
+      .await
+      .expect("推来即发：不该等定时器")
+      .expect("订阅还在");
+    assert!(hop.iter().all(|x| (*x - 0.25).abs() < 1e-6));
+    assert_eq!(hub.stats().tx_subs[0].pending_hops, 0, "发完就没有积压");
+    hub.unsubscribe_tx(id);
+    assert!(sub.recv().await.is_none(), "退订后 recv 应结束");
+  }
+
+  #[tokio::test]
+  async fn outbound_drops_instead_of_blocking_engine() {
+    let hub = NetHub::new();
+    let (_id, mut sub) = hub.subscribe_tx();
+    for _ in 0..10 {
+      hub.push_tx_hop(&[1.0; HOP]);
     }
-    let mut out = [0.0f32; HOP];
-    for _ in 0..CAP_HOPS {
-      assert!(sub.take_hop(&mut out), "应能连续取出封顶内的 hop");
+    let st = hub.stats();
+    assert_eq!(st.tx_subs[0].pending_hops, MAX_PENDING_HOPS as u64);
+    assert_eq!(st.tx_subs[0].dropped, 10 - MAX_PENDING_HOPS as u64);
+    for _ in 0..MAX_PENDING_HOPS {
+      let _ = sub.recv().await;
     }
-    assert!(!sub.take_hop(&mut out), "超出封顶的应被丢弃");
-    assert!(hub.stats().tx_dropped > 0);
+    assert_eq!(hub.stats().tx_subs[0].pending_hops, 0);
   }
 
   #[test]
   fn remote_input_defaults_off() {
     let hub = NetHub::new();
-    assert!(!hub.remote_input(), "远程输入必须默认关闭");
+    assert!(!hub.remote_input());
     hub.set_remote_input(true);
     assert!(hub.remote_input());
     assert!(hub.stats().remote_input);
   }
 
   #[test]
-  fn rx_hop_underrun_fills_silence() {
+  fn client_report_reaches_snapshot() {
     let hub = NetHub::new();
-    let mut hop = [9.0f32; HOP];
-    hub.take_rx_hop(&mut hop);
-    assert!(hop.iter().all(|x| *x == 0.0), "欠载应补静音");
-    assert_eq!(hub.stats().rx_underruns, 1);
-    hub.push_rx(&[0.5; HOP]);
-    hub.take_rx_hop(&mut hop);
-    assert!(hop.iter().all(|x| *x == 0.5));
+    assert!(hub.stats().client.is_none(), "没上报时应为 null");
+    hub.set_client_report(ClientReport {
+      level_ms: 21.0,
+      target_ms: RING_MS as f32,
+      underruns: 0,
+      concealed: 2,
+      late: 1,
+      one_way_ms: Some(14.5),
+      clock_ppm: Some(-27.0),
+      at_ms: 1234,
+    });
+    let st = hub.stats().client.expect("上报后应可见");
+    assert!((st.level_ms - 21.0).abs() < 1e-6);
+    assert_eq!(st.concealed, 2);
+    assert_eq!(st.clock_ppm, Some(-27.0));
+  }
+
+  /// 深度是常量：不管有没有抖动 / 欠载，`rx_target_ms` 必须恒等于 `RING_MS`。
+  #[test]
+  fn depth_is_constant() {
+    let hub = NetHub::new();
+    let mut c = Clock::new();
+    let mut out = [0.0f32; HOP];
+    for k in 0..200 {
+      // 制造大抖动（0/30 ms 交替），再穿插几次欠载
+      c.0 += Duration::from_millis(if k % 2 == 0 { 0 } else { 30 });
+      if k % 7 != 0 {
+        hub.push_rx_at(&[0.1; HOP], c.0);
+      }
+      hub.take_rx_hop_at(&mut out);
+    }
+    let s = hub.stats();
+    assert_eq!(s.rx_target_ms, RING_MS as f32, "深度不许被动态调整");
+    assert!(s.rx_jitter_ms > 0.0, "抖动要能观测到");
+  }
+
+  #[test]
+  fn stop_clears_audio_state() {
+    let hub = NetHub::new();
+    for _ in 0..8 {
+      hub.push_rx(&[0.2; HOP]);
+    }
+    assert!(hub.stats().rx_level > 0);
+    hub.set_running(false);
+    assert_eq!(hub.stats().rx_level, 0, "停服务后缓冲必须清空");
+  }
+
+  #[test]
+  fn hop_is_ten_ms() {
+    assert_eq!(HOP, crate::audio::SAMPLE_RATE as usize / 100);
   }
 }

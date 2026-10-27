@@ -25,110 +25,133 @@ import android.media.AudioTrack
 import android.os.Build
 import android.os.Process
 import android.util.Log
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
+import com.purevox.mic.Proto
 
 /**
- * 下行播放（电脑音频 → 手机扬声器）：**包队列 + 解码线程 + 样本环形缓冲 + 写入线程 + AudioTrack**。
+ * 下行播放（电脑音频 → 手机扬声器）。
  *
- * 为什么这么分层：
- * - WebSocket 的收包线程（OkHttp）**不能**做解码 —— 一解码就会挡住后面的包，
- *   抖动直接变成音频卡顿。所以 [enqueue] 只做一次入队，解码在独立线程（`pv-spk-dec`）。
- * - 解码输出**按样本累积**在环形缓冲里，而不是「一包一帧对齐播放」：
- *   发包帧长（2.5~60 ms）和解码输出帧长（常见 20 ms）都可能不同。
- * - `AudioTrack` 是唯一主时钟：写入线程**永远不停**（欠载补静音），
- *   这样设备的播放时钟不会因为数据断档而重启/漂移；水位超上限则丢最旧。
+ * ## 结构（只有三层，别再加）
  *
- * 三个线程 + 一个缓冲的典型水位：预热 40 ms，稳态几十毫秒。状态栏直接读
- * [bufferedMs] / [underruns] / [dropped] / [lastError]，不做「看起来正常」的伪装。
+ * ```text
+ *   OkHttp 收包线程 —— 解析帧头 → Opus 解码 → 写进播放环
+ *   播放环（[PlaybackRing]）—— 吸收网络抖动 + 用变速重采样吸收晶振差
+ *   写线程 —— 按 AudioTrack 的主时钟取 10 ms → 写设备
+ * ```
+ *
+ * **没有包队列、没有第二个环、没有播放定时器**：`AudioTrack` 的阻塞写就是主时钟。
+ * 旧实现是「包队列 + 解码线程 + 样本环 + 20 ms 写入线程 + 50 ms 预热」，多出来的每一层
+ * 都是白送的延迟，而且每层都有自己的水位策略（互相打架）。
+ *
+ * ## 欠载怎么办
+ *
+ * 环空 → 先让 libopus 走 **PLC** 合成一帧（保持时间轴连续，听感是「一个音节糊了一下」），
+ * 还空 → 环里淡化重复上一格。两种都计数，界面与 `/debug` 都看得到 —— 不静默。
+ *
+ * ## 时钟偏差是**量出来**的
+ *
+ * [clockPpm] 用 `AudioTrack.getPlaybackHeadPosition()`（硬件实际播出的帧数）对
+ * `System.nanoTime()` 做差分：这就是「手机音频时钟 vs 电脑时钟」的真实偏差，
+ * 随 `st` 上报给电脑，`/debug` 的 `net.client.clock_ppm` 直接能读。
+ * 它也是伺服要吃掉的那个量 —— 先量，再决定要不要调参（AGENTS §1.4）。
  */
-class SpeakerDownlink {
+class SpeakerDownlink(
+    /**
+     * 电脑算出的时钟偏移（手机 − 电脑，µs）；还没测出来时返回 null。
+     * 用来把下行帧头的时间戳换成**单向延迟**。
+     */
+    private val clockOffsetUs: () -> Long?,
+) {
 
     companion object {
         private const val TAG = "PureVoxSpk"
 
-        const val SAMPLE_RATE = OpusEncoder.SAMPLE_RATE
-        /** **立体声**：很多机型的低延迟快通路只对 stereo 生效；mono 会被丢到深缓冲
-         *  （听感就是「延迟一截」）。下行仍按单声道处理，写 AudioTrack 时复制成左右两路。 */
+        private const val SR = Proto.SAMPLE_RATE
+        private const val HOP = Proto.FRAME_SAMPLES
+
+        /** 立体声：很多机型的低延迟快通路只对 stereo 生效（mono 会被丢到深缓冲）。 */
+        private const val CHANNELS = 2
         private const val CHANNEL_MASK = AudioFormat.CHANNEL_OUT_STEREO
-        private const val CHANNEL_MASK_MONO = AudioFormat.CHANNEL_OUT_MONO
-        private const val OUT_CHANNELS = 2
-        private const val PCM_ENCODING = AudioFormat.ENCODING_PCM_FLOAT
+        private const val ENCODING = AudioFormat.ENCODING_PCM_FLOAT
 
-        /** 环形缓冲 = 2^14 样本（约 341 ms），满了丢最旧（硬顶延迟，不无限涨）。 */
-        private const val RING_SAMPLES = 1 shl 14
+        /** AudioTrack 底层缓冲：**20 ms**（2 格）。它只吸收写线程调度，不是 jitter buffer。 */
+        private const val TRACK_MS = 20
 
-        /** 一次写入的样本数：**20 ms** @48 kHz。10 ms 会把写线程唤醒 100 次/s，
-         *  20 ms 减半（长时间运行省电），环水位仍是 50 ms，延迟不变。 */
-        private const val WRITE_CHUNK = 960
-
-        /** 开声前预热水位：50 ms（网页版实验值；服务端已把 10 ms 定时器提到 1 ms，
-         *  包不再按 15.6 ms 成串，50 ms 足够吸收 Wi-Fi jitter）。 */
-        private const val PREBUFFER_SAMPLES = 2400
-
-        /** 包队列深度：300 包（@10 ms ≈ 3 s），突发兜底。 */
-        private const val PACKET_QUEUE = 300
-
-        /** AudioTrack 底层缓冲：40 ms（float 立体声）。真正的 jitter buffer 是上面的环；
-         *  底层只负责写线程调度，**不要**再叠 80 ms（那就是纯延迟）。 */
-        private const val TRACK_BUFFER_MS = 40
-
-        private const val PREBUFFER_WAIT_MS = 500L
-
-        /** 解码线程的取包等待；超时只是让线程有机会看到 running=false。 */
-        private const val POLL_WAIT_MS = 100L
+        /** 起播前的最低水位（ms）：到这就开声，不等「目标水位」，起播更快。 */
+        private const val START_MS = 15.0
+        private const val START_WAIT_MS = 500L
     }
 
-    private val ring = FloatArray(RING_SAMPLES)
-    private val wIdx = AtomicLong(0)
-    private val rIdx = AtomicLong(0)
-
-    /** 待解码的 Opus 包（OkHttp 线程写，解码线程读）。 */
-    private val packets = ArrayBlockingQueue<ByteArray>(PACKET_QUEUE)
-
-    private var decoder: OpusDecoder? = null
     private var track: AudioTrack? = null
-    /** 实际打开的通道数（优先 stereo 走低延迟快通路；不支持时回退 mono）。 */
-    @Volatile
-    private var outChannels = OUT_CHANNELS
-    private var decodeThread: Thread? = null
+    private var decoder: OpusDecoder? = null
     private var writeThread: Thread? = null
+
+    /** 播放环：**唯一的缓冲**（见 [PlaybackRing]）。 */
+    private val ring = PlaybackRing()
+
+    /** 解码器的保护锁：`decode()` 在 OkHttp 线程、`plc()` 在写线程。 */
+    private val decLock = Any()
 
     @Volatile
     private var running = false
 
-    /** 实际生效的解码器名。 */
+    /** 解码器名（诊断）。 */
+    @Volatile
     var decoderName: String = ""
         private set
 
-    /** 欠载（缓冲空、写了静音）次数。 */
+    /** 最近一次故障原因（null = 正常）。 */
     @Volatile
-    var underruns: Long = 0L
+    var lastError: String? = null
         private set
 
-    /** 丢掉的包 / 样本数。 */
-    @Volatile
-    var dropped: Long = 0L
-        private set
-
-    /** 最近一块音频的峰值（0..1，状态栏用）。 */
+    /** 最近一块音频的峰值（0..1）。 */
     @Volatile
     var peak: Float = 0f
         private set
 
+    /** 最近一包的单向延迟（电脑发出 → 手机收到，ms）；没同步过就是 NaN。 */
+    @Volatile
+    var oneWayMs: Double = Double.NaN
+        private set
+
     /**
-     * 解码器走 PLC（丢包补帧）的次数。
+     * 手机音频时钟实测偏差（ppm，正 = 手机比电脑快）；样本不足时是 NaN。
      *
-     * 与 [underruns] 是**两件事**，别混：欠载 = 我们自己的缓冲空了、写了静音
-     * （设备侧没喂上）；掩盖 = 数据流里缺包、解码器补出来的（网络在抖）。
+     * 这不是估算：用 **硬件播放头**（`getPlaybackHeadPosition`）的增量除以 `nanoTime`
+     * 增量。它回答的是「我们这边 hop 已经发出去了，接收方的 ring 到底会不会漂」。
      */
+    @Volatile
+    var clockPpm: Double = Double.NaN
+        private set
+
+    val levelMs: Double get() = ring.levelMs()
+    val targetMs: Double get() = ring.targetMs()
+    val jitterMs: Double get() = ring.jitterMs()
+    val worstJitterMs: Double get() = ring.worstJitterMs()
+    val maxGapMs: Double get() = ring.maxGapMs()
+    val underruns: Long get() = ring.underruns
+    val plc: Long get() = ring.plc
+    val trims: Long get() = ring.trims
+    val late: Long get() = ring.late
+    val dropped: Long get() = ring.dropped
+    /** Opus 解码器的 PLC 次数（与 [plc] 同源，这里直接读解码器以涵盖「服务端补的帧」） */
     val concealed: Long get() = decoder?.concealed ?: 0L
 
-    /** 最近一次故障原因（null = 正常）；界面上要显示，不能静默。 */
-    @Volatile
-    var lastError: String? = null
-        private set
+    /** AudioTrack 自己的欠载次数（与环的欠载是两件事）。 */
+    val deviceUnderruns: Int
+        get() = try {
+            track?.underrunCount ?: 0
+        } catch (e: Throwable) {
+            0
+        }
+
+    /** AudioTrack 实际申请的底层缓冲（ms）。 */
+    val trackBufferMs: Int
+        get() = try {
+            (track?.bufferSizeInFrames ?: 0) * 1000 / SR
+        } catch (e: Throwable) {
+            0
+        }
 
     // ---------------------------------------------------------------- 生命周期
 
@@ -138,7 +161,7 @@ class SpeakerDownlink {
         lastError = null
         val dec = OpusDecoder()
         val name = try {
-            dec.start { pcm, n -> push(pcm, n) }
+            dec.start { pcm, n -> ring.push(pcm, n, System.nanoTime()) }
         } catch (e: Throwable) {
             lastError = e.message ?: "Opus 解码器不可用"
             Log.e(TAG, "解码器启动失败", e)
@@ -154,21 +177,20 @@ class SpeakerDownlink {
             return false
         }
         track = at
+        ring.reset()
         running = true
-        packets.clear()
-        underruns = 0L
-        dropped = 0L
-        peak = 0f
-
-        decodeThread = Thread({ decodeLoop(dec) }, "pv-spk-dec").also { it.isDaemon = true; it.start() }
-        writeThread = Thread({ writeLoop(at) }, "pv-spk-out").also { it.isDaemon = true; it.start() }
-        Log.i(TAG, "下行播放启动：$name")
+        oneWayMs = Double.NaN
+        clockPpm = Double.NaN
+        writeThread = Thread({ writeLoop(at) }, "pv-spk-out").also {
+            it.isDaemon = true
+            it.start()
+        }
+        Log.i(TAG, "下行播放启动：$name（环目标 ${targetMs.toInt()} ms，底层 ${trackBufferMs} ms）")
         return true
     }
 
     fun stop() {
         running = false
-        // 先让阻塞的 write 出来，再 join，否则线程会卡在 WRITE_BLOCKING 上
         val at = track
         if (at != null) {
             try {
@@ -179,11 +201,11 @@ class SpeakerDownlink {
             }
         }
         writeThread?.join(1000)
-        decodeThread?.join(500)
         writeThread = null
-        decodeThread = null
-        decoder?.stop()
-        decoder = null
+        synchronized(decLock) {
+            decoder?.stop()
+            decoder = null
+        }
         if (at != null) {
             try {
                 at.stop()
@@ -193,87 +215,58 @@ class SpeakerDownlink {
             at.release()
         }
         track = null
-        packets.clear()
-        wIdx.set(0)
-        rIdx.set(0)
-        underruns = 0L
-        dropped = 0L
+        ring.reset()
         peak = 0f
+        oneWayMs = Double.NaN
         Log.i(TAG, "下行播放停止")
     }
 
     // ---------------------------------------------------------------- 数据面
 
-    /** 收包线程调用：入队一个 Opus 包。队列满则丢最旧（保最新，保可懂度）。 */
-    fun enqueue(packet: ByteArray) {
-        if (!running) return
-        if (packets.offer(packet)) return
-        packets.poll()
-        dropped++
-        if (!packets.offer(packet)) dropped++
-    }
-
-    /** 解码线程调用：把解出的样本写进环形缓冲。 */
-    private fun push(src: FloatArray, n: Int) {
-        if (n <= 0) return
-        var w = (wIdx.get() and (RING_SAMPLES - 1).toLong()).toInt()
-        for (i in 0 until n) {
-            ring[w] = src[i]
-            w++
-            if (w == RING_SAMPLES) w = 0
+    /**
+     * 收到一个音频包（**OkHttp 线程**）。`payload` 已经去掉了 8 字节帧头。
+     *
+     * 解码就在这个线程做（一个 10 ms 帧的解码是零点几毫秒，不会挡住后面的包）：
+     * 多一个「解码线程 + 包队列」只会多一层延迟和一层水位。
+     */
+    fun onPacket(seq: Int, tsUs: Int, payload: ByteArray) {
+        if (!running || payload.isEmpty()) return
+        val dec = decoder ?: return
+        // 单向延迟（需要时钟偏移）：只做展示与统计，不影响播放
+        clockOffsetUs()?.let { off ->
+            val us = Proto.usDiff(Proto.nowUs(), tsUs) + off
+            if (us in 0..5_000_000) oneWayMs = us / 1000.0
         }
-        wIdx.addAndGet(n.toLong())
-        val over = wIdx.get() - rIdx.get() - RING_SAMPLES
-        if (over > 0) {
-            // 解码跑飞（长时间取不走）：丢最旧，把水位压回上限
-            rIdx.set(wIdx.get() - RING_SAMPLES)
-            dropped++
+        synchronized(decLock) {
+            try {
+                dec.decode(payload, payload.size)
+            } catch (e: Throwable) {
+                lastError = "解码异常：${e.message ?: e.javaClass.simpleName}"
+                Log.w(TAG, "解码异常（seq=$seq）", e)
+            }
         }
     }
-
-    // ---------------------------------------------------------------- 状态
-
-    private fun bufferedSamples(): Int = (wIdx.get() - rIdx.get()).toInt().coerceAtLeast(0)
-
-    fun bufferedMs(): Float = bufferedSamples() * 1000f / SAMPLE_RATE
-
-    /** AudioTrack 自己的欠载次数（API 24；与上面的环欠载是两件事）。 */
-    val deviceUnderruns: Int
-        get() = try { track?.getUnderrunCount() ?: 0 } catch (e: Throwable) { 0 }
-
-    /** AudioTrack 实际申请的底层缓冲（ms）。 */
-    val trackBufferMs: Int
-        get() = try { (track?.getBufferSizeInFrames() ?: 0) * 1000 / SAMPLE_RATE } catch (e: Throwable) { 0 }
 
     // ---------------------------------------------------------------- 内部
 
     private fun openTrack(): AudioTrack? {
-        // 顺序 = 延迟从低到高：stereo 低延迟（快通路）→ stereo 普通 → mono 低延迟 → mono 普通。
-        // 有些机型 mono 进不了快通路，有些机型不支持低延迟；**不能一条路失败就没声音**。
-        val variants = listOf(
-            Triple(CHANNEL_MASK, 2, true),
-            Triple(CHANNEL_MASK, 2, false),
-            Triple(CHANNEL_MASK_MONO, 1, true),
-            Triple(CHANNEL_MASK_MONO, 1, false),
-        )
         var lastReason = "未知"
-        for ((mask, channels, lowLatency) in variants) {
+        for (lowLatency in booleanArrayOf(true, false)) {
             try {
-                val minBytes = AudioTrack.getMinBufferSize(SAMPLE_RATE, mask, PCM_ENCODING)
+                val minBytes = AudioTrack.getMinBufferSize(SR, CHANNEL_MASK, ENCODING)
                 if (minBytes <= 0) {
-                    lastReason = "getMinBufferSize($channels ch) = $minBytes"
+                    lastReason = "getMinBufferSize = $minBytes"
                     continue
                 }
-                // 40 ms；底层缓冲只吸收写线程调度，不承担网络 jitter（那是环的事）
-                val bytes = maxOf(minBytes, WRITE_CHUNK * 4 * channels * (TRACK_BUFFER_MS / 10))
+                val bytes = maxOf(minBytes, HOP * 4 * CHANNELS * (TRACK_MS / 10))
                 val attrs = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
                 val format = AudioFormat.Builder()
-                    .setEncoding(PCM_ENCODING)
-                    .setSampleRate(SAMPLE_RATE)
-                    .setChannelMask(mask)
+                    .setEncoding(ENCODING)
+                    .setSampleRate(SR)
+                    .setChannelMask(CHANNEL_MASK)
                     .build()
                 val builder = AudioTrack.Builder()
                     .setAudioAttributes(attrs)
@@ -285,118 +278,127 @@ class SpeakerDownlink {
                 }
                 val at = builder.build()
                 if (at.state == AudioTrack.STATE_INITIALIZED) {
-                    outChannels = channels
                     Log.i(
                         TAG,
-                        "AudioTrack 打开：${channels}ch · ${if (lowLatency) "低延迟" else "普通"} · " +
-                            "底层 ${bytes * 1000 / (SAMPLE_RATE * 4 * channels)} ms",
+                        "AudioTrack：${if (lowLatency) "低延迟" else "普通"} · 申请 ${bytes * 1000 / (SR * 4 * CHANNELS)} ms",
                     )
                     return at
                 }
-                lastReason = "$channels ch/${if (lowLatency) "低延迟" else "普通"}：state=${at.state}"
+                lastReason = "${if (lowLatency) "低延迟" else "普通"}：state=${at.state}"
                 at.release()
             } catch (e: Throwable) {
-                lastReason = "$channels ch/${if (lowLatency) "低延迟" else "普通"}：${e.message ?: e.javaClass.simpleName}"
-                Log.w(TAG, "AudioTrack 创建失败（$channels ch, lowLatency=$lowLatency）", e)
+                lastReason = "${if (lowLatency) "低延迟" else "普通"}：${e.message ?: e.javaClass.simpleName}"
+                Log.w(TAG, "AudioTrack 创建失败", e)
             }
         }
         lastError = "AudioTrack 创建失败：$lastReason"
-        Log.e(TAG, lastError ?: "AudioTrack 创建失败")
         return null
-    }
-
-    private fun decodeLoop(dec: OpusDecoder) {
-        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-        while (running) {
-            val pkt = try {
-                packets.poll(POLL_WAIT_MS, TimeUnit.MILLISECONDS)
-            } catch (e: InterruptedException) {
-                null
-            } ?: continue
-            if (!running) return
-            try {
-                dec.decode(pkt, pkt.size)
-            } catch (e: Throwable) {
-                lastError = "解码异常：${e.message ?: e.javaClass.simpleName}"
-                Log.e(TAG, "解码异常", e)
-                return
-            }
-        }
     }
 
     private fun writeLoop(at: AudioTrack) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-        val chunk = FloatArray(WRITE_CHUNK * outChannels)
-        val silence = FloatArray(WRITE_CHUNK * outChannels)
+        val mono = FloatArray(HOP)
+        val out = FloatArray(HOP * CHANNELS)
+        // 起播：攒到最低水位再开声（0.5 s 内攒不到也开，别让用户以为坏了）
+        val deadline = System.currentTimeMillis() + START_WAIT_MS
+        while (running && ring.levelMs() < START_MS && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(2)
+            } catch (e: InterruptedException) {
+                return
+            }
+        }
         try {
-            // 预热：先攒够水位再开声，避免起播一段断音
-            val deadline = System.currentTimeMillis() + PREBUFFER_WAIT_MS
-            while (running && bufferedSamples() < PREBUFFER_SAMPLES && System.currentTimeMillis() < deadline) {
-                try {
-                    Thread.sleep(5)
-                } catch (e: InterruptedException) {
-                    return
-                }
-            }
             at.play()
-            while (running) {
-                if (bufferedSamples() >= WRITE_CHUNK) {
-                    readIntoOut(chunk)
-                    writeFully(at, chunk)
-                } else {
-                    // 欠载：补静音，绝不停写 —— 播放时钟必须不断
-                    underruns++
-                    writeFully(at, silence)
+        } catch (e: Throwable) {
+            lastError = "AudioTrack.play 失败：${e.message}"
+            return
+        }
+
+        var lastHead = -1L
+        var lastHeadNs = 0L
+        var lastPeak = 0L
+        while (running) {
+            val real = ring.pull(mono, HOP)
+            var pk = 0f
+            for (i in 0 until HOP) {
+                val v = mono[i]
+                out[i * 2] = v
+                out[i * 2 + 1] = v
+                val a = if (v < 0f) -v else v
+                if (a > pk) pk = a
+            }
+            peak = pk
+            if (!writeFully(at, out)) return
+
+            // 时钟偏差：硬件播放头的增量 vs nanoTime 增量（每 ~1 s 更新一次）
+            val now = System.nanoTime()
+            if (now - lastPeak > 500_000_000L) {
+                lastPeak = now
+                val head = try {
+                    at.playbackHeadPosition.toLong() and 0xFFFF_FFFFL
+                } catch (e: Throwable) {
+                    -1L
+                }
+                if (head >= 0) {
+                    if (lastHead >= 0) {
+                        val dFrames = (head - lastHead + (1L shl 32)) % (1L shl 32)
+                        val dNs = now - lastHeadNs
+                        if (dNs > 400_000_000L && dFrames > 0) {
+                            val rate = dFrames * 1e9 / dNs
+                            clockPpm = (rate / SR - 1.0) * 1e6
+                        }
+                    }
+                    lastHead = head
+                    lastHeadNs = now
                 }
             }
-        } catch (e: Throwable) {
-            lastError = "播放线程退出：${e.message ?: e.javaClass.simpleName}"
-            Log.e(TAG, "播放线程异常", e)
+            if (!real) {
+                // 欠载：让 libopus 补一帧（PLC 保持时间轴连续，比静音自然），
+                // 下一拍就真的从环里取到它（README/DESIGN §4.1.4）
+                val dec = decoder
+                if (dec != null) {
+                    synchronized(decLock) {
+                        try {
+                            dec.plc()
+                            ring.notePlc()
+                        } catch (e: Throwable) {
+                            Log.w(TAG, "PLC 异常", e)
+                        }
+                    }
+                }
+                if (ring.levelMs() < 1.0) {
+                    try {
+                        Thread.sleep(1) // 一直没数据：让出 CPU，别空转
+                    } catch (e: InterruptedException) {
+                        return
+                    }
+                }
+            }
         }
     }
 
-    private fun writeFully(at: AudioTrack, buf: FloatArray) {
+    private fun writeFully(at: AudioTrack, buf: FloatArray): Boolean {
         var off = 0
         while (off < buf.size && running) {
             val w = try {
                 at.write(buf, off, buf.size - off, AudioTrack.WRITE_BLOCKING)
             } catch (e: Throwable) {
                 lastError = "AudioTrack.write 异常：${e.message ?: e.javaClass.simpleName}"
-                Log.e(TAG, "write 异常", e)
-                return
+                Log.w(TAG, "write 异常", e)
+                return false
             }
             if (w <= 0) {
                 if (w < 0) lastError = "AudioTrack.write 返回 $w（输出设备不可用）"
                 try {
                     Thread.sleep(1)
                 } catch (e: InterruptedException) {
-                    return
+                    return false
                 }
-                return
+                return true
             }
             off += w
         }
-    }
-
-    /** 从环里取 480 个单声道样本，按实际通道数展开（stereo 左右相同）写进 [dst]。 */
-    private fun readIntoOut(dst: FloatArray) {
-        val ch = outChannels
-        var idx = (rIdx.get() and (RING_SAMPLES - 1).toLong()).toInt()
-        var pk = 0f
-        for (i in 0 until WRITE_CHUNK) {
-            val v = ring[idx]
-            if (ch == 2) {
-                dst[i * 2] = v
-                dst[i * 2 + 1] = v
-            } else {
-                dst[i] = v
-            }
-            val a = if (v < 0f) -v else v
-            if (a > pk) pk = a
-            idx++
-            if (idx == RING_SAMPLES) idx = 0
-        }
-        rIdx.addAndGet(WRITE_CHUNK.toLong())
-        peak = pk
+        return running
     }
 }

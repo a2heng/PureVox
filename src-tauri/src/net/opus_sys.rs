@@ -355,6 +355,32 @@ impl Decoder {
     Ok(n)
   }
 
+  /// 丢包补偿（PLC）：让 libopus 按上一帧的频谱合成一帧，长度等于上一包。
+  ///
+  /// 为什么在解码器里补、而不是在缓冲里补静音：静音是**时间轴上的一个洞** —— 补 10 ms
+  /// 静音之后，后面所有样本都晚 10 ms，等于每丢一包就多一次相位跳变；PLC 保持时间轴连续，
+  /// 听感是「一个音节的尾巴糊了一下」，而不是「声音被挖掉一块」。丢包数另计，不静默。
+  pub fn decode_plc(&mut self, out: &mut Vec<f32>) -> Result<usize, String> {
+    let a = api()?;
+    // SAFETY: st 有效；packet 传 NULL + len 0 是 libopus 规定的 PLC 调用方式。
+    let n = unsafe {
+      (a.decode_float)(
+        self.st,
+        std::ptr::null(),
+        0,
+        self.scratch.as_mut_ptr(),
+        self.scratch.len() as c_int,
+        0,
+      )
+    };
+    if n < 0 {
+      return Err(errstr(a, n));
+    }
+    out.clear();
+    out.extend_from_slice(&self.scratch[..n as usize]);
+    Ok(n as usize)
+  }
+
   /// 解码到内部暂存区（两条解码路径共用的唯一实现）。
   fn decode_raw(&mut self, packet: &[u8], gain_q8: i32) -> Result<usize, String> {
     let a = api()?;

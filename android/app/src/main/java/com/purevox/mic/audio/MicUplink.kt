@@ -38,13 +38,18 @@ import com.purevox.mic.Proto
  * - **后台受限**：Android 9+ 后台拿不到麦克风，所以推流必须由
  *   `service/CaptureService`（microphone 类型前台服务）顶着 —— 界面在开启推流前
  *   先起服务，再开 `AudioRecord`。
- * - 读取阻塞时长 = [READ_SAMPLES]（20 ms），因此 [stop] 不需要等很久（join 1 s 足够）。
+ * - 读取阻塞时长 = [READ_SAMPLES]（**10 ms**），因此 [stop] 不需要等很久（join 1 s 足够）；
+ *   一读一包，包的时间戳就是读返回的时刻（帧头用它算单向延迟）。
  * - 峰值电平写在 [level]，由界面轮询读取，不做回调（避免高频 post）。
  */
 class MicUplink(
     private val context: Context,
-    /** 一个 Opus 包（可直接丢给 `WsClient.sendAudio`）。 */
-    private val onPacket: (ByteArray) -> Unit,
+    /**
+     * 一个 Opus 包 + **采集时刻**（µs，`System.nanoTime()/1000` 的低 32 位）。
+     *
+     * 时间戳必须是采集侧的：电脑用它算「手机 → 电脑」的单向延迟（配合 `sync` 的时钟偏移）。
+     */
+    private val onPacket: (pkt: ByteArray, tsUs: Int) -> Unit,
     /** 故障原因（人类可读），界面直接显示。 */
     private val onError: (String) -> Unit,
     /** 所选麦克风 API 不可用但已回退到 MIC 时的提示（不中断推流）。 */
@@ -59,8 +64,13 @@ class MicUplink(
         const val SAMPLE_RATE = Proto.SAMPLE_RATE
         private const val CHANNEL_MASK = AudioFormat.CHANNEL_IN_MONO
 
-        /** 一次读多少样本：20 ms @48 kHz。 */
-        private const val READ_SAMPLES = 960
+        /**
+         * 一次读多少样本：**10 ms = 480**，与 Opus 帧、与引擎 hop 完全对齐。
+         *
+         * 旧实现读 20 ms（960），每个读回调编两包 —— 多出来的 10 ms 是**纯延迟**，
+         * 而且两包共用一个采集时刻，时间戳会有一半是错的（差 10 ms）。
+         */
+        private const val READ_SAMPLES = Proto.FRAME_SAMPLES
 
         private const val REC_PERMISSION = Manifest.permission.RECORD_AUDIO
     }
@@ -100,6 +110,10 @@ class MicUplink(
     private var encoder: OpusEncoder? = null
     private var thread: Thread? = null
 
+    /** 最近一次 `AudioRecord.read` 返回时刻（帧头时间戳；单线程读写，无锁）。 */
+    @Volatile
+    private var lastReadTsUs: Int = 0
+
     @Volatile
     private var running = false
 
@@ -113,7 +127,7 @@ class MicUplink(
 
         val enc = OpusEncoder()
         try {
-            enc.start(onPacket)
+            enc.start { pkt -> onPacket(pkt, lastReadTsUs) }
         } catch (e: Throwable) {
             onError(e.message ?: "Opus 编码器不可用")
             Log.e(TAG, "编码器启动失败", e)
@@ -291,6 +305,8 @@ class MicUplink(
                 }
             }
             level = pk
+            // 时间戳在**读返回时**打：这才是这段音频进入系统的时刻
+            lastReadTsUs = Proto.nowUs()
             enc.encode(floats, got)
         }
     }

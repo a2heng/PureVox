@@ -581,7 +581,7 @@ fn net_ifaces() -> Vec<net::addrs::NetIface> {
 ///
 /// 服务绑的是 `0.0.0.0:port`，所有网卡本来就都在服务里；选子网只是决定**把哪个地址
 /// 告诉客户端**。为这个重启会把已连着的客户端全踢掉，而实际什么都没变
-/// （DESIGN.md §4.1.1）。
+/// （DESIGN.md §4.1.11）。
 #[tauri::command]
 fn net_select_ip(ip: String) -> Result<String, String> {
   let ip = ip.trim();

@@ -43,9 +43,9 @@ use std::time::{Duration, Instant};
 use rtrb::Consumer;
 
 use super::fanout::Fanout;
-use super::playback::Servo;
 use super::{HOP, SAMPLE_RATE};
 use crate::dsp::resampler::Converter;
+use crate::dsp::servo::Servo;
 
 /// 一拍（与列工作线程同一套 10 ms 网格）。
 const GRID: Duration = Duration::from_millis(10);
@@ -242,7 +242,7 @@ impl Source {
     self.servo.update(acc_ms, dt_s.max(1e-4));
     if self.last_ratio.elapsed() >= Duration::from_millis(50) {
       self.last_ratio = Instant::now();
-      let _ = self.conv.set_relative_ratio(1.0 - self.servo.adj);
+      let _ = self.conv.set_relative_ratio(1.0 - self.servo.adj());
     }
   }
 }

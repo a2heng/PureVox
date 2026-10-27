@@ -26,24 +26,18 @@
 //! 只有关键词注入是平台相关（Windows `SendInput`，其余平台明确报不可用，见 `keys`）。
 
 pub mod addrs;
-pub mod hub;
-pub mod keymap;
-pub mod keys;
-pub mod mdns;
-pub mod opus_sys;
-#[cfg(windows)]
-#[path = "pacer_windows.rs"]
-mod pacer;
-#[cfg(not(windows))]
-#[path = "pacer_other.rs"]
-mod pacer;
-
 /// 网络回环测试（只 `cfg(test)` 编译，不进产物）。
 #[cfg(test)]
 mod diag;
+pub mod hub;
+pub mod keymap;
+pub mod keys;
 #[cfg(test)]
 mod loopback;
+pub mod mdns;
+pub mod opus_sys;
 pub mod proto;
+pub mod rt;
 pub mod server;
 pub mod tls;
 pub mod webclient;
@@ -69,36 +63,6 @@ const BIND_ADDR: [u8; 4] = [0, 0, 0, 0];
 /// 「停止服务」根本不生效，改端口后重启也必然 `address in use`——界面按钮看着能用，
 /// 其实什么也没做。重启服务要能真的换掉监听，就靠 abort 这个任务。
 static TASK: Mutex<Option<tauri::async_runtime::JoinHandle<()>>> = Mutex::new(None);
-
-/// 网络服务运行期间的 Windows 定时器精度（1 ms）。**按订阅者引用计数**：
-/// 只有真的有客户端在收电脑音频时才提升；没人订阅/只连着手机会话时保持系统默认粒度，
-/// 避免长时间开服务把整机定时器精度拉高、增加耗电。
-static PACER: Mutex<(usize, Option<pacer::TimerResolution>)> = Mutex::new((0, None));
-
-pub(crate) fn pacer_acquire() {
-  let mut g = PACER.lock().unwrap_or_else(|e| e.into_inner());
-  g.0 = g.0.saturating_add(1);
-  if g.0 == 1 {
-    g.1 = Some(pacer::TimerResolution::raise());
-  }
-}
-
-pub(crate) fn pacer_release() {
-  let mut g = PACER.lock().unwrap_or_else(|e| e.into_inner());
-  if g.0 == 0 {
-    return;
-  }
-  g.0 -= 1;
-  if g.0 == 0 {
-    g.1 = None;
-  }
-}
-
-fn pacer_reset() {
-  let mut g = PACER.lock().unwrap_or_else(|e| e.into_inner());
-  g.0 = 0;
-  g.1 = None;
-}
 
 /// 启动服务（幂等）。返回绑定结果说明；端口占用等失败原因进调试接口，不静默失败。
 pub fn start() -> Result<String, String> {
@@ -201,8 +165,6 @@ pub fn stop() {
   let h = hub();
   h.set_remote_input(false);
   h.set_running(false);
-  // 释放 1 ms 定时器精度（Windows）；服务不在跑时不该影响系统
-  pacer_reset();
   // 广告必须跟着停：常驻广播会让「明明没跑服务却搜得到」，连过去必然失败，比搜不到更难排查
   mdns::unregister();
   // 锁中毒时不能 panic：停服务是在退出路径上调用的，宁可漏停也不能崩。
@@ -288,7 +250,7 @@ pub fn status() -> String {
   };
   let ms = |v: usize| v as f64 / crate::audio::SAMPLE_RATE as f64 * 1000.0;
   format!(
-    "{}：端口 {}，客户端 {}，订阅音频 {}，入站 {:.0} ms，出站已发 {} 包（水位 {:.0} ms）；{input}；{codec}",
+    "{}：端口 {}，客户端 {}，订阅音频 {}，入站水位 {:.0}/{:.0} ms，出站已发 {} 包（待发 {:.0} ms）；{input}；{codec}",
     // 就绪与否看 `is_running()`，不能看 `port > 0` —— 端口是**下次要绑的**那个值，
     // 恒为正数，服务没开时也一样（端口改成可编辑之后这个判据就废了）
     if h.is_running() {
@@ -299,7 +261,8 @@ pub fn status() -> String {
     s.port,
     s.clients,
     s.subs,
-    ms(s.rx_level),
+    s.rx_level_ms,
+    s.rx_target_ms,
     s.tx_packets,
     ms(s.tx_level),
   )

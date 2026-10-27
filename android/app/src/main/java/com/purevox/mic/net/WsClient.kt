@@ -30,6 +30,9 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import java.io.IOException
+import java.net.InetAddress
+import java.net.Socket
+import javax.net.SocketFactory
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -38,16 +41,22 @@ import java.util.concurrent.atomic.AtomicLong
  * 与电脑端的 WebSocket 连接（`wss://host:59123/ws` —— 电脑端只监听 HTTPS，
  * 自签证书的放行规则见 [LocalTls]）。
  *
- * 职责边界：
- * - 这里**只管连接与收发**：文本消息往上抛（[Listener.onMessage]）、二进制包往上抛
- *   （[Listener.onAudioPacket]）、握手 / RTT ping 也在这里发。
- * - 音频的解码与播放在 `audio/SpeakerDownlink.kt`；上行编码在 `audio/MicUplink.kt`。
- *   本类不认识 Opus。
- * - RTT 由本类测量（客户端自测再 `rtt` 上报，电脑的调试界面因此能直接看到）。
+ * ## 这一层只做四件事
  *
- * 线程：所有回调在 OkHttp 的调度线程上；[sendAudio] / [sendText] 线程安全
- * （OkHttp 内部排队），所以音频线程可以直接调 [sendAudio]。
- * 注意 [Listener.onAudioPacket] 也在 OkHttp 线程上，**不要在那里做解码**。
+ * 1. **连接 / 收发**：文本消息往上抛，音频包拆掉 8 字节帧头后往上抛；
+ * 2. **音频帧头**：上行加 `seq` + 采集时刻，下行解析出 `seq`/`ts`（见 [Proto]）；
+ * 3. **时钟同步**：回 `syncreply`、收 `offset`（NTP 四时戳，电脑算偏移）；
+ * 4. **`TCP_NODELAY`**：见 [LowLatencySocketFactory]。
+ *
+ * 编解码在 `audio/`，播放环在 `audio/PlaybackRing.kt`。本类不认识 Opus，也不做缓冲。
+ *
+ * ## 为什么必须 `TCP_NODELAY`
+ *
+ * 我们的包是 10 ms 一个、每个只有几十到一百多字节。Nagle 算法会把「还有未确认数据」
+ * 时的新包攒起来，等 ACK 回来再发 —— 在 Wi-Fi 省电让 ACK 变慢时，这会把平滑的 10 ms
+ * 序列变成「憋一下再来一串」，听感是周期性断音 / 延迟抖动。OkHttp 没有开关，但
+ * `OkHttpClient.socketFactory` 允许我们交出已经设好 `tcpNoDelay` 的 socket，
+ * TLS 再包一层也不影响这个设置（同一根 TCP 连接）。
  */
 class WsClient(
     private val host: String,
@@ -59,11 +68,11 @@ class WsClient(
         /** WebSocket 握手完成（此时已自动发出 `hello`，`ready` 随后到达）。 */
         fun onOpen()
 
-        /** 收到非 `pong` 的文本消息。 */
+        /** 收到非 `pong` / `sync` / `offset` 的文本消息。 */
         fun onMessage(msg: ServerMsg)
 
-        /** 收到一个 Opus 包（二进制帧）。数组是本类新分配的，可安全跨线程持有。 */
-        fun onAudioPacket(packet: ByteArray)
+        /** 收到一个音频包（**已去掉 8 字节帧头**）。数组是本类新分配的，可安全跨线程持有。 */
+        fun onAudioPacket(seq: Int, tsUs: Int, payload: ByteArray)
 
         /** `pong` 回来，算好的往返时延（ms）。 */
         fun onPong(id: Long, rttMs: Double)
@@ -92,34 +101,44 @@ class WsClient(
     private val pendingPings = ConcurrentHashMap<Long, Long>()
     private var pingSeq = 0L
 
+    /** 上行包序号（每个连接从 0 开始）。 */
+    private var txSeq = 0
+
+    /** 电脑算出的时钟偏移（手机 − 电脑，µs）；`Long.MIN_VALUE` = 还没测出来。 */
+    private val offsetUs = AtomicLong(Long.MIN_VALUE)
+
     /** 上行（手机 → 电脑）已成功入队的 Opus 包数。 */
     val txPackets = AtomicLong(0)
 
     /** 下行（电脑 → 手机）收到的 Opus 包数。 */
     val rxPackets = AtomicLong(0)
 
-    /**
-     * 上/下行**字节数**（含控制帧）。诊断用：界面拿它按秒差分算真实码率 ——
-     * 不能拿「Opus 比特率设的是多少」冒充实际码率（控帧、丢包、暂停推流都会让它不一样）。
-     */
+    /** 上/下行**字节数**（含控制帧），诊断里按秒差分算真实码率。 */
     val txBytes = AtomicLong(0)
     val rxBytes = AtomicLong(0)
+
+    /** 时钟偏移（µs）；没同步过返回 null（界面显示「测量中」，不编 0）。 */
+    val clockOffsetUs: Long?
+        get() {
+            val v = offsetUs.get()
+            return if (v == Long.MIN_VALUE) null else v
+        }
 
     // ---------------------------------------------------------------- 连接
 
     fun connect() {
         disconnect()
-        // **必须在建 client 之前**记下目标主机：证书校验发生在 OkHttp 线程上，而
-        // `X509TrustManager` 看不到主机名，只能靠这里记下的目标来判断放不放行
+        // 证书校验在 OkHttp 线程上跑，`X509TrustManager` 看不到主机名，只能靠这里记下目标
         LocalTls.setTarget(host)
         val c = OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(0, TimeUnit.MILLISECONDS)     // WebSocket 是长连接，不设读超时
+            .readTimeout(0, TimeUnit.MILLISECONDS) // WebSocket 是长连接，不设读超时
             .writeTimeout(10, TimeUnit.SECONDS)
-            .pingInterval(20, TimeUnit.SECONDS)        // 协议层保活，与应用层 ping 互不替代
+            .pingInterval(20, TimeUnit.SECONDS) // 协议层保活，与应用层 ping 互不替代
             .retryOnConnectionFailure(true)
-            // 电脑端是 HTTPS 且证书自签（每台机器自己签）。只对**私有网段**放行，
-            // 公网地址仍走系统校验——理由见 LocalTls 的注释。
+            // 音频包只有几十字节、10 ms 一个：关掉 Nagle（见类注释）
+            .socketFactory(LowLatencySocketFactory)
+            // 电脑端是 HTTPS 且证书自签（每台机器自己签）。只对**私有网段**放行
             .sslSocketFactory(LocalTls.socketFactory(), LocalTls.trustManager())
             .hostnameVerifier(LocalTls.hostnameVerifier())
             .build()
@@ -142,16 +161,16 @@ class WsClient(
             Log.w(TAG, "close 异常", e)
         }
         pendingPings.clear()
+        offsetUs.set(Long.MIN_VALUE)
         val c = client
         client = null
-        // 关掉连接池里的空闲连接，避免反复连断开线程堆积
         c?.dispatcher?.executorService?.shutdown()
         c?.connectionPool?.evictAll()
     }
 
     // ---------------------------------------------------------------- 发送
 
-    /** 发一条控制文本帧（内部消息一律由 `Proto` 拼好）。 */
+    /** 发一条控制文本帧（消息一律由 `Proto` 拼好）。 */
     fun sendText(json: String): Boolean {
         val s = ws ?: return false
         return try {
@@ -164,14 +183,23 @@ class WsClient(
         }
     }
 
-    /** 发一个 Opus 包（二进制帧 = 一个包，无头）。[len] ≤ `data.size`。 */
-    fun sendAudio(data: ByteArray, len: Int): Boolean {
+    /**
+     * 发一个 Opus 包：`8 字节帧头（seq + 采集时刻 µs）+ 载荷`，拼成**一条** WS 二进制帧。
+     *
+     * 为什么时间戳由采集侧给：它要表示「这段音频是什么时候从麦克风进来的」，
+     * 晚到再补一个当前时间就完全量不出延迟了。
+     */
+    fun sendAudio(payload: ByteArray, len: Int, tsUs: Int): Boolean {
         val s = ws ?: return false
         return try {
-            val payload = if (len == data.size) data else data.copyOf(len)
-            if (!s.send(payload.toByteString())) return false
+            val n = len.coerceIn(0, payload.size)
+            val msg = ByteArray(Proto.HDR_BYTES + n)
+            System.arraycopy(Proto.header(txSeq, tsUs), 0, msg, 0, Proto.HDR_BYTES)
+            System.arraycopy(payload, 0, msg, Proto.HDR_BYTES, n)
+            txSeq++
+            if (!s.send(msg.toByteString())) return false
             txPackets.incrementAndGet()
-            txBytes.addAndGet(payload.size.toLong())
+            txBytes.addAndGet(msg.size.toLong())
             true
         } catch (e: Throwable) {
             Log.w(TAG, "sendAudio 异常", e)
@@ -193,7 +221,6 @@ class WsClient(
                 if (!opened) return@Thread
                 val id = ++pingSeq
                 pendingPings[id] = System.nanoTime()
-                // 表不该无限长：只保留最近的若干条，其余的 pong 直接丢掉
                 while (pendingPings.size > PING_TABLE_LIMIT) {
                     val oldest = pendingPings.keys.minOrNull() ?: break
                     pendingPings.remove(oldest)
@@ -225,6 +252,8 @@ class WsClient(
     private inner class SocketListener : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             opened = true
+            txSeq = 0
+            offsetUs.set(Long.MIN_VALUE)
             sendText(Proto.hello())
             startPing()
             listener.onOpen()
@@ -234,17 +263,25 @@ class WsClient(
             rxBytes.addAndGet(text.toByteArray(Charsets.UTF_8).size.toLong())
             when (val msg = ServerMsg.parse(text)) {
                 is ServerMsg.Pong -> onPong(msg.id)
+                is ServerMsg.Sync -> {
+                    // NTP 四时戳：t1 = 收到、t2 = 回（都用手机的单调时钟）
+                    val t1 = Proto.nowUs()
+                    sendText(Proto.syncReply(msg.id, msg.t0, t1, Proto.nowUs()))
+                }
+                is ServerMsg.Offset -> offsetUs.set(msg.us)
                 else -> listener.onMessage(msg)
             }
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            // ByteString 的底层数组不能直接交给解码线程（可能复用），复制一份
-            val packet = bytes.toByteArray()
-            if (packet.isEmpty()) return
+            val raw = bytes.toByteArray()
+            if (raw.size <= Proto.HDR_BYTES) return
+            val seq = Proto.readU32(raw, 0)
+            val ts = Proto.readU32(raw, 4)
+            val payload = raw.copyOfRange(Proto.HDR_BYTES, raw.size)
             rxPackets.incrementAndGet()
-            rxBytes.addAndGet(packet.size.toLong())
-            listener.onAudioPacket(packet)
+            rxBytes.addAndGet(raw.size.toLong())
+            listener.onAudioPacket(seq, ts, payload)
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -285,4 +322,33 @@ class WsClient(
         }
         else -> t.message ?: t.javaClass.simpleName
     }
+}
+
+/**
+ * 交出 `tcpNoDelay = true` 的 socket（见 [WsClient] 的类注释）。
+ *
+ * 只改这一个选项：socket 的其他行为（连接超时、TLS 包装）仍走 OkHttp 与系统默认。
+ */
+private object LowLatencySocketFactory : SocketFactory() {
+    private fun tune(s: Socket): Socket = s.apply {
+        try {
+            tcpNoDelay = true
+        } catch (e: Throwable) {
+            Log.w("PureVoxWs", "设置 TCP_NODELAY 失败", e)
+        }
+    }
+
+    override fun createSocket(): Socket = tune(Socket())
+
+    override fun createSocket(host: String?, port: Int): Socket =
+        tune(Socket()).apply { connect(java.net.InetSocketAddress(host, port)) }
+
+    override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket =
+        tune(Socket(host, port, localHost, localPort))
+
+    override fun createSocket(host: InetAddress?, port: Int): Socket =
+        tune(Socket(host, port))
+
+    override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): Socket =
+        tune(Socket(address, port, localAddress, localPort))
 }

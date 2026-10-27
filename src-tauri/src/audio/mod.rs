@@ -20,6 +20,9 @@
 //! 输入采集线程（原生→48k hop）→ 列工作线程（混合 + 处理链）→ 输出播放线程。
 
 pub mod capture;
+/// 实测时钟（设备 vs 系统）：只在测试里编译，见模块注释。
+#[cfg(test)]
+mod clock_probe;
 /// 设备池（DESIGN.md §6.5）：每个 `(设备, 角色)` 只打开一次 + 引用计数
 pub mod device_pool;
 pub mod fanout;

@@ -21,7 +21,7 @@
 //! 渲染端点（不传设备 ID 时用系统默认渲染端点）。一次把队列里的包全部取空，避免积压
 //! 造成不连续；`AUDCLNT_BUFFERFLAGS_SILENT` 按静音处理；共享混音格式为 float32。
 //!
-//! 参考旧实现（`legacy-v2026.09.30.1944/pvplatform/audio/speaker_capture_win.py`）的行为，
+//! 行为沿用旧 Python 实现（快照已删除；要点见下），
 //! 但用 `windows` crate 的 COM 接口重写，采集数据面复用 [`capture::worker`]。
 //! COM 接口对象 `!Send`：全部在本线程（轮询线程）内创建与释放，格式经通道回传。
 

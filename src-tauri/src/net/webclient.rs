@@ -33,7 +33,7 @@
 //! **下行播放必须是环形缓冲，不是「一包一个 AudioBufferSource」**（2026-10-27 实测）：
 //! Windows 的 10 ms 定时器实际按 15.6 ms 触发，包成串到达；20 ms 的按包起播会在 1 kHz
 //! 测试音上拼出 2~6 ms 空隙（8 s 内 8 次，能量 99.9% → 93.8%）。现在解码后的样本进
-//! AudioWorklet 的环形队列，预缓冲 50 ms、硬顶 300 ms，欠载数经 `spkUnderruns` 可见。
+//! AudioWorklet 的环形队列，深度固定 20 ms（超了丢一格 / 空了淡出），欠载数经 `spkUnderruns` 可见。
 
 /// 网页版客户端页面。整页自包含（无外链、无构建），直接内联进二进制。
 pub const PAGE: &str = r##"<!doctype html>
@@ -110,7 +110,13 @@ input[type=text]{font:inherit;width:100%;color:var(--fg);background:#18202a;bord
 <script>
 "use strict";
 // ---- 与 Rust 侧 proto.rs 保持一致的协议（只有 /ws 这一套） ----
-const SR = 48000, HOP = 480;
+const SR = 48000, HOP = 480, HDR = 8;
+/** 单调时钟（µs，u32 回绕）：与 Rust 的 `rt::now_us32()` 同一口径。 */
+function nowUs() { return Math.floor(performance.now() * 1000) & 0xFFFFFFFF; }
+/** 带符号 u32 微秒差（跨回绕有效），与 Rust `rt::us_diff` 等价。 */
+function usDiff(now, then) { return (now - then) | 0; }
+/** 与电脑的时钟偏移（µs，网页 − 电脑）；没同步过是 null。 */
+let clockOffsetUs = null;
 const st = document.getElementById('st'), dot = document.getElementById('dot');
 const hint = document.getElementById('hint');
 document.getElementById('pc').textContent = location.host;
@@ -125,6 +131,10 @@ let opusMod = null;
 let spkSub = false;
 /** 下行缓冲水位与欠载数（worklet 上报，只用于状态行 / 调试）。 */
 let spkBuffered = 0, spkUnderruns = 0;
+/** 下行单向延迟（ms，电脑发出 → 网页收到）；NaN = 还没同步。 */
+let spkOneWay = NaN;
+/** worklet 上报的环状态（深度 / 欠载 / 晚到 / 裁剪 / 抖动 / 最大间隔）。 */
+let spkTarget = 0, spkLate = 0, spkTrims = 0, spkJitter = 0, spkMaxGap = 0;
 
 // ---- Opus 编解码器：wasm（`libopus-wasm`，MIT），不依赖浏览器内置的 WebCodecs ----
 // 帧长按引擎的 10 ms hop 配（480 样本 @ 48 kHz 单声道），和服务端队列同格式，
@@ -149,6 +159,8 @@ async function ensureDec() {
   return dec;
 }
 let frameMs = 10, ready = false;
+/** 上行包序号（与 Rust 侧同口径：每包 +1，只用于判丢包）。 */
+let micSeq = 0;
 
 function say(t, cls) { st.textContent = t; dot.className = 'dot ' + (cls || ''); }
 function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
@@ -163,7 +175,7 @@ function connect() {
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
     // 握手是**必须**的（proto.rs：`proto` 不等于 PROTO 服务端直接回 err 断开）。
-    send({ t: 'hello', proto: 1 });
+    send({ t: 'hello', proto: 3 });
   };
   ws.onclose = () => {
     // 连接断了，服务端的订阅随连接销毁；本地播放节点也收掉，重连后按 spkOn 重新订阅。
@@ -186,6 +198,13 @@ function connect() {
         }
         if (micOn && !enc) startMic();
         if (spkOn) startSpk();
+      } else if (m.t === 'sync') {
+        // NTP 四时戳：t1 = 收到、t2 = 回（都用网页自己的单调时钟，µs）
+        const t1 = nowUs();
+        send({ t: 'syncreply', id: m.id, t0: m.t0, t1: t1, t2: nowUs() });
+      } else if (m.t === 'offset') {
+        // 电脑算出的时钟偏移（网页 − 电脑，µs）：下行单向延迟靠它
+        clockOffsetUs = m.us;
       } else if (m.t === 'pong') {
         const t0 = pingAt[m.id];
         if (t0) { const rtt = Math.round(performance.now() - t0);
@@ -195,8 +214,11 @@ function connect() {
       }
       return;
     }
-    const b = new Uint8Array(ev.data);                   // 二进制 = Opus 包
-    if (spkOn && dec && ready && b.length) playPacket(b);
+    // 二进制 = 8 字节帧头（seq + 发送方 µs）+ 一个 Opus 包
+    const raw = new Uint8Array(ev.data);
+    if (raw.length <= HDR) return;
+    const pkt = raw.subarray(HDR);
+    if (spkOn && dec && ready) playPacket(pkt, new DataView(raw.buffer, raw.byteOffset).getUint32(4));
   };
   // RTT：每 5 秒 ping 一次，服务端原样回 pong；时差自己算好再用 rtt 上报
   // （proto.rs 的约定：客户端测、服务端不计时，这样 /debug 里能直接看到）
@@ -209,6 +231,37 @@ let pingTimer = null, pingSeq = 0;
 const pingAt = {};
 const rttEl = document.getElementById('rtt');
 
+// ---- 网页自己的音频时钟偏差：AudioContext 的播放时钟 vs performance.now ----
+// 实测（DESIGN.md §4.1.1）设备晶振差只有几十 ppm，这里让浏览器把自己的偏差报上来，
+// /debug 的 `net.client.clock_ppm` 直接可读 —— 与安卓用 getPlaybackHeadPosition 是同一件事。
+let webClockPpm = NaN;
+let lastClockSample = null;
+setInterval(() => {
+  if (!actx || actx.state !== 'running') return;
+  const s = { audio: actx.currentTime, wall: performance.now() };
+  if (lastClockSample) {
+    const dAudio = s.audio - lastClockSample.audio;
+    const dWall = (s.wall - lastClockSample.wall) / 1000;
+    if (dWall > 1.5 && dAudio > 0) webClockPpm = (dAudio / dWall - 1) * 1e6;
+  }
+  lastClockSample = s;
+}, 1000);
+
+// ---- 客户端状态上报（2 Hz）：电脑那边看不到网页的播放环，只能靠这里报 ----
+setInterval(() => {
+  if (!ws || ws.readyState !== 1 || !spkOn) return;
+  send({
+    t: 'st',
+    level_ms: spkBuffered * 1000 / SR,
+    target_ms: spkTarget,
+    underruns: spkUnderruns,
+    concealed: 0,
+    late: spkLate,
+    one_way_ms: Number.isFinite(spkOneWay) ? spkOneWay : undefined,
+    clock_ppm: Number.isFinite(webClockPpm) ? webClockPpm : undefined,
+  });
+}, 500);
+
 // ---- 麦克风上行：getUserMedia → AudioWorklet 取 480 样本的 hop → wasm Opus ----
 let workletUrl = null;
 function worklet() {
@@ -220,37 +273,59 @@ function worklet() {
       for(let i=0;i<c.length;i++){this.buf[this.n++]=c[i];
         if(this.n===480){const o=this.buf.slice(0);this.port.postMessage(o);this.n=0;}}}
     return true;}}
-  // 下行播放：**环形队列 + 50 ms 预缓冲**。不能每包起一个 AudioBufferSource：
+  // 下行播放：**环形队列 + 固定 20 ms 深度**（DESIGN.md §4.1.4）。不能每包起一个 AudioBufferSource：
   // Windows 的 10 ms 定时器实际按 15.6 ms 触发，包成串到达，20 ms 的「按包起播」
   // 会周期性断 2~6 ms（1 kHz 测试音实测 8 秒内 8 次，能量从 99.9% 掉到 93.8%）。
   class S extends AudioWorkletProcessor{
-    constructor(){super();this.q=[];this.off=0;this.samples=0;this.playing=false;this.underruns=0;this.blocks=0;
-      this.target=Math.round(sampleRate*0.05);
-      this.port.onmessage=(e)=>{const d=e.data;if(d&&d.pcm&&d.pcm.length){
-        this.q.push(d.pcm);this.samples+=d.pcm.length;
-        // 硬顶 300 ms：网络突发/主线程卡顿不能让延迟无限涨，丢最旧
-        const cap=Math.round(sampleRate*0.3);
-        while(this.samples>cap&&this.q.length>1){this.samples-=this.q.shift().length;this.off=0;}
-      }};
+    // 下行播放环：**唯一的缓冲**，与 `audio/Rt.kt` / `net/rt.rs` 逐字同一套规则：
+    // 深度固定 20 ms，运行期只有「超了丢一格」和「空了补一格」，**不重采样、不伺服**。
+    constructor(){
+      super();
+      this.b=new Float32Array(8192);this.head=0;this.count=0;
+      this.lastHop=new Float32Array(480);
+      this.depth=Math.round(sampleRate*0.020);this.trimAt=Math.round(sampleRate*0.030);
+      this.primed=false;this.streak=0;
+      this.lastArr=0;this.jitter=0;this.worst=0;this.maxGap=0;
+      this.packets=0;this.hops=0;this.underruns=0;this.trims=0;this.late=0;this.dropped=0;
+      this.port.onmessage=(e)=>{const d=e.data;if(d&&d.pcm)this.push(d.pcm);};
+    }
+    push(p){
+      this.packets++;
+      if(this.primed && this.count===0)this.late++;
+      const now=currentTime*1000;
+      if(this.lastArr){
+        const dt=now-this.lastArr;
+        this.maxGap=Math.max(this.maxGap,dt);
+        if(dt>0&&dt<500){const dev=Math.abs(dt-10);this.jitter+=0.02*(dev-this.jitter);if(dev>this.worst)this.worst=dev;}
+      }
+      this.lastArr=now;
+      for(let i=0;i<p.length;i++){this.b[(this.head+this.count)%8192]=p[i];this.count++;}
+      if(this.count>this.trimAt){const drop=this.count-this.depth;this.head=(this.head+drop)%8192;this.count-=drop;this.trims++;this.dropped+=drop;}
     }
     process(inputs,outputs){
-      const out=outputs[0][0];let i=0;
-      if(!this.playing){
-        if(this.samples<this.target){out.fill(0);return true;}
-        this.playing=true;
+      const out=outputs[0][0],n=out.length;
+      if(!this.primed){
+        // 起播 = 攒满深度（20 ms）
+        if(this.count<this.depth){out.fill(0);return true;}
+        this.primed=true;
       }
-      while(i<out.length){
-        if(!this.q.length){this.playing=false;this.underruns++;out.fill(0,i);break;}
-        const b=this.q[0];
-        const n=Math.min(out.length-i,b.length-this.off);
-        out.set(b.subarray(this.off,this.off+n),i);
-        i+=n;this.off+=n;this.samples-=n;
-        if(this.off>=b.length){this.q.shift();this.off=0;}
+      if(this.count>=n){
+        for(let i=0;i<n;i++){out[i]=this.b[(this.head+i)%8192];}
+        this.head=(this.head+n)%8192;this.count-=n;this.hops++;this.streak=0;
+        if(n===480)this.lastHop.set(out);
+      }else{
+        // 欠载：淡出重复上一格（绝不硬切静音）
+        this.underruns++;this.streak++;
+        for(let i=0;i<n;i++){out[i]=this.lastHop[i%480]*0.5*(1-i/n);}
+        if(this.streak>100){this.primed=false;this.streak=0;this.lastArr=0;}
       }
-      this.blocks++;
-      if(this.blocks%50===0)this.port.postMessage({level:this.samples,underruns:this.underruns});
+      if(this.packets%5===0)this.port.postMessage({
+        level:this.count,target:this.depth,jitter:this.jitter,worst:this.worst,maxGap:this.maxGap,
+        underruns:this.underruns,trims:this.trims,late:this.late,dropped:this.dropped,hops:this.hops,
+      });
       return true;
-    }}
+    }
+  }
   registerProcessor('hop',H);
   registerProcessor('spk',S);`;
   workletUrl = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
@@ -260,7 +335,7 @@ function worklet() {
 /** 麦克风在**拿到权限之前**就注定拿不到的原因（空串 = 可以试）。 */
 function micBlockReason() {
   // `getUserMedia` 只在安全上下文里可用。`http://192.168.x.x` 不是安全上下文，浏览器
-  // 直接拒绝，**没有任何绕过办法** —— 所以二维码必须指向 https（DESIGN.md §4.1.1）。
+  // 直接拒绝，**没有任何绕过办法** —— 所以二维码必须指向 https（DESIGN.md §4.1.11）。
   if (!window.isSecureContext)
     return '当前页面不是安全上下文，浏览器禁止使用麦克风。必须用 https:// 打开' +
            '（用 http:// 时无论怎么点都没用；电脑上启动服务后扫码即可）';
@@ -301,19 +376,27 @@ async function startMic() {
   micNode = new AudioWorkletNode(actx, 'hop', { numberOfInputs: 1, numberOfOutputs: 0 });
   micNode.port.onmessage = (e) => {
     if (!enc) return;
-    // 每 hop 一帧 Opus（10 ms）。服务端按 hop 重切，不依赖帧长。
+    // 每 hop 一帧 Opus（10 ms），前面加 8 字节帧头：seq + **采集时刻**（电脑用它算单向延迟）
     const f = new Float32Array(e.data);
     try {
       // 直接编码成裸 Opus 包：**不需要浏览器内置的编解码器**（WebCodecs 只有 Chrome 94+ /
       // Safari 16.4+ 才有，实测有浏览器根本没有，麦克风与扬声器一起不可用）。
-      sendBin(enc.encodeFloat(f).buffer);
+      const enc8 = enc.encodeFloat(f);
+      const payload = new Uint8Array(enc8.buffer, enc8.byteOffset, enc8.byteLength);
+      const msg = new Uint8Array(HDR + payload.length);
+      const ts = nowUs();
+      const seq = micSeq++ & 0xFFFFFFFF;
+      const dv = new DataView(msg.buffer);
+      dv.setUint32(0, seq); dv.setUint32(4, ts);
+      msg.set(payload, HDR);
+      sendBin(msg.buffer);
     } catch (e) { say('Opus 编码失败：' + (e && e.message ? e.message : e), 'err'); }
   };
   const src = actx.createMediaStreamSource(stream);
   src.connect(micNode);
 }
 
-// ---- 扬声器下行：wasm 解码 → AudioWorklet 环形缓冲（50 ms 预缓冲） ----
+// ---- 扬声器下行：wasm 解码 → AudioWorklet 播放环（固定 20 ms） ----
 async function startSpk() {
   await ensureDec();
   if (!actx) actx = new AudioContext({ sampleRate: SR });
@@ -332,7 +415,12 @@ async function startSpk() {
       const d = e.data;
       if (d && typeof d.level === 'number') {
         spkBuffered = d.level;
-        spkUnderruns = d.underruns;
+        spkTarget = d.target || 0;
+        spkUnderruns = d.underruns || 0;
+        spkLate = d.late || 0;
+        spkTrims = d.trims || 0;
+        spkJitter = d.jitter || 0;
+        spkMaxGap = d.maxGap || 0;
       }
     };
     spkNode.connect(spkGain);
@@ -355,9 +443,14 @@ function stopSpkNode(unsub) {
   spkBuffered = 0;
 }
 
-/** 一个收到的 Opus 包 → 解码 → 塞进 worklet 的环形队列（不在这里按时间起播）。 */
-function playPacket(bytes) {
+/** 一个收到的 Opus 包 → 解码 → 塞进 worklet 的环形缓冲（缓冲只在接收方）。 */
+function playPacket(bytes, tsUs) {
   if (!spkNode || !dec) return;
+  // 单向延迟：收到时刻（换算到电脑时钟）− 电脑发出时刻。需要 offset，没有就只算抖动。
+  if (clockOffsetUs != null && tsUs) {
+    const us = usDiff(nowUs(), tsUs) + clockOffsetUs;
+    if (us >= 0 && us < 5000000) spkOneWay = us / 1000;
+  }
   let pcm;
   try { pcm = dec.decodeFloat(bytes, { frameSize: HOP }); }
   catch (e) { say('Opus 解码失败：' + (e && e.message ? e.message : e), 'err'); return; }
@@ -390,7 +483,7 @@ async function autoMic() {
 }
 bind('bSpk', async (b) => {
   spkOn = !spkOn; b.setAttribute('aria-pressed', String(spkOn));
-  if (spkOn) { await startSpk(); say('扬声器已开（50 ms 缓冲）', 'on'); }
+  if (spkOn) { await startSpk(); say('扬声器已开（自适应缓冲）', 'on'); }
   else { stopSpkNode(true); say('扬声器已关'); }
 });
 // 远程输入**没有客户端消息**：它是电脑端的总开关（proto.rs 里没有 remote_input），
