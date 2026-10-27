@@ -18,8 +18,8 @@
    `PUREVOX_BUILD_STAMP`（见 `src/version.rs`，开发态为空 → `is_dev()`）。
 7. **CI 与门禁（多平台：Windows + Linux + Android；测试与打包解耦，无自动触发）**：
    - **触发纪律**：**没有任何分支推送 / PR 触发**。`tests.yml`（只测试、不打包）只
-     `workflow_dispatch` 手动触发；`release.yml`（打包发版）由 tag `v*` 触发、也可手动；
-     `warm-cache.yml`（唯一缓存写入者）也只手动。日常提交零成本，要验证就手动 dispatch 一次。
+     `workflow_dispatch` 手动触发；`release.yml`（打包发版）由 tag `v*` 触发、也可手动。
+     日常提交零成本，要验证就手动 dispatch 一次。
    - 门禁唯一实现 = `tools/automation/check.py`（**Python，跨平台唯一**：七道门禁 `fmt` /
      `clippy`（`-D warnings`）/ `build` / `test` / `ui`（`tsc` + `i18n_lint`）/ `version` /
      `bundle`）。选 Python 不选 PowerShell：门禁要跑 Windows / Linux / macOS 三边，pwsh 只有前两边
@@ -32,9 +32,6 @@
    - 工作流（`.github/workflows/`）：
      - `tests.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-24.04`
        （fmt/clippy/build/test）、`ui` 门禁（`ubuntu-24.04`：setup-node → `-Gate ui`）。**不打包**。
-     - `warm-cache.yml`：**全仓库唯一缓存写入者**，手动；矩阵 Windows+Linux 冷构建
-       target，预热 debug 三门禁 + `cargo tauri build`，再 save 四个桶（cargo registry /
-       target-debug / target-release / cargo-tauri binary；`continue-on-error`，同键已存在即成功）。
      - `release.yml`：tag `v*` 或手动 → 三平台并行：
        **Windows**（门禁 + `cargo tauri build` + `assert_bundle.py --smoke` → NSIS exe）；
        **Linux**（`ubuntu-24.04`：装 WebKitGTK/ALSA/rpm 依赖 + 门禁 + `cargo tauri build` +
@@ -69,26 +66,19 @@
       另一个查**每个产物名都落在运行期 `ASSET_SUFFIXES` 认的后缀里** —— 后缀对不上不会
       报任何错，只是自动更新静默失效，用户只看到「永远有新版本」。
        **没有 Lite 变体**（遗留资产已删除，见 §2.5）。
-   - **缓存纪律**：`tests.yml` / `release.yml` 只 restore、不写缓存；键为
-     `purevox-<RUNNER_OS>-<发行版>-<桶>-<CACHE_GEN>-<Cargo.lock 哈希>`，**发行版段来自
-     `versions.env` 的 `LINUX_CACHE_TAG`**（`runs-on:` 写死，发行版静态已知，不在 runner 上探测 ——
-     探测不到会静默退化成同一个键，不同版本又混回一起）。**一律不写 `restore-keys`**：
-     精确命中是唯一路径（§2.1），兜底键会跨发行版回读旧 `target/`，且 Cargo.lock 一变就静默
-     回退到旧桶，「命中了缓存」不再等于「缓存对得上当前依赖」。依赖变了要重暖就手跑
-     `warm-cache.yml`。缓存桶与全部版本（含 `JDK_VER` / `ANDROID_PLATFORM` /
-     `ANDROID_BUILD_TOOLS`）的唯一来源 = `tools/automation/versions.env`
-     （其余 workflow 不得硬编码版本或直写缓存）。`warm-cache.yml` 保存前先按 key 删旧条目
-     （**GitHub 缓存 key 不可变**，覆盖 = 先删再存；否则同键 save 被拒、旧缓存永远留着）。
-     **`warm-cache.yml` 只恢复 registry 与 cargo-tauri，`target/debug` 故意冷构建**
-     （否则「预热」退化成把现有桶原样再存一遍，验不到冷构建能不能过）；
-     **`target/release` 任何 workflow 都不保存**（太大），所以打包时 release 目标总是冷编
-     （`release.yml` 里那条 `TARGET_RELEASE_KEY` 的 restore **永远 miss**，留着只是占位）。
-     **顺序有讲究：预热没存完就 tag = 白冷一轮** —— 新代数/新锁的桶要等 `warm-cache.yml`
-     两个平台都 save 完，`release.yml` 才 restore 得到（实测 2026-10-18：桶 00:22/00:30 存完，
-     tag 起来的 run 00:35 才吃上；在那之前起的 run 全程冷编）。数缓存有没有吃上别读日志
-     （in-progress 的 job 取不到 log），看 `gh cache list` 的 `lastAccessedAt` 最快。
-     **键里的 `<Cargo.lock 哈希>` 是 `hashFiles()`，不是文件 sha256** —— 本地 `sha256sum`
-     算出来对不上是正常的，别据此以为键拼错了。
+   - **缓存纪律（sccache 自动写，不需要手动预热）**：编译走 `mozilla-actions/sccache-action`
+     + `SCCACHE_GHA_ENABLED=true`，按**源码/编译器的对象指纹**复用，跨 tag 自动命中、自动更新
+     （不会因为换依赖就整桶失效）；`release.yml` 另外在构建后自动 `actions/cache/save`
+     cargo registry 与 cargo-tauri（**同键已存在就跳过**，`continue-on-error`）。
+     `tests.yml` 仍只 restore（不抢写）。
+     - 键为 `purevox-<RUNNER_OS>-<发行版>-<桶>-<CACHE_GEN>-<Cargo.lock 哈希>`，发行版段来自
+       `versions.env` 的 `LINUX_CACHE_TAG`（`runs-on:` 写死，静态已知）。**不写 `restore-keys`**：
+       精确命中是唯一路径；兜底键会跨发行版回读旧 `target/`。
+     - **`target/release` 不再做目录缓存**（太大）；release 的编译复用由 sccache 承担，
+       所以「新依赖第一次冷、之后命中」不再依赖手动 `warm-cache.yml`。
+     - 键里的 `<Cargo.lock 哈希>` 是 `hashFiles()`，不是文件 sha256 —— 本地算出来对不上很正常。
+     - 缓存桶与版本（含 `JDK_VER` / `ANDROID_PLATFORM` / `ANDROID_BUILD_TOOLS`）的唯一来源 =
+       `tools/automation/versions.env`（其余 workflow 不得硬编码版本）。
    - **Linux 系统依赖**（本机与 CI 同）：`libwebkit2gtk-4.1-dev libssl-dev libxdo-dev
      librsvg2-dev libgtk-3-dev libasound2-dev pkg-config file rpm`（wry→WebKitGTK、
      cpal→ALSA、rpmbuild→rpm）；运行期还需系统 `libopus0`（缺时网络音频降级，见 §1.2）。

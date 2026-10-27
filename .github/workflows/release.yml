@@ -1,7 +1,9 @@
 # PureVox 打包 / 发版 —— **多平台**：Windows（NSIS 安装包）、Linux（deb+rpm+AppImage）、
 # Android（签名 release APK）。触发：推 tag `v*`（构建 + 建 release）或手动 `workflow_dispatch`
 # （只构建、不建 release）。**分支推送不触发**；代码门禁见 tests.yml（手动）。
-# 纪律：缓存 restore-only（唯一写入者 warm-cache.yml）；版本/键唯一来源
+# 缓存：sccache 自动写（对象级、按源码/编译器指纹复用）；每次发版再自动 save
+# cargo registry / cargo-tauri（同键已存在则跳过）。不再需要手动 warm-cache。
+# 版本/键唯一来源
 # tools/automation/versions.env；门禁实现唯一 = tools/automation/check.py。
 # 注意 AGENTS.md 维护准则：CI 失败、从未生成 release 的 tag 必须删除
 # （git tag -d <tag> && git push origin :refs/tags/<tag>），否则会截断下个 tag 的提交记录。
@@ -25,6 +27,9 @@ jobs:
   windows:
     name: 打包 · Windows（NSIS 安装包）
     runs-on: windows-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     defaults:
       run:
         shell: bash
@@ -60,11 +65,12 @@ jobs:
           esac
           {
             printf 'CARGO_CACHE_KEY=purevox-%s-%s-cargo-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$lock"
-            printf 'TARGET_DEBUG_KEY=purevox-%s-%s-target-dbg-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$lock"
-            printf 'TARGET_RELEASE_KEY=purevox-%s-%s-target-rel-%s-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$TCLI_VER" "$lock"
             printf 'TAURI_CLI_KEY=purevox-%s-tauri-cli-%s\n' "$RUNNER_OS" "$TCLI_VER"
           } >> "$GITHUB_ENV"
           echo "CARGO_CACHE_KEY=$CARGO_CACHE_KEY"
+
+      - name: sccache（编译器对象缓存，自动更新）
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install Rust toolchain (rustfmt + clippy)
         shell: bash
@@ -73,8 +79,7 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
 
       # restore 一律不写 restore-keys，理由见 tests.yml 同处注释。
-      # 注意 target/release 这个桶**没有任何 workflow 会保存**（warm-cache 明确不预热
-      # release 目标，target/release 太大），所以这里每次都是冷编 release —— 有意为之。
+      # release 的编译复用由 sccache 负责；target/release 不做目录缓存（太大）。
       - name: Restore cargo registry (restore-only)
         uses: actions/cache/restore@v6
         with:
@@ -83,17 +88,6 @@ jobs:
             ~/.cargo/git
           key: ${{ env.CARGO_CACHE_KEY }}
 
-      - name: Restore target/debug (restore-only)
-        uses: actions/cache/restore@v6
-        with:
-          path: src-tauri/target/debug
-          key: ${{ env.TARGET_DEBUG_KEY }}
-
-      - name: Restore target/release (restore-only)
-        uses: actions/cache/restore@v6
-        with:
-          path: src-tauri/target/release
-          key: ${{ env.TARGET_RELEASE_KEY }}
 
       - name: Restore cargo-tauri binary (restore-only)
         uses: actions/cache/restore@v6
@@ -154,6 +148,26 @@ jobs:
       # 每个都 `if-no-files-found: error`：少出一样就当场红，不产出残缺的包。
       # **Windows 只有 NSIS 一个安装包**（`tauri.windows.conf.json` 把 targets 收成 ["nsis"]）：
       # 只留一条安装/更新路径，不再出 MSI。
+      # 自动写缓存：新键才写，已有同键会失败（continue-on-error）；下次同 Cargo.lock 直接命中。
+      # 编译本身由 sccache 缓存（按对象指纹，跨 tag 复用），这里只保 registry / tauri-cli。
+      - name: Save cargo registry（自动）
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ env.CARGO_CACHE_KEY }}
+
+      - name: Save cargo-tauri binary（自动）
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cargo/bin/cargo-tauri*
+          key: ${{ env.TAURI_CLI_KEY }}
+
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v7
         with:
@@ -175,6 +189,9 @@ jobs:
     # 24.04 也不是随便挑的：onnxruntime（ort）预编译包要求 glibc ≥ 2.39，
     # 正好是 24.04 的版本 —— 再老就编不过了，这就是支持范围的下限。
     runs-on: ubuntu-24.04
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     defaults:
       run:
         shell: bash
@@ -202,19 +219,14 @@ jobs:
             esac
           done < tools/automation/versions.env
           lock="${{ hashFiles('src-tauri/Cargo.lock') }}"
-          # 发行版标记来自 versions.env。**本 job 是打包基线（24.04），与 tests/warm-cache
-          # 用的 26.04 不是同一个 tag** —— target/ 里是各发行版自己编出来的 C 依赖产物
-          # （ort-sys / aws-lc-sys / ring），跨发行版回读就是用错中间产物。
-          # 本 job 目前没有对应的缓存桶（warm-cache 只预热 26.04），所以每次发版都是冷编；
-          # 想省这十几分钟就手动给 24.04 暖一次（见 AGENTS §2.7 缓存纪律）。
+          # 发行版标记来自 versions.env；缓存键按发行版隔离（C 依赖的中间产物不能跨发行版回读）。
+          # release 的编译复用由 sccache 承担，不预暖 target/。
           case "$RUNNER_OS" in
             Windows) os_tag="windows" ;;
             *)       os_tag="$LINUX_CACHE_TAG" ;;
           esac
           {
             printf 'CARGO_CACHE_KEY=purevox-%s-%s-cargo-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$lock"
-            printf 'TARGET_DEBUG_KEY=purevox-%s-%s-target-dbg-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$lock"
-            printf 'TARGET_RELEASE_KEY=purevox-%s-%s-target-rel-%s-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$TCLI_VER" "$lock"
             printf 'TAURI_CLI_KEY=purevox-%s-tauri-cli-%s\n' "$RUNNER_OS" "$TCLI_VER"
           } >> "$GITHUB_ENV"
           echo "CARGO_CACHE_KEY=$CARGO_CACHE_KEY"
@@ -228,6 +240,9 @@ jobs:
             libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev libgtk-3-dev libasound2-dev \
             libopus0 xvfb pkg-config file rpm
 
+      - name: sccache（编译器对象缓存，自动更新）
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Install Rust toolchain (rustfmt + clippy)
         shell: bash
         run: |
@@ -235,8 +250,7 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
 
       # restore 一律不写 restore-keys，理由见 tests.yml 同处注释。
-      # 注意 target/release 这个桶**没有任何 workflow 会保存**（warm-cache 明确不预热
-      # release 目标，target/release 太大），所以这里每次都是冷编 release —— 有意为之。
+      # release 的编译复用由 sccache 负责；target/release 不做目录缓存（太大）。
       - name: Restore cargo registry (restore-only)
         uses: actions/cache/restore@v6
         with:
@@ -245,17 +259,6 @@ jobs:
             ~/.cargo/git
           key: ${{ env.CARGO_CACHE_KEY }}
 
-      - name: Restore target/debug (restore-only)
-        uses: actions/cache/restore@v6
-        with:
-          path: src-tauri/target/debug
-          key: ${{ env.TARGET_DEBUG_KEY }}
-
-      - name: Restore target/release (restore-only)
-        uses: actions/cache/restore@v6
-        with:
-          path: src-tauri/target/release
-          key: ${{ env.TARGET_RELEASE_KEY }}
 
       - name: Restore cargo-tauri binary (restore-only)
         uses: actions/cache/restore@v6
@@ -314,6 +317,26 @@ jobs:
         run: python tools/automation/test_packages.py
 
       # 一个格式一个 artifact，理由同上（AppImage 最大，单它就 ~200 MB）。
+      # 自动写缓存：新键才写，已有同键会失败（continue-on-error）；下次同 Cargo.lock 直接命中。
+      # 编译本身由 sccache 缓存（按对象指纹，跨 tag 复用），这里只保 registry / tauri-cli。
+      - name: Save cargo registry（自动）
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ env.CARGO_CACHE_KEY }}
+
+      - name: Save cargo-tauri binary（自动）
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cargo/bin/cargo-tauri*
+          key: ${{ env.TAURI_CLI_KEY }}
+
       - name: Upload deb
         uses: actions/upload-artifact@v7
         with:

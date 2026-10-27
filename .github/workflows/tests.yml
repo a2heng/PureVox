@@ -2,7 +2,7 @@
 # 分支推送 / PR **不触发**：日常提交零成本，要验证某分支手动 dispatch 一次即可。
 # 打包与发版见 release.yml（tag `v*` 触发，也可手动）。
 # 纪律（沿袭旧版）：
-#   - 缓存全部 restore-only，唯一写入者是 warm-cache.yml（也手动）；
+#   - 缓存全部 restore-only（写入由 release.yml / sccache 自动完成）；
 #   - 键与版本的唯一来源是 tools/automation/versions.env（本文件只组合，不硬编码版本）；
 #   - 门禁实现只有一处 tools/automation/check.py（Python，跨平台唯一实现）；
 #   - `*.md` 改动不参与 CI。
@@ -21,6 +21,9 @@ jobs:
   rust:
     name: 测试 · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     strategy:
       fail-fast: false
       matrix:
@@ -50,7 +53,7 @@ jobs:
               *=*) printf '%s\n' "$line" >> "$GITHUB_ENV" ;;
             esac
           done < tools/automation/versions.env
-          # 缓存键 = 发行版 + 缓存代数 + Cargo.lock 哈希。唯一写入者是 warm-cache.yml。
+          # 缓存键 = 发行版 + 缓存代数 + Cargo.lock 哈希。写入由 release.yml / sccache 自动完成。
           lock="${{ hashFiles('src-tauri/Cargo.lock') }}"
           # 发行版标记：target/ 里是各发行版自己编出来的 C 依赖产物
           # （ort-sys / aws-lc-sys / ring），跨发行版回读就是用错中间产物。
@@ -63,7 +66,6 @@ jobs:
           esac
           {
             printf 'CARGO_CACHE_KEY=purevox-%s-%s-cargo-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$lock"
-            printf 'TARGET_DEBUG_KEY=purevox-%s-%s-target-dbg-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$lock"
           } >> "$GITHUB_ENV"
           # 把算出来的键打进日志：键拼错时不必再猜，扫一眼日志就知道
           echo "CARGO_CACHE_KEY=$CARGO_CACHE_KEY"
@@ -78,6 +80,9 @@ jobs:
             libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev libgtk-3-dev libasound2-dev \
             libopus0 pkg-config file
 
+      - name: sccache（编译器对象缓存，自动更新）
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Install Rust toolchain (rustfmt + clippy)
         shell: bash
         run: |
@@ -91,7 +96,7 @@ jobs:
       #      LINUX_CACHE_TAG 防的就是这个，被兜底键一绕就等于没加；
       #   ② Cargo.lock 一变就静默回退到某个旧桶，此时「命中了缓存」这件事不再等于
       #      「缓存内容对得上当前依赖」，排查时极具误导性。
-      # 想要某次依赖变更后重新暖桶：手跑一次 warm-cache.yml（或按需 bump CACHE_GEN），
+      # 依赖变更后由下一次 release 自动写新键（或按需 bump CACHE_GEN），
       # 这本来就是手动流程，不值得用兜底键去换。
       - name: Restore cargo registry (restore-only)
         uses: actions/cache/restore@v6
@@ -101,11 +106,6 @@ jobs:
             ~/.cargo/git
           key: ${{ env.CARGO_CACHE_KEY }}
 
-      - name: Restore target/debug (restore-only)
-        uses: actions/cache/restore@v6
-        with:
-          path: src-tauri/target/debug
-          key: ${{ env.TARGET_DEBUG_KEY }}
 
       - name: "Gate · fmt"
         shell: bash
@@ -154,7 +154,7 @@ jobs:
             esac
           done < tools/automation/versions.env
 
-      # 本仓库无 package.json，不设 setup-node 的 cache（缓存只由 warm-cache.yml 写）。
+      # 本仓库无 package.json，不设 setup-node 的 cache。
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VER }}

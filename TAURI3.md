@@ -24,8 +24,8 @@
   重采样 + PI 时钟伺服（±3%）+ 预热/重同步/封顶。VB-Cable 回环（播放到 CABLE Input、从 CABLE Output
   采集）与真实默认输出（EDIFIER）各测 30 s / 16 s：48k 缓冲稳定在目标 40 ms，欠载 0、重同步 0、
   丢弃 0、流错误 0，伺服修正量约 ±300 ppm 内；回环采回频谱峰值 1000 Hz @ -20 dB。
-- CI 与发版流水线已建立（2026-10-07，见 §3.7）：`tests.yml`（门禁）/ `warm-cache.yml`（唯一缓存写入者）/
-  `release.yml`（tag → 门禁 → 打包 → `assert_bundle -Smoke` 安装冒烟（7 模型布局）→ gh release）；
+- CI 与发版流水线已建立（2026-10-07，见 §3.7）：`tests.yml`（门禁）/ `release.yml`
+  （tag → 门禁 → 打包 → `assert_bundle -Smoke` 安装冒烟（7 模型布局）→ gh release）；
   门禁与断言脚本集中在 `tools/automation/`，本机与 CI 跑同一份 `check.py`。
 - **网络（手机 ⇄ 电脑）已实现**（2026-10-08，NETWORK.md §4.1）：axum WebSocket 服务（端口
   59123，`/ws` + `/health`）。`remote_mic` 输入行（手机麦克风→电脑，**不需要虚拟声卡驱动**，
@@ -515,7 +515,7 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
 纪律（规则正文见 AGENTS.md §2 第 7 条）：
 
 - **触发纪律：没有任何分支推送 / PR 触发**（日常提交零成本）。`tests.yml`（只测试）只
-  `workflow_dispatch`；`release.yml`（打包发版）tag `v*` 或手动；`warm-cache.yml`（唯一缓存写入者）只手动。
+  `workflow_dispatch`；`release.yml`（打包发版）tag `v*` 或手动。
 - **门禁唯一实现** `tools/automation/check.py`（**Python，跨平台唯一**，Windows / Linux / macOS 跑同一份）：
   `fmt`（rustfmt --check，缩进见 `src-tauri/rustfmt.toml`）/ `clippy`（`--all-targets -D warnings`）/
   `build` / `test` / `ui`（`tsc -p ui/jsconfig.json --noEmit` + `i18n_lint.js`）/
@@ -527,8 +527,6 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
   `gen_icons.py` 也都是**单份 Python**，取代原先的 `.ps1` + `.sh` 双份。
 - **工作流** `.github/workflows/`：
   - `tests.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-24.04`；`ui` 门禁在 `ubuntu-24.04`。
-  - `warm-cache.yml`：**全仓库唯一缓存写入者**，手动；矩阵 Windows+Linux **冷构建**（不恢复 target 缓存）
-    debug 三门禁 + `cargo tauri build`，再 save 四个桶（`continue-on-error`，同键已存在即视为成功）。
   - `release.yml`：tag `v*` 或手动 → 三平台并行：
     - **Windows**：门禁 → `cargo tauri build` → `assert_bundle.py --smoke` → NSIS exe（只此一个）。
     - **Linux**（`ubuntu-24.04`）：装 WebKitGTK/ALSA/rpm 依赖 → 门禁 → `cargo tauri build` →
@@ -538,11 +536,10 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
       `./gradlew assembleRelease` → **签名 release APK**（`PV_REQUIRE_SIGNING=1`，缺 secret 当场失败）。
     - tag 时 `release_notes.py`（上一 tag 区间）+ `gh release create` 附带全部产物；手动只打包、不建 release。
   - **没有 Lite 变体**（Lite 已取消，遗留资产已删除）。
-- **缓存纪律**：`tests.yml` / `release.yml` 全部 `actions/cache/restore`（无 save）；键与版本唯一来源 =
-  `tools/automation/versions.env`（`CACHE_GEN` / `RUST_TOOLCHAIN` / `TCLI_VER` / `TS_VER` / `NODE_VER` /
-  `LINUX_RUNNER` / `JDK_VER` / `ANDROID_PLATFORM` / `ANDROID_BUILD_TOOLS`），工作流只组合
-  `hashFiles('src-tauri/Cargo.lock')`。四个桶按 `purevox-<RUNNER_OS>-…`：
-  `…-cargo-…`（registry+git）、`…-target-dbg-…`、`…-target-rel-…`、`…-tauri-cli-<ver>`
+- **缓存纪律**：编译走 **sccache**（`SCCACHE_GHA_ENABLED`，对象级、按源码/编译器指纹复用，
+  跨 tag 自动更新），不需要手动预热；`release.yml` 构建后再自动 save cargo registry / cargo-tauri
+  （同键已存在则跳过）。键与版本唯一来源 = `tools/automation/versions.env`，工作流只组合
+  `hashFiles('src-tauri/Cargo.lock')`；`target/release` 不做目录缓存（太大）。
   （`cargo-tauri`，未命中才 `cargo install tauri-cli --version 钉死`）。
   为什么集中写：GitHub 缓存按触发 ref 分域，各工作流各写各的只会堆出没人回读的重复条目（tag 上尤甚）。
 - **产物断言**（`assert_bundle.py` 是入口，平台差异拆到 `_windows.py` / `_linux.py`，
