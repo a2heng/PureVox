@@ -17,13 +17,16 @@
 
   SPDX-License-Identifier: GPL-3.0-or-later
 -->
-<!-- 顶部品牌渐变：圆角 24dp，颜色日夜各一套（values / values-night）。 -->
+<!--
+  顶栏底：品牌蓝 → 略亮的同色，圆角只给**下沿**（上沿贴着状态栏，圆角会被裁掉、看着像缺口）。
+  日夜两套颜色在 values / values-night 里，这里不写死。
+-->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
     <gradient
         android:angle="315"
-        android:endColor="@color/pv_hero_end"
-        android:startColor="@color/pv_hero_start"
+        android:endColor="@color/pv_header_light"
+        android:startColor="@color/pv_header"
         android:type="linear" />
-    <corners android:radius="24dp" />
+    <corners android:radius="18dp" />
 </shape>

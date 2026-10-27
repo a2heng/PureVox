@@ -306,6 +306,19 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
     }
   });
 
+  // ---- 环深度广播：任一侧改了，所有客户端立刻收到 `target`（含发起方）----
+  let (tgt_out, mut tgt_rx) = (out_tx.clone(), hub.subscribe_target());
+  let target_task = tokio::spawn(async move {
+    while let Ok(ms) = tgt_rx.recv().await {
+      if tgt_out
+        .send(Out::Text(ServerMsg::Target { ms }.to_text()))
+        .is_err()
+      {
+        return;
+      }
+    }
+  });
+
   // ---- 时钟同步：每 2 s 一个 `sync`；应答在收任务里算（见 `SyncState`）----
   let sync = Arc::new(Mutex::new(SyncState::default()));
   let (sync_out, sync_state) = (out_tx.clone(), sync.clone());
@@ -331,10 +344,15 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
   });
 
   // 唯一写 socket 的任务
+  let writer_hub = hub.clone();
   let writer_task = tokio::spawn(async move {
     while let Some(o) = out_rx.recv().await {
       let r = match o {
-        Out::Packet(p) => sink.send(Message::Binary(p.into())).await,
+        Out::Packet(p) => {
+          // 发包间隔在这里量：**只观测**（理想 10.0 ms；<5 ms = 一拍连发两包）
+          writer_hub.note_tx_sent();
+          sink.send(Message::Binary(p.into())).await
+        }
         Out::Text(t) => sink.send(Message::Text(t.into())).await,
       };
       if r.is_err() {
@@ -453,6 +471,12 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
           }
           Ok(ClientMsg::Ping { id }) => reply = Some(ServerMsg::Pong { id }),
           Ok(ClientMsg::Rtt { ms }) => hub.set_rtt(ms),
+          // 改环深度：落盘 + 广播给**所有**客户端（含发起方）—— 两侧 UI 与环永远同一个值。
+          // 只走 `net::set_ring_ms` 这一条路（它内部才 `hub.set_ring_ms` 并广播一次），
+          // 否则同一改动会广播两遍（客户端日志里会出现两条「电脑把抖动缓冲改成 X」）。
+          Ok(ClientMsg::SetTarget { ms }) => {
+            crate::net::set_ring_ms(ms);
+          }
           Ok(ClientMsg::St {
             level_ms,
             target_ms,
@@ -528,6 +552,7 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
   drop(sub_tx);
   let _ = tokio::time::timeout(Duration::from_millis(200), send_task).await;
   sync_task.abort();
+  target_task.abort();
   drop(out_tx);
   let _ = tokio::time::timeout(Duration::from_millis(500), writer_task).await;
   hub.client_disconnected();
@@ -611,7 +636,12 @@ mod tests {
     let st = hub.stats();
     // 12 个真实包 + 2 个预热带（`push_rx` 每调一次就记一个包）
     assert_eq!(st.rx_packets, 14);
-    assert_eq!(st.rx_dropped, 0, "水位远低于硬顶，不应丢样本");
+    // 新策略：超过实时性上限就丢最旧的 —— 只要求水位有界、包数正确
+    assert!(
+      st.rx_level_ms <= 20.0 + 10.0,
+      "水位必须有界：{} ms",
+      st.rx_level_ms
+    );
     assert!(st.rx_hops >= 10, "应取走大部分 hop：{}", st.rx_hops);
   }
 

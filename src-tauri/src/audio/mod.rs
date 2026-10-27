@@ -42,7 +42,9 @@ pub mod loopback;
 /// 输出设备的混音：多列 → 一个设备（逐源对齐后相加）
 pub mod mixer;
 pub mod playback;
+pub mod rt_guard;
 pub mod probe;
+pub mod tick;
 pub mod tone;
 /// Linux 虚拟麦克风（PipeWire）的创建 / 移除（「驱动」页面）。
 pub mod virtual_mic;
@@ -154,6 +156,11 @@ pub struct AudioManager {
   rebuild: Mutex<()>,
 }
 
+/// 进程级「执行保活」句柄（Windows = `PowerRequestExecutionRequired`）。
+/// 会话跑着就持有：系统不会把进程按效率模式挂起。停的时候 Drop 自动释放。
+static KEEPALIVE: std::sync::Mutex<Option<crate::audio::rt_guard::ExecutionRequest>> =
+  std::sync::Mutex::new(None);
+
 impl AudioManager {
   pub fn new(hub: SharedHub) -> Self {
     let plan = config::load_plan();
@@ -216,6 +223,15 @@ impl AudioManager {
     let mut g = self.state.lock().unwrap();
     g.session = Some(outcome.session);
     g.running = true;
+    // 音频在跑：申请执行保活（失败只是没有保活，不致命；原因进事件日志）
+    if let Ok(mut k) = KEEPALIVE.lock() {
+      if k.is_none() {
+        *k = Some(crate::audio::rt_guard::acquire_execution_required());
+        if let Some(e) = crate::audio::rt_guard::last_error() {
+          crate::debug::events::log("warn", "audio", e.to_string());
+        }
+      }
+    }
     g.epoch = generation;
     drop(g);
     // 提交媒体槽位：旧代次的（已删/已换位置的媒体行）在这里清掉
@@ -242,6 +258,9 @@ impl AudioManager {
     g.running = false;
     g.epoch += 1;
     drop(g);
+    if let Ok(mut k) = KEEPALIVE.lock() {
+      *k = None; // Drop → 释放执行保活
+    }
     self.hub.set_running(false);
     // 显式停引擎才清媒体槽位与列概要（`Session::stop` 自己不清：先建后停时会误伤新会话）
     crate::engine::media::hub().clear();

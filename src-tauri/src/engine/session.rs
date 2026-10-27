@@ -186,6 +186,8 @@ impl Session {
         &calib,
         &mut hot,
         media_gen,
+        // 只有多列时才绑核（见 `run_column` 里的说明）：单列绑核只会被钉到忙核上
+        plan.columns.len() > 1,
       ));
     }
 
@@ -737,6 +739,7 @@ fn build_column(
   calib: &Arc<CalibHub>,
   hot: &mut std::collections::HashMap<(usize, usize, String), Arc<crate::engine::hot::HotGain>>,
   media_gen: u64,
+  pin_core: bool,
 ) -> ColumnRuntime {
   let mut rows: Vec<Row> = Vec::new();
   let mut captures = Vec::new();
@@ -1051,12 +1054,18 @@ fn build_column(
   // 一个模型一路核（见 `engine/affinity.rs`）：列线程 = 这一列推理的宿主线程，
   // 从 1 号核开始轮转分配，避免多列的模型被调度到同一个核上互相打断
   // （2026-10-26：后台 CPU 忙时两列抢核 → 采集环涨到硬顶 → 丢样本）。
+  //
+  // **只有多列时才绑核**：绑核的目的是「别让两列的推理挤同一个核」，只有一列时
+  // 它只会在一种情况下帮倒忙 —— 被钉到一个正忙的核 / 小核上（实测列线程节拍迟到
+  // 最高 94.7 ms、源侧发包间隔出现 0.001 ms 连发 + 89 ms 空档）。单列交给系统调度。
   let core = super::affinity::next_core();
   let join = match std::thread::Builder::new()
     .name(format!("column-{}@cpu{}", idx + 1, core))
     .spawn(move || {
       let _guard = AliveGuard(alive2);
-      if let Err(e) = super::affinity::pin_current(core) {
+      if pin_core
+        && let Err(e) = super::affinity::pin_current(core)
+      {
         events::log(
           "warn",
           "engine",
@@ -1113,12 +1122,19 @@ fn run_column(
   hub: SharedHub,
   token: threads::ThreadToken,
 ) {
+  // 实时音频线程：向系统声明用途（Windows = MMCSS "Pro Audio"），
+  // 否则播放/推流时会被当普通后台线程调度，出现几十毫秒的整体停顿（`debug/stall.rs` 量得到）。
+  let _rt = crate::audio::rt_guard::enter_audio_thread();
   let ctx = FrameContext::default();
   let mut tmp = [0.0f32; HOP];
   let mut last_publish = Instant::now() - PUBLISH;
-  // 绝对时刻节拍：每轮对齐到 10 ms 网格，消除 sleep 过冲的累积漂移
-  // （固定 sleep(10ms-work) 会每轮多睡一点，实测产 hop 只有 ~96/s，输出侧 ±3% 伺服补不回来 → 周期性欠载）。
-  let mut next = Instant::now() + TICK;
+  // 10 ms 节拍：**必须用高精度等待**（`audio/tick.rs`）。
+  //
+  // 以前是 `sleep(next - now)` + 「落后一点就立刻跑下一轮追平」：Windows 默认时钟刻度
+  // 15.6 ms，睡过头之后那一轮会**连发两拍**（实测发包间隔出现 0.00 ms，同时空档 86 ms）。
+  // 连发是「超前」，接收端多深的缓冲都吃不掉 —— 听感就是 1 kHz「不像一条直线」。
+  // `Tick` 只放行一拍、落后不补发，超过两个周期就从此刻重新对齐。
+  let mut tick = crate::audio::tick::Tick::new(TICK);
   let mut ticks: u64 = 0;
   let mut last_ticks: u64 = 0;
   // 节拍质量：迟到（上一拍处理超时/被挂起）与单拍处理耗时。这两项是「为什么卡」的第一现场。
@@ -1135,6 +1151,8 @@ fn run_column(
   while !stop.load(Relaxed) {
     ticks += 1;
     let tick_start = Instant::now();
+    // 这一拍「该在的时刻」由节拍器给（诊断只用，不参与控制）
+    let next = tick.due();
     let late = tick_start.saturating_duration_since(next);
     if late > TICK_LATE_WARN {
       tick_overruns += 1;
@@ -1526,14 +1544,7 @@ fn run_column(
 
     let work_ms = tick_start.elapsed().as_secs_f32() * 1000.0;
     max_work_ms = max_work_ms.max(work_ms);
-    let now = Instant::now();
-    if next > now {
-      std::thread::sleep(next - now);
-      next += TICK;
-    } else if now.duration_since(next) > Duration::from_millis(200) {
-      next = now + TICK; // 长时间被挂起后重新对齐，不补发积压
-    } else {
-      next += TICK; // 只落后一点：立刻跑下一轮追平平均速率
-    }
+    // 等到下一拍。**这里绝不能再有「立刻跑下一轮追平」的分支** —— 那就是连发。
+    tick.wait();
   }
 }

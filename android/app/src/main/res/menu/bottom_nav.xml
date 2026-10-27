@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!-- 底部五个选项卡：每页只做一件事。图标是自绘矢量，不引第三方图标库。 -->
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/tab_connect"
+        android:icon="@drawable/ic_tab_connect"
+        android:title="@string/tab_connect" />
+    <item
+        android:id="@+id/tab_input"
+        android:icon="@drawable/ic_tab_input"
+        android:title="@string/tab_input" />
+    <item
+        android:id="@+id/tab_diag"
+        android:icon="@drawable/ic_tab_diag"
+        android:title="@string/tab_diag" />
+    <item
+        android:id="@+id/tab_more"
+        android:icon="@drawable/ic_tab_more"
+        android:title="@string/tab_more" />
+</menu>

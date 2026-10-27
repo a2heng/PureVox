@@ -28,6 +28,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -63,17 +64,26 @@ class CaptureService : Service() {
         const val ACTION_STOP = "com.purevox.mic.action.STOP"
 
         /**
-         * 通知按钮发回界面的广播（**不是**服务自己的 action）。
-         * 「停止推流」= 关麦克风链路；「断开连接」= 断开 WebSocket。两件事分开。
+         * 通知按钮发回界面的广播（**不是**服务自己的 action）：界面是唯一的编排者。
+         *
+         * 三个按钮各管一件事，且都是「切换 / 刷新」而不是「单向关闭」：
+         * - [BROADCAST_NOTIF_MIC]      开/关麦克风（= 界面上那个开关）
+         * - [BROADCAST_NOTIF_SPK]      开/关扬声器（= 界面上那个开关）
+         * - [BROADCAST_NOTIF_RECONNECT] 重新连接：**先把已经打开的流全部拆掉再重连**
+         *   （等价于手动关掉再打开，用来复位卡住的采集/播放）
          */
-        const val BROADCAST_NOTIF_STOP = "com.purevox.mic.notif.STOP"
-        const val BROADCAST_NOTIF_DISCONNECT = "com.purevox.mic.notif.DISCONNECT"
+        const val BROADCAST_NOTIF_MIC = "com.purevox.mic.notif.MIC"
+        const val BROADCAST_NOTIF_SPK = "com.purevox.mic.notif.SPK"
+        const val BROADCAST_NOTIF_RECONNECT = "com.purevox.mic.notif.RECONNECT"
 
         /** 通知正文（由界面刷新，用来显示已推包数 / 采集格式 / 保活状态）。 */
         const val EXTRA_TEXT = "text"
 
-        /** 本条通知是否包含 `microphone` 前台服务类型。 */
+        /** 本条通知是否包含 `microphone` 前台服务类型（也决定按钮标签「开/关麦克风」）。 */
         const val EXTRA_MIC = "mic"
+
+        /** 扬声器是否在放（决定按钮标签「开/关扬声器」；不影响前台服务类型）。 */
+        const val EXTRA_SPK = "spk"
 
         /** 当前是否真的有音频在跑（mic 或 speaker）；只有这时才持 WakeLock。
          *  仅仅「连着/界面在前台」不需要 CPU 常亮 —— 通知挂着即可。 */
@@ -96,6 +106,10 @@ class CaptureService : Service() {
         /** 本进程当前是否真的挂着前台通知（由服务在成功/停止时维护）。 */
         @Volatile
         var foreground = false
+
+        /** 当前是否持着高性能 WifiLock（**省电模式是音频流的最大杀手**，必须可见）。 */
+        @Volatile
+        var wifiLockHeld = false
             private set
 
         internal fun noteError(msg: String) {
@@ -110,22 +124,33 @@ class CaptureService : Service() {
 
         private const val WAKE_LOCK_TAG = "PureVoxMic:AudioWakeLock"
 
-        fun start(ctx: Context, text: String, mic: Boolean, audio: Boolean) =
-            deliver(ctx, ACTION_START, text, mic, audio)
+        /** Wi-Fi 高性能锁：关掉省电模式（它会攒包，实测 RTT 5→55 ms、抖动 25 ms）。 */
+        private const val WIFI_LOCK_TAG = "PureVoxMic:WifiHighPerf"
 
-        fun update(ctx: Context, text: String, mic: Boolean, audio: Boolean) =
-            deliver(ctx, ACTION_UPDATE, text, mic, audio)
+        fun start(ctx: Context, text: String, mic: Boolean, audio: Boolean, spk: Boolean = false) =
+            deliver(ctx, ACTION_START, text, mic, audio, spk)
+
+        fun update(ctx: Context, text: String, mic: Boolean, audio: Boolean, spk: Boolean = false) =
+            deliver(ctx, ACTION_UPDATE, text, mic, audio, spk)
 
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, CaptureService::class.java))
         }
 
-        private fun deliver(ctx: Context, action: String, text: String, mic: Boolean, audio: Boolean) {
+        private fun deliver(
+            ctx: Context,
+            action: String,
+            text: String,
+            mic: Boolean,
+            audio: Boolean,
+            spk: Boolean,
+        ) {
             val intent = Intent(ctx, CaptureService::class.java).apply {
                 this.action = action
                 putExtra(EXTRA_TEXT, text)
                 putExtra(EXTRA_MIC, mic)
                 putExtra(EXTRA_AUDIO, audio)
+                putExtra(EXTRA_SPK, spk)
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -145,9 +170,16 @@ class CaptureService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
 
+    /** 高性能 WifiLock（拿不到时为 null；界面/诊断里要看得见，不能静默）。 */
+    private var wifiLock: WifiManager.WifiLock? = null
+
     /** 本次会话当前是否含麦克风（决定前台服务类型掩码）。 */
     @Volatile
     private var micActive = false
+
+    /** 扬声器是否在放（只影响通知按钮标签，不改变前台服务类型）。 */
+    @Volatile
+    private var spkActive = false
 
     /** 当前是否真的有音频流（决定持不持 WakeLock）。 */
     @Volatile
@@ -165,6 +197,7 @@ class CaptureService : Service() {
             ACTION_START, ACTION_UPDATE -> {
                 val text = intent.getStringExtra(EXTRA_TEXT) ?: getString(R.string.notif_default)
                 micActive = intent.getBooleanExtra(EXTRA_MIC, false)
+                spkActive = intent.getBooleanExtra(EXTRA_SPK, false)
                 audioActive = intent.getBooleanExtra(EXTRA_AUDIO, micActive)
                 if (audioActive) acquireWakeLock() else releaseWakeLock()
                 startForegroundCompat(text, micActive)
@@ -190,7 +223,7 @@ class CaptureService : Service() {
     @Suppress("DEPRECATION")
     @SuppressLint("NewApi") // type != 0 只在 SDK >= Q 时成立，lint 看不到分支
     private fun startForegroundCompat(text: String, mic: Boolean) {
-        val notification = buildNotification(text)
+        val notification = buildNotification(text, mic, spkActive)
         val type = when {
             Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> 0   // 走两参重载
             mic -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
@@ -239,7 +272,7 @@ class CaptureService : Service() {
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(text: String, mic: Boolean, spk: Boolean): Notification {
         val launch = packageManager.getLaunchIntentForPackage(packageName)
         val contentPi = launch?.let {
             PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE)
@@ -253,11 +286,22 @@ class CaptureService : Service() {
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .addAction(0, getString(R.string.notif_action_stop), broadcast(BROADCAST_NOTIF_STOP, 1))
+            // 三个按钮：麦克风 / 扬声器 / 重新连接。标签跟着**当前状态**变（开→显示「关」），
+            // 所以通知每次 update 都要重建（`setOnlyAlertOnce` 保证不响铃、不闪）。
             .addAction(
                 0,
-                getString(R.string.notif_action_disconnect),
-                broadcast(BROADCAST_NOTIF_DISCONNECT, 2),
+                getString(if (mic) R.string.notif_action_mic_off else R.string.notif_action_mic_on),
+                broadcast(BROADCAST_NOTIF_MIC, 1),
+            )
+            .addAction(
+                0,
+                getString(if (spk) R.string.notif_action_spk_off else R.string.notif_action_spk_on),
+                broadcast(BROADCAST_NOTIF_SPK, 2),
+            )
+            .addAction(
+                0,
+                getString(R.string.notif_action_reconnect),
+                broadcast(BROADCAST_NOTIF_RECONNECT, 3),
             )
             .build()
     }
@@ -269,22 +313,58 @@ class CaptureService : Service() {
     }
 
     private fun acquireWakeLock() {
-        if (wakeLock != null) return
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
-            setReferenceCounted(false)
-            // 长推流场景不给上限，但设一个远大于任何会话的兜底，避免永久持有
-            acquire(4 * 60 * 60 * 1000L)
+        if (wakeLock == null) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+                setReferenceCounted(false)
+                // 长推流场景不给上限，但设一个远大于任何会话的兜底，避免永久持有
+                acquire(4 * 60 * 60 * 1000L)
+            }
+        }
+        acquireWifiLock()
+    }
+
+    /**
+     * 屏幕关掉后 Wi-Fi **省电模式**会把包攒起来一批批送（实测 RTT 从 5 ms 涨到 55 ms、
+     * 抖动 25 ms、最坏 74 ms），接收端 20 ms 的环直接被冲爆 + 饿死 —— 听感就是不断断续续。
+     * 手机揣兜里放音频正是本应用的主场景，所以只要有音频在跑就持一把高性能 WifiLock。
+     *
+     * 失败不致命，但要能被界面/诊断看到（`CaptureService.wifiLockHeld`）。
+     */
+    private fun acquireWifiLock() {
+        if (wifiLock != null) return
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            val l = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, WIFI_LOCK_TAG)
+            l.setReferenceCounted(false)
+            l.acquire()
+            wifiLock = l
+            wifiLockHeld = l.isHeld
+        } catch (e: Throwable) {
+            Log.w(TAG, "WifiLock 获取失败", e)
         }
     }
 
     private fun releaseWakeLock() {
-        val l = wakeLock ?: return
+        val l = wakeLock ?: null
         wakeLock = null
-        try {
-            if (l.isHeld) l.release()
-        } catch (e: Throwable) {
-            Log.w(TAG, "释放 WakeLock 异常", e)
+        if (l != null) {
+            try {
+                if (l.isHeld) l.release()
+            } catch (e: Throwable) {
+                Log.w(TAG, "释放 WakeLock 异常", e)
+            }
+        }
+        val w = wifiLock
+        wifiLock = null
+        wifiLockHeld = false
+        if (w != null) {
+            try {
+                if (w.isHeld) w.release()
+            } catch (e: Throwable) {
+                Log.w(TAG, "释放 WifiLock 异常", e)
+            }
         }
     }
 }

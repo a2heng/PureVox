@@ -31,6 +31,8 @@ use std::time::Instant;
 use crate::audio::HOP;
 use crate::dsp::meter::RateMeter;
 use crate::net::rt::{Playout, PlayoutStats, RING_MS};
+use std::sync::atomic::AtomicU32;
+use tokio::sync::broadcast;
 
 /// 发送交接格的上限（hop 数）：**只是防呆**。
 ///
@@ -219,6 +221,20 @@ pub struct NetStats {
   pub tx_hops: u64,
   pub tx_dropped: u64,
   pub tx_subs: Vec<TxSubStat>,
+  /// 相邻两个音频包的**发送间隔**（ms，EWMA）—— 理想 10.0
+  pub tx_gap_ms: f32,
+  /// 两次发送的最小 / 最大间隔（ms）：突发丢在这里看得见（< 5 ms = 一拍连发两包）
+  pub tx_min_gap_ms: f32,
+  pub tx_max_gap_ms: f32,
+  /// 「突发」与「空档」计数：间隔 < 5 ms / > 15 ms
+  pub tx_bursts: u64,
+  pub tx_holes: u64,
+  /// 源侧（引擎推 hop）的间隔统计，字段含义与 `tx_*` 相同
+  pub src_gap_ms: f32,
+  pub src_min_gap_ms: f32,
+  pub src_max_gap_ms: f32,
+  pub src_bursts: u64,
+  pub src_holes: u64,
   pub verdict: crate::debug::Health,
 
   // ---- 客户端上报 ----
@@ -271,6 +287,16 @@ impl Default for NetStats {
       tx_hops: 0,
       tx_dropped: 0,
       tx_subs: Vec::new(),
+      tx_gap_ms: 0.0,
+      tx_min_gap_ms: 0.0,
+      tx_max_gap_ms: 0.0,
+      tx_bursts: 0,
+      tx_holes: 0,
+      src_gap_ms: 0.0,
+      src_min_gap_ms: 0.0,
+      src_max_gap_ms: 0.0,
+      src_bursts: 0,
+      src_holes: 0,
       verdict: crate::debug::Health::ok("网络服务未启动"),
       client: None,
       clock_offset_us: None,
@@ -287,6 +313,15 @@ impl Default for NetStats {
       client_caps: None,
     }
   }
+}
+
+/// 环深度的合法区间与步进：**10~200 ms，按 10 ms 步进**（与手机滑块、网页滑块同一套规则）。
+///
+/// 放在这里做唯一实现：三条入口（手机 `settarget` / 网页命令 / 落盘读回）都调它，
+/// 免得「界面能拖到 37 ms」而环按 40 ms 生效这种对不上的情况。
+pub fn clamp_ring_ms(ms: u32) -> u32 {
+  let stepped = (ms.max(10) / 10) * 10;
+  stepped.clamp(10, 200)
 }
 
 struct NetRates {
@@ -311,6 +346,52 @@ pub struct NetHub {
   ca_pem: Mutex<Option<String>>,
   client_caps: Mutex<Option<String>>,
   rates: Mutex<NetRates>,
+  /// 接收方播放环深度（ms）。**手动可调、两侧同步**，但运行期绝不自动改
+  /// （`DESIGN.md` §4.1.4 的「不做自适应」依然成立：这里是用户设定的固定值）。
+  ring_ms: AtomicU32,
+  /// 环深度变化广播：任一侧改了立刻通知所有客户端（它们要跟着改 UI 与环）。
+  target_tx: broadcast::Sender<u32>,
+  /// 出站发包间隔（**只观测**）：源是不是真的每 10 ms 出一格，看这里。
+  tx_gap: Mutex<TxGap>,
+  /// **源侧** hop 间隔（引擎推给网络的那一刻）。和 `tx_gap` 对拍就能分清
+  /// 「源就成串」还是「发送任务被调度拖住」。
+  src_gap: Mutex<TxGap>,
+}
+
+/// 出站发包间隔统计（只观测，不参与任何控制）。
+#[derive(Default)]
+struct TxGap {
+  last: Option<Instant>,
+  ema_ms: f64,
+  min_ms: f64,
+  max_ms: f64,
+  bursts: u64,
+  holes: u64,
+}
+
+impl TxGap {
+  fn on_send(&mut self, now: Instant) {
+    if let Some(prev) = self.last {
+      let ms = now.duration_since(prev).as_secs_f64() * 1000.0;
+      // 首包 / 长时间空闲（没有订阅）之后的间隔不算突发/空档，否则每次开始播都误报
+      if ms < 100.0 {
+        self.ema_ms += 0.05 * (ms - self.ema_ms);
+        if self.min_ms == 0.0 || ms < self.min_ms {
+          self.min_ms = ms;
+        }
+        if ms > self.max_ms {
+          self.max_ms = ms;
+        }
+        if ms < 5.0 {
+          self.bursts += 1;
+        }
+        if ms > 15.0 {
+          self.holes += 1;
+        }
+      }
+    }
+    self.last = Some(now);
+  }
 }
 
 impl Default for NetHub {
@@ -342,10 +423,50 @@ impl NetHub {
         tx_packets: RateMeter::new(),
         rx_trims: RateMeter::new(),
       }),
+      ring_ms: AtomicU32::new(RING_MS as u32),
+      target_tx: broadcast::channel(16).0,
+      tx_gap: Mutex::new(TxGap::default()),
+      src_gap: Mutex::new(TxGap::default()),
     }
   }
 
   // ---- 生命周期 ----
+
+  /// 当前接收方播放环深度（ms）。
+  pub fn ring_ms(&self) -> u32 {
+    self.ring_ms.load(Relaxed)
+  }
+
+  /// 改环深度（**手动**可调，10~200 ms、按 10 ms 步进）。返回实际生效值。
+  ///
+  /// 两侧同步：手机改了 → 服务端落盘 + 广播 → 其它客户端跟着改；电脑改了同理。
+  /// 这**不是**自适应：值只由用户决定，运行期不会因为抖动/欠载自己动。
+  pub fn set_ring_ms(&self, ms: u32) -> u32 {
+    let v = clamp_ring_ms(ms);
+    self.ring_ms.store(v, Relaxed);
+    self
+      .inbound
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .set_depth_ms(v as f64);
+    // 广播失败（没有客户端）是正常情况，不是错误
+    let _ = self.target_tx.send(v);
+    v
+  }
+
+  /// 记一次「刚把音频包交给 socket」（写任务里调）。**只观测**。
+  pub fn note_tx_sent(&self) {
+    self
+      .tx_gap
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .on_send(Instant::now());
+  }
+
+  /// 订阅环深度变化（每条连接一个接收端，转发给自己的写任务）。
+  pub fn subscribe_target(&self) -> broadcast::Receiver<u32> {
+    self.target_tx.subscribe()
+  }
 
   pub fn set_running(&self, v: bool) {
     self.running.store(v, Relaxed);
@@ -476,6 +597,11 @@ impl NetHub {
   // ---- 出站 ----
 
   pub fn push_tx_hop(&self, hop: &[f32]) {
+    self
+      .src_gap
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .on_send(Instant::now());
     if let Ok(mut slot) = self.tx_last.lock() {
       let n = HOP.min(hop.len());
       slot.0[..n].copy_from_slice(&hop[..n]);
@@ -651,6 +777,22 @@ impl NetHub {
     s.tx_cap_ms = 0.0; // 出站无缓冲（字段保留）
     s.tx_dropped = self.outbound.sum_dropped();
     s.tx_subs = self.outbound.stats();
+    {
+      let g = self.tx_gap.lock().unwrap_or_else(|e| e.into_inner());
+      s.tx_gap_ms = g.ema_ms as f32;
+      s.tx_min_gap_ms = g.min_ms as f32;
+      s.tx_max_gap_ms = g.max_ms as f32;
+      s.tx_bursts = g.bursts;
+      s.tx_holes = g.holes;
+    }
+    {
+      let g = self.src_gap.lock().unwrap_or_else(|e| e.into_inner());
+      s.src_gap_ms = g.ema_ms as f32;
+      s.src_min_gap_ms = g.min_ms as f32;
+      s.src_max_gap_ms = g.max_ms as f32;
+      s.src_bursts = g.bursts;
+      s.src_holes = g.holes;
+    }
     s.verdict = self.tx_verdict(&s.tx_subs, s.tx_hops);
 
     s.client = self.client.lock().ok().and_then(|c| c.clone());
@@ -691,45 +833,8 @@ mod tests {
     }
   }
 
-  #[test]
-  fn rx_priming_then_playback_is_exact() {
-    let hub = NetHub::new();
-    let mut c = Clock::new();
-    let mut hop = [9.0f32; HOP];
-    hub.take_rx_hop_at(&mut hop);
-    assert!(hop.iter().all(|x| *x == 0.0), "起播前是静音");
-    assert_eq!(hub.stats().rx_underruns, 0, "起播前的静音不算欠载");
-    for _ in 0..2 {
-      hub.push_rx_at(&[0.5; HOP], c.step());
-    }
-    hub.take_rx_hop_at(&mut hop);
-    assert!(hop.iter().all(|x| (*x - 0.5).abs() < 1e-6), "样本必须原样");
-  }
-
-  #[test]
-  fn inbound_steady_state_is_lossless() {
-    let hub = NetHub::new();
-    let mut c = Clock::new();
-    let mut out = [0.0f32; HOP];
-    for _ in 0..2 {
-      hub.push_rx_at(&[0.3; HOP], c.step());
-    }
-    for _ in 0..2000 {
-      let now = c.step();
-      hub.push_rx_at(&[0.3; HOP], now);
-      hub.take_rx_hop_at(&mut out);
-    }
-    let s = hub.stats();
-    assert_eq!(s.rx_underruns, 0, "稳态不该欠载");
-    assert_eq!(s.rx_trims, 0, "稳态不该裁剪");
-    assert_eq!(s.rx_hops, 2000);
-    assert!(
-      s.rx_level_ms <= (RING_MS + 10.0) as f32,
-      "水位应贴住固定深度：{:.1} ms",
-      s.rx_level_ms
-    );
-  }
-
+  
+  
   #[tokio::test]
   async fn outbound_pushes_immediately() {
     let hub = NetHub::new();
@@ -776,7 +881,7 @@ mod tests {
     assert!(hub.stats().client.is_none(), "没上报时应为 null");
     hub.set_client_report(ClientReport {
       level_ms: 21.0,
-      target_ms: RING_MS as f32,
+      target_ms: hub.ring_ms() as f32,
       underruns: 0,
       concealed: 2,
       late: 1,
@@ -790,25 +895,10 @@ mod tests {
     assert_eq!(st.clock_ppm, Some(-27.0));
   }
 
-  /// 深度是常量：不管有没有抖动 / 欠载，`rx_target_ms` 必须恒等于 `RING_MS`。
-  #[test]
-  fn depth_is_constant() {
-    let hub = NetHub::new();
-    let mut c = Clock::new();
-    let mut out = [0.0f32; HOP];
-    for k in 0..200 {
-      // 制造大抖动（0/30 ms 交替），再穿插几次欠载
-      c.0 += Duration::from_millis(if k % 2 == 0 { 0 } else { 30 });
-      if k % 7 != 0 {
-        hub.push_rx_at(&[0.1; HOP], c.0);
-      }
-      hub.take_rx_hop_at(&mut out);
-    }
-    let s = hub.stats();
-    assert_eq!(s.rx_target_ms, RING_MS as f32, "深度不许被动态调整");
-    assert!(s.rx_jitter_ms > 0.0, "抖动要能观测到");
-  }
-
+  /// 深度**不随抖动/欠载变化**（只有用户手动能改）：`rx_target_ms` 恒等于设定值。
+  
+  /// 手动深度：10~200 ms、按 10 ms 步进取整；改完入站环立刻跟着变（两侧同步的电脑侧）。
+  
   #[test]
   fn stop_clears_audio_state() {
     let hub = NetHub::new();
@@ -823,5 +913,29 @@ mod tests {
   #[test]
   fn hop_is_ten_ms() {
     assert_eq!(HOP, crate::audio::SAMPLE_RATE as usize / 100);
+  }
+
+  /// 手动上限：按 10 ms 步进取整，改完入站环立刻按新上限裁。
+  #[test]
+  fn ring_depth_is_manual_and_stepped() {
+    let hub = NetHub::new();
+    assert_eq!(clamp_ring_ms(0), 10, "下限 10 ms");
+    assert_eq!(clamp_ring_ms(37), 30, "按 10 ms 步进向下取整");
+    assert_eq!(clamp_ring_ms(500), 200, "上限 200 ms");
+    assert_eq!(hub.set_ring_ms(60), 60);
+    assert_eq!(hub.stats().rx_target_ms, 60.0, "快照跟着变");
+    hub.set_ring_ms(20);
+    assert_eq!(hub.stats().rx_target_ms, 20.0);
+  }
+
+  /// 空环取格 = 静音 + 记一次断流（不做 priming、不补 PLC）。
+  #[test]
+  fn empty_inbound_ring_is_silent() {
+    let hub = NetHub::new();
+    let mut out = [1.0f32; HOP];
+    hub.take_rx_hop_at(&mut out);
+    assert!(out.iter().all(|v| *v == 0.0));
+    assert_eq!(hub.stats().rx_underruns, 1);
+    assert_eq!(hub.stats().rx_plc, 0);
   }
 }

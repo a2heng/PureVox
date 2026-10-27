@@ -95,6 +95,10 @@ pub enum ClientMsg {
     #[serde(default)]
     one_way_ms: Option<f64>,
   },
+  /// 改接收方播放环深度（ms）。**任一侧都能改**：服务端落盘后广播 `target` 给所有客户端，
+  /// 包括发起方自己（这样两端 UI 与环永远同一个值，不用各自猜）。
+  #[serde(rename = "settarget")]
+  SetTarget { ms: u32 },
   /// 对服务端 `sync` 的应答（NTP 四时戳）。三个时间戳都是**客户端时钟的 µs**（t0 原样带回）。
   #[serde(rename = "syncreply")]
   SyncReply { id: u64, t0: u32, t1: u32, t2: u32 },
@@ -115,8 +119,8 @@ pub enum ServerMsg {
     frame_ms: u32,
     /// 音频帧头长度（字节）。客户端按它切 Opus 载荷（v3 = 8）。
     header_bytes: u32,
-    /// 客户端播放环的**固定深度**（ms）。缓冲只在接收方，深度是常量：
-    /// 由服务端下发同一个值，避免两端各拍一个数字。
+    /// 客户端播放环深度（ms）。缓冲只在接收方，深度是**同一个值**：
+    /// 由服务端下发，避免两端各拍一个数字（可手动调，见 [`ClientMsg::SetTarget`]）。
     target_ms: u32,
     clients: usize,
   },
@@ -128,6 +132,9 @@ pub enum ServerMsg {
   /// 服务端算出的时钟偏移（客户端 − 服务端，µs），客户端用它算下行单向延迟。
   #[serde(rename = "offset")]
   Offset { us: i64 },
+  /// 环深度变了（手动调整，两侧同步）。收到就按这个值改自己的环与界面。
+  #[serde(rename = "target")]
+  Target { ms: u32 },
   #[serde(rename = "err")]
   Err { msg: String },
 }

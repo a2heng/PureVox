@@ -106,6 +106,28 @@ def find_nm(ndk: Path) -> Path:
     return hit
 
 
+def max_load_align(path: Path) -> int:
+    """读 ELF64 程序头，返回所有 PT_LOAD 的 p_align 最大值（纯标准库，不需要 NDK）。
+
+    16 KB 页：`0x4000`。4 KB 页：`0x1000`（Android 15+ 的设备上会装不上）。
+    """
+    raw = path.read_bytes()
+    if raw[:4] != b"ELF" or raw[4] != 2:  # ELF64
+        raise SystemExit(f"{path} 不是 ELF64")
+    e_phoff = int.from_bytes(raw[0x20:0x28], "little")
+    e_phentsize = int.from_bytes(raw[0x36:0x38], "little")
+    e_phnum = int.from_bytes(raw[0x38:0x3A], "little")
+    best = 0
+    for i in range(e_phnum):
+        off = e_phoff + i * e_phentsize
+        p_type = int.from_bytes(raw[off:off + 4], "little")
+        if p_type != 1:  # PT_LOAD
+            continue
+        align = int.from_bytes(raw[off + 0x30:off + 0x38], "little")
+        best = max(best, align)
+    return best
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="重建 Android 的 libopus.a 与 libpvopus.so")
     ap.add_argument("version", nargs="?", default=DEFAULT_OPUS_VERSION,
@@ -154,8 +176,14 @@ def main() -> int:
                 run([curl, "-fL", "--retry", "3", "-o", tar, url])
             else:
                 run(["wget", "-O", tar, url])
-            tar_bin = shutil.which("tar") or "tar"
-            run([tar_bin, "xzf", tar, "-C", tmp])
+            # **用标准库解包**，不要 shell 出去调 tar：
+            # Git for Windows 的 GNU tar 把 `C:\…` 当远程主机（"Cannot connect to C"），
+            # 加 `--force-local` 又和「选项簇必须在第一个参数」的规则打架；Windows 自带的
+            # bsdtar 不认那个开关。tarfile 三个平台一个行为，没有这些坑。
+            import tarfile
+
+            with tarfile.open(tar, "r:gz") as tf:
+                tf.extractall(tmp, filter="data")
         # 发版包里没有 .git，libopus 的 CMake 会退回到 package_version 文件（已验证可用）
         if not src_dir.is_dir():
             raise SystemExit(f"源码解压后没找到 {src_dir}")
@@ -194,6 +222,9 @@ def main() -> int:
              f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
              "-DANDROID_ABI=arm64-v8a",
              "-DANDROID_PLATFORM=android-24",
+             # Android 15+ 要求原生库按 16 KB 页对齐（NDK 的这个开关会带上
+             # -Wl,-z,max-page-size=16384；CMakeLists 里也显式写了，双保险）
+             "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
              "-DCMAKE_BUILD_TYPE=Release",
              "-S", cpp_dir, "-B", jni_build])
         run([cmake, "--build", jni_build])
@@ -203,6 +234,16 @@ def main() -> int:
         jni_dir.mkdir(parents=True, exist_ok=True)
         so = jni_dir / "libpvopus.so"
         shutil.copy2(jni_build / "libpvopus.so", so)
+
+        # **16 KB 页对齐**：读 ELF 的 PT_LOAD，p_align 必须 >= 0x4000。
+        # 这一条错了不会在编译期报，只会在 16 KB 页的机器上装不上（或起不来），所以当门禁看。
+        align = max_load_align(so)
+        if align < 0x4000:
+            raise SystemExit(
+                f"{so.name} 的 PT_LOAD 对齐只有 0x{align:x}（要求 >= 0x4000 = 16 KB）。"
+                "检查 CMakeLists 的 -Wl,-z,max-page-size=16384。"
+            )
+        print(f"  16 KB 对齐：p_align=0x{align:x} ✓")
 
         # 必须只导出 JNI 入口：libopus 的 C 符号漏出去会污染 .so 的符号表（更大，
         # 还可能与 app 里的同名符号撞车），所以这一条要当门禁看，不是「看一眼」。

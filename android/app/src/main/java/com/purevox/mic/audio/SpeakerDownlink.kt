@@ -75,10 +75,12 @@ class SpeakerDownlink(
 
         /** AudioTrack 底层缓冲：**20 ms**（2 格）。它只吸收写线程调度，不是 jitter buffer。 */
         private const val TRACK_MS = 20
-
         /** 起播前的最低水位（ms）：到这就开声，不等「目标水位」，起播更快。 */
         private const val START_MS = 15.0
         private const val START_WAIT_MS = 500L
+
+        /** 接缝阈值：1 kHz @ -20 dBFS 的正常样本差 ≈ 0.013，取 0.05（约 4 倍）当「跳变」。 */
+        private const val SPLICE_DELTA = 0.05f
     }
 
     private var track: AudioTrack? = null
@@ -124,18 +126,45 @@ class SpeakerDownlink(
     var clockPpm: Double = Double.NaN
         private set
 
+    /**
+     * 改**实时性上限**（ms，手动、两侧同步、1 帧 = 10 ms）。**不重建 AudioTrack**：
+     * 只是阈值变了，下一拍就按新上限丢最旧的（拖滑块时听不出打断）。
+     */
+    fun setTargetMs(ms: Double) {
+        ring.setMaxMs(ms)
+        Log.i(TAG, "实时性上限 → ${ring.targetMs().toInt()} ms")
+    }
+
     val levelMs: Double get() = ring.levelMs()
     val targetMs: Double get() = ring.targetMs()
-    val jitterMs: Double get() = ring.jitterMs()
-    val worstJitterMs: Double get() = ring.worstJitterMs()
-    val maxGapMs: Double get() = ring.maxGapMs()
+
+    /** 抖动 / 最坏抖动：极简策略不再统计（保留字段，界面与诊断结构不变）。 */
+    val jitterMs: Double get() = Double.NaN
+    val worstJitterMs: Double get() = Double.NaN
+    val maxGapMs: Double get() = ring.maxGapMs
+
+    /** 到达间隔超过实时性上限的次数（这些拍一定听得出）。 */
+    val gapOverRing: Long get() = if (ring.maxGapMs > ring.maxMs) 1L else 0L
     val underruns: Long get() = ring.underruns
-    val plc: Long get() = ring.plc
+    val plc: Long get() = 0L
     val trims: Long get() = ring.trims
     val late: Long get() = ring.late
     val dropped: Long get() = ring.dropped
-    /** Opus 解码器的 PLC 次数（与 [plc] 同源，这里直接读解码器以涵盖「服务端补的帧」） */
-    val concealed: Long get() = decoder?.concealed ?: 0L
+
+    /** 收到的包数（解码线程计数，和 [hops] 一起就能算出「包是否都对上了格」）。 */
+    val packets: Long get() = ring.packets
+
+    /** 从环里取出的 hop 数（正常 = 100/s）。 */
+    val hops: Long get() = ring.hops
+
+    /** 掩盖次数：极简策略不再补帧（断流直接静音），恒为 0。 */
+    val concealed: Long get() = 0L
+
+    /** 「接缝」计数：极简策略下**恒为 0**（不做任何拼接/补帧，字段保留给界面结构）。 */
+    val splicedHops: Long get() = 0L
+
+    /** 观测到的最大相邻样本跳变（同上，极简策略下不再统计）。 */
+    val maxSampleDelta: Float get() = 0f
 
     /** AudioTrack 自己的欠载次数（与环的欠载是两件事）。 */
     val deviceUnderruns: Int
@@ -153,6 +182,24 @@ class SpeakerDownlink(
             0
         }
 
+    /** AudioTrack 实际使用的采样率（设备可能不是 48 kHz，框架会重采样；诊断要看得到）。 */
+    val trackSampleRate: Int
+        get() = try {
+            track?.sampleRate ?: 0
+        } catch (e: Throwable) {
+            0
+        }
+
+    /** 我们申请的底层缓冲（ms）。实际值见 [trackBufferMs] —— 两个都要能看到。 */
+    @Volatile
+    var bufferRequestedMs: Int = 0
+        private set
+
+    /** 是否拿到了低延迟快通路（`PERFORMANCE_MODE_LOW_LATENCY` 被系统接受）。 */
+    @Volatile
+    var lowLatencyPath: Boolean = false
+        private set
+
     // ---------------------------------------------------------------- 生命周期
 
     /** 成功返回 true；失败时 [lastError] 有原因。 */
@@ -161,7 +208,7 @@ class SpeakerDownlink(
         lastError = null
         val dec = OpusDecoder()
         val name = try {
-            dec.start { pcm, n -> ring.push(pcm, n, System.nanoTime()) }
+            dec.start { pcm, n, plc -> ring.push(pcm, n, System.nanoTime(), plc) }
         } catch (e: Throwable) {
             lastError = e.message ?: "Opus 解码器不可用"
             Log.e(TAG, "解码器启动失败", e)
@@ -185,7 +232,11 @@ class SpeakerDownlink(
             it.isDaemon = true
             it.start()
         }
-        Log.i(TAG, "下行播放启动：$name（环目标 ${targetMs.toInt()} ms，底层 ${trackBufferMs} ms）")
+        Log.i(
+            TAG,
+            "下行播放启动：$name（环目标 ${targetMs.toInt()} ms，底层 $trackBufferMs ms，" +
+                "共 ${trackBufferMs + targetMs.toInt()} ms 缓冲）",
+        )
         return true
     }
 
@@ -278,9 +329,24 @@ class SpeakerDownlink(
                 }
                 val at = builder.build()
                 if (at.state == AudioTrack.STATE_INITIALIZED) {
+                    // 申请值 ≠ 实际值：设备侧的最小缓冲常常远大于我们要的 20 ms
+                    // （本机实测 128 ms —— 那等于把抖动缓冲变成 128 ms，延迟白涨、环被抽干）。
+                    // `setBufferSizeInFrames` 可以在**已分配**的缓冲里再收紧一次，收到硬件允许
+                    // 的最小值为止；收不下去就把实际值报出去（诊断里一眼看见，不用猜）。
+                    val allocated = at.bufferSizeInFrames
+                    val want = HOP * 2 // 20 ms
+                    val effective = try {
+                        at.setBufferSizeInFrames(want).coerceAtLeast(want)
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "setBufferSizeInFrames 失败", e)
+                        allocated
+                    }
+                    bufferRequestedMs = TRACK_MS
+                    lowLatencyPath = lowLatency
                     Log.i(
                         TAG,
-                        "AudioTrack：${if (lowLatency) "低延迟" else "普通"} · 申请 ${bytes * 1000 / (SR * 4 * CHANNELS)} ms",
+                        "${if (lowLatency) "低延迟" else "普通"} · 分配 ${allocated * 1000 / SR} ms" +
+                            " → 实际 ${effective * 1000 / SR} ms（申请 $TRACK_MS ms）",
                     )
                     return at
                 }
@@ -315,25 +381,56 @@ class SpeakerDownlink(
             return
         }
 
+        // 先把 AudioTrack 自己的底层缓冲**灌满静音**，再进 10 ms 取数循环。
+        //
+        // 不灌会怎样（2026-10-27 实测，就是「1 kHz 和系统声音都吞吞吐吐」的根因）：
+        // `play()` 之后底层缓冲是空的，头两格写入把环里的 20 ms **一次性抽进底层缓冲**，
+        // 环立刻稳定在 0 —— 之后每个包都落在空环上（`late` 每包 +1）、每一拍都补 PLC
+        // （`underruns` 与 `concealed` 同步涨），听感就是规律的断续；而 `/debug` 里
+        // `level_ms` 稳定显示 0，看着像「环没工作」。
+        // 灌满之后：底层缓冲（设备侧垫层）+ 环（网络抖动垫层）各就各位，环停在 20 ms，
+        // 与 DESIGN §4.1.5 的预算（环 20 + AudioTrack 20）一致。
+        val prefillFrames = try {
+            at.bufferSizeInFrames
+        } catch (e: Throwable) {
+            0
+        }
+        if (prefillFrames > 0) {
+            if (!writeFully(at, FloatArray(prefillFrames * CHANNELS))) return
+        }
+
         var lastHead = -1L
         var lastHeadNs = 0L
         var lastPeak = 0L
+        // 接缝检测用：上一格最后一个样本
+        var prevSample = 0f
+        var started = false
         while (running) {
             val real = ring.pull(mono, HOP)
             var pk = 0f
+            var maxDelta = 0f
             for (i in 0 until HOP) {
                 val v = mono[i]
                 out[i * 2] = v
                 out[i * 2 + 1] = v
                 val a = if (v < 0f) -v else v
                 if (a > pk) pk = a
+                // 相邻样本跳变（含**跨格接缝**：上一格末样本 → 本格首样本）
+                val ref = if (i == 0) prevSample else mono[i - 1]
+                val d = if (v > ref) v - ref else ref - v
+                if (d > maxDelta) maxDelta = d
             }
+            prevSample = mono[HOP - 1]
             peak = pk
+            // 极简策略：不做补帧/拼接，所以没有「接缝」可统计（`real` 只用于电平判断）
+            if (!real && pk > 0.5f) peak = 0f
             if (!writeFully(at, out)) return
 
             // 时钟偏差：硬件播放头的增量 vs nanoTime 增量（每 ~1 s 更新一次）
             val now = System.nanoTime()
-            if (now - lastPeak > 500_000_000L) {
+            // 2 s 窗口：`getPlaybackHeadPosition` 是**分块**推进的，500 ms 窗口里
+            // 那点量化误差会算出 ±700 ppm 这种不可能的晶振差（实测），拉长到 2 s 才稳。
+            if (now - lastPeak > 2_000_000_000L) {
                 lastPeak = now
                 val head = try {
                     at.playbackHeadPosition.toLong() and 0xFFFF_FFFFL
@@ -351,28 +448,6 @@ class SpeakerDownlink(
                     }
                     lastHead = head
                     lastHeadNs = now
-                }
-            }
-            if (!real) {
-                // 欠载：让 libopus 补一帧（PLC 保持时间轴连续，比静音自然），
-                // 下一拍就真的从环里取到它（README/DESIGN §4.1.4）
-                val dec = decoder
-                if (dec != null) {
-                    synchronized(decLock) {
-                        try {
-                            dec.plc()
-                            ring.notePlc()
-                        } catch (e: Throwable) {
-                            Log.w(TAG, "PLC 异常", e)
-                        }
-                    }
-                }
-                if (ring.levelMs() < 1.0) {
-                    try {
-                        Thread.sleep(1) // 一直没数据：让出 CPU，别空转
-                    } catch (e: InterruptedException) {
-                        return
-                    }
                 }
             }
         }

@@ -21,6 +21,7 @@
 //! [`DebugHub::snapshot`] 返回的同一个 [`DebugSnapshot`]，禁止另算一套。
 
 pub mod events;
+pub mod stall;
 pub mod http;
 pub mod metrics;
 pub mod system;

@@ -107,6 +107,8 @@ windows = { version = "0.62", features = [
   "Win32_System_Performance",
   "Win32_System_ProcessStatus",
   "Win32_System_Threading",
+  # 调试读数：GetSystemTimeAdjustment（系统时钟中断粒度）
+  "Win32_System_SystemInformation",
   "Win32_System_Registry",
   # 启动/停止：全局快捷键 + 提示音
   "Win32_UI_WindowsAndMessaging",

@@ -54,6 +54,8 @@
   let addrIp = ''
   /** 服务端口（端口框要显示它） */
   let addrPort = 59123
+  /** 接收方播放环深度（ms，手动可调；滑块显示它） */
+  let ringTarget = 20
   /** 可选网卡列表（子网下拉的选项）。`[]` = 不支持枚举或一张都没有。 */
   /** @type {{ip: string, name: string, desc: string, is_default: boolean}[]} */
   let ifaces = []
@@ -67,6 +69,15 @@
   /** 本次挂载里建过的卡片，重绘时统一收摊 */
   /** @type {Set<{el: HTMLElement, paint: () => void}>} */
   const cards = new Set()
+  /**
+   * 环深度滑块的「回绘」回调（每张网络卡一份）。
+   *
+   * **必须单独收集**：`cards` 里的 `paint` 是整张卡的数据回绘，而滑块的值来自
+   * `net_ring_ms`（单独一次 IPC），手机那边拖动后电脑要跟着动，就得在 `poll()` 里
+   * 再刷一遍滑块 —— 只在建卡时画一次的话，手机上改了这边界面纹丝不动（实测 2026-10-27）。
+   * @type {Set<() => void>}
+   */
+  const ringPainters = new Set()
   /** @type {number|null} */
   let timer = null
 
@@ -78,12 +89,14 @@
     let ok = false
     let text = ''
     try {
-      const [s, a, run, ifs] = await Promise.all([
+      const [s, a, run, ifs, ring] = await Promise.all([
         invoke('net_status'),
         invoke('net_local_addr'),
         invoke('net_running'),
         invoke('net_ifaces'),
+        invoke('net_ring_ms'),
       ])
+      if (Number.isFinite(Number(ring))) ringTarget = Number(ring)
       ok = true
       text = String(s)
       addrUrl = a && a.url ? String(a.url) : ''
@@ -104,6 +117,9 @@
       if (c.el.isConnected) c.paint()
       else cards.delete(c)
     }
+    // 环深度可能在**别的客户端**被改过（手机滑块 / 另一台电脑）：每轮都回绘一次。
+    // 只在建卡时画一次的话，手机上改了这边界面纹丝不动（实测 2026-10-27）。
+    for (const f of ringPainters) f()
   }
 
   /** @param {HTMLButtonElement} b @param {string} label */
@@ -361,7 +377,82 @@
           poll()
         })
     })
-    netBox.appendChild(portIn)
+    // 4) 端口：**单独一行**，右边常驻一行「是否被占用」的结论（不静默）。
+    //    原来把它塞在「网卡」那一行里，标签被裁成「端口」两个字、还有一半看不见。
+    const portRow = document.createElement('div')
+    portRow.className = 'netcard-addr'
+    portRow.appendChild(nl(T('端口')))
+    portRow.appendChild(portIn)
+    const portHint = document.createElement('span')
+    portHint.className = 'netcard-port-hint'
+    portRow.appendChild(portHint)
+    // 只由网卡/端口那一行承载：
+
+
+    // 2c) 抖动缓冲深度（**手动**滑块，10~200 ms、10 ms 步进）。
+    //     「缓冲只在接收方」是设计不变量，所以这个值由手机执行、电脑只负责设定与显示；
+    //     手机那侧也有同一个滑块，谁改了另一边跟着变（协议 `settarget` ↔ `target`）。
+    //     这不是自适应：值只由用户拧，运行期不会因为抖动自己动。
+    const ringWrap = document.createElement('div')
+    ringWrap.className = 'netcard-ring'
+    const ringLabel = document.createElement('div')
+    ringLabel.className = 'netcard-ring-label'
+    const ringIn = document.createElement('input')
+    ringIn.type = 'range'
+    ringIn.min = '10'
+    ringIn.max = '200'
+    ringIn.step = '10'
+    ringIn.className = 'netcard-ring-range'
+    const ringVal = document.createElement('span')
+    ringVal.className = 'netcard-ring-val mono'
+    const ringMs = () => ringTarget
+    /** 用户正在拖滑块（拖动期间不许回绘把它拽回去）。**必须在 `paintRing` 之前声明**：
+     *  它在下面第一次 `paintRing()` 里被读，声明在后面的 `let` 会直接 TDZ 抛错，
+     *  整张卡都建不出来（2026-10-27 实测：`Cannot access 'ringDragging' before initialization`，
+     *  结果是整个列区空白）。 */
+    let ringDragging = false
+    const paintRing = (ms) => {
+      ringLabel.textContent = T('抖动缓冲（手机缓冲帧数，1 帧 = 10 ms）')
+      // 用户正在拖：别把滑块拽回去（读数照旧跟着手指）
+      if (ringDragging) return
+      ringIn.value = String(ms)
+      ringVal.textContent = T('{f} 帧 / {ms} ms', { f: String(ms / 10), ms: String(ms) })
+    }
+    paintRing(ringMs())
+    ringPainters.add(() => {
+      if (ringWrap.isConnected) paintRing(ringMs())
+    })
+
+    // 拖动时只更新读数；抬手才下发（避免每 10 ms 打一次 IPC 把命令队列灌满）
+    ringIn.addEventListener('pointerdown', () => {
+      ringDragging = true
+    })
+    ringIn.addEventListener('pointerup', () => {
+      ringDragging = false
+    })
+    ringIn.addEventListener('input', () => {
+      ringVal.textContent = T('{f} 帧 / {ms} ms', {
+        f: String(Number(ringIn.value) / 10),
+        ms: String(Number(ringIn.value)),
+      })
+    })
+    ringIn.addEventListener('change', () => {
+      const ms = Number(ringIn.value)
+      invoke('net_set_ring_ms', { ms })
+        .then((applied) => {
+          paintRing(Number(applied) || ms)
+          toast(T('抖动缓冲已改为 {ms} ms', { ms: String(applied) }), 'ok', 3000)
+        })
+        .catch((e) => {
+          paintRing(ringMs())
+          toast(T('改抖动缓冲失败：') + String(e), 'error', 6000)
+        })
+    })
+    ringWrap.appendChild(ringLabel)
+    ringWrap.appendChild(ringIn)
+    ringWrap.appendChild(ringVal)
+    netBox.appendChild(ringWrap)
+
     box.appendChild(netBox)
 
     // 3) 装 CA 证书的按钮。网页版的麦克风靠 `getUserMedia`，它只在**安全上下文**里可用，
@@ -501,6 +592,11 @@
       if (document.activeElement !== portIn && portIn.value !== String(addrPort)) {
         portIn.value = String(addrPort)
       }
+      // 端口是否被占用：从状态串里读（失败原因是唯一事实来源，不另猜）
+      const st = (lastStatus && lastStatus.text) || ''
+      const busy = /占用|in use|Address already/i.test(st)
+      portHint.textContent = busy ? T('端口被占用') : running ? T('监听中') : ''
+      portHint.className = 'netcard-port-hint ' + (busy ? 'bad' : 'ok')
       drawQr(qrBox)
     }
 
@@ -516,7 +612,8 @@
     aecCb.type = 'checkbox'
     aecCb.checked = row.params.aec === '1'
     aecHead.append(aecCb, document.createTextNode(T('AEC 消除回声')))
-    box.appendChild(aecHead)
+    // **只有网络输入行**才有 AEC（输出行没有「近端麦克风」这个概念）
+    if (!out) box.appendChild(aecHead)
 
     aecCb.addEventListener('change', () => {
       row.params.aec = aecCb.checked ? '1' : '0'
@@ -539,18 +636,32 @@
     near.appendChild(nl(T('远端')))
     const farSel = document.createElement('select')
     farSel.className = 'netcard-sel'
-    const farOpts = [
-      ['loopback', T('系统默认输出')],
-      ['network', T('网络出站（本机刚发出的音频）')],
-    ]
-    farSel.append(...farOpts.map(([v, t]) => {
-      const o = document.createElement('option')
-      o.value = v
-      o.textContent = t
-      return o
-    }))
-    if (!row.params.far_device) row.params.far_device = 'loopback'
-    farSel.value = row.params.far_device
+    // 远端来源与**独立 AEC 行**同一份列表（`list_loopback_targets`：系统默认输出 +
+    // 每只输出设备的回环），另外多一项「网络出站」—— 那是网络行独有的参考源。
+    // 先填两个保底项，枚举回来再补：枚举要碰 cpal / pactl，慢一点不能挡住首屏。
+    const fillFar = (targets) => {
+      const keep = farSel.value
+      farSel.textContent = ''
+      const opts = [['loopback', T('系统默认输出')],
+                    ['network', T('网络出站（本机刚发出的音频）')]]
+      for (const t of targets || []) {
+        const id = t && (t.id || t.device || t.name)
+        if (!id || id === 'loopback') continue
+        opts.push([id, t.name || t.label || String(id)])
+      }
+      for (const [v, t] of opts) {
+        const o = document.createElement('option')
+        o.value = v
+        o.textContent = t
+        farSel.appendChild(o)
+      }
+      if (!row.params.far_device) row.params.far_device = 'loopback'
+      farSel.value = keep && [...farSel.options].some((o) => o.value === keep)
+        ? keep
+        : row.params.far_device || 'loopback'
+    }
+    fillFar(null)
+    invoke('list_loopback_targets').then(fillFar).catch(() => {})
     farSel.addEventListener('change', () => {
       row.params.far_device = farSel.value
       if (typeof apply === 'function') apply()
@@ -560,51 +671,74 @@
 
     const gains = document.createElement('div')
     gains.className = 'netcard-far'
-    gains.appendChild(nl(T('近端增益')))
-    gains.appendChild(netNum(row, 'mic_gain_db', -40, 40, 1, apply))
-    gains.appendChild(nl(T('远端增益')))
-    gains.appendChild(netNum(row, 'far_gain_db', -40, 40, 1, apply))
-    gains.appendChild(nl(T('延时')))
-    gains.appendChild(netNum(row, 'far_delay_ms', -1000, 1000, 10, apply))
-    const byp = document.createElement('label')
-    byp.className = 'en'
-    const bcb = document.createElement('input')
-    bcb.type = 'checkbox'
-    bcb.checked = row.params.bypass === '1' || row.params.bypass === 'true'
-    bcb.addEventListener('change', () => {
-      row.params.bypass = bcb.checked ? '1' : '0'
-      if (typeof apply === 'function') apply()
-    })
-    byp.append(bcb, document.createTextNode(T('直通')))
-    gains.appendChild(byp)
+    // **与独立 `echo_cancel` 行完全同一份控件**：直接调 `columns.js` 的渲染器，
+    // 用一个 ptype=echo_cancel 的代理行、`params` 指向本行 —— 于是模型下拉、远端设备、
+    // 近端/远端增益滑块、直通、有符号远端延时，逐项同构，范围/步进/单位都一致。
+    // 复制一套到自己这里就是漂移的根源（模型缺项、范围不一致都是这么来的）。
+    const aecProxy = { ptype: 'echo_cancel', params: row.params }
+    gains.appendChild(
+      window.__pvParams
+        ? window.__pvParams.controls(aecProxy, _ci, _ri)
+        : document.createTextNode(T('参数控件未就绪')),
+    )
+    // 校准：与独立行**同一个面板**（`calib.js`），结果展示也就自然一致
     const cal = document.createElement('button')
     cal.type = 'button'
     cal.textContent = T('校准')
-    cal.title = T('送扫频探针：测延时并自动配平近端 / 远端')
+    cal.title = T('向远端送扫频探针，测出延时与两端电平并回填')
     cal.addEventListener('click', () => {
       cal.disabled = true
-      cal.textContent = T('校准中')
       invoke('calibrate_aec_delay')
-        .then((t) => window.__pvDebug?.(T('开始校准：') + String(t)))
+        .then((t) => window.__pvDebug?.('开始校准：' + t))
         .catch((e) => {
-          window.__pvDebug?.(T('校准失败：') + String(e))
+          window.__pvToast?.(T('校准失败：') + String(e), 'error', 7000)
           cal.disabled = false
-          cal.textContent = T('校准')
+        })
+        .finally(() => {
+          window.setTimeout(() => {
+            cal.disabled = false
+          }, 1500)
         })
     })
     gains.appendChild(cal)
+
     aecBox.appendChild(gains)
 
     const aecHelp = document.createElement('p')
     aecHelp.className = 'netcard-help'
     aecHelp.textContent = T('勾上后这台网络的麦克风会先过 AEC：远端取哪一路由上面选。近端永远是这张卡的网络输入，不能改。')
     aecBox.appendChild(aecHelp)
-    box.appendChild(aecBox)
+    if (!out) box.appendChild(aecBox)
 
     /** 按勾选状态显隐 AEC 控件（勾上才有意义，不勾时占地方也没信息） */
     const syncAec = () => { aecBox.classList.toggle('on', aecCb.checked) }
     aecCb.addEventListener('change', syncAec)
     syncAec()
+
+    /*
+     * 八行顺序（用户 2026-10-27 指定，两张卡完全一致，只有第 8 行是输入行独有）：
+     *   1) 启动/停止/重启 + 状态
+     *   2) 网卡
+     *   3) 客户端地址（IP:端口 + 复制）
+     *   4) 端口 + 是否被占用
+     *   5) 抖动缓冲（帧 = 10 ms）
+     *   6) 二维码 + 右侧说明
+     *   7) 远程输入
+     *   8) AEC（**仅输入**）
+     * 用 appendChild 重排既有节点：节点只会被「移动」，不会重建，监听器全都保留。
+     */
+    box.appendChild(bar)
+    box.appendChild(netBox)
+    box.appendChild(addrBox)
+    box.appendChild(portRow)
+    box.appendChild(ringWrap)
+    box.appendChild(qrBox)
+    box.appendChild(ri)
+    if (!out) {
+      box.appendChild(aecHead)
+      box.appendChild(aecBox)
+    }
+    box.appendChild(caBtn)
 
     elRow.appendChild(box)
     cards.add({ el: elRow, paint })
@@ -616,6 +750,7 @@
   /** 重绘整张计划前调用（`columns.js` 的 render 会重建 DOM） */
   function reset() {
     cards.clear()
+    ringPainters.clear()
     if (timer !== null) {
       window.clearInterval(timer)
       timer = null

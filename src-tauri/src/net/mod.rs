@@ -103,6 +103,14 @@ pub fn start() -> Result<String, String> {
           let Ok((tcp, _peer)) = listener.accept().await else {
             continue;
           };
+          // **必须关 Nagle**：音频是每 10 ms 一个 ~40 字节的小包，Nagle 会「等上一个包
+          // 被 ACK 再发」，把它们攒成 40~60 ms 一批。实测症状：手机侧 RTT 恒 57 ms、
+          // 最大到达间隔 154 ms、一批 2~4 个包同时到 → 20 ms 的环冲爆（`trims` 9.5/s）
+          // 又饿死（补 PLC 3.9/s），听感就是「一直在抖」。
+          // 手机端（OkHttp）早已 `TCP_NODELAY`，这里是**服务端漏掉的那一半**。
+          if let Err(e) = tcp.set_nodelay(true) {
+            hh.set_last_error(format!("设置 TCP_NODELAY 失败：{e}"));
+          }
           let acceptor = acceptor.clone();
           let app = app.clone();
           let hh = hh.clone();
@@ -184,9 +192,24 @@ pub fn restart() -> Result<String, String> {
 /// 启动时把上次选定的端口读进 hub。**必须在第一次 `start()` 之前调**，
 /// 否则用户填的端口每次启动都白填（hub 默认 59123）。
 pub fn load_settings() {
-  let p = crate::config::load_settings().net_port;
-  if p != 0 {
-    hub().set_port(p);
+  let s = crate::config::load_settings();
+  if s.net_port != 0 {
+    hub().set_port(s.net_port);
+  }
+  // 环深度也要读回：用户调过 60 ms，重启后回到 20 会让人以为设置丢了
+  hub().set_ring_ms(s.net_ring_ms);
+}
+
+/// 记下新的环深度并落盘（**不重启服务**：环在两侧运行期直接生效）。
+///
+/// 三条入口共用这一处：手机 `settarget`、网页命令、`load_settings` 读回 ——
+/// 免得「界面上是 60，落盘是 20」这种对不上的情况。
+pub fn set_ring_ms(ms: u32) {
+  let applied = hub().set_ring_ms(ms);
+  let mut s = crate::config::load_settings();
+  if s.net_ring_ms != applied {
+    s.net_ring_ms = applied;
+    let _ = crate::config::save_settings(&s);
   }
 }
 

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!--
+  品牌「P」——**与桌面/安卓图标同一份定义**（`tools/automation/gen_icons.py` 的 `P_BOXES`）：
+  512 画布上四个直角盒子，描边 = 每个盒子向外扩 30（方形外扩，不是圆角化），
+  右上角 1px 错位是像素风刻意的（别「顺手对齐」）。
+
+  这里只是把同一组坐标写成 vector：先画 4 个外扩盒子的深蓝描边（相邻的自然合并），
+  再用浅蓝压本体。viewport 收紧到 P 的包围盒（332×495），用在头图里不用额外留白。
+
+  **改颜色只改下面两个 fillColor**，形状必须和图标脚本一致，否则应用里的 P 和桌面图标
+  会变成两个不同的标记。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="34dp"
+    android:height="51dp"
+    android:viewportWidth="332"
+    android:viewportHeight="495">
+
+    <!-- 坐标原点平移到 P 的包围盒 (90,24) -->
+    <group android:translateX="-90" android:translateY="-24">
+
+        <!-- ① 描边：每个盒子向外扩 30 -->
+        <path
+            android:fillColor="#0F2350"
+            android:pathData="M90,24 H367 V138 H90 Z" />
+        <path
+            android:fillColor="#0F2350"
+            android:pathData="M90,24 H204 V519 H90 Z" />
+        <path
+            android:fillColor="#0F2350"
+            android:pathData="M308,79 H422 V301 H308 Z" />
+        <path
+            android:fillColor="#0F2350"
+            android:pathData="M90,242 H367 V356 H90 Z" />
+
+        <!-- ② 本体：四个盒子原尺寸（覆盖描边内部，剩下的就是边） -->
+        <path
+            android:fillColor="#64B4FF"
+            android:pathData="M120,54 H337 V108 H120 Z" />
+        <path
+            android:fillColor="#64B4FF"
+            android:pathData="M120,54 H174 V489 H120 Z" />
+        <path
+            android:fillColor="#64B4FF"
+            android:pathData="M338,109 H392 V271 H338 Z" />
+        <path
+            android:fillColor="#64B4FF"
+            android:pathData="M120,272 H337 V326 H120 Z" />
+    </group>
+</vector>

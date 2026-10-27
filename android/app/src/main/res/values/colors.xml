@@ -24,9 +24,19 @@
     <color name="pv_on_blue">#FFFFFF</color>
     <!-- 卡片标题色：亮色主题用深蓝；暗色主题在 values-night/colors.xml 覆盖成亮蓝 -->
     <color name="pv_accent">#1B3A63</color>
+    <!-- 底栏选中态底衬（半透明品牌蓝） -->
+    <color name="pv_nav_indicator">#221B3A63</color>
     <!-- 电脑回 err / 本机故障：状态区红字行 -->
     <color name="pv_err">#C62828</color>
-    <!-- 顶部品牌渐变（亮色主题）；暗色在 values-night/colors.xml 覆盖 -->
-    <color name="pv_hero_start">#13294B</color>
-    <color name="pv_hero_end">#2E6BE6</color>
+
+    <!--
+      底色 / 卡片 / 描边：**换成中性灰白**（以前是 Material3 默认的紫灰调，配上大标题
+      渐变整片都发闷）。三档明度：底 < 卡片 < 输入框，层次靠明度差，不靠阴影。
+    -->
+    <color name="pv_bg">#F1F3F6</color>
+    <color name="pv_surface">#FFFFFF</color>
+    <color name="pv_outline">#E2E6EC</color>
+    <!-- 顶栏（品牌深蓝，与状态栏同色 → 看起来是一整块，不是「系统条 + 应用」两截） -->
+    <color name="pv_header">#1B3A63</color>
+    <color name="pv_header_light">#2E5C99</color>
 </resources>

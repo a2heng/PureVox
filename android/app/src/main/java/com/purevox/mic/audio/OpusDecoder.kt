@@ -69,10 +69,10 @@ class OpusDecoder {
 
     private var handle: Long = 0
     private val scratch = FloatArray(SCRATCH_SAMPLES)
-    private var onPcm: ((FloatArray, Int) -> Unit)? = null
+    private var onPcm: ((FloatArray, Int, Boolean) -> Unit)? = null
 
     /** 建好解码器。成功返回 [codecName]，失败抛 [IllegalStateException]（消息已含原因）。 */
-    fun start(onPcm: (FloatArray, Int) -> Unit): String {
+    fun start(onPcm: (FloatArray, Int, Boolean) -> Unit): String {
         stop()
         OpusNative.require()
         this.onPcm = onPcm
@@ -97,7 +97,7 @@ class OpusDecoder {
             return
         }
         val r = OpusNative.decDecode(h, pkt, n, scratch, SCRATCH_SAMPLES)
-        emit(r)
+        emit(r, plc = false)
     }
 
     /**
@@ -111,7 +111,7 @@ class OpusDecoder {
         if (h == 0L) return
         val r = OpusNative.decDecode(h, null, 0, scratch, SCRATCH_SAMPLES)
         concealed++
-        emit(r)
+        emit(r, plc = true)
     }
 
     fun stop() {
@@ -125,7 +125,12 @@ class OpusDecoder {
 
     // ---------------------------------------------------------------- 内部
 
-    private fun emit(samples: Int) {
+    /**
+     * 交出解出的样本。`plc = true` 表示这是**补出来的**一帧（不是网络上收到的包）：
+     * 播放环据此**不把它算进「收到包 / 来晚 / 到达间隔」**，否则统计会被自己的补偿污染
+     * （实测：PLC 帧落进空环 → 每补一帧就自报一次「来晚」，把 5 次/s 的欠载显示成 34 次/s）。
+     */
+    private fun emit(samples: Int, plc: Boolean) {
         if (samples < 0) {
             dropped++
             Log.w(TAG, "解码失败：${OpusNative.lastError()}（code $samples）")
@@ -133,6 +138,6 @@ class OpusDecoder {
         }
         if (samples == 0) return
         val n = samples.coerceAtMost(scratch.size)
-        onPcm?.invoke(scratch, n)
+        onPcm?.invoke(scratch, n, plc)
     }
 }

@@ -138,6 +138,15 @@ pub struct AppSettings {
   /// 已经不属于本机的 IP 上。所以记的是**地址本身**，取不到就回落自动（见 `addrs.rs`）。
   #[serde(default)]
   pub net_ip: String,
+
+  /// 接收方播放环深度（ms）。**手动可调**（手机滑块 / 网页滑块），两侧同步；
+  /// 运行期不做任何自动调整（`DESIGN.md` §4.1.4）。缺省 = 20 ms。
+  #[serde(default = "d_net_ring_ms")]
+  pub net_ring_ms: u32,
+}
+
+fn d_net_ring_ms() -> u32 {
+  crate::net::rt::RING_MS as u32
 }
 
 /// 主窗口几何（**物理像素**）。
@@ -202,6 +211,7 @@ impl Default for AppSettings {
       start_hidden: false,
       net_port: d_net_port(),
       net_ip: String::new(),
+      net_ring_ms: d_net_ring_ms(),
       window: None,
     }
   }

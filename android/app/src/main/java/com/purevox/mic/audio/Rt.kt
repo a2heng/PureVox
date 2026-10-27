@@ -24,15 +24,25 @@ import com.purevox.mic.Proto
 /**
  * 下行播放环（电脑 → 手机）：**整条链上唯一的缓冲**。
  *
- * 这是 `src-tauri/src/net/rt.rs` 的 `Playout` 的**逐行镜像**：深度、阈值、起播规则、
- * 欠载策略必须与那边逐字一致（那边有同样的注释与单元测试）。
+ * 这是 `src-tauri/src/net/rt.rs` 的 `Playout` 的**逐行镜像**：阈值与策略必须与那边一致。
+ *
+ * ## 策略只有两条（极简）
+ *
+ * 1. 排队超过**实时性上限**（滑块，1 帧 = 10 ms）→ 直接丢最旧的，不做任何平滑；
+ * 2. 取数时不够一格 → **输出静音**（残留整块丢掉），不做 priming、不做 PLC、不做淡出。
+ *
+ * 音频与别的数据不同：**晚到的样本没有价值**。所以这里没有目标水位、没有容差、
+ * 没有控制回路，只有一个用户可以拧的上限。
  *
  * ## 为什么这么小
  *
  * 实测：设备晶振差 **±25 ppm**、局域网到达抖动 **0.4~0.9 ms**、电脑 10 ms 节拍误差 **0.0%**。
- * 所以深度是**常量** [RING_MS] = 20 ms，运行期只有两种动作：超了丢一格（10 ms）、
+ * 所以默认深度 [RING_MS] = 20 ms，运行期只有两种动作：超了丢一格（10 ms）、
  * 空了补一格（PLC / 淡出）。**没有重采样、没有 PI 伺服、没有抖动驱动的目标水位** ——
  * 前两版都死在控制回路上（服务器侧实测摆出 ±1500 ppm 颤音、起播被误判成 25 次欠载）。
+ *
+ * **深度可手动调**（10~200 ms、10 ms 步进，[setTargetMs]）：那是用户拧的旋钮，
+ * 不是自适应 —— 值不会因为抖动/欠载自己动，两侧界面与环同步同一个值。
  *
  * 代价：25 ppm 的漂移约 **13 分钟**修正一格。换回来的是音频**逐样本原样**（不变调、不颤）。
  */
@@ -42,39 +52,38 @@ class PlaybackRing {
         private const val SR = Proto.SAMPLE_RATE
         private const val HOP = Proto.FRAME_SAMPLES
 
-        /** 环深度（ms）——与 `rt.rs` 的 `RING_MS` 同值，**改一处必须改三处**（含网页 worklet）。 */
+        /** 默认实时性上限（ms）。**可手动调**（滑块，1 帧 = 10 ms）。 */
         const val RING_MS = 20.0
 
-        /** 溢出阈值：超过「深度 + 一格」就裁掉最旧一格。 */
-        private const val TRIM_MS = RING_MS + 10.0
+        const val MIN_MS = 10.0
+        const val MAX_MS = 300.0
+        const val STEP_MS = 10.0
 
-        /** 容量：深度 + 一格 + 余量。 */
-        private const val CAP = (SR / 1000) * (RING_MS.toInt() + 30)
+        /** 容量按上限算（300 ms + 一格）。 */
+        private const val CAP = (SR / 1000) * (MAX_MS.toInt() + 10)
     }
 
     private val buf = FloatArray(CAP)
     private var head = 0
     private var count = 0
 
-    /** 上一格输出（欠载时淡出重复）。 */
-    private val lastHop = FloatArray(HOP)
+    /**
+     * 实时性上限（ms）：**唯一的控制**。
+     *
+     * 音频只看实时性 —— 数据不重要、晚到的样本没有价值。所以这里只有一个数：
+     * 排队超过它就**直接丢最旧的**，不做任何平滑。
+     */
+    @Volatile
+    var maxMs: Double = RING_MS
+        private set
 
-    private var primed = false
-    private var underrunStreak = 0
-
-    // ---- 到达统计（**只观测，不参与控制**）----
+    // ---- 到达统计（只观测） ----
     private var lastArrivalNs = 0L
-    private var jitterEmaMs = 0.0
-    private var worstJitterMs = 0.0
-    private var maxGapMs = 0.0
-
     var packets = 0L
         private set
     var hops = 0L
         private set
     var underruns = 0L
-        private set
-    var plc = 0L
         private set
     var trims = 0L
         private set
@@ -82,43 +91,23 @@ class PlaybackRing {
         private set
     var late = 0L
         private set
+    var maxGapMs = 0.0
+        private set
 
     fun levelMs(): Double = count * 1000.0 / SR
-    fun targetMs(): Double = RING_MS
-    fun jitterMs(): Double = jitterEmaMs
-    fun worstJitterMs(): Double = worstJitterMs
-    fun maxGapMs(): Double = maxGapMs
+    fun targetMs(): Double = maxMs
+    fun gapOverMs(ms: Double): Long = if (maxGapMs > ms) 1 else 0
 
-    /**
-     * 收到解码后的样本。`nowNs` = `System.nanoTime()`。
-     *
-     * 环当时是空的就说明这一包**来晚了**（播放已经在补音），计入 `late`。
-     */
-    fun push(samples: FloatArray, n: Int, nowNs: Long) {
-        if (n <= 0) return
-        packets++
-        // 「来晚」= 已经起播却仍然空环；起播填充期不算
-        if (primed && count == 0) late++
-        if (lastArrivalNs != 0L) {
-            val dtMs = (nowNs - lastArrivalNs) / 1_000_000.0
-            maxGapMs = Math.max(maxGapMs, dtMs)
-            if (dtMs in 0.0..500.0) {
-                val dev = Math.abs(dtMs - HOP * 1000.0 / SR)
-                jitterEmaMs += 0.02 * (dev - jitterEmaMs)
-                if (dev > worstJitterMs) worstJitterMs = dev
-            }
-        }
-        lastArrivalNs = nowNs
+    /** 改实时性上限（手动）。变小时立刻按新上限丢最旧的。 */
+    fun setMaxMs(ms: Double) {
+        maxMs = (ms.coerceIn(MIN_MS, MAX_MS) / STEP_MS).toInt() * STEP_MS
+        trimToCap()
+    }
 
-        for (i in 0 until n) {
-            buf[(head + count) % CAP] = samples[i]
-            count++
-        }
-        // 溢出：只保留「深度 + 一格」以内，超了裁到深度
-        val cap = (TRIM_MS * SR / 1000.0).toInt()
+    private fun trimToCap() {
+        val cap = (maxMs * SR / 1000.0).toInt()
         if (count > cap) {
-            val keep = (RING_MS * SR / 1000.0).toInt()
-            val drop = count - keep
+            val drop = count - cap
             head = (head + drop) % CAP
             count -= drop
             trims++
@@ -127,20 +116,34 @@ class PlaybackRing {
     }
 
     /**
-     * 按播放节拍取 `n` 个样本（**总是填满**：不够就淡出重复上一格）。
+     * 收到解码后的样本。**只看实时性**：收下、超过上限就丢最旧的。
+     * `plc = true` 表示本机补的帧（现在不会有了，字段保留兼容）。
+     */
+    fun push(samples: FloatArray, n: Int, nowNs: Long, plc: Boolean = false) {
+        if (n <= 0) return
+        if (!plc) {
+            packets++
+            if (lastArrivalNs != 0L) {
+                val dtMs = (nowNs - lastArrivalNs) / 1_000_000.0
+                if (dtMs > maxGapMs) maxGapMs = dtMs
+            }
+            lastArrivalNs = nowNs
+        }
+        for (i in 0 until n) {
+            buf[(head + count) % CAP] = samples[i]
+            count++
+        }
+        trimToCap()
+    }
+
+    /**
+     * 按设备节拍取一格：**有就播、不够就静音**。
      *
-     * 返回 `true` = 真实样本；`false` = 欠载（调用方可以再补一帧 Opus PLC）。
+     * 不做 priming（不垫深度）、不做 PLC、不做淡出 —— 音频只看实时性，
+     * 晚到的样本没有价值，补出来的东西也一样：宁可静音一下，也不要把时间轴往后拖。
+     * 返回 `true` = 真实样本；`false` = 这一拍是静音。
      */
     fun pull(out: FloatArray, n: Int): Boolean {
-        if (!primed) {
-            // 起播 = 攒满**深度**（20 ms）：只在起播这一刻做一次，让稳态水位落在深度上
-            if (count >= (RING_MS * SR / 1000.0).toInt()) {
-                primed = true
-            } else {
-                out.fill(0f, 0, n)
-                return false
-            }
-        }
         if (count >= n) {
             var idx = head
             for (i in 0 until n) {
@@ -151,47 +154,29 @@ class PlaybackRing {
             head = idx
             count -= n
             hops++
-            underrunStreak = 0
-            if (n == HOP) System.arraycopy(out, 0, lastHop, 0, HOP)
             return true
         }
-        // 欠载：淡出重复上一格
+        // 断流：**整块丢掉**残留（它们已经过时了），输出静音
         underruns++
-        underrunStreak++
-        val total = Math.max(1, n).toFloat()
-        for (i in 0 until n) {
-            out[i] = lastHop[i % HOP] * 0.5f * (1f - i / total)
-        }
-        if (underrunStreak > 100) {
-            // 断流超过 1 s：退回未起播，等真正有数据再说
-            primed = false
-            underrunStreak = 0
-            lastArrivalNs = 0
-        }
+        dropped += count.toLong()
+        head = 0
+        count = 0
+        out.fill(0f, 0, n)
         return false
     }
 
-    /** 记一次「补了一帧 Opus PLC」（计数用）。 */
-    fun notePlc() {
-        plc++
-    }
+    fun notePlc() {} // 保留签名：PLC 已经取消，调用方不需要改
 
     fun reset() {
         head = 0
         count = 0
-        primed = false
-        underrunStreak = 0
         lastArrivalNs = 0L
-        jitterEmaMs = 0.0
-        worstJitterMs = 0.0
         maxGapMs = 0.0
         packets = 0
         hops = 0
         underruns = 0
-        plc = 0
         trims = 0
         dropped = 0
         late = 0
-        lastHop.fill(0f)
     }
 }

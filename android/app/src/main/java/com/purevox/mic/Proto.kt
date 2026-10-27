@@ -103,6 +103,14 @@ object Proto {
     fun rtt(ms: Double): String = JSONObject().put("t", "rtt").put("ms", ms).toString()
 
     /**
+     * `{"t":"settarget","ms":40}` —— 改接收方播放环深度（**手动**，10~200 ms、按 10 步进）。
+     *
+     * 电脑收到后落盘并广播 `target` 给所有客户端（含本机），所以两边界面与环永远同一个值。
+     */
+    fun setTarget(ms: Int): String =
+        JSONObject().put("t", "settarget").put("ms", ms).toString()
+
+    /**
      * `{"t":"st",…}` —— 手机侧播放 / 采集状态，2 Hz 上报。
      *
      * 为什么手机要报：**缓冲在接收方**（DESIGN.md §4.1），电脑那一侧看不到手机环的水位、
@@ -130,12 +138,20 @@ object Proto {
     }
 
     /** `{"t":"syncreply",…}` —— 对电脑 `sync` 的 NTP 四时戳应答。三个时间戳都是手机时钟（µs）。 */
+    /**
+     * `{"t":"syncreply",…}` —— 对电脑 `sync` 的 NTP 四时戳应答。三个时间戳都是手机时钟（µs）。
+     *
+     * **必须按无符号 32 位发**：µs 计数器回绕后落在 2^31..2^32-1，Android 的 `Int` 是
+     * 有符号的，直接 `put` 会写成负数，而电脑侧按 `u32` 解析 → 整条消息解析失败 →
+     * 手机上弹红字「电脑：控制消息格式不对」（实测 2026-10-27）。所以统一转成 `Long`
+     * 再按 32 位掩码，让 JSON 里出现的永远是非负数。
+     */
     fun syncReply(id: Long, t0: Int, t1: Int, t2: Int): String = JSONObject()
         .put("t", "syncreply")
         .put("id", id)
-        .put("t0", t0)
-        .put("t1", t1)
-        .put("t2", t2)
+        .put("t0", t0.toLong() and 0xFFFF_FFFFL)
+        .put("t1", t1.toLong() and 0xFFFF_FFFFL)
+        .put("t2", t2.toLong() and 0xFFFF_FFFFL)
         .toString()
 
     /** 拼 8 字节帧头（大端）。 */
@@ -201,6 +217,9 @@ sealed class ServerMsg {
 
     data class Offset(val us: Long) : ServerMsg()
 
+    /** 环深度变了（手动调整，两侧同步）：收到就把自己的环与滑块一起改到这个值。 */
+    data class Target(val ms: Int) : ServerMsg()
+
     data class Err(val msg: String) : ServerMsg()
 
     /** 非本协议认识的 `t`：不断线，只记日志（协议只增不改，老客户端要能活）。 */
@@ -230,6 +249,7 @@ sealed class ServerMsg {
                 "pong" -> Pong(o.optLong("id", -1L))
                 "sync" -> Sync(o.optLong("id", -1L), o.optInt("t0", 0))
                 "offset" -> Offset(o.optLong("us", 0L))
+                "target" -> Target(o.optInt("ms", 0))
                 "err" -> Err(o.optString("msg"))
                 else -> Other(o.optString("t"))
             }

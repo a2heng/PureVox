@@ -968,5 +968,7 @@ async function init() {
   })()
 }
 
+// 参数控件渲染器导出：网络行的 AEC 要**用同一份**（不要复制一套，否则必然漂移）
+window.__pvParams = { controls: paramControls }
 init()
 })()

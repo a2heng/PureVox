@@ -136,6 +136,64 @@
 
 ---
 
+## 0.1 2026-10-27 网络音频定案（固定 20 ms）+ Android 打包/界面
+
+**这一轮是把「手机 ⇄ 电脑」的音频通路按实测数据重写成最简形态**，目标是砍掉上一版的
+自适应机制（它反而制造了 ±1500 ppm 颤音与「起播被判成欠载」）。设计写在 DESIGN.md §4.1，
+这里只记结果与坑。
+
+- **设计定案（不变量）**：**只在接收方缓冲，固定 20 ms**；发送方有一个 hop 就发一个，
+  没有定时器、没有队列。运行期只有两种动作：超了丢一格（10 ms）、空了补一格（PLC / 淡出）；
+  **不做任何自适应**（不按抖动调深度、不做 PI 伺服、不重采样）。起播前先垫满一整环，
+  垫的过程**不算**欠载/晚到。实测依据：两端晶振差 −24.4 / −28.9 ppm、10 ms 绝对节拍误差
+  0.0 %（`audio/clock_probe.rs`，`cargo test clock_probe -- --ignored --nocapture`）、
+  局域网抖动 0.4~1 ms → 25 ppm 漂移约 13 分钟才需要修正一格，固定深度足够。
+- **协议升到 3（不兼容）**：8 字节帧头（`seq` u32 + 发送方 µs u32）+ 一个 Opus 包；
+  新增 `sync` / `syncreply` / `offset` 四时戳时钟偏移估计；客户端 2 Hz 上报 `st`
+  （环水位 / 欠载 / 掩盖 / 晚到 / 单向延迟 / **自己实测的音频时钟 ppm**）；
+  `ready` 带 `header_bytes` / `target_ms`。
+- **删掉的（不是留着当备选）**：`SampleQueue` / `catchup`、`Varispeed`、PI 伺服接线、
+  按抖动推目标水位、Android 的「包队列 + 解码线程 + 比例伺服」、服务端的 `pacer_*`
+  （含 `timeBeginPeriod` —— 出站推送式之后不需要 1 ms 定时器精度）。
+- **回环实测**（`tools/automation/net_loopback.py`，真实环回）：1000.49 Hz、主瓣
+  99.84~99.86 %、100.01 包/s、**0 个静音包**、`rx_latency_ms = 0.28`、
+  `rx_target_ms` 恒 20.0、`rx_lost = 0`、`pending_hops = 0`。
+
+**Android 这一侧同批修的**：
+
+- **本机 debug 包与 CI release 包共存**：debug 构建带 `applicationIdSuffix = ".debug"` +
+  `versionNameSuffix = "-debug"`，`app/src/debug/res/values/strings.xml` 把应用名覆盖成
+  **PureVox Debug**，产物统一叫 `PureVox-<版本>[-debug]-android-arm64.apk`。
+  原因见 AGENTS §1.2：Android 只允许同签名覆盖安装，以前每版都得先卸载线上包才能调试。
+- **16 KB 页对齐**：`libpvopus.so` 用 NDK 27 重建，`llvm-readelf -l` 实测
+  `LOAD ... Align 0x4000`；`CMakeLists.txt` 加 `-Wl,-z,max-page-size=16384` +
+  `-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON`，`build_opus_android.py` 里加了
+  `max_load_align()` 断言（重建时不对齐就直接失败，不会悄悄产出装不上的包）。
+  顺带：解包 `tar.xz` 改用 Python `tarfile` —— MSYS 的 GNU tar 会把 `C:\…` 当成远程主机。
+- **界面改底部选项卡**：连接 / 音频 / 输入 / 诊断 / 更多，五页各自 `ScrollView`，
+  切页只是 `visibility`（不重建视图，不打断正在跑的音频与日志刷新）；诊断页因此
+  **默认展开**（它已经是独立页签，不需要再收一次）。图标是自绘矢量，不引第三方图标库。
+- **连接做成开关**（`swConnect`，不是按钮）：滑块位置本身就是状态，点一下连、再点一下断；
+  程序改状态时用 `suppressConnectToggle` 抑制监听器，避免「setChecked → 回调 → connect」自激。
+- **通知栏三个按钮**：开/关麦克风、开/关扬声器、重新连接，标签跟着当前状态变
+  （`mic` / `spk` 两个 extra 决定）。**「重新连接」= 先彻底拆掉本机已打开的流再重连**
+  （停上行/下行 → 断 WS → 重连 → `ready` 后按开关状态重开），因为卡住的往往是本机的
+  `AudioRecord` / `AudioTrack`，只重连 WebSocket 治不好；开关本身不动。
+
+**门禁**：本机七道全绿（`python tools/automation/check.py` → fmt / clippy / build / test /
+ui / version / bundle，150 个单测通过）。
+
+**还没做 / 待验证（记一笔）**：
+
+- 新版 Android 界面**没有目视验证**（安装成功、进程在跑、`ResumedActivity` 正确，
+  但设备当时锁屏且拿不到指纹/PIN，截不到画面）。
+- 真机音频验收没跑（诊断 → 音频里的延迟、`/debug` 的 `net.client.clock_ppm`、
+  `AudioTrack.trackBufferMs`）。
+- `release` 产物是**重构之前**的（`target/release/purevox.exe` 已过时），这轮没重打。
+- Linux / Android 门禁与 CI 均未在本机跑；本次只在 Windows 上过门禁。
+
+---
+
 ## 1. 现状
 
 | 项目 | 状态 |
@@ -524,4 +582,6 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
 - **多平台 CI + 无自动触发**：测试手动、打包 tag 触发，三平台（Windows / Linux / Android），
   无 Lite 变体（见 §3.7）。
 
-已决定：Tk 桌面 UI 与全部旧 Python 代码已从主线删除（2026-10-07），只保留归档快照。
+已决定：Tk 桌面 UI 与全部旧 Python 代码已从主线删除（2026-10-07）；`legacy-v*/` 两份只读快照
+也已于 **2026-10-27 删除**（AGENTS §2.3），历史行为一律以现行 `DESIGN.md` + AGENTS 为准，
+要查旧实现只能看 git 历史。

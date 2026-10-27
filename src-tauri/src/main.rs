@@ -604,12 +604,26 @@ fn net_select_ip(ip: String) -> Result<String, String> {
   ))
 }
 
-/// 改监听端口。**端口是绑定那一刻定死的，所以这里直接重启服务**，省得用户再点一次。
-/// 服务没在跑就只存下，下次启动生效。范围限 1024~65535：1024 以下在 Unix 上要 root，
+/// 改接收方播放环深度（ms，10~200、按 10 步进）。**不重启服务**：两侧运行期直接生效。
+///
+/// 这是**手动**设定，不是自适应：值只由用户决定，运行期不会因为抖动自己动。
+/// 电脑端改了会广播给手机（手机界面与环同步跟着变），手机改了同理（`net/server.rs`）。
+/// 当前环深度（ms），界面滑块用它显示。
+#[tauri::command]
+fn net_ring_ms() -> u32 {
+  net::hub().ring_ms()
+}
+
+#[tauri::command]
+fn net_set_ring_ms(ms: u32) -> Result<u32, String> {
+  net::set_ring_ms(ms);
+  Ok(net::hub().ring_ms())
+}
+
+/// 改监听端口。**端口是绑定那一刻定死的，所以这里直接重启服务**，省得用户再点一次。/// 服务没在跑就只存下，下次启动生效。范围限 1024~65535：1024 以下在 Unix 上要 root，
 /// 而且 47821 是调试接口、别来抢。
 #[tauri::command]
-fn net_set_port(port: u16) -> Result<String, String> {
-  if port < 1024 {
+fn net_set_port(port: u16) -> Result<String, String> {  if port < 1024 {
     return Err(format!(
       "端口 {port} 太小（要 ≥ 1024，低端口在 Linux 上需要管理员权限）"
     ));
@@ -807,6 +821,14 @@ fn main() {
         eprintln!("PureVox: {msg}");
         app.state::<SharedHub>().inner().push_ui("error", msg);
       }
+      // 音频是实时活：显式退出 Windows 的电源节流（EcoQoS），并把「整个进程被冻住」
+      // 的幅度量出来（`/debug/system` 的 `stall_*`）。应用在托盘里时最容易被判成后台进程
+      // 而降频，实测会造成 ~50 ms 的整体停顿 → 音频抖一下。
+      match debug::stall::opt_out_of_throttling() {
+        Ok(()) => {}
+        Err(e) => app.state::<SharedHub>().inner().push_ui("warn", e),
+      }
+      debug::stall::spawn_watchdog_default();
       // 读回上次选定的网络端口 / 广告地址。不读的话用户填的端口每次启动都白填
       // （hub 默认 59123），必须在第一次 `net_start` 之前。
       net::load_settings();
@@ -929,6 +951,8 @@ fn main() {
       net_ifaces,
       net_select_ip,
       net_set_port,
+      net_set_ring_ms,
+      net_ring_ms,
       virtual_mic_status,
       virtual_mic_create,
       virtual_mic_remove,

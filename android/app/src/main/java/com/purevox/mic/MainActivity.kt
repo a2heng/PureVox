@@ -52,12 +52,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.ContextCompat
+import com.google.android.material.bottomnavigation.BottomNavigationView
+import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
+import com.google.android.material.slider.Slider
 import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import com.purevox.mic.audio.MicSources
 import com.purevox.mic.audio.MicUplink
 import com.purevox.mic.audio.OpusSupport
 import com.purevox.mic.audio.SpeakerDownlink
+import com.purevox.mic.diag.DiagJson
 import com.purevox.mic.diag.RtStats
 import com.purevox.mic.net.Discovery
 import com.purevox.mic.net.HealthProbe
@@ -67,6 +71,8 @@ import com.purevox.mic.update.UpdateChecker
 import com.purevox.mic.update.UpdateDownloader
 import com.purevox.mic.update.UpdateInstaller
 import java.io.File
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * 唯一的界面与编排者（单 Activity，Material 风格）。
@@ -211,7 +217,12 @@ class MainActivity : AppCompatActivity() {
 
     // 界面控件
     private lateinit var etHost: EditText
-    private lateinit var btnConnect: Button
+    // 连接做成开关：滑块位置 = 连没连上（不用读文字判状态）
+    private lateinit var swConnect: MaterialSwitch
+    private lateinit var navBottom: BottomNavigationView
+    private var pages: List<Pair<Int, android.view.View>> = emptyList()
+    /** 程序改开关状态时抑制监听器，避免「setChecked → 回调 → connect」自激。 */
+    private var suppressConnectToggle = false
     private lateinit var btnHealth: Button
     private lateinit var btnRediscover: Button
     private lateinit var btnReconnect: Button
@@ -231,6 +242,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var spMicSource: MaterialAutoCompleteTextView
     private lateinit var tvHeroStatus: TextView
     private lateinit var swSpeaker: SwitchCompat
+    private lateinit var slRing: Slider
+    private lateinit var tvRing: TextView
+    /** 程序改滑块时抑制监听器，避免「setValue → 回调 → 再发 settarget」自激。 */
+    private var suppressRing = false
     private lateinit var swRemote: SwitchCompat
     private lateinit var swRemoteText: SwitchCompat
     private lateinit var swRemoteKeys: SwitchCompat
@@ -246,7 +261,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnCheckUpdate: Button
     private lateinit var btnDownload: Button
     private lateinit var btnInstall: Button
-    private lateinit var tvDiagHeader: TextView
     private lateinit var llDiag: LinearLayout
     private lateinit var tvLog: TextView
 
@@ -258,15 +272,22 @@ class MainActivity : AppCompatActivity() {
     private val notifReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                CaptureService.BROADCAST_NOTIF_STOP -> {
-                    log("通知栏：停止推流")
-                    swMic.isChecked = false
+                // 三个按钮都是**切换 / 刷新**：与界面上那个开关完全等价（同一个入口）
+                CaptureService.BROADCAST_NOTIF_MIC -> {
+                    log("通知栏：麦克风 → ${if (swMic.isChecked) "关" else "开"}")
+                    swMic.isChecked = !swMic.isChecked
                     applyState()
                     updateStatus()
                 }
-                CaptureService.BROADCAST_NOTIF_DISCONNECT -> {
-                    log("通知栏：断开连接")
-                    disconnect()
+                CaptureService.BROADCAST_NOTIF_SPK -> {
+                    log("通知栏：扬声器 → ${if (swSpeaker.isChecked) "关" else "开"}")
+                    swSpeaker.isChecked = !swSpeaker.isChecked
+                    applyState()
+                    updateStatus()
+                }
+                CaptureService.BROADCAST_NOTIF_RECONNECT -> {
+                    log("通知栏：重新连接（先拆掉已打开的流再重连）")
+                    reconnect()
                 }
             }
         }
@@ -321,9 +342,40 @@ class MainActivity : AppCompatActivity() {
         // 一行说明「现在在用什么 + 为什么不碰系统 codec」，不是探测结果而是编解码器的身份
         opusDetail = OpusSupport.describe()
 
-        btnConnect.setOnClickListener {
-            if (ws == null && !connecting) connect() else disconnect()
+        swConnect.setOnCheckedChangeListener { _, checked ->
+            if (suppressConnectToggle) return@setOnCheckedChangeListener
+            if (checked && ws == null && !connecting) connect() else if (!checked) disconnect()
         }
+
+        // 底部选项卡：一次只显示一页（每页自己滚，互不干扰）
+        // 第一页 = 连接 + 音频（一次会话的两半，分开要来回切）
+        pages = listOf(
+            R.id.tab_connect to findViewById(R.id.pageConnect),
+            R.id.tab_input to findViewById(R.id.pageInput),
+            R.id.tab_diag to findViewById(R.id.pageDiag),
+            R.id.tab_more to findViewById(R.id.pageMore),
+        )
+        navBottom.setOnItemSelectedListener { item ->
+            showPage(item.itemId)
+            true
+        }
+        showPage(R.id.tab_connect)
+        // 抖动缓冲滑块：**拖一下就生效**（不重建会话、不重连），并同步给电脑
+        slRing.addOnChangeListener { _, value, fromUser ->
+            val ms = value.toInt()
+            tvRing.text = getString(R.string.ring_label, ms / 10, ms)
+            if (fromUser && !suppressRing) {
+                downlink?.setTargetMs(ms.toDouble())
+                ws?.sendText(Proto.setTarget(ms))
+                log("抖动缓冲 → $ms ms")
+            }
+        }
+        tvRing.text = getString(
+            R.string.ring_label,
+            slRing.value.toInt() / 10,
+            slRing.value.toInt(),
+        )
+
         btnHealth.setOnClickListener { runHealthCheck() }
         // 换 Wi-Fi / 刚才没搜到 → 重新发现（停掉再 discover，不复用旧监听）
         btnRediscover.setOnClickListener { rediscover() }
@@ -410,7 +462,6 @@ class MainActivity : AppCompatActivity() {
         btnClear.setOnClickListener { clearComposed() }
 
         // 诊断区默认收起，标题行点击展开/收起
-        tvDiagHeader.setOnClickListener { toggleDiag() }
         // 「复制诊断」：把整块诊断（含日志）塞进剪贴板 —— 出错时不必让人截图
         btnCopyDiag.setOnClickListener { copyDiag() }
 
@@ -429,8 +480,9 @@ class MainActivity : AppCompatActivity() {
             this,
             notifReceiver,
             IntentFilter().apply {
-                addAction(CaptureService.BROADCAST_NOTIF_STOP)
-                addAction(CaptureService.BROADCAST_NOTIF_DISCONNECT)
+                addAction(CaptureService.BROADCAST_NOTIF_MIC)
+                addAction(CaptureService.BROADCAST_NOTIF_SPK)
+                addAction(CaptureService.BROADCAST_NOTIF_RECONNECT)
             },
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
@@ -662,6 +714,7 @@ class MainActivity : AppCompatActivity() {
         log("连接 ${Proto.wsUrl(host, port)}")
     }
 
+
     private fun disconnect() {
         val c = ws
         ws = null
@@ -701,6 +754,11 @@ class MainActivity : AppCompatActivity() {
                     is ServerMsg.Pong -> Unit
                     // 时钟同步由 WsClient 自己处理（它要回 syncreply、存 offset），界面不需要知道
                     is ServerMsg.Sync, is ServerMsg.Offset -> Unit
+                    is ServerMsg.Target -> {
+                        // 电脑（或另一台客户端）改了环深度：这边跟着改，界面同步
+                        applyRingTarget(msg.ms)
+                        log("电脑把抖动缓冲改成 ${msg.ms} ms")
+                    }
                     is ServerMsg.Other -> log("未识别的消息 t=${msg.type}")
                 }
                 updateStatus()
@@ -740,9 +798,12 @@ class MainActivity : AppCompatActivity() {
         if (msg.rate > 0 && msg.rate != Proto.SAMPLE_RATE) {
             showErr("电脑音频是 ${msg.rate} Hz，手机播放按 ${Proto.SAMPLE_RATE} Hz 打开")
         }
+        // 深度以电脑下发的为准（两侧同一个值）：手机改了电脑广播回来、电脑改了也走这里
+        applyRingTarget(msg.targetMs)
         log(
             "ready · proto=${msg.proto} codec=${msg.codec} rate=${msg.rate} " +
-                "ch=${msg.channels} frame=${msg.frameMs}ms 电脑侧客户端=${msg.clients}",
+                "ch=${msg.channels} frame=${msg.frameMs}ms 目标环=${msg.targetMs}ms " +
+                "电脑侧客户端=${msg.clients}",
         )
         // sub 由 applyStateInner 在开启扬声器时发；这里不重复发（服务端虽然会替换旧订阅，
         // 但没必要每次 ready 都发一条）。
@@ -855,7 +916,7 @@ class MainActivity : AppCompatActivity() {
             ready -> getString(R.string.notif_connected)
             else -> getString(R.string.notif_idle)
         }
-        CaptureService.update(this, text, mic, audio)
+        CaptureService.update(this, text, mic, audio, spk = speakerOn)
         updateKeepalive()
     }
 
@@ -935,7 +996,13 @@ class MainActivity : AppCompatActivity() {
 
     /** 起上行：先起前台服务（Android 9+ 后台麦克风的前提），再开 AudioRecord。 */
     private fun startUplink(): Boolean {
-        CaptureService.start(this, getString(R.string.notif_starting), mic = true, audio = true)
+        CaptureService.start(
+            this,
+            getString(R.string.notif_starting),
+            mic = true,
+            audio = true,
+            spk = speakerOn,
+        )
         svcRunning = true
         svcMic = true
         svcAudio = true
@@ -1047,6 +1114,20 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    /**
+     * 切页：只显示一个 ScrollView。
+     *
+     * **不重建任何视图**：所有页都在同一棵树上，切页只是 visibility 变化 ——
+     * 这样切换不会打断正在跑的音频/日志刷新，也不需要每个页面各存一份状态。
+     */
+    private fun showPage(itemId: Int) {
+        if (pages.isEmpty()) return
+        for ((tab, page) in pages) {
+            page.visibility = if (tab == itemId) android.view.View.VISIBLE else android.view.View.GONE
+        }
+        if (itemId == R.id.tab_diag) updateStatus()
+    }
+
     private fun refreshRemoteSwitches() {
         swRemoteText.isEnabled = swRemote.isChecked
         swRemoteKeys.isEnabled = swRemote.isChecked
@@ -1092,8 +1173,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateButtons() {
         val online = ready
-        btnConnect.text = if (ws != null || connecting) getString(R.string.btn_disconnect) else getString(R.string.btn_connect)
-        btnConnect.isEnabled = !connecting
+        // 开关 = 状态显示：连着（或正在连）就在「开」的位置
+        suppressConnectToggle = true
+        swConnect.isChecked = ws != null || connecting
+        suppressConnectToggle = false
+        swConnect.isEnabled = !connecting
         swMic.isEnabled = online
         swSpeaker.isEnabled = online
         swRemote.isEnabled = online
@@ -1224,6 +1308,140 @@ class MainActivity : AppCompatActivity() {
         tvHealth.text = getString(R.string.status_health) + healthText
         tvErr.text = lastErr
         tvErr.visibility = if (lastErr.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+
+        // ---- 结构化诊断（AGENTS §1.4）：同一份读数同时落盘 + 打 logcat，
+        // 脚本/AI 不必截图、不必点界面（`adb logcat -s PureVoxDiag:I` / `run-as ... cat files/diag.json`）
+        val diagIssue = DiagJson.publish(this, diagJson(net, q, a), System.currentTimeMillis())
+        if (diagIssue != null) log(diagIssue)
+    }
+
+    /**
+     * 当前状态 → 结构化 JSON（`schema_version` + 单位写进字段名，缺测用 null 不用 0）。
+     *
+     * 字段名与电脑侧 `/debug` 的 `net` 段保持一致（`level_ms` / `target_ms` / `late` /
+     * `underruns` / `clock_ppm` …），两边对着看不用翻译。
+     */
+    private fun diagJson(net: RtStats.Net, q: RtStats.Verdict, a: RtStats.Verdict): String {
+        fun num(v: Double): Any = if (v.isNaN() || v.isInfinite()) JSONObject.NULL else v
+
+        val root = JSONObject()
+        root.put("schema_version", DiagJson.SCHEMA_VERSION)
+        root.put("ts_ms", System.currentTimeMillis())
+        root.put("app", getString(R.string.app_name))
+        root.put("diag_file", DiagJson.path(this))
+
+        root.put(
+            "conn",
+            JSONObject().apply {
+                put("state", connState)
+                put("host", host)
+                put("port", port)
+                put("url", Proto.wsUrl(host, port))
+                put("ready", ready)
+                put("connecting", connecting)
+                put("found_by_mdns", found)
+                put("rtt_ms", num(net.rttLast))
+                put("rtt_avg_ms", num(net.rttAvg))
+                put("rtt_max_ms", num(net.rttMax))
+                put("rtt_jitter_ms", num(net.jitter))
+                put("rtt_samples", net.rttSamples)
+                put("up_packets_per_s", num(net.upPps))
+                put("down_packets_per_s", num(net.downPps))
+                put("up_kbps", num(net.upKbps))
+                put("down_kbps", num(net.downKbps))
+                put("clock_offset_us", ws?.clockOffsetUs ?: JSONObject.NULL)
+                put("verdict", "${q.label} · ${q.detail}")
+            },
+        )
+
+        val enc = uplink
+        root.put(
+            "uplink",
+            JSONObject().apply {
+                put("on", enc != null)
+                if (enc != null) {
+                    put("mic_api", MicSources.label(this@MainActivity, enc.sourceUsed))
+                    put("mic_source", enc.sourceName)
+                    put("capture_format", OpusSupport.pcmName(enc.recordEncoding))
+                    put("encoder", enc.encoderName)
+                    put("packets", enc.encoderPackets)
+                    put("dropped_samples", enc.encoderDroppedSamples)
+                    put("level", enc.level.toDouble())
+                }
+            },
+        )
+
+        val dec = downlink
+        root.put(
+            "downlink",
+            JSONObject().apply {
+                put("on", dec != null)
+                if (dec != null) {
+                    put("decoder", dec.decoderName)
+                    put("sample_rate", dec.trackSampleRate)
+                    put("buffer_ms", dec.trackBufferMs)
+                    put("buffer_requested_ms", dec.bufferRequestedMs)
+                    put("low_latency_path", dec.lowLatencyPath)
+                    put("device_underruns", dec.deviceUnderruns)
+                    put("level_ms", num(dec.levelMs))
+                    put("target_ms", num(dec.targetMs))
+                    put("jitter_ms", num(dec.jitterMs))
+                    put("worst_jitter_ms", num(dec.worstJitterMs))
+                    put("max_gap_ms", num(dec.maxGapMs))
+                    put("packets", dec.packets)
+                    put("hops", dec.hops)
+                    put("late", dec.late)
+                    put("trims", dec.trims)
+                    put("dropped_samples", dec.dropped)
+                    put("underruns", dec.underruns)
+                    put("plc", dec.plc)
+                    put("concealed", dec.concealed)
+                    put("gap_over_ring", dec.gapOverRing)
+                    put("spliced_hops", dec.splicedHops)
+                    put("max_sample_delta", dec.maxSampleDelta.toDouble())
+                    put("clock_ppm", num(dec.clockPpm))
+                    put("one_way_ms", num(dec.oneWayMs))
+                    put("peak", dec.peak.toDouble())
+                    put("verdict", "${a.label} · ${a.detail}")
+                }
+            },
+        )
+
+        root.put(
+            "service",
+            JSONObject().apply {
+                put("foreground_notification", CaptureService.foreground)
+                put("wifi_lock", CaptureService.wifiLockHeld)
+                put("keepalive_error", CaptureService.lastError ?: JSONObject.NULL)
+            },
+        )
+
+        root.put(
+            "log",
+            JSONArray().also { arr ->
+                val lines = tvLog.text.toString().split("\n").filter { it.isNotBlank() }
+                for (line in lines.takeLast(40)) arr.put(line)
+            },
+        )
+        return root.toString()
+    }
+
+    /**
+     * 应用环深度（来自 `ready` / `target`）：环、滑块、读数一起改。
+     *
+     * 抑制监听器是关键：`Slider.setValue` 会触发 `OnChangeListener`，不抑制就会
+     * 「setValue → 回调 → 发 settarget → 电脑再广播 → setValue」自激。
+     */
+    private fun applyRingTarget(ms: Int) {
+        if (ms <= 0) return
+        downlink?.setTargetMs(ms.toDouble())
+        suppressRing = true
+        try {
+            slRing.value = ms.toFloat().coerceIn(slRing.valueFrom, slRing.valueTo)
+        } finally {
+            suppressRing = false
+        }
+        tvRing.text = getString(R.string.ring_label, ms / 10, ms)
     }
 
     /**
@@ -1266,18 +1484,12 @@ class MainActivity : AppCompatActivity() {
             if (lines.size > MAX_LOG_LINES) {
                 tvLog.text = lines.subList(lines.size - MAX_LOG_LINES, lines.size).joinToString("\n")
             }
-            tvLog.post { tvLog.scrollTo(0, tvLog.height) }
+            // **不要**在这里 scrollTo：日志区在一条常显的页里，每来一行就把正文顶一下
+            // 看起来就是「整块在闪」。保留最近 MAX_LOG_LINES 行、不动视口即可。
         }
     }
 
     // ---------------------------------------------------------------- 诊断区 / 保活 / 更新
-
-    /** 诊断区展开/收起（默认收起，见 activity_main.xml）。 */
-    private fun toggleDiag() {
-        val show = llDiag.visibility != View.VISIBLE
-        llDiag.visibility = if (show) View.VISIBLE else View.GONE
-        tvDiagHeader.setText(if (show) R.string.diag_hide else R.string.diag_show)
-    }
 
     /**
      * 把整块诊断复制到剪贴板（网络 + 音频 + 读数 + 日志）。
@@ -1446,7 +1658,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun bindViews() {
         etHost = findViewById(R.id.etHost)
-        btnConnect = findViewById(R.id.btnConnect)
+        swConnect = findViewById(R.id.swConnect)
+        navBottom = findViewById(R.id.navBottom)
         btnHealth = findViewById(R.id.btnHealth)
         btnRediscover = findViewById(R.id.btnRediscover)
         btnReconnect = findViewById(R.id.btnReconnect)
@@ -1466,6 +1679,8 @@ class MainActivity : AppCompatActivity() {
         spMicSource = findViewById(R.id.spMicSource)
         tvHeroStatus = findViewById(R.id.tvHeroStatus)
         swSpeaker = findViewById(R.id.swSpeaker)
+        slRing = findViewById(R.id.slRing)
+        tvRing = findViewById(R.id.tvRing)
         swRemote = findViewById(R.id.swRemote)
         swRemoteText = findViewById(R.id.swRemoteText)
         swRemoteKeys = findViewById(R.id.swRemoteKeys)
@@ -1481,7 +1696,6 @@ class MainActivity : AppCompatActivity() {
         btnCheckUpdate = findViewById(R.id.btnCheckUpdate)
         btnDownload = findViewById(R.id.btnDownload)
         btnInstall = findViewById(R.id.btnInstall)
-        tvDiagHeader = findViewById(R.id.tvDiagHeader)
         llDiag = findViewById(R.id.llDiag)
         tvLog = findViewById(R.id.tvLog)
     }

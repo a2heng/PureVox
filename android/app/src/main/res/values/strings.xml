@@ -24,9 +24,18 @@
     <string name="subtitle">远程麦克风 · 扬声器 · 键盘客户端</string>
     <string name="hint_host">电脑 IP 或主机名（可直接粘电脑端复制的网址）</string>
     <string name="btn_connect">连接</string>
+    <!-- 品牌字标的后半截：头图里「彩色 P + ureVox」拼成 PureVox。品牌名，不翻译。 -->
+    <string name="wordmark_tail" translatable="false">ureVox</string>
+    <!-- 底部选项卡 -->
+    <string name="tab_connect">连接</string>
+    <string name="tab_input">输入</string>
+    <string name="tab_diag">诊断</string>
+    <string name="tab_more">更多</string>
+    <!-- 连接做成开关：位置本身就是状态 -->
+    <string name="sw_connect">连接</string>
     <string name="btn_disconnect">断开</string>
     <string name="btn_health">自检 GET /health</string>
-    <string name="btn_rediscover">重新发现电脑</string>
+    <string name="btn_rediscover">发现电脑</string>
     <string name="btn_reconnect">重新连接</string>
     <string name="msg_discovering">正在发现局域网里的电脑…</string>
     <string name="msg_reuse_cached">正在用上次的地址连接 %1$s…</string>
@@ -42,14 +51,14 @@
     <string name="section_keepalive">后台保活</string>
     <string name="section_update">更新</string>
 
-    <!-- 诊断区（默认收起） -->
+    <!-- 诊断页（独立页签，内容常显） -->
     <string name="diag_title">诊断</string>
-    <string name="diag_show">诊断　▸ 点此展开</string>
-    <string name="diag_hide">诊断　▾ 点此收起</string>
 
     <!-- 实时监控两块（与 MainActivity.updateStatus 一一对应） -->
     <string name="diag_net">网络</string>
     <string name="diag_audio">音频</string>
+    <string name="diag_state">连接与状态</string>
+    <string name="diag_log">日志</string>
     <string name="diag_jitter">抖动</string>
     <string name="diag_quality">质量</string>
     <string name="diag_level_up">上行电平</string>
@@ -69,6 +78,9 @@
     <string name="diag_latency">延迟</string>
     <string name="status_opus">Opus 探测</string>
     <string name="status_health">自检　</string>
+
+    <!-- 抖动缓冲滑块（手动，10~200 ms） -->
+    <string name="ring_label">抖动缓冲 %1$d 帧（%2$d ms）</string>
 
     <!-- 功能开关 -->
     <string name="sw_mic">手机麦克风 → 电脑</string>
@@ -125,10 +137,16 @@
     <string name="notif_channel_desc">保持麦克风在后台可用</string>
     <string name="notif_starting">正在启动麦克风…</string>
     <string name="notif_default">正在推流</string>
-    <string name="notif_connected">已连接电脑（后台保活）</string>
-    <string name="notif_idle">待连接（后台保活）</string>
-    <string name="notif_action_stop">停止推流</string>
-    <string name="notif_action_disconnect">断开连接</string>
+    <!-- 通知正文只留一行状态：文案一长系统就把三个按钮折叠进「展开」，
+         而保活本来就由通知**存在**这件事表达，不需要再写一遍 -->
+    <string name="notif_connected">已连接电脑</string>
+        <string name="notif_idle">待连接</string>
+    <!-- 通知栏三个按钮：麦克风 / 扬声器 / 重新连接（标签随当前状态变） -->
+    <string name="notif_action_mic_on">开麦克风</string>
+    <string name="notif_action_mic_off">关麦克风</string>
+    <string name="notif_action_spk_on">开扬声器</string>
+    <string name="notif_action_spk_off">关扬声器</string>
+    <string name="notif_action_reconnect">重新连接</string>
 
     <!-- 更新 -->
     <string name="btn_check_update">检查更新</string>

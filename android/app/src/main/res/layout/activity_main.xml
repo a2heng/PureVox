@@ -18,69 +18,118 @@
   SPDX-License-Identifier: GPL-3.0-or-later
 -->
 <!--
-  单界面，卡片式布局：连接 / 功能 / 远程输入 / 后台保活 / 更新，最后是可折叠的诊断区
-  （连接读数 + 日志，默认收起，标题行点击展开）。唯一滚动区域是这一个 ScrollView；
-  布局里不放任何计算逻辑。
+  底部选项卡：连接（含音频）/ 输入 / 诊断 / 更多。
 
-  **不用固定高度**：每张卡片 `wrap_content`，内容随语言/字号自然伸缩（AGENTS §1.3
-  「界面不要写死高度」）。需要「数值不跳动」的地方靠等宽字体（PvStatus 用 monospace）。
+  **为什么拆页**：以前是一个 ScrollView 里堆五张卡片 + 一整块诊断，手机上要滚很久，
+  而且「当前在做什么」看不出来。现在每页只做一件事，底栏固定可见。
+
+  连接与音频**同一页**：它们本来就是一次会话的两半（连上才有麦克风/扬声器可开），
+  分成两页反而要来回切。顺序固定为「状态 → 连没连上 → 连去哪 → 开什么」。
+
+  约束不变（AGENTS §1.3）：**不写死高度**，每张卡片 wrap_content；每个页面是一个
+  ScrollView，可滚动区域互相独立。
 -->
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true">
+    android:orientation="vertical">
 
-    <LinearLayout
+    <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp">
+        android:layout_height="0dp"
+        android:layout_weight="1">
 
-        <!-- 品牌头图：渐变底 + 大标题 + 实时连接状态。比裸文字标题更像一个应用。 -->
+        <ScrollView
+            android:id="@+id/pageConnect"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingStart="16dp"
+                android:paddingTop="12dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="16dp">
+
+        <!--
+          头图：**一条**，四角全圆。
+            左：品牌字标 = 彩色「P」（`ic_p_mark.xml`，与图标同一份矢量定义）+ 后面的 "ureVox"
+            右：连接状态（颜色跟着状态变）
+          以前是 160 dp 的渐变块 + 26 sp 大标题 + 独立状态行，一屏开头就吃掉四分之一高度；
+          现在 68 dp，信息一个不少。字标是**品牌**，不进 i18n（不做翻译）；
+          调试包与正式包的区别在应用名/通知里（PureVox Debug），不靠这里区分。
+        -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="6dp"
             android:background="@drawable/bg_hero"
-            android:elevation="2dp"
-            android:orientation="vertical"
-            android:paddingStart="20dp"
-            android:paddingTop="18dp"
-            android:paddingEnd="20dp"
-            android:paddingBottom="16dp">
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingTop="12dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="12dp">
 
-            <TextView
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:letterSpacing="0.08"
-                android:text="@string/app_name"
-                android:textColor="#FFFFFF"
-                android:textSize="26sp"
-                android:textStyle="bold" />
+                android:layout_weight="1"
+                android:orientation="vertical">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
-                android:text="@string/subtitle"
-                android:textColor="#CCE0FF"
-                android:textSize="12sp" />
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <!-- translationY：P 的包围盒比文字的大写高度高，按中心对齐会显得偏低，
+                         往上挪 2dp 让它跟 "ureVox" 的视觉基线贴住（**别再往下调**，会离开基线）。 -->
+                    <ImageView
+                        android:layout_width="21dp"
+                        android:layout_height="32dp"
+                        android:contentDescription="@string/app_name"
+                        android:src="@drawable/ic_p_mark"
+                        android:translationY="-2dp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="1dp"
+                        android:letterSpacing="0.01"
+                        android:text="@string/wordmark_tail"
+                        android:textColor="#FFFFFF"
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="1dp"
+                    android:text="@string/subtitle"
+                    android:textColor="#B9D2F5"
+                    android:textSize="11sp" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/tvHeroStatus"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginStart="8dp"
                 android:background="@drawable/bg_chip"
                 android:fontFamily="monospace"
-                android:paddingStart="12dp"
-                android:paddingTop="5dp"
-                android:paddingEnd="12dp"
-                android:paddingBottom="5dp"
+                android:maxWidth="132dp"
+                android:paddingStart="10dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="4dp"
                 android:text="@string/msg_not_connected"
                 android:textColor="#FFFFFF"
-                android:textSize="11sp" />
+                android:textSize="10sp" />
         </LinearLayout>
 
         <!-- ============================ 连接 ============================ -->
@@ -94,80 +143,65 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="16dp">
+                android:padding="12dp">
 
                 <TextView
                     style="@style/PvCardTitle"
                     android:text="@string/section_connect" />
 
-                <LinearLayout
+                <!--
+                  连接本身做成**开关**（不是按钮），且**放在地址上面**：先看「连没连上」，
+                  再看「连去哪」—— 开关的位置本身就代表状态，不用读文字判断。
+                  点一下即连、再点即断；连接中禁用（避免连过程中又点一次）。
+                -->
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/swConnect"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
+                    android:minHeight="40dp"
+                    android:text="@string/sw_connect"
+                    android:textSize="14sp" />
 
-                    <EditText
-                        android:id="@+id/etHost"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:autofillHints=""
-                        android:background="@drawable/bg_field"
-                        android:hint="@string/hint_host"
-                        android:importantForAutofill="no"
-                        android:inputType="textUri"
-                        android:maxLines="1"
-                        android:minHeight="48dp"
-                        android:padding="12dp"
-                        android:textSize="14sp" />
-
-                    <Button
-                        android:id="@+id/btnConnect"
-                        style="@style/PvButton"
-                        android:layout_width="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:minWidth="88dp"
-                        android:text="@string/btn_connect" />
-                </LinearLayout>
+                <EditText
+                    android:id="@+id/etHost"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:autofillHints=""
+                    android:background="@drawable/bg_field"
+                    android:hint="@string/hint_host"
+                    android:importantForAutofill="no"
+                    android:inputType="textUri"
+                    android:maxLines="1"
+                    android:minHeight="40dp"
+                    android:padding="10dp"
+                    android:textSize="14sp" />
 
                 <!--
-                  「重新发现」与「重新连接」是**两件事**，所以是两个按钮（DESIGN.md §4.1.1）：
-                    重新发现 = 换了 Wi-Fi / 刚才没搜到 → 停掉 NsdManager 再 discover（要等几秒）
-                    重新连接 = 只是掉线、服务还在    → 只重连 WebSocket（立刻就好）
+                  「发现电脑」与「重新连接」是**两件事**，所以是两个按钮（DESIGN.md §4.1.1）：
+                    发现电脑  = 换了 Wi-Fi / 刚才没搜到 → 停掉 NsdManager 再 discover（要等几秒）
+                    重新连接  = 只是掉线、服务还在    → **先拆掉本机已打开的流再重连**（立刻就好）
                   分开是为了让用户在正确的时机做正确的事：只是掉线却去重新发现，会白等那几秒。
                   电脑上没跑服务时搜不到是**预期行为**，所以这两个按钮任何时候都可用。
+                  **各占一行**（不并排）：手机上并排的两个按钮文字一长就挤成两行、看着像坏了。
                 -->
-                <LinearLayout
+                <Button
+                    android:id="@+id/btnRediscover"
+                    style="@style/PvButton.Outlined"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-
-                    <Button
-                        android:id="@+id/btnRediscover"
-                        style="@style/PvButton.Outlined"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:text="@string/btn_rediscover" />
-
-                    <Button
-                        android:id="@+id/btnReconnect"
-                        style="@style/PvButton.Outlined"
-                        android:layout_width="0dp"
-                        android:layout_marginStart="8dp"
-                        android:layout_weight="1"
-                        android:text="@string/btn_reconnect" />
-                </LinearLayout>
+                    android:layout_marginTop="8dp"
+                    android:text="@string/btn_rediscover" />
 
                 <Button
-                    android:id="@+id/btnHealth"
+                    android:id="@+id/btnReconnect"
                     style="@style/PvButton.Outlined"
-                    android:layout_width="wrap_content"
+                    android:layout_width="match_parent"
                     android:layout_marginTop="8dp"
-                    android:text="@string/btn_health" />
+                    android:text="@string/btn_reconnect" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- ============================ 功能 ============================ -->
+        <!-- ============================ 音频 ============================ -->
         <com.google.android.material.card.MaterialCardView
             style="@style/PvCard"
             android:layout_width="match_parent"
@@ -178,7 +212,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="16dp">
+                android:padding="12dp">
 
                 <TextView
                     style="@style/PvCardTitle"
@@ -188,7 +222,7 @@
                     android:id="@+id/swMic"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:minHeight="44dp"
+                    android:minHeight="40dp"
                     android:text="@string/sw_mic"
                     android:textSize="14sp" />
 
@@ -224,11 +258,50 @@
                     android:id="@+id/swSpeaker"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:minHeight="44dp"
+                    android:minHeight="40dp"
                     android:text="@string/sw_speaker"
                     android:textSize="14sp" />
+
+                <!--
+                  抖动缓冲深度（**手动**滑块，10~200 ms、10 ms 步进）。
+                  不是自适应：值只由用户拧，电脑端改了这边跟着变、这边改了电脑端跟着变
+                  （协议 `settarget` ↔ `target` 双向同步）。
+                -->
+                <TextView
+                    android:id="@+id/tvRing"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/ring_label"
+                    android:textColor="?android:attr/textColorSecondary"
+                    android:textSize="12sp" />
+
+                <com.google.android.material.slider.Slider
+                    android:id="@+id/slRing"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:stepSize="10"
+                    android:value="20"
+                    android:valueFrom="10"
+                    android:valueTo="200" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
+
+            </LinearLayout>
+        </ScrollView>
+
+        <ScrollView
+            android:id="@+id/pageInput"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="12dp">
 
         <!-- ========================= 远程输入 ========================= -->
         <com.google.android.material.card.MaterialCardView
@@ -241,7 +314,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="16dp">
+                android:padding="12dp">
 
                 <TextView
                     style="@style/PvCardTitle"
@@ -251,7 +324,7 @@
                     android:id="@+id/swRemote"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:minHeight="44dp"
+                    android:minHeight="40dp"
                     android:text="@string/sw_remote"
                     android:textSize="14sp" />
 
@@ -260,7 +333,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="20dp"
-                    android:minHeight="44dp"
+                    android:minHeight="40dp"
                     android:text="@string/sw_remote_text"
                     android:textSize="13sp" />
 
@@ -269,7 +342,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="20dp"
-                    android:minHeight="44dp"
+                    android:minHeight="40dp"
                     android:text="@string/sw_remote_keys"
                     android:textSize="13sp" />
 
@@ -312,153 +385,62 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- ========================= 后台保活 ========================= -->
-        <com.google.android.material.card.MaterialCardView
-            style="@style/PvCard"
+            </LinearLayout>
+        </ScrollView>
+
+        <ScrollView
+            android:id="@+id/pageDiag"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp">
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:visibility="gone">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="16dp">
+                android:padding="12dp">
 
-                <TextView
-                    style="@style/PvCardTitle"
-                    android:text="@string/section_keepalive" />
+        <!--
+          诊断页：**内容常显**（它已经是独立页签，不需要「点此展开」）。
 
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/keepalive_desc"
-                    android:textColor="?android:attr/textColorSecondary"
-                    android:textSize="12sp" />
-
-                <!-- 常驻通知状态：挂了 / 没挂上（带原因）。看不见的「保活没生效」= 没有保活 -->
-                <TextView
-                    android:id="@+id/tvKeepalive"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:text="@string/keepalive_notif_off"
-                    android:textSize="12sp" />
-
-                <!-- 通知权限（Android 13+）：没允许就没通知；一旦拒过，弹窗不会再出现，只能去设置 -->
-                <TextView
-                    android:id="@+id/tvNotifPerm"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/notif_perm_unknown"
-                    android:textSize="12sp" />
-
-                <Button
-                    android:id="@+id/btnNotifSettings"
-                    style="@style/PvButton.Outlined"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/btn_notif_settings" />
-
-                <TextView
-                    android:id="@+id/tvBattery"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:text="@string/battery_not_ignored"
-                    android:textSize="12sp" />
-
-                <Button
-                    android:id="@+id/btnBattery"
-                    style="@style/PvButton.Outlined"
-                    android:layout_width="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/btn_battery_settings" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <!-- =========================== 更新 =========================== -->
-        <com.google.android.material.card.MaterialCardView
-            style="@style/PvCard"
+          布局固定为从上到下五段，顺序与行数都不随状态变（数值不跳动）：
+            ① 标题行 + 自检 / 复制 两个按钮（一进来就能一键复制，不用滚到底去找）；
+            ② 网络；③ 音频；④ 连接与状态；⑤ 日志。
+        -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp">
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-            <LinearLayout
-                android:layout_width="match_parent"
+            <TextView
+                style="@style/PvCardTitle"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
+                android:layout_weight="1"
+                android:text="@string/diag_title" />
 
-                <TextView
-                    style="@style/PvCardTitle"
-                    android:text="@string/section_update" />
+            <Button
+                android:id="@+id/btnHealth"
+                style="@style/PvButton.Outlined"
+                android:layout_width="wrap_content"
+                android:text="@string/btn_health" />
 
-                <TextView
-                    android:id="@+id/tvUpdate"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:textSize="13sp" />
-
-                <Button
-                    android:id="@+id/btnCheckUpdate"
-                    style="@style/PvButton.Outlined"
-                    android:layout_width="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="@string/btn_check_update" />
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:orientation="horizontal">
-
-                    <Button
-                        android:id="@+id/btnDownload"
-                        style="@style/PvButton"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:enabled="false"
-                        android:text="@string/btn_download" />
-
-                    <Button
-                        android:id="@+id/btnInstall"
-                        style="@style/PvButton"
-                        android:layout_width="0dp"
-                        android:layout_marginStart="8dp"
-                        android:layout_weight="1"
-                        android:enabled="false"
-                        android:text="@string/btn_install" />
-                </LinearLayout>
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <!-- ================= 诊断（默认收起，标题行点击展开） ================= -->
-        <!-- 标题行给一块可见底板（bg_panel + 前景 ripple），否则它只是一行彩色小字，
-             看不出能点（「调试看问题不够」的一半原因是它根本不像入口）。 -->
-        <TextView
-            android:id="@+id/tvDiagHeader"
-            style="@style/PvCardTitle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:background="@drawable/bg_panel"
-            android:clickable="true"
-            android:focusable="true"
-            android:foreground="?attr/selectableItemBackground"
-            android:paddingStart="12dp"
-            android:paddingTop="10dp"
-            android:paddingEnd="12dp"
-            android:paddingBottom="10dp"
-            android:text="@string/diag_show" />
+            <Button
+                android:id="@+id/btnCopyDiag"
+                style="@style/PvButton.Outlined"
+                android:layout_width="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/btn_copy_diag" />
+        </LinearLayout>
 
         <LinearLayout
             android:id="@+id/llDiag"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:visibility="gone">
+            android:orientation="vertical">
 
             <!-- 实时监控 · 网络：RTT 窗口统计 + 抖动 + 真实速率（字节差分，不拿设定比特率冒充） -->
             <TextView
@@ -589,17 +571,16 @@
                 style="@style/PvStatus"
                 android:layout_marginTop="6dp" />
 
-            <Button
-                android:id="@+id/btnCopyDiag"
-                style="@style/PvButton.Outlined"
-                android:layout_width="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="@string/btn_copy_diag" />
+            <!-- ④ 连接与状态：连接状态 / 地址 / RTT / 上下行 / 播放 / Opus / 自检 -->
+            <TextView
+                style="@style/PvCardTitle"
+                android:layout_marginTop="14dp"
+                android:text="@string/diag_state" />
 
             <TextView
                 android:id="@+id/tvStatus"
                 style="@style/PvStatus"
-                android:layout_marginTop="10dp" />
+                android:layout_marginTop="6dp" />
 
             <TextView
                 android:id="@+id/tvHealth"
@@ -616,16 +597,173 @@
                 android:textSize="11sp"
                 android:visibility="gone" />
 
+            <!-- ⑤ 日志：最近 200 行（复制诊断会带上它） -->
+            <TextView
+                style="@style/PvCardTitle"
+                android:layout_marginTop="14dp"
+                android:text="@string/diag_log" />
+
             <TextView
                 android:id="@+id/tvLog"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
+                android:layout_marginTop="4dp"
                 android:layout_marginBottom="16dp"
                 android:fontFamily="monospace"
                 android:lineSpacingExtra="2dp"
                 android:textColor="?android:attr/textColorSecondary"
                 android:textSize="10sp" />
         </LinearLayout>
-    </LinearLayout>
-</ScrollView>
+            </LinearLayout>
+        </ScrollView>
+
+        <ScrollView
+            android:id="@+id/pageMore"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+        <!-- ========================= 后台保活 ========================= -->
+        <com.google.android.material.card.MaterialCardView
+            style="@style/PvCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+                <TextView
+                    style="@style/PvCardTitle"
+                    android:text="@string/section_keepalive" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/keepalive_desc"
+                    android:textColor="?android:attr/textColorSecondary"
+                    android:textSize="12sp" />
+
+                <!-- 常驻通知状态：挂了 / 没挂上（带原因）。看不见的「保活没生效」= 没有保活 -->
+                <TextView
+                    android:id="@+id/tvKeepalive"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/keepalive_notif_off"
+                    android:textSize="12sp" />
+
+                <!-- 通知权限（Android 13+）：没允许就没通知；一旦拒过，弹窗不会再出现，只能去设置 -->
+                <TextView
+                    android:id="@+id/tvNotifPerm"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/notif_perm_unknown"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btnNotifSettings"
+                    style="@style/PvButton.Outlined"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/btn_notif_settings" />
+
+                <TextView
+                    android:id="@+id/tvBattery"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/battery_not_ignored"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btnBattery"
+                    style="@style/PvButton.Outlined"
+                    android:layout_width="match_parent"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/btn_battery_settings" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- =========================== 更新 =========================== -->
+        <com.google.android.material.card.MaterialCardView
+            style="@style/PvCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+                <TextView
+                    style="@style/PvCardTitle"
+                    android:text="@string/section_update" />
+
+                <TextView
+                    android:id="@+id/tvUpdate"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/btnCheckUpdate"
+                    style="@style/PvButton.Outlined"
+                    android:layout_width="match_parent"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/btn_check_update" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnDownload"
+                        style="@style/PvButton"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:enabled="false"
+                        android:text="@string/btn_download" />
+
+                    <Button
+                        android:id="@+id/btnInstall"
+                        style="@style/PvButton"
+                        android:layout_width="0dp"
+                        android:layout_marginStart="8dp"
+                        android:layout_weight="1"
+                        android:enabled="false"
+                        android:text="@string/btn_install" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+            </LinearLayout>
+        </ScrollView>
+
+    </FrameLayout>
+
+    <!-- 底栏：五个选项卡，状态一眼可见（图标 + 文字）。 -->
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/navBottom"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?attr/colorSurface"
+        app:itemActiveIndicatorStyle="@style/PvNavIndicator"
+        app:labelVisibilityMode="labeled"
+        app:menu="@menu/bottom_nav" />
+</LinearLayout>

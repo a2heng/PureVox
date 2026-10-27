@@ -67,6 +67,21 @@ pub struct SystemInfo {
   pub cpu: Probe<CpuInfo>,
   pub memory: Probe<MemoryInfo>,
   pub gpu: Probe<Vec<GpuAdapter>>,
+  /// **系统时钟中断粒度**（ms）。Windows 默认 ≈ 15.6 ms，`timeBeginPeriod(1)` 期间是 1 ms。
+  ///
+  /// 它决定了 `std::thread::sleep` / `Sleep()` 的**实际**精度：`sleep(10 ms)` 的语义是
+  /// 「至少 10 ms」，但系统只在时钟节拍边界上判到期，于是常常睡 15.6 ms —— 用它给音频
+  /// 造 10 ms 节拍必然「一拍睡过头、下一拍补两拍」。合成源与列线程因此一律改用高精度
+  /// 可等待定时器（`audio/tick.rs`），这个读数就是「这台机器为什么会抖」的第一现场。
+  pub timer_resolution_ms: Probe<f64>,
+  /// **整个进程被冻住**的最坏幅度 / 次数 / 最近一次（ms）。
+  ///
+  /// 由 `debug/stall.rs` 的看门狗量：它什么都不干、每 10 ms 醒一次，所以它看到的超时
+  /// 只可能来自「进程/系统层面」的停顿（电源节流、内存换页、CPU 抢占）。
+  /// 音频线程卡住时如果这里也同步变大，就不是我们的锁/代码问题。
+  pub stall_worst_ms: Probe<f64>,
+  pub stall_last_ms: Probe<f64>,
+  pub stall_count: u64,
 }
 
 impl Default for SystemInfo {
@@ -76,6 +91,10 @@ impl Default for SystemInfo {
       cpu: Probe::Pending,
       memory: Probe::Pending,
       gpu: Probe::Pending,
+      timer_resolution_ms: crate::audio::tick::timer_resolution_probe(),
+      stall_worst_ms: Probe::Pending,
+      stall_last_ms: Probe::Pending,
+      stall_count: 0,
     }
   }
 }
@@ -146,6 +165,11 @@ pub fn spawn_sampler(hub: SharedHub) {
           cpu,
           memory,
           gpu: gpu.sample(),
+          // 粒度基本不变，但用户可能刚跑过别的音频软件把 `timeBeginPeriod` 拉满，所以每轮都读
+          timer_resolution_ms: crate::audio::tick::timer_resolution_probe(),
+          stall_worst_ms: Probe::ok(crate::debug::stall::stat().worst()),
+          stall_last_ms: Probe::ok(crate::debug::stall::stat().last()),
+          stall_count: crate::debug::stall::stat().count(),
         });
         // 虚拟麦克风状态（Linux 才有）：不必每 tick 都跑 pw-cli 子进程，2 s 一次即可。
         if first || tick.is_multiple_of(2) {

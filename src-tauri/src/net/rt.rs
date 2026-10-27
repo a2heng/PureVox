@@ -168,103 +168,100 @@ pub struct PlayoutStats {
 ///
 /// 不重采样：取出来的就是送进去的样本（顺序不变、样本不变）。唯一的「修饰」是
 /// 欠载时的 PLC / 淡出，以及溢出时丢掉最旧一格。
+/// 毫秒 → 样本数（48 kHz）。
+fn ms_to_samples(ms: f64) -> usize {
+  (ms * SAMPLE_RATE as f64 / 1000.0).round().max(0.0) as usize
+}
+
 pub struct Playout {
   buf: VecDeque<f32>,
-  depth_ms: f64,
-  /// 上一格的输出（欠载时用它淡出重复）
-  last_hop: Vec<f32>,
-  /// 起播前不出声（攒够半格才开）
-  primed: bool,
-  /// 连续欠载拍数（> 1 s 退回未起播）
-  underrun_streak: u32,
-  arrival: Arrival,
+  /// 实时性上限（ms）：**唯一的控制**（手动滑块，1 帧 = 10 ms）。
+  max_ms: f64,
   hops: u64,
   underruns: u64,
-  plc: u64,
   trims: u64,
   dropped: u64,
+  packets: u64,
+  late: u64,
 }
 
 impl Playout {
-  pub fn new(depth_ms: f64) -> Self {
+  pub fn new(max_ms: f64) -> Self {
     Playout {
-      buf: VecDeque::with_capacity(SAMPLE_RATE as usize / 10),
-      depth_ms,
-      last_hop: vec![0.0; HOP],
-      primed: false,
-      underrun_streak: 0,
-      arrival: Arrival::default(),
+      buf: VecDeque::with_capacity(SAMPLE_RATE as usize / 10 * 40),
+      max_ms,
       hops: 0,
       underruns: 0,
-      plc: 0,
       trims: 0,
       dropped: 0,
+      packets: 0,
+      late: 0,
     }
   }
 
-  /// 收到解码后的样本（一个包通常就是一格；多于/少于一格也能收）。
-  pub fn push(&mut self, samples: &[f32], now: Instant) {
-    // 「来晚」= **已经起播**却仍然空环（说明播放已经饿着了）；起播填充期不算
-    let starving = self.primed && self.buf.is_empty();
-    self.arrival.on_packet(now, hop_ms(), starving);
-    self.buf.extend(samples.iter().copied());
-    // 溢出：只保留「深度 + 一格」以内，超了裁到深度
-    let cap = ms_to_samples(self.depth_ms + TRIM_EXTRA_MS);
+  /// 改**实时性上限**（用户手动，10~200 ms）。变小就立刻把超出的部分丢掉。
+  ///
+  /// 这不是自适应：值只来自用户（手机滑块 / 网页命令），运行期不会因为抖动自己动。
+  pub fn set_depth_ms(&mut self, ms: f64) {
+    self.max_ms = ms;
+    self.trim_to_cap();
+  }
+
+  fn trim_to_cap(&mut self) {
+    let cap = ms_to_samples(self.max_ms);
     if self.buf.len() > cap {
-      let keep = ms_to_samples(self.depth_ms);
-      let drop = self.buf.len() - keep;
+      let drop = self.buf.len() - cap;
       self.buf.drain(..drop);
       self.trims += 1;
       self.dropped += drop as u64;
     }
   }
 
-  /// 按引擎 / 播放节拍取一格。**总是填满**：不够就走 PLC 段 + 淡出。
+  /// 收到解码后的样本：**收下，超过实时性上限就丢最旧的**（不做任何平滑）。
   ///
-  /// 返回 `true` = 这一格是真实样本；`false` = 欠载（调用方可以补一帧 Opus PLC 再喂进来，
-  /// 见 `server.rs` / `SpeakerDownlink.kt` 的用法）。
-  pub fn pull(&mut self, out: &mut [f32]) -> bool {
-    if !self.primed {
-      // 起播 = 攒满**深度**（20 ms）。不是自适应：只在起播这一刻做一次，
-      // 目的就是让稳态水位落在深度上（否则水位全靠起播时的偶然值，可能在 10~30 之间漂）。
-      if self.buf.len() >= ms_to_samples(self.depth_ms) {
-        self.primed = true;
-      } else {
-        out.fill(0.0);
-        return false;
-      }
+  /// 音频只看实时性 —— TCP 不会丢包也不会乱序，晚到的样本已经没有价值，
+  /// 所以这里没有蓄水位、没有容差、更没有控制回路。
+  pub fn push(&mut self, samples: &[f32], _now: Instant) {
+    if self.buf.is_empty() {
+      self.late += 1;
     }
+    self.packets += 1;
+    self.buf.extend(samples.iter().copied());
+    self.trim_to_cap();
+  }
+
+  /// 按引擎节拍取一格：**够就取、不够就静音**（残留整块丢掉，不做 PLC / 淡化）。
+  ///
+  /// 返回 `true` = 真实样本；`false` = 这一拍静音（调用方不需要补任何东西）。
+  pub fn pull(&mut self, out: &mut [f32]) -> bool {
     if self.buf.len() >= out.len() {
       for (i, slot) in out.iter_mut().enumerate() {
         *slot = self.buf[i];
       }
       self.buf.drain(..out.len());
       self.hops += 1;
-      self.underrun_streak = 0;
-      if out.len() == self.last_hop.len() {
-        self.last_hop.copy_from_slice(out);
-      }
       return true;
     }
-    // 欠载：淡出重复上一格（首格是静音，自然就是「安静地等一下」）
+    // 断流：剩下的已经过时，整块丢掉，输出静音
     self.underruns += 1;
-    self.underrun_streak = self.underrun_streak.saturating_add(1);
-    let total = out.len().max(1) as f32;
-    for (i, slot) in out.iter_mut().enumerate() {
-      *slot = self.last_hop[i % HOP] * 0.5 * (1.0 - i as f32 / total);
-    }
-    if self.underrun_streak > 100 {
-      // 断流超过 1 s：退回未起播，等真正有数据再说（别对着空环一直做 PLC）
-      self.primed = false;
-      self.underrun_streak = 0;
-      self.arrival.reset();
-    }
+    self.dropped += self.buf.len() as u64;
+    self.buf.clear();
+    out.fill(0.0);
     false
   }
 
-  /// 记一次「调用方补了一帧 Opus PLC」（计数用；样本本身照常 `push`）。
-  pub fn note_plc(&mut self) {
-    self.plc += 1;
+  /// 保留签名：PLC 已经取消（断流直接静音），调用方不需要改。
+  pub fn note_plc(&mut self) {}
+
+  /// 清空（停服务 / 会话重建）。
+  pub fn reset(&mut self) {
+    self.buf.clear();
+    self.hops = 0;
+    self.underruns = 0;
+    self.trims = 0;
+    self.dropped = 0;
+    self.packets = 0;
+    self.late = 0;
   }
 
   pub fn level_ms(&self) -> f64 {
@@ -274,35 +271,20 @@ impl Playout {
   pub fn stats(&self) -> PlayoutStats {
     PlayoutStats {
       level_ms: self.level_ms(),
-      target_ms: self.depth_ms,
-      jitter_ms: self.arrival.ema_ms,
-      worst_jitter_ms: self.arrival.worst_ms,
-      max_gap_ms: self.arrival.max_gap_ms,
-      packets: self.arrival.packets,
+      target_ms: self.max_ms,
+      // 极简策略不再统计抖动（字段保留，界面与诊断结构不变）
+      jitter_ms: 0.0,
+      worst_jitter_ms: 0.0,
+      max_gap_ms: 0.0,
+      packets: self.packets,
       hops: self.hops,
       underruns: self.underruns,
-      plc: self.plc,
+      plc: 0,
       trims: self.trims,
       dropped: self.dropped,
-      late: self.arrival.late,
+      late: self.late,
     }
   }
-
-  pub fn reset(&mut self) {
-    self.buf.clear();
-    self.primed = false;
-    self.underrun_streak = 0;
-    self.arrival.reset();
-    self.last_hop.fill(0.0);
-  }
-}
-
-fn hop_ms() -> f64 {
-  HOP as f64 * 1000.0 / SAMPLE_RATE as f64
-}
-
-fn ms_to_samples(ms: f64) -> usize {
-  (ms * SAMPLE_RATE as f64 / 1000.0) as usize
 }
 
 #[cfg(test)]
@@ -349,20 +331,7 @@ mod tests {
   }
 
   /// 起播：环里没有半格就静音，而且**不算欠载**（刚开流不是故障）。
-  #[test]
-  fn priming_is_silent_and_not_counted() {
-    let mut p = Playout::new(RING_MS);
-    let mut out = vec![9.0f32; HOP];
-    assert!(!p.pull(&mut out));
-    assert!(out.iter().all(|x| *x == 0.0), "起播前应是静音");
-    assert_eq!(p.stats().underruns, 0, "起播前的静音不是欠载");
-    // 攒满**深度**（20 ms = 2 格）才起播
-    p.push(&hop(0.5), Instant::now());
-    assert!(!p.pull(&mut out), "不足深度不出声");
-    p.push(&hop(0.5), Instant::now());
-    assert!(p.pull(&mut out), "满深度应能起播");
-  }
-
+  
   /// 稳态：推 1 取 1，20 秒不丢不补。
   #[test]
   fn steady_state_is_lossless() {
@@ -381,9 +350,9 @@ mod tests {
       assert!(out.iter().all(|x| (*x - 0.3).abs() < 1e-6));
     }
     let s = p.stats();
+    // 新策略不蓄水位：稳态只要求「不欠载 + 水位有界」，允许超上限时丢最旧的
     assert_eq!(s.underruns, 0);
-    assert_eq!(s.trims, 0);
-    assert_eq!(s.dropped, 0);
+    assert!(s.level_ms <= RING_MS + 1e-6, "水位应贴住上限：{} ms", s.level_ms);
     assert!(
       s.level_ms <= RING_MS + TRIM_EXTRA_MS,
       "水位不该超过深度一格：{}",
@@ -418,49 +387,44 @@ mod tests {
   }
 
   /// 欠载：淡出重复上一格（不是硬切静音），计数可见；断流 1 s 后退回未起播。
+  
+  /// 观测数据不许参与控制：抖动再大，深度也**不变**。
+  
+  /// 新策略：超上限丢最旧的（不淡化、不补帧）。
   #[test]
-  fn underrun_fades_and_then_reprimes() {
-    let mut p = Playout::new(RING_MS);
-    let mut t = Instant::now();
-    let mut out = vec![0.0f32; HOP];
-    // 垫到 2 格（20 ms = 深度），先正常取走两格
-    for _ in 0..2 {
-      t += Duration::from_millis(10);
-      p.push(&hop(0.5), t);
+  fn drops_oldest_over_cap() {
+    let mut p = Playout::new(20.0);
+    let now = Instant::now();
+    // 塞 50 ms（上限 20）
+    for _ in 0..5 {
+      p.push(&[0.25; HOP], now);
     }
-    assert!(p.pull(&mut out), "有数据时应出声");
-    assert!(p.pull(&mut out), "第二格也应有数据");
-    // 现在环空了：这一拍欠载应该是「上一格 × 0.5 的淡出」，不是全 0
-    assert!(!p.pull(&mut out));
-    assert!(
-      out.iter().any(|x| x.abs() > 1e-3),
-      "欠载应淡出重复，而不是挖掉一格"
-    );
-    assert!(out.iter().all(|x| x.abs() <= 0.5 + 1e-3), "淡出不能放大");
-    assert_eq!(p.stats().underruns, 1);
-    // 断流 1 s 之后退回未起播：输出静音
-    for _ in 0..120 {
-      p.pull(&mut out);
-    }
-    assert!(!p.stats().packets > 0 && true);
-    let s = p.stats();
-    assert!(s.underruns > 100, "持续断流应一直计欠载：{s:?}");
+    let st = p.stats();
+    assert!(st.level_ms <= 20.0 + 0.01, "水位不能超过上限：{}", st.level_ms);
+    assert!(st.trims >= 1 && st.dropped > 0, "超上限要计丢弃");
   }
 
-  /// 观测数据不许参与控制：抖动再大，深度也**不变**。
+  /// 新策略：环空 → 输出静音，不补 PLC、不淡化。
   #[test]
-  fn jitter_is_observation_only() {
-    let mut p = Playout::new(RING_MS);
-    let mut t = Instant::now();
-    let mut out = vec![0.0f32; HOP];
-    for k in 0..200 {
-      // 人为制造 0/20 ms 交替的到达（抖动 10 ms）
-      t += Duration::from_millis(if k % 2 == 0 { 0 } else { 20 });
-      p.push(&hop(0.1), t);
-      p.pull(&mut out);
+  fn silent_when_empty() {
+    let mut p = Playout::new(20.0);
+    let mut out = [1.0f32; HOP];
+    assert!(!p.pull(&mut out));
+    assert!(out.iter().all(|v| *v == 0.0), "空环必须整格静音");
+    assert_eq!(p.stats().underruns, 1);
+    assert_eq!(p.stats().plc, 0, "不做 PLC");
+  }
+
+  /// 上限变小时立刻丢到新上限（拖动滑块的即时效果）。
+  #[test]
+  fn shrink_takes_effect_immediately() {
+    let mut p = Playout::new(100.0);
+    let now = Instant::now();
+    for _ in 0..10 {
+      p.push(&[0.1; HOP], now);
     }
-    let s = p.stats();
-    assert!(s.jitter_ms > 5.0, "抖动应被观测到：{}", s.jitter_ms);
-    assert_eq!(s.target_ms, RING_MS, "深度是常量，不许被抖动改");
+    assert!(p.stats().level_ms > 90.0);
+    p.set_depth_ms(20.0);
+    assert!(p.stats().level_ms <= 20.0 + 0.01);
   }
 }

@@ -20,7 +20,7 @@
 # **产物直接入库**（`app/src/main/jniLibs/arm64-v8a/libpvopus.so`），与电脑端的
 # `server/opus.dll` 同一思路：预编译二进制随包分发、运行时加载，好处是 Gradle 构建
 # 完全不需要 NDK（CI 也就不用装 NDK、不用多一步编译）。重建用
-# `tools/automation/build_opus_android.ps1`。
+# `tools/automation/build_opus_android.py`（唯一实现）。
 #
 # 只出 arm64-v8a：CI 产出的就是 `PureVox-Android-arm64-*.apk`，不打算发其它 ABI。
 # 编译期就用 -Os + strip 去掉符号，静态库 3.3 MB 会瘦到 1 MB 上下。
@@ -50,4 +50,10 @@ target_link_libraries(pvopus opus log m)
 # 符号可见性：只导出 JNI 入口，其余（libopus 内部）全部隐藏。
 # 不加这个，libopus 的 C 符号会污染 .so 的导出表，既增大体积又可能与 app 里的同名符号撞车。
 target_compile_options(pvopus PRIVATE -Os -fvisibility=hidden -ffunction-sections -fdata-sections)
-target_link_options(pvopus PRIVATE -Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,-s)
+# **16 KB 页对齐**（Android 15+ / Google Play 的硬要求）：不打这个标记，LINK 出来的
+# PT_LOAD 是 4 KB 对齐（实测 `p_align 0x1000`），在 16 KB 页的设备上装不上 / 起不来。
+# NDK r28 起默认就是 16 KB，但本机/CI 可能用 r27，所以显式写死，别靠默认值。
+target_link_options(pvopus PRIVATE
+    -Wl,-z,max-page-size=16384
+    -Wl,-z,common-page-size=16384
+    -Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,-s)
