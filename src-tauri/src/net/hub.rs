@@ -597,11 +597,24 @@ impl NetHub {
   // ---- 出站 ----
 
   pub fn push_tx_hop(&self, hop: &[f32]) {
-    self
-      .src_gap
-      .lock()
-      .unwrap_or_else(|e| e.into_inner())
-      .on_send(Instant::now());
+    self.push_tx_inner(hop, true);
+  }
+
+  /// 校准探针注入：**只**进网络音频通路（手机照常放、far 照常看得到），
+  /// 但**不记 `src_gap`** —— 探针不是引擎的正常输出，混进去会把
+  /// 「引擎推 hop 的间隔」这个排查第一现场读歪（NETWORK.md §3.4 第 0 步）。
+  pub fn push_probe_hop(&self, hop: &[f32]) {
+    self.push_tx_inner(hop, false);
+  }
+
+  fn push_tx_inner(&self, hop: &[f32], count_src_gap: bool) {
+    if count_src_gap {
+      self
+        .src_gap
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .on_send(Instant::now());
+    }
     if let Ok(mut slot) = self.tx_last.lock() {
       let n = HOP.min(hop.len());
       slot.0[..n].copy_from_slice(&hop[..n]);
@@ -821,20 +834,6 @@ mod tests {
   use super::*;
   use std::time::Duration;
 
-  /// 模拟时钟：每步 10 ms（与真实 hop 节拍一致）。
-  struct Clock(Instant);
-  impl Clock {
-    fn new() -> Self {
-      Clock(Instant::now())
-    }
-    fn step(&mut self) -> Instant {
-      self.0 += Duration::from_millis(10);
-      self.0
-    }
-  }
-
-  
-  
   #[tokio::test]
   async fn outbound_pushes_immediately() {
     let hub = NetHub::new();
@@ -895,10 +894,6 @@ mod tests {
     assert_eq!(st.clock_ppm, Some(-27.0));
   }
 
-  /// 深度**不随抖动/欠载变化**（只有用户手动能改）：`rx_target_ms` 恒等于设定值。
-  
-  /// 手动深度：10~200 ms、按 10 ms 步进取整；改完入站环立刻跟着变（两侧同步的电脑侧）。
-  
   #[test]
   fn stop_clears_audio_state() {
     let hub = NetHub::new();

@@ -17,12 +17,18 @@
 
 // 网络行（`remote_mic` 网络麦克风 / `remote_speaker` 网络扬声器）的卡片内容。
 //
-// **为什么要单独一个文件**：网络行不需要选设备，光一个下拉框等于什么都没说——用户
-// 建完这行不知道下一步干什么。真正的操作全在这里：服务开关/重启、状态灯、扫码用的
-// 网址与二维码、这行到底干什么的说明。与 `media.js`（音效板 / 播放器）同理，由
-// 本模块独占这些控件，`columns.js` 不再画第二遍。
+// **整张卡片的职责只有两件事**：让客户端连上来（地址 / 二维码 / 证书），以及把这一行
+// 自己的可调项摆出来（网卡 / 端口 / 缓冲 / 远程输入 / AEC）。所以 2026-10-27 按用户要求
+// 做成**极致紧凑**：
+//   - 不可改的状态一律收成「状态灯 + 一句短状态」，全文在 `/debug` 的 `net` 段；
+//   - 静态说明（「这个行是干什么的」「近端不可更改」）全部删掉 —— 看一次就懂的东西
+//     不该每块卡片都占一行；
+//   - 二维码右边就是按钮 / 开关，不再放一栏说明文字；
+//   - AEC 的模型是**内置的、与独立 AEC 行同一个**（`infer::aec::MODEL_AEC`），
+//     所以这里没有模型下拉（用户 2026-10-27 明确要求），也没有「近端」这个不可改的
+//     选择器 —— 近端本来就是这一行的网络输入。
 //
-// 与顶栏「手机」面板读的是同一份状态（`net_status` / `net_running` / `net_local_addr`，
+// 与顶栏「手机」面板读的是同一份状态（`net_card` / `net_local_addr` / `net_ifaces`，
 // 都是 `/debug` 的 `net` 段同源）。网络行卡片是**唯一**的手机/客户端操作入口：顶栏
 // 不再有独立的「手机」面板（用户 2026-10-12 明确要求——「手机不要单独的面板，就是
 // 这个网络面板」），没建网络行时想连客户端就只能先把行加上，这是有意的。
@@ -48,7 +54,7 @@
     return window.__TAURI__.core.invoke(cmd, args)
   }
 
-  /** 当前地址（`http://ip:port/`），失败给原因。同一份数据给顶栏面板与这里的二维码。 */
+  /** 当前地址（`https://ip:port/`），失败给原因。同一份数据给二维码与「复制」。 */
   let addrUrl = ''
   /** 当前对外广告的 IP（子网下拉要选中它） */
   let addrIp = ''
@@ -59,13 +65,19 @@
   /** 可选网卡列表（子网下拉的选项）。`[]` = 不支持枚举或一张都没有。 */
   /** @type {{ip: string, name: string, desc: string, is_default: boolean}[]} */
   let ifaces = []
-  /** 服务是否在跑。**别去 `net_status` 的中文串里匹配** —— 那串会改文案。 */
-  let running = false
   /** 取不到地址的原因（没网卡 / 没默认路由）。空 = 取到了。 */
   let addrReason = ''
-  /** @type {{text: string, ok: boolean}|null} */
-  let lastStatus = null
-  let remoteInput = false
+  /**
+   * 最近一次 `net_card`（结构化、紧凑；判定与数字全在 Rust 侧算）。
+   * `null` = 还没取到 / 取失败。
+   * @type {{running: boolean, port: number, clients: number, subs: number,
+   *   rx_level_ms: number|null, rx_target_ms: number, remote_input: boolean,
+   *   keys_backend: string|null, keys_reason: string|null,
+   *   last_error: string|null, codec_ok: boolean, codec_reason: string|null}|null}
+   */
+  let card = null
+  /** 取不到状态 / 地址的原因（合并显示，不静默） */
+  let statusReason = ''
   /** 本次挂载里建过的卡片，重绘时统一收摊 */
   /** @type {Set<{el: HTMLElement, paint: () => void}>} */
   const cards = new Set()
@@ -86,33 +98,30 @@
    * @returns {Promise<void>}
    */
   async function poll() {
-    let ok = false
-    let text = ''
+    let failed = ''
     try {
-      const [s, a, run, ifs, ring] = await Promise.all([
-        invoke('net_status'),
+      const [c, a, ifs, ring] = await Promise.all([
+        invoke('net_card'),
         invoke('net_local_addr'),
-        invoke('net_running'),
         invoke('net_ifaces'),
         invoke('net_ring_ms'),
       ])
+      card = c || null
       if (Number.isFinite(Number(ring))) ringTarget = Number(ring)
-      ok = true
-      text = String(s)
       addrUrl = a && a.url ? String(a.url) : ''
       addrIp = a && a.ip ? String(a.ip) : ''
       addrReason = a && a.reason ? String(a.reason) : ''
       if (a && a.port) addrPort = Number(a.port)
-      running = !!run
       if (Array.isArray(ifs)) ifaces = ifs
+      if (!card) failed = T('状态不可用')
     } catch (e) {
-      text = T('状态不可用：') + String(e)
+      failed = String(e)
+      card = null
       addrUrl = ''
       addrIp = ''
       addrReason = String(e)
-      running = false
     }
-    lastStatus = { text, ok }
+    statusReason = failed
     for (const c of cards) {
       if (c.el.isConnected) c.paint()
       else cards.delete(c)
@@ -177,6 +186,7 @@
     const canvas = /** @type {HTMLCanvasElement|null} */ (host.querySelector('canvas'))
     const note = /** @type {HTMLElement|null} */ (host.querySelector('.netqr-note'))
     if (!canvas || !window.__pvQr) return
+    const running = !!card?.running
     // 服务没跑就不给码：地址是能算出来的，但扫过去连不上。与其给一张必然失败的码，不如
     // 说清楚为什么没码（AGENTS.md §1.1：不显示伪造 / 无效的值）。
     if (!url || !running) {
@@ -195,7 +205,7 @@
     canvas.classList.remove('off')
     try {
       window.__pvQr.render(url, canvas, { scale: 4, margin: 2 })
-      if (note) note.textContent = T('客户端扫码打开网页版客户端')
+      if (note) note.textContent = ''
     } catch (e) {
       canvas.classList.add('off')
       if (note) note.textContent = T('二维码生成失败：') + String(e)
@@ -211,48 +221,27 @@
   }
 
   /**
-   * AEC 的数值参数。改完立刻 apply（重建会话）——这些数都参与建行，跑起来就固定了。
-   */
-  function netNum(row, key, min, max, step, apply) {
-    const i = document.createElement('input')
-    i.type = 'number'
-    i.min = String(min)
-    i.max = String(max)
-    i.step = String(step)
-    i.style.width = '4.5em'
-    i.value = row.params[key] ?? '0'
-    i.addEventListener('change', () => {
-      row.params[key] = i.value
-      if (typeof apply === 'function') apply()
-    })
-    return i
-  }
-
-  /**
    * @param {HTMLElement} elRow 行容器（`columns.js` 传进来）
-   * @param {number} _ci @param {number} _ri @param {any} row
+   * @param {number} ci @param {number} ri @param {any} row
    * @param {{apply?: () => void}} [hooks]
    */
-  function attach(elRow, _ci, _ri, row, hooks) {
+  function attach(elRow, ci, ri, row, hooks) {
     const apply = hooks && hooks.apply
     const out = row.ptype === 'remote_speaker'
+    // 旧配置里「直通」可能存成 `'1'`（独立 AEC 行的写法），而参数渲染器只认 `'true'`：
+    // 不归一化就会出现「实际在直通、界面没勾」。在这里收口一次，不给第二套判定。
+    if (row.params.bypass === '1') row.params.bypass = 'true'
 
-    // 网络行卡片。**手机相关的全部操作都在这里**——顶栏不再有独立面板（用户明确要求：
-    // 「手机不要单独的面板，就是这个网络面板」）。这一行既是链路的一环，也是客户端
-    // 的说明书：状态、地址、二维码、重启、远程输入、端口，缺一样用户就接不上。
-    //
-    // 「手机」这个词只在指代真机时出现；客户端本身可能是手机、平板或浏览器网页版，
-    // 所以一律叫「客户端」（见 AGENTS.md §1.2：远程音频与远程输入是**网络**功能）。
     const box = document.createElement('div')
     box.className = 'netcard'
 
-    // 1) 状态灯 + 状态串（与 `/debug` 的 `net` 段同源；失败给原因，不显示伪造的 0）
+    // ---- 1) 状态灯 + 一句短状态 + 生命周期按钮 ----
     const bar = document.createElement('div')
     bar.className = 'netcard-bar'
     const dot = document.createElement('span')
     dot.className = 'netdot'
     const status = document.createElement('span')
-    status.className = 'netcard-status'
+    status.className = 'netcard-status mono'
     bar.append(dot, status)
 
     const acts = document.createElement('span')
@@ -303,31 +292,26 @@
     bar.appendChild(acts)
     box.appendChild(bar)
 
-    // 2) 客户端地址 + 复制。二维码的内容就是它，两边永远一致（同一个 `addrUrl`）。
+    // ---- 2) 地址 + 复制 + 网卡 + 端口（全是一行，能折行） ----
+    // 不再写「客户端地址 / 网卡 / 端口」三个标签：它们都是**可调项的标题**，
+    // 每张卡都写一遍只是在挤占横向空间（用户 2026-10-27）。语义放进 title / aria-label。
     const addrBox = document.createElement('div')
     addrBox.className = 'netcard-addr'
-    const lab = document.createElement('span')
-    lab.className = 'netcard-label'
-    lab.textContent = T('客户端地址')
     const url = document.createElement('span')
     url.className = 'mono netcard-url'
+    url.title = T('客户端地址')
     const copyBtn = document.createElement('button')
     copyBtn.type = 'button'
-    copyBtn.className = 'icon'
+    copyBtn.className = 'icon netcard-copy'
     copyBtn.textContent = T('复制')
     copyBtn.title = T('复制客户端地址')
+    copyBtn.setAttribute('aria-label', T('复制客户端地址'))
     copyBtn.addEventListener('click', () => copy(addrUrl, copyBtn))
-    addrBox.append(lab, url, copyBtn)
-    box.appendChild(addrBox)
 
-    // 2b) 网卡下拉 + 端口框。**换网卡不用重启服务**（服务绑 0.0.0.0，本来就监听所有
-    //     网卡），换端口必须重启 —— 所以这两件事的行为不一样，提示文字也分开写。
-    const netBox = document.createElement('div')
-    netBox.className = 'netcard-addr'
-    netBox.appendChild(nl(T('网卡')))
     const ifSel = document.createElement('select')
     ifSel.className = 'netcard-sel netcard-ifsel'
     ifSel.title = T('只决定二维码 / 复制的是哪个地址，服务不用重启（本来就在监听所有网卡）')
+    ifSel.setAttribute('aria-label', T('网卡'))
     ifSel.addEventListener('change', () => {
       const v = ifSel.value
       invoke('net_select_ip', { ip: v })
@@ -343,8 +327,7 @@
           poll()
         })
     })
-    netBox.appendChild(ifSel)
-    netBox.appendChild(nl(T('端口')))
+
     const portIn = document.createElement('input')
     portIn.type = 'number'
     portIn.min = '1024'
@@ -352,6 +335,9 @@
     portIn.step = '1'
     portIn.className = 'netcard-port mono'
     portIn.title = T('改完自动重启服务；已连着的客户端需要重新连')
+    portIn.setAttribute('aria-label', T('端口'))
+    const portHint = document.createElement('span')
+    portHint.className = 'netcard-port-hint'
     portIn.addEventListener('change', () => {
       const p = Number(portIn.value)
       if (!Number.isInteger(p) || p < 1024 || p > 65535) {
@@ -377,120 +363,8 @@
           poll()
         })
     })
-    // 4) 端口：**单独一行**，右边常驻一行「是否被占用」的结论（不静默）。
-    //    原来把它塞在「网卡」那一行里，标签被裁成「端口」两个字、还有一半看不见。
-    const portRow = document.createElement('div')
-    portRow.className = 'netcard-addr'
-    portRow.appendChild(nl(T('端口')))
-    portRow.appendChild(portIn)
-    const portHint = document.createElement('span')
-    portHint.className = 'netcard-port-hint'
-    portRow.appendChild(portHint)
-    // 只由网卡/端口那一行承载：
-
-
-    // 2c) 抖动缓冲深度（**手动**滑块，10~200 ms、10 ms 步进）。
-    //     「缓冲只在接收方」是设计不变量，所以这个值由手机执行、电脑只负责设定与显示；
-    //     手机那侧也有同一个滑块，谁改了另一边跟着变（协议 `settarget` ↔ `target`）。
-    //     这不是自适应：值只由用户拧，运行期不会因为抖动自己动。
-    const ringWrap = document.createElement('div')
-    ringWrap.className = 'netcard-ring'
-    const ringLabel = document.createElement('div')
-    ringLabel.className = 'netcard-ring-label'
-    const ringIn = document.createElement('input')
-    ringIn.type = 'range'
-    ringIn.min = '10'
-    ringIn.max = '200'
-    ringIn.step = '10'
-    ringIn.className = 'netcard-ring-range'
-    const ringVal = document.createElement('span')
-    ringVal.className = 'netcard-ring-val mono'
-    const ringMs = () => ringTarget
-    /** 用户正在拖滑块（拖动期间不许回绘把它拽回去）。**必须在 `paintRing` 之前声明**：
-     *  它在下面第一次 `paintRing()` 里被读，声明在后面的 `let` 会直接 TDZ 抛错，
-     *  整张卡都建不出来（2026-10-27 实测：`Cannot access 'ringDragging' before initialization`，
-     *  结果是整个列区空白）。 */
-    let ringDragging = false
-    const paintRing = (ms) => {
-      ringLabel.textContent = T('抖动缓冲（手机缓冲帧数，1 帧 = 10 ms）')
-      // 用户正在拖：别把滑块拽回去（读数照旧跟着手指）
-      if (ringDragging) return
-      ringIn.value = String(ms)
-      ringVal.textContent = T('{f} 帧 / {ms} ms', { f: String(ms / 10), ms: String(ms) })
-    }
-    paintRing(ringMs())
-    ringPainters.add(() => {
-      if (ringWrap.isConnected) paintRing(ringMs())
-    })
-
-    // 拖动时只更新读数；抬手才下发（避免每 10 ms 打一次 IPC 把命令队列灌满）
-    ringIn.addEventListener('pointerdown', () => {
-      ringDragging = true
-    })
-    ringIn.addEventListener('pointerup', () => {
-      ringDragging = false
-    })
-    ringIn.addEventListener('input', () => {
-      ringVal.textContent = T('{f} 帧 / {ms} ms', {
-        f: String(Number(ringIn.value) / 10),
-        ms: String(Number(ringIn.value)),
-      })
-    })
-    ringIn.addEventListener('change', () => {
-      const ms = Number(ringIn.value)
-      invoke('net_set_ring_ms', { ms })
-        .then((applied) => {
-          paintRing(Number(applied) || ms)
-          toast(T('抖动缓冲已改为 {ms} ms', { ms: String(applied) }), 'ok', 3000)
-        })
-        .catch((e) => {
-          paintRing(ringMs())
-          toast(T('改抖动缓冲失败：') + String(e), 'error', 6000)
-        })
-    })
-    ringWrap.appendChild(ringLabel)
-    ringWrap.appendChild(ringIn)
-    ringWrap.appendChild(ringVal)
-    netBox.appendChild(ringWrap)
-
-    box.appendChild(netBox)
-
-    // 3) 装 CA 证书的按钮。网页版的麦克风靠 `getUserMedia`，它只在**安全上下文**里可用，
-    //    所以必须走 https（DESIGN.md §4.1.11）。装一次 CA 之后手机就永久不再报警。
-    //    按钮放在这里而不是「设置」里，因为它和地址、端口是同一件事：地址决定去哪台机器。
-    const caBtn = document.createElement('button')
-    caBtn.type = 'button'
-    caBtn.className = 'netcard-ca'
-    caBtn.textContent = T('下载证书（手机装一次）')
-    caBtn.title = T(
-      '手机浏览器打开这个地址下载 CA 证书，装到系统里，之后扫码访问就不会再报警告了',
-    )
-    caBtn.addEventListener('click', async () => {
-      caBtn.disabled = true
-      try {
-        const pem = await invoke('net_ca_pem')
-        if (!pem) {
-          toast(T('证书还没准备好：先启动服务'), 'warn', 5000)
-          if (window.__pvDebug) window.__pvDebug(T('证书还没准备好：先启动服务'))
-          return
-        }
-        // 用 Blob + a[download]：不经过服务端额外路由，证书内容直接来自 Rust 侧读的那份
-        const url = URL.createObjectURL(new Blob([pem], { type: 'application/x-x509-ca-cert' }))
-        const a = document.createElement('a')
-        a.href = url
-        a.download = 'purevox-ca.crt'
-        a.click()
-        URL.revokeObjectURL(url)
-        toast(T('CA 证书已下载'), 'ok')
-        if (window.__pvDebug) window.__pvDebug(T('CA 证书已下载'))
-      } catch (e) {
-        toast(T('取证书失败：') + String(e), 'error', 6000)
-        if (window.__pvDebug) window.__pvDebug(T('取证书失败：') + String(e))
-      } finally {
-        caBtn.disabled = false
-      }
-    })
-    box.appendChild(caBtn)
+    addrBox.append(url, copyBtn, ifSel, portIn, portHint)
+    box.appendChild(addrBox)
 
     /**
      * 重建网卡下拉的选项。
@@ -502,7 +376,8 @@
     const fillIfaces = () => {
       // 每 500 ms 重建一次会把用户正打开的下拉弹回去。签名相同就直接跳过 —— 选项内容
       // 和选中项都没变，重建纯属自找麻烦。
-      const sig = addrIp + ' ' + ifaces.map((n) => n.ip + ' ' + n.name + ' ' + n.desc).join('')
+      const sig =
+        addrIp + '\u0000' + ifaces.map((n) => n.ip + '\u0000' + n.name + '\u0000' + n.desc).join('\u0001')
       if (ifSel.dataset.sig === sig) return
       ifSel.dataset.sig = sig
       ifSel.textContent = ''
@@ -530,59 +405,257 @@
       ifSel.value = addrIp
     }
 
-    // 3) 二维码在左，**说明文字在二维码右边**（一栏竖排，不散在卡片各处）。
-    //    下面再放远程输入开关——高度由内容决定，不留空白。
+    // ---- 3) 二维码在左，**按钮在右边**（用户 2026-10-27：右边只放能点的东西） ----
     const qrBox = document.createElement('div')
     qrBox.className = 'netqr'
     const canvas = document.createElement('canvas')
     canvas.className = 'netqr-canvas'
     canvas.setAttribute('role', 'img')
+    canvas.setAttribute('aria-label', T('客户端扫码打开网页版客户端'))
+
     const side = document.createElement('div')
     side.className = 'netqr-side'
-    const note = document.createElement('div')
-    note.className = 'netqr-note'
-    const help = document.createElement('div')
-    help.className = 'netcard-help'
-    help.textContent = out
-      ? T('网络扬声器：把处理后的声音 Opus 编码后发给所有已订阅的客户端。客户端连上并订阅后就有声音。')
-      : T('网络麦克风：远端设备的麦克风当电脑麦克风用，照样进降噪 / TSE / AEC 全链。客户端需连接上面的地址。')
-    side.append(note, help)
-    qrBox.append(canvas, side)
-    box.appendChild(qrBox)
 
-    // 5) 远程输入开关：打字 + 全尺寸键盘。默认关闭（局域网无鉴权，AGENTS.md §1.2）。
-    const ri = document.createElement('label')
-    ri.className = 'en netcard-remote'
+    const sideActs = document.createElement('div')
+    sideActs.className = 'netqr-acts'
+
+    // 证书：网页版的麦克风靠 `getUserMedia`，它只在**安全上下文**里可用，所以必须走
+    // https（DESIGN.md §4.1.12）。装一次 CA 之后手机就永久不再报警告。
+    const caBtn = document.createElement('button')
+    caBtn.type = 'button'
+    caBtn.className = 'netcard-ca'
+    caBtn.textContent = T('证书')
+    caBtn.title = T('手机浏览器打开这个地址下载 CA 证书，装到系统里，之后扫码访问就不会再报警告了')
+    caBtn.setAttribute('aria-label', T('下载证书（手机装一次）'))
+    caBtn.addEventListener('click', async () => {
+      caBtn.disabled = true
+      try {
+        const pem = await invoke('net_ca_pem')
+        if (!pem) {
+          toast(T('证书还没准备好：先启动服务'), 'warn', 5000)
+          if (window.__pvDebug) window.__pvDebug(T('证书还没准备好：先启动服务'))
+          return
+        }
+        // 用 Blob + a[download]：不经过服务端额外路由，证书内容直接来自 Rust 侧读的那份
+        const u = URL.createObjectURL(new Blob([pem], { type: 'application/x-x509-ca-cert' }))
+        const a = document.createElement('a')
+        a.href = u
+        a.download = 'purevox-ca.crt'
+        a.click()
+        URL.revokeObjectURL(u)
+        toast(T('CA 证书已下载'), 'ok')
+        if (window.__pvDebug) window.__pvDebug(T('CA 证书已下载'))
+      } catch (e) {
+        toast(T('取证书失败：') + String(e), 'error', 6000)
+        if (window.__pvDebug) window.__pvDebug(T('取证书失败：') + String(e))
+      } finally {
+        caBtn.disabled = false
+      }
+    })
+
+    // 远程输入开关：打字 + 全尺寸键盘。默认关闭（局域网无鉴权，AGENTS.md §1.2）。
+    const riBox = document.createElement('label')
+    riBox.className = 'en netcard-remote'
     const cb = document.createElement('input')
     cb.type = 'checkbox'
+    cb.title = T('同网段无鉴权：开启后同一 Wi-Fi 下的任何设备都能向这台电脑打字和发按键')
     cb.addEventListener('change', () => {
       invoke('net_set_remote_input', { on: cb.checked })
         .then(() => {
-          remoteInput = cb.checked
+          // 成功后再用下一轮 `net_card` 校准显示，避免「界面说开了其实没开」
+          poll()
         })
         .catch((e) => {
-          cb.checked = remoteInput // 失败必须回滚，不能界面显示已开而实际是关
+          cb.checked = !cb.checked // 失败必须回滚，不能界面显示已开而实际是关
           toast(T('远程输入开关失败：') + String(e), 'error', 6000)
           if (window.__pvDebug) window.__pvDebug(T('远程输入开关失败：') + String(e))
         })
     })
-    ri.append(cb, document.createTextNode(T('远程输入（打字 + 键盘，默认关闭）')))
-    ri.title = T('同网段无鉴权：开启后同一 Wi-Fi 下的任何设备都能向这台电脑打字和发按键')
-    box.appendChild(ri)
+    riBox.append(cb, document.createTextNode(T('远程输入')))
 
-    /** 重绘状态相关的部分（2 Hz，AGENTS.md §1.1：不卡 UI） */
-    const paint = () => {
-      const s = lastStatus
-      if (s) {
-        status.textContent = s.text
-        // 灯也看服务在不在跑：服务停了但状态查询成功时，不能还是绿的
-        dot.className = 'netdot ' + (s.ok && running ? 'ok' : 'na')
+    sideActs.append(caBtn, riBox)
+
+    // AEC 开关（**只有网络输入行**有意义：输出行没有「近端麦克风」）
+    const aecHead = document.createElement('label')
+    aecHead.className = 'en netcard-aec-head'
+    const aecCb = document.createElement('input')
+    aecCb.type = 'checkbox'
+    aecCb.checked = row.params.aec === '1' || row.params.aec === 'true'
+    aecCb.title = T('AEC 消除回声')
+    aecHead.append(aecCb, document.createTextNode(T('AEC')))
+    if (!out) sideActs.appendChild(aecHead)
+    aecCb.addEventListener('change', () => {
+      row.params.aec = aecCb.checked ? '1' : '0'
+      // AEC 是结构性变更（模型要加载、far 采集要起停），必须重建会话
+      if (typeof apply === 'function') apply()
+      syncAec()
+    })
+
+    // 抖动缓冲（**手动**滑块，10~200 ms、10 ms 步进）：「缓冲只在接收方」是设计不变量，
+    // 所以这个值由手机执行、电脑只负责设定与显示；手机那侧也有同一个滑块，谁改了另一边
+    // 跟着变（协议 `settarget` ↔ `target`）。**不是自适应**：值只由用户拧。
+    const ringWrap = document.createElement('div')
+    ringWrap.className = 'netcard-ring'
+    const ringIn = document.createElement('input')
+    ringIn.type = 'range'
+    ringIn.min = '10'
+    ringIn.max = '200'
+    ringIn.step = '10'
+    ringIn.className = 'netcard-ring-range'
+    ringIn.setAttribute(
+      'aria-label',
+      T('抖动缓冲（手机缓冲帧数，1 帧 = 10 ms）'),
+    )
+    ringIn.title = T('抖动缓冲（手机缓冲帧数，1 帧 = 10 ms）')
+    const ringVal = document.createElement('span')
+    ringVal.className = 'netcard-ring-val mono'
+    ringWrap.append(nl(T('缓冲')), ringIn, ringVal)
+    /** 用户正在拖滑块（拖动期间不许回绘把它拽回去）。**必须在 `paintRing` 之前声明**：
+     *  它在下面第一次 `paintRing()` 里被读，声明在后面的 `let` 会直接 TDZ 抛错，
+     *  整张卡都建不出来（2026-10-27 实测：`Cannot access 'ringDragging' before initialization`，
+     *  结果是整个列区空白）。 */
+    let ringDragging = false
+    const paintRing = (ms) => {
+      // 用户正在拖：别把滑块拽回去（读数照旧跟着手指）
+      if (ringDragging) return
+      ringIn.value = String(ms)
+      ringVal.textContent = T('{ms} ms', { ms: String(ms) })
+    }
+    paintRing(ringTarget)
+    ringPainters.add(() => {
+      if (ringWrap.isConnected) paintRing(ringTarget)
+    })
+    ringIn.addEventListener('pointerdown', () => {
+      ringDragging = true
+    })
+    ringIn.addEventListener('pointerup', () => {
+      ringDragging = false
+    })
+    ringIn.addEventListener('input', () => {
+      ringVal.textContent = T('{ms} ms', { ms: String(Number(ringIn.value)) })
+    })
+    ringIn.addEventListener('change', () => {
+      const ms = Number(ringIn.value)
+      invoke('net_set_ring_ms', { ms })
+        .then((applied) => {
+          paintRing(Number(applied) || ms)
+          toast(T('抖动缓冲已改为 {ms} ms', { ms: String(applied) }), 'ok', 3000)
+        })
+        .catch((e) => {
+          paintRing(ringTarget)
+          toast(T('改抖动缓冲失败：') + String(e), 'error', 6000)
+        })
+    })
+
+    const note = document.createElement('div')
+    note.className = 'netqr-note'
+    side.append(sideActs, ringWrap, note)
+    qrBox.append(canvas, side)
+    box.appendChild(qrBox)
+
+    // ---- 4) AEC 控件（勾上才展开：远端来源 + 增益 / 延时 / 直通 + 校准 / 结果）----
+    const aecBox = document.createElement('div')
+    aecBox.className = 'netcard-aec'
+
+    const farRow = document.createElement('div')
+    farRow.className = 'netcard-far'
+    farRow.appendChild(nl(T('远端')))
+    const farSel = document.createElement('select')
+    farSel.className = 'netcard-sel'
+    farSel.setAttribute('aria-label', T('远端设备'))
+    // 远端来源与**独立 AEC 行**同一份列表（`list_loopback_targets`：系统默认输出 +
+    // 每只输出设备的回环），另外多一项「网络出站」—— 那是网络行独有的参考源。
+    // 先填两个保底项，枚举回来再补：枚举要碰 cpal / pactl，慢一点不能挡住首屏。
+    const fillFar = (targets) => {
+      const keep = row.params.far_device || 'loopback'
+      farSel.textContent = ''
+      const opts = [
+        ['loopback', T('系统默认输出')],
+        ['network', T('网络出站（本机刚发出的音频）')],
+      ]
+      for (const t of targets || []) {
+        const id = t && (t.id || t.device || t.name)
+        if (!id || id === 'loopback' || id === 'network') continue
+        opts.push([id, t.name || t.label || String(id)])
       }
-      // 启停按钮按状态禁用（不隐藏，避免卡片重排）
+      for (const [v, t] of opts) {
+        const o = document.createElement('option')
+        o.value = v
+        o.textContent = t
+        farSel.appendChild(o)
+      }
+      farSel.value = [...farSel.options].some((o) => o.value === keep) ? keep : 'loopback'
+    }
+    fillFar(null)
+    invoke('list_loopback_targets').then(fillFar).catch(() => {})
+    farSel.addEventListener('change', () => {
+      row.params.far_device = farSel.value
+      if (typeof apply === 'function') apply()
+    })
+    farRow.appendChild(farSel)
+    aecBox.appendChild(farRow)
+
+    // 增益 / 延时 / 直通：**与独立 `echo_cancel` 行完全同一份控件**（`columns.js` 的
+    // 参数渲染器），范围 / 步进 / 单位都一致。复制一套到自己这里就是漂移的根源。
+    // 明确排除 `aec`（开关在二维码右边）与 `far_device`（上面那只下拉），也不给
+    // `model`（内置模型，与 AEC 行同一个，用户 2026-10-27 要求不给选）。
+    aecBox.appendChild(
+      window.__pvParams
+        ? window.__pvParams.controls(row, ci, ri, [
+            'mic_gain_db',
+            'far_gain_db',
+            'far_delay_ms',
+            'bypass',
+          ])
+        : document.createTextNode(T('参数控件未就绪')),
+    )
+
+    const aecActs = document.createElement('div')
+    aecActs.className = 'netcard-aec-acts'
+    const calBtn = document.createElement('button')
+    calBtn.type = 'button'
+    calBtn.textContent = T('校准')
+    calBtn.title = T('向远端送扫频探针，测出延时与两端电平并回填')
+    calBtn.addEventListener('click', () => {
+      calBtn.disabled = true
+      calBtn.textContent = T('校准中')
+      invoke('calibrate_aec_delay', { col: ci, row: ri })
+        .then((t) => window.__pvDebug?.('开始校准：' + t))
+        .catch((e) => {
+          window.__pvToast?.(T('校准失败：') + String(e), 'error', 7000)
+          window.__pvDebug?.('校准失败：' + e)
+        })
+        .finally(() => {
+          window.setTimeout(() => {
+            calBtn.disabled = false
+            calBtn.textContent = T('校准')
+          }, 1800)
+        })
+    })
+    // 结果：打开最近一次校准的曲线 + 结论（与 AEC 行**同一个面板**，数据来自快照
+    // `calib_report`，见 calib.js）。没有报告时禁用，不假装有结果。
+    const resBtn = document.createElement('button')
+    resBtn.type = 'button'
+    resBtn.textContent = T('结果')
+    resBtn.title = T('查看最近一次校准结果（含曲线与结论）')
+    resBtn.addEventListener('click', () => window.__pvCalib?.open())
+    aecActs.append(calBtn, resBtn)
+    aecBox.appendChild(aecActs)
+    if (!out) box.appendChild(aecBox)
+
+    /** 按勾选状态显隐 AEC 控件（勾上才有意义，不勾时占地方也没信息） */
+    function syncAec() {
+      aecBox.classList.toggle('on', aecCb.checked)
+    }
+    syncAec()
+
+    // ---- 重绘（2 Hz，AGENTS.md §1.1：不卡 UI）----
+    const paint = () => {
+      const c = card
+      const running = !!c?.running
       bStart.disabled = running
       bStop.disabled = !running
-      // 地址取不到时要说**为什么**：没网卡 / 没有默认路由，和「服务没跑」是两回事，都写
-      // 成「服务没启动」会让人一直去点启动按钮（AGENTS.md §1.1）。
+      // 地址取不到时要说**为什么**：没网卡 / 没有默认路由，和「服务没跑」是两回事。
       // 地址取得到时照常显示（服务没跑就是灰的），用户据此在手机上先填好 —— 只是别给一张
       // 扫不通的码，见 `drawQr`。
       url.textContent = addrUrl || addrReason || T('服务未启动')
@@ -592,154 +665,66 @@
       if (document.activeElement !== portIn && portIn.value !== String(addrPort)) {
         portIn.value = String(addrPort)
       }
-      // 端口是否被占用：从状态串里读（失败原因是唯一事实来源，不另猜）
-      const st = (lastStatus && lastStatus.text) || ''
-      const busy = /占用|in use|Address already/i.test(st)
-      portHint.textContent = busy ? T('端口被占用') : running ? T('监听中') : ''
-      portHint.className = 'netcard-port-hint ' + (busy ? 'bad' : 'ok')
+
+      // 状态：**只给一句短的**，全文留在 `/debug` 的 `net` 段（`net_status` 那条长串
+      // 不适合放进几行高的卡片）。每一段都来自 Rust 的结构化字段，前端不另算。
+      const parts = []
+      if (statusReason) parts.push(statusReason)
+      else if (c) {
+        parts.push(running ? T('就绪') : T('未启动'))
+        if (c.clients) parts.push(T('{n} 客户端', { n: c.clients }))
+        if (c.subs) parts.push(T('{n} 订阅', { n: c.subs }))
+        if (!c.codec_ok) parts.push(T('编解码器不可用'))
+      } else {
+        parts.push(T('状态不可用'))
+      }
+      status.textContent = parts.join(' · ')
+      // 灯也看服务在不在跑 + 编解码器是否可用（缺 opus 时网络功能是废的）
+      const ok = running && !!c?.codec_ok && !statusReason
+      dot.className = 'netdot ' + (ok ? 'ok' : 'na')
+      // 细节（端口占用 / 后端 / 最近错误 / 水位 / 入站环）放进 tooltip，不占版面
+      const tips = []
+      tips.push(T('端口') + '：' + addrPort)
+      if (c) {
+        tips.push(T('客户端') + '：' + c.clients + '，' + T('订阅') + '：' + c.subs)
+        tips.push(
+          T('缓冲') + '：' +
+            (c.rx_level_ms == null
+              ? '—'
+              : Math.round(c.rx_level_ms) + '/' + Math.round(c.rx_target_ms) + ' ms'),
+        )
+        if (c.keys_backend) tips.push(T('远程输入') + '：' + c.keys_backend)
+        if (c.keys_reason) tips.push(T('远程输入') + '：' + c.keys_reason)
+        if (!c.codec_ok && c.codec_reason) tips.push(T('编解码器不可用') + '：' + c.codec_reason)
+        if (c.last_error) tips.push(c.last_error)
+      }
+      if (addrReason) tips.push(addrReason)
+      status.title = tips.join('\n')
+
+      // 端口是否被占用：从状态里读（失败原因是唯一事实来源，不另猜）
+      // Rust 的 `codec_reason` 不区分端口；端口占用会体现在 `last_error` 里。
+      const lastErr = (c && c.last_error) || ''
+      const busyPort = /占用|in use|address already/i.test(lastErr)
+      portHint.textContent = busyPort ? T('端口被占用') : ''
+      portHint.className = 'netcard-port-hint ' + (busyPort ? 'bad' : '')
+
+      // 远程输入：开关状态跟着 Rust 走（手机 / 托盘关掉时这里也要变）；后端不可用时
+      // 说明为什么（禁用只是不让人白点，原因必须在 tooltip 里看得见）
+      const riOn = !!c?.remote_input
+      if (document.activeElement !== cb) cb.checked = riOn
+      const keysOk = !(c && c.keys_reason)
+      cb.disabled = !keysOk
+      riBox.title = keysOk
+        ? T('同网段无鉴权：开启后同一 Wi-Fi 下的任何设备都能向这台电脑打字和发按键')
+        : T('远程输入在这个平台不可用：') + (c?.keys_reason || '')
+
+      // 校准结果：有报告才让点
+      resBtn.disabled = !window.__pvCalib?.hasReport?.()
+
       drawQr(qrBox)
     }
 
-    // 5) AEC 复选框。网络麦克风**近端锁死是网络**（卡片上不可改 —— 这就是这张卡的
-    //    意义），勾上后才长出完整 AEC 控件：远端来源 / 近端·远端增益 / 延时 / 校准 /
-    //    直通。远端默认「系统默认输出回环」：PC 自己外放最常见，也最容易用
-    //    VB-CABLE 之类的虚拟设备搭出来验证。
-    // 复选框**必须常驻可见** —— 它不能放在下面那个默认 `display:none` 的容器里，
-    // 否则用户连勾都勾不上（我第一版就是这么写的，界面上什么都看不到）。
-    const aecHead = document.createElement('label')
-    aecHead.className = 'en netcard-aec-head'
-    const aecCb = document.createElement('input')
-    aecCb.type = 'checkbox'
-    aecCb.checked = row.params.aec === '1'
-    aecHead.append(aecCb, document.createTextNode(T('AEC 消除回声')))
-    // **只有网络输入行**才有 AEC（输出行没有「近端麦克风」这个概念）
-    if (!out) box.appendChild(aecHead)
-
-    aecCb.addEventListener('change', () => {
-      row.params.aec = aecCb.checked ? '1' : '0'
-      // AEC 是结构性变更（模型要加载、far 采集要起停），必须重建会话
-      if (typeof apply === 'function') apply()
-    })
-
-    // 控件区：默认收起，勾上才展开。
-    const aecBox = document.createElement('div')
-    aecBox.className = 'netcard-aec'
-
-    const near = document.createElement('div')
-    near.className = 'netcard-far'
-    near.appendChild(nl(T('近端')))
-    // 近端锁死：网络麦克风本来就是网络输入，没有别的可选
-    const nearLocked = document.createElement('span')
-    nearLocked.className = 'netcard-locked'
-    nearLocked.textContent = T('网络麦克风（不可更改）')
-    near.appendChild(nearLocked)
-    near.appendChild(nl(T('远端')))
-    const farSel = document.createElement('select')
-    farSel.className = 'netcard-sel'
-    // 远端来源与**独立 AEC 行**同一份列表（`list_loopback_targets`：系统默认输出 +
-    // 每只输出设备的回环），另外多一项「网络出站」—— 那是网络行独有的参考源。
-    // 先填两个保底项，枚举回来再补：枚举要碰 cpal / pactl，慢一点不能挡住首屏。
-    const fillFar = (targets) => {
-      const keep = farSel.value
-      farSel.textContent = ''
-      const opts = [['loopback', T('系统默认输出')],
-                    ['network', T('网络出站（本机刚发出的音频）')]]
-      for (const t of targets || []) {
-        const id = t && (t.id || t.device || t.name)
-        if (!id || id === 'loopback') continue
-        opts.push([id, t.name || t.label || String(id)])
-      }
-      for (const [v, t] of opts) {
-        const o = document.createElement('option')
-        o.value = v
-        o.textContent = t
-        farSel.appendChild(o)
-      }
-      if (!row.params.far_device) row.params.far_device = 'loopback'
-      farSel.value = keep && [...farSel.options].some((o) => o.value === keep)
-        ? keep
-        : row.params.far_device || 'loopback'
-    }
-    fillFar(null)
-    invoke('list_loopback_targets').then(fillFar).catch(() => {})
-    farSel.addEventListener('change', () => {
-      row.params.far_device = farSel.value
-      if (typeof apply === 'function') apply()
-    })
-    near.appendChild(farSel)
-    aecBox.appendChild(near)
-
-    const gains = document.createElement('div')
-    gains.className = 'netcard-far'
-    // **与独立 `echo_cancel` 行完全同一份控件**：直接调 `columns.js` 的渲染器，
-    // 用一个 ptype=echo_cancel 的代理行、`params` 指向本行 —— 于是模型下拉、远端设备、
-    // 近端/远端增益滑块、直通、有符号远端延时，逐项同构，范围/步进/单位都一致。
-    // 复制一套到自己这里就是漂移的根源（模型缺项、范围不一致都是这么来的）。
-    const aecProxy = { ptype: 'echo_cancel', params: row.params }
-    gains.appendChild(
-      window.__pvParams
-        ? window.__pvParams.controls(aecProxy, _ci, _ri)
-        : document.createTextNode(T('参数控件未就绪')),
-    )
-    // 校准：与独立行**同一个面板**（`calib.js`），结果展示也就自然一致
-    const cal = document.createElement('button')
-    cal.type = 'button'
-    cal.textContent = T('校准')
-    cal.title = T('向远端送扫频探针，测出延时与两端电平并回填')
-    cal.addEventListener('click', () => {
-      cal.disabled = true
-      invoke('calibrate_aec_delay')
-        .then((t) => window.__pvDebug?.('开始校准：' + t))
-        .catch((e) => {
-          window.__pvToast?.(T('校准失败：') + String(e), 'error', 7000)
-          cal.disabled = false
-        })
-        .finally(() => {
-          window.setTimeout(() => {
-            cal.disabled = false
-          }, 1500)
-        })
-    })
-    gains.appendChild(cal)
-
-    aecBox.appendChild(gains)
-
-    const aecHelp = document.createElement('p')
-    aecHelp.className = 'netcard-help'
-    aecHelp.textContent = T('勾上后这台网络的麦克风会先过 AEC：远端取哪一路由上面选。近端永远是这张卡的网络输入，不能改。')
-    aecBox.appendChild(aecHelp)
-    if (!out) box.appendChild(aecBox)
-
-    /** 按勾选状态显隐 AEC 控件（勾上才有意义，不勾时占地方也没信息） */
-    const syncAec = () => { aecBox.classList.toggle('on', aecCb.checked) }
-    aecCb.addEventListener('change', syncAec)
-    syncAec()
-
-    /*
-     * 八行顺序（用户 2026-10-27 指定，两张卡完全一致，只有第 8 行是输入行独有）：
-     *   1) 启动/停止/重启 + 状态
-     *   2) 网卡
-     *   3) 客户端地址（IP:端口 + 复制）
-     *   4) 端口 + 是否被占用
-     *   5) 抖动缓冲（帧 = 10 ms）
-     *   6) 二维码 + 右侧说明
-     *   7) 远程输入
-     *   8) AEC（**仅输入**）
-     * 用 appendChild 重排既有节点：节点只会被「移动」，不会重建，监听器全都保留。
-     */
-    box.appendChild(bar)
-    box.appendChild(netBox)
-    box.appendChild(addrBox)
-    box.appendChild(portRow)
-    box.appendChild(ringWrap)
-    box.appendChild(qrBox)
-    box.appendChild(ri)
-    if (!out) {
-      box.appendChild(aecHead)
-      box.appendChild(aecBox)
-    }
-    box.appendChild(caBtn)
-
+    // 节点只 append 一次；顺序就是最终的视觉顺序（不要先 append 再移动）
     elRow.appendChild(box)
     cards.add({ el: elRow, paint })
     paint()

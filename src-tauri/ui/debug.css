@@ -649,16 +649,16 @@ td { padding: 3px 8px 3px 0; overflow: hidden; text-overflow: ellipsis; }
 .state:empty { display: none; }
 
 /* ---------- 网络行卡片（netrow.js） ----------
-   网络行（网络麦克风 / 网络扬声器）不选设备，卡片里要把“怎么用”说清楚：
-   状态灯 + 服务开关/重启 + 地址与二维码 + 说明。同样遵守“不写死高度”的铁律：
-   卡片自然长高，内容多少都不裁掉。 */
+   网络行（网络麦克风 / 网络扬声器）不选设备，卡片是**唯一**的客户端操作入口。
+   2026-10-27 按用户要求做成极致紧凑：状态只一句、静态说明全删、二维码右边只放按钮。
+   同样遵守“不写死高度”的铁律：卡片自然长高，内容多少都不裁掉。 */
 .row.net { flex-direction: column; align-items: stretch; gap: 8px; }
 .netcard {
   display: flex;
   flex-direction: column;
   flex-wrap: wrap;
-  gap: 10px;
-  padding: 12px;
+  gap: 7px;
+  padding: 8px 9px;
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   background: var(--bg-2);
@@ -667,52 +667,57 @@ td { padding: 3px 8px 3px 0; overflow: hidden; text-overflow: ellipsis; }
 .netdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; background: var(--muted); }
 .netdot.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
 .netdot.na { background: var(--warn); }
-.netcard-status { color: var(--muted); font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+.netcard-status { color: var(--muted); font-size: 12px; min-width: 0; flex: 1 1 8em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* `<select>` 的宽度会被最长选项撑开（网卡名带 GUID 就很长），
    这里强制它占满行宽而不是按内容撑 —— 否则卡片量出 359 > 342 */
 .netcard-sel { width: 100%; max-width: 100%; min-width: 0; flex: 1 1 100%; }
 .netcard-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 .netcard-addr { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .netcard-label { color: var(--muted); font-size: 12px; flex: 0 0 auto; }
-.netcard-url { flex: 1 1 12em; min-width: 0; overflow-wrap: anywhere; user-select: all; }
-.netcard-remote { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-/* 二维码在左、文字一栏在右（`flex-start` 顶对齐，不要居中留白）。 */
-/* 码下面只放「远程输入」一行；高度全由内容决定，不预留空白。 */
+.netcard-url { flex: 1 1 10em; min-width: 0; overflow-wrap: anywhere; user-select: all; font-size: 12px; }
+.netcard-copy { flex: 0 0 auto; }
+.netcard-remote { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+/* 二维码在左、**按钮一栏在右**（`flex-start` 顶对齐，不居中留白）。
+   右边只有能点的东西：证书 / 远程输入 / AEC / 缓冲；说明文字一律删掉。 */
 .netqr { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
 .netqr-canvas {
-  width: 132px; height: 132px; flex: 0 0 auto;
+  width: 116px; height: 116px; flex: 0 0 auto;
   background: #fff; border-radius: var(--r-sm); padding: 0;
 }
 .netqr-canvas.off { background: transparent; border: 1px dashed var(--line-strong); }
-.netqr-side { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 10em; }
-.netqr-note { color: var(--fg); font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+.netqr-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1 1 10em; }
+.netqr-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.netqr-note { color: var(--muted); font-size: 11px; min-width: 0; overflow-wrap: anywhere; }
+/* 空 note 不占一行（紧凑卡片里不能因为「没有结论」多留一道空隙） */
+.netqr-note:empty { display: none; }
 .netcard-help { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; min-width: 0; }
-/* AEC 段：复选框常驻（`.netcard-aec-head`），控件区默认收起、勾上才展开。 */
+/* AEC 段：开关在二维码右边（`.netcard-aec-head`），控件区默认收起、勾上才展开。 */
 .netcard-aec { display: none; flex-direction: column; flex-wrap: wrap; gap: 6px;
-  padding-top: 8px; border-top: 1px dashed var(--line-strong); }
+  padding-top: 7px; border-top: 1px dashed var(--line-strong); }
 .netcard-aec.on { display: flex; }
-.netcard-aec-head { display: flex; align-items: center; gap: 6px; font-size: 12px;
-  margin-top: 4px; padding-top: 8px; border-top: 1px dashed var(--line-strong); }
+.netcard-aec-head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.netcard-aec-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .netcard-far { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
-.netcard-locked { color: var(--muted); font-size: 12px; padding: 3px 8px;
-  border: 1px dashed var(--line-strong); border-radius: var(--r-sm); }
+/* 远端来源与标签同一行（`netcard-sel` 的 100% 是给网卡下拉的，这里不能照搬，
+   否则「远端」标签独占一行、白抬一级高度） */
+.netcard-far .netcard-sel { flex: 1 1 8em; }
 /* 网络行里的下拉（网卡 / AEC 远端来源）与全局 `select` 样式**共用同一套外观**：
    这里只调布局（宽度与伸缩），配色 / 边框 / 高度一律不写 —— 另起一套就会和别处的下拉
    对不上，换主题时也只改得到一半（AGENTS.md §4 的「一个功能只有一条实现路径」同理）。 */
-.netcard-ifsel { flex: 1 1 16em; min-width: 8em; max-width: 26em; }
+.netcard-ifsel { flex: 1 1 12em; min-width: 8em; max-width: 26em; }
 /* 端口框定宽 + 等宽数字（`mono` 已带 `tabular-nums`）：改端口时宽度不能跳，
    否则光标位置会飘。 */
-.netcard-port { width: 6em; flex: 0 0 auto; }
-/* 「下载证书」按钮：跟地址/端口同属一件事，所以放在那块下面而不是「设置」里 */
-.netcard-ca { align-self: flex-start; font-size: 12px; }
+.netcard-port { width: 5.6em; flex: 0 0 auto; }
+/* 「证书」按钮：跟地址/端口同属一件事，所以放在二维码右边而不是「设置」里 */
+.netcard-ca { font-size: 12px; }
 
-/* 抖动缓冲滑块：一整行（标签在上、滑块与读数并排）。**窄屏不写死高度**：
+/* 抖动缓冲滑块：二维码右边的一行（标签 / 滑块 / 读数并排）。**不写死高度**：
    标签过长会自动换行，读数用等宽数字定宽，拖动时布局不跳。 */
-.netcard-ring { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 1 100%; margin-top: 2px; }
-.netcard-ring-label { flex: 1 1 100%; font-size: 12px; color: var(--muted); }
-.netcard-ring-range { flex: 1 1 12em; min-width: 8em; accent-color: var(--accent); }
-.netcard-ring-val { flex: 0 0 auto; min-width: 4.5em; text-align: right; font-size: 12px; }
-/* 端口占用结论：常驻一行，占满剩余宽度；不占用时留空（不显示伪造的「正常」） */
+.netcard-ring { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.netcard-ring-range { flex: 1 1 7em; min-width: 6em; accent-color: var(--accent); }
+.netcard-ring-val { flex: 0 0 auto; min-width: 3.6em; text-align: right; font-size: 12px; }
+/* 端口占用结论：只在不正常时出现（「监听中」是常态，不占版面） */
 /* 卡片里的每一行都允许折行、子项可收缩：写死 nowrap 就会量出 359>342 的溢出 */
 .netcard-addr, .netcard-far, .netcard-bar { flex-wrap: wrap; min-width: 0; }
 .netcard-addr > *, .netcard-far > * { min-width: 0; }
@@ -724,8 +729,6 @@ td { padding: 3px 8px 3px 0; overflow: hidden; text-overflow: ellipsis; }
 .netcard { overflow-wrap: anywhere; }
 .netcard-port-hint { flex: 1 1 6em; font-size: 12px; color: var(--muted); }
 .netcard-port-hint.bad { color: var(--err); }
-/* AEC 模型：与独立 `echo_cancel` 行同一个参数，路径长，允许省略号 */
-.netcard-model { flex: 1 1 12em; min-width: 8em; }
 
 /* 滚动条：细一点，别抢视觉 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }

@@ -438,12 +438,18 @@ async fn tse_open_reference_folder() -> Result<(), String> {
 /// **不必先手动启动**：会话未运行时自动临时启动一个，测完（含失败 / 超时）由看门狗线程
 /// 停回原状；期间用户自己启停过就不动他的会话（`AudioManager::finish_temp_session`）。
 #[tauri::command]
-async fn calibrate_aec_delay(mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<String, String> {
+async fn calibrate_aec_delay(
+  mgr: tauri::State<'_, Arc<AudioManager>>,
+  col: Option<usize>,
+  row: Option<usize>,
+) -> Result<String, String> {
   let mgr = mgr.inner().clone();
   let mgr2 = mgr.clone();
-  let (msg, temp_epoch) = tauri::async_runtime::spawn_blocking(move || mgr2.calibrate_aec_delay())
-    .await
-    .map_err(|e| format!("校准异常：{e}"))??;
+  let at = col.zip(row);
+  let (msg, temp_epoch) =
+    tauri::async_runtime::spawn_blocking(move || mgr2.calibrate_aec_delay(at))
+      .await
+      .map_err(|e| format!("校准异常：{e}"))??;
   if temp_epoch.is_some() {
     spawn_calib_watchdog(mgr, temp_epoch);
   }
@@ -498,6 +504,13 @@ async fn net_restart() -> Result<String, String> {
 #[tauri::command]
 fn net_status() -> String {
   net::status()
+}
+
+/// 网络卡片用的紧凑状态（结构化）：界面只排「就绪 · 1 客户端 · 1 订阅」这种短句，
+/// 全文与大段计数留在 `/debug` 与上面的 `net_status`（AGENTS §1.3 单一数据源）。
+#[tauri::command]
+fn net_card() -> net::NetCard {
+  net::card()
 }
 
 /// 服务是否在跑（界面按钮用布尔，别去 `net_status` 的中文串里匹配）。
@@ -623,7 +636,8 @@ fn net_set_ring_ms(ms: u32) -> Result<u32, String> {
 /// 改监听端口。**端口是绑定那一刻定死的，所以这里直接重启服务**，省得用户再点一次。/// 服务没在跑就只存下，下次启动生效。范围限 1024~65535：1024 以下在 Unix 上要 root，
 /// 而且 47821 是调试接口、别来抢。
 #[tauri::command]
-fn net_set_port(port: u16) -> Result<String, String> {  if port < 1024 {
+fn net_set_port(port: u16) -> Result<String, String> {
+  if port < 1024 {
     return Err(format!(
       "端口 {port} 太小（要 ≥ 1024，低端口在 Linux 上需要管理员权限）"
     ));
@@ -868,7 +882,7 @@ fn main() {
             return;
           }
           std::thread::sleep(std::time::Duration::from_millis(ms));
-          match mgr.calibrate_aec_delay() {
+          match mgr.calibrate_aec_delay(None) {
             // 这个钩子是自己先 start() 的，所以返回 None（不是临时会话，别停）
             Ok((t, _)) => hub.push_ui("info", format!("AUTOCALIB：{t}")),
             Err(e) => hub.push_ui("error", format!("AUTOCALIB：{e}")),
@@ -944,6 +958,7 @@ fn main() {
       net_stop,
       net_restart,
       net_status,
+      net_card,
       net_running,
       net_set_remote_input,
       net_local_addr,

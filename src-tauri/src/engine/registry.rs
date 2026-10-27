@@ -131,8 +131,62 @@ static SPECS: &[NodeSpec] = &[
     ptype: "remote_mic",
     label: "网络",
     kind: NodeKind::Input,
-    // 无参数：不需要虚拟声卡驱动，网络流直接进引擎；全会话只允许一个
-    params: &[],
+    // 不需要虚拟声卡驱动，网络流直接进引擎；全会话只允许一个。
+    //
+    // 参数分两组：`aec` 是**这一行自带的去回声开关**（近端锁死为网络输入，界面只给开关），
+    // 其余五项与独立 `echo_cancel` 行同名同义，勾上 AEC 后才用得上。
+    // **没有 `model`**：网络 AEC 与 AEC 行用**同一个内置模型**（`infer::aec::MODEL_AEC`），
+    // 不给用户选（用户 2026-10-27 明确要求：模型本来就是内置的，别再占 UI）。
+    params: &[
+      // 去回声开关：勾上 = 这一行的网络麦克风先过 AEC 再进列（DESIGN.md §4）。
+      ParamSpec {
+        key: "aec",
+        label: "AEC（回声消除）",
+        kind: ParamKind::Bool { default: false },
+      },
+      ParamSpec {
+        key: "far_device",
+        label: "远端设备",
+        kind: ParamKind::Text {
+          default: "loopback",
+        },
+      },
+      ParamSpec {
+        key: "mic_gain_db",
+        label: "近端增益",
+        kind: ParamKind::Number {
+          lo: -40.0,
+          hi: 40.0,
+          default: 0.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "far_gain_db",
+        label: "远端增益",
+        kind: ParamKind::Number {
+          lo: -40.0,
+          hi: 40.0,
+          default: 0.0,
+          step: 1.0,
+        },
+      },
+      ParamSpec {
+        key: "bypass",
+        label: "直通",
+        kind: ParamKind::Bool { default: false },
+      },
+      ParamSpec {
+        key: "far_delay_ms",
+        label: "远端延时",
+        kind: ParamKind::Number {
+          lo: -1000.0,
+          hi: 1000.0,
+          default: 0.0,
+          step: 10.0,
+        },
+      },
+    ],
   },
   NodeSpec {
     ptype: "loopback",

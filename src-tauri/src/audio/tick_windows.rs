@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Threading::{
-  CreateWaitableTimerExW, SetWaitableTimer, WaitForSingleObject, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-  INFINITE, TIMER_ALL_ACCESS,
+  CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, SetWaitableTimer,
+  TIMER_ALL_ACCESS, WaitForSingleObject,
 };
 
 /// 可等待定时器句柄（Drop 时关掉）。

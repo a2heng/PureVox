@@ -42,7 +42,9 @@ use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use crate::audio::{HOP, SAMPLE_RATE};
+#[cfg(test)]
+use crate::audio::HOP;
+use crate::audio::SAMPLE_RATE;
 
 /// 音频帧头长度（字节）。
 pub const HDR_LEN: usize = 8;
@@ -55,6 +57,7 @@ pub const HDR_LEN: usize = 8;
 pub const RING_MS: f64 = 20.0;
 
 /// 溢出阈值 = 深度 + 一格：超过就裁掉最旧一格（保延迟有界）。
+#[cfg(test)]
 const TRIM_EXTRA_MS: f64 = 10.0;
 
 /// 音频帧头：`seq`（每方向独立）+ `ts`（发送方单调时钟，微秒，u32 回绕）。
@@ -95,45 +98,6 @@ pub fn now_us32() -> u32 {
   static T0: OnceLock<Instant> = OnceLock::new();
   let t0 = T0.get_or_init(Instant::now);
   t0.elapsed().as_micros() as u32
-}
-
-/// 到达统计：**只观测**，不参与任何控制。
-#[derive(Debug, Clone, Default)]
-pub struct Arrival {
-  /// 到达间隔偏离 10 ms 的 EWMA（ms）
-  ema_ms: f64,
-  /// 观测到的最坏偏差（ms），只增不减到 `reset`
-  worst_ms: f64,
-  /// 相邻两包的最大间隔（ms）
-  max_gap_ms: f64,
-  last: Option<Instant>,
-  pub packets: u64,
-  /// 到达时环是空的（= 播放已经饿着了）
-  pub late: u64,
-}
-
-impl Arrival {
-  fn on_packet(&mut self, now: Instant, hop_ms: f64, starving: bool) {
-    if let Some(prev) = self.last {
-      let dt = now.saturating_duration_since(prev).as_secs_f64() * 1000.0;
-      self.max_gap_ms = self.max_gap_ms.max(dt);
-      // 超过 500 ms 是「断了一次」，不算抖动
-      if dt < 500.0 {
-        let dev = (dt - hop_ms).abs();
-        self.ema_ms += 0.02 * (dev - self.ema_ms);
-        self.worst_ms = self.worst_ms.max(dev);
-      }
-    }
-    if starving {
-      self.late += 1;
-    }
-    self.last = Some(now);
-    self.packets += 1;
-  }
-
-  fn reset(&mut self) {
-    *self = Arrival::default();
-  }
 }
 
 /// 一路播放环的统计（进 `/debug`；客户端上报用同一套口径）。
@@ -330,8 +294,6 @@ mod tests {
     assert_eq!(out, src[HOP..HOP * 2]);
   }
 
-  /// 起播：环里没有半格就静音，而且**不算欠载**（刚开流不是故障）。
-  
   /// 稳态：推 1 取 1，20 秒不丢不补。
   #[test]
   fn steady_state_is_lossless() {
@@ -352,7 +314,11 @@ mod tests {
     let s = p.stats();
     // 新策略不蓄水位：稳态只要求「不欠载 + 水位有界」，允许超上限时丢最旧的
     assert_eq!(s.underruns, 0);
-    assert!(s.level_ms <= RING_MS + 1e-6, "水位应贴住上限：{} ms", s.level_ms);
+    assert!(
+      s.level_ms <= RING_MS + 1e-6,
+      "水位应贴住上限：{} ms",
+      s.level_ms
+    );
     assert!(
       s.level_ms <= RING_MS + TRIM_EXTRA_MS,
       "水位不该超过深度一格：{}",
@@ -386,10 +352,6 @@ mod tests {
     );
   }
 
-  /// 欠载：淡出重复上一格（不是硬切静音），计数可见；断流 1 s 后退回未起播。
-  
-  /// 观测数据不许参与控制：抖动再大，深度也**不变**。
-  
   /// 新策略：超上限丢最旧的（不淡化、不补帧）。
   #[test]
   fn drops_oldest_over_cap() {
@@ -400,7 +362,11 @@ mod tests {
       p.push(&[0.25; HOP], now);
     }
     let st = p.stats();
-    assert!(st.level_ms <= 20.0 + 0.01, "水位不能超过上限：{}", st.level_ms);
+    assert!(
+      st.level_ms <= 20.0 + 0.01,
+      "水位不能超过上限：{}",
+      st.level_ms
+    );
     assert!(st.trims >= 1 && st.dropped > 0, "超上限要计丢弃");
   }
 

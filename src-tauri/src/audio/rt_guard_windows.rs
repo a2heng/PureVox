@@ -19,17 +19,17 @@
 
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::core::PWSTR;
 use windows::Win32::System::Power::{
-  PowerClearRequest, PowerCreateRequest, PowerRequestExecutionRequired, PowerSetRequest,
-  POWER_REQUEST_TYPE,
+  POWER_REQUEST_TYPE, PowerClearRequest, PowerCreateRequest, PowerRequestExecutionRequired,
+  PowerSetRequest,
 };
 use windows::Win32::System::Threading::{
-  AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority,
-  AVRT_PRIORITY_CRITICAL, POWER_REQUEST_CONTEXT_FLAGS, REASON_CONTEXT, REASON_CONTEXT_0,
+  AVRT_PRIORITY_CRITICAL, AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW,
+  AvSetMmThreadPriority, POWER_REQUEST_CONTEXT_FLAGS, REASON_CONTEXT, REASON_CONTEXT_0,
 };
+use windows::core::PCWSTR;
+use windows::core::PWSTR;
 
 static FAILED: AtomicBool = AtomicBool::new(false);
 static mut ERR: Option<&'static str> = None;
@@ -91,12 +91,25 @@ pub fn acquire_exec() -> ExecGuard {
   // REASON_CONTEXT：SimpleReasonString 是**给用户看的英文短语**（任务管理器里显示），
   // 用 static 宽字符常量，生命周期覆盖整个请求。
   const WHY: &[u16] = &[
-    b'A' as u16, b'u' as u16, b'd' as u16, b'i' as u16, b'o' as u16, b' ' as u16,
-    b's' as u16, b't' as u16, b'r' as u16, b'e' as u16, b'a' as u16, b'm' as u16,
-    b'i' as u16, b'n' as u16, b'g' as u16, 0,
+    b'A' as u16,
+    b'u' as u16,
+    b'd' as u16,
+    b'i' as u16,
+    b'o' as u16,
+    b' ' as u16,
+    b's' as u16,
+    b't' as u16,
+    b'r' as u16,
+    b'e' as u16,
+    b'a' as u16,
+    b'm' as u16,
+    b'i' as u16,
+    b'n' as u16,
+    b'g' as u16,
+    0,
   ];
   let ctx = REASON_CONTEXT {
-    Version: 0, // POWER_REQUEST_CONTEXT_VERSION
+    Version: 0,                            // POWER_REQUEST_CONTEXT_VERSION
     Flags: POWER_REQUEST_CONTEXT_FLAGS(1), // POWER_REQUEST_CONTEXT_SIMPLE_STRING
     Reason: REASON_CONTEXT_0 {
       SimpleReasonString: PWSTR(WHY.as_ptr() as *mut u16),

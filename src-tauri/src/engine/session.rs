@@ -282,7 +282,6 @@ impl Session {
 
 /// 网络麦克风行勾了 AEC 时要用的参数（一包，免得 `build_net_aec_row` 参数列太长）。
 struct NetAecParams {
-  model: String,
   far: String,
   delay_ms: f64,
   mic_gain: f32,
@@ -300,11 +299,8 @@ impl NetAecParams {
         .unwrap_or(0.0)
     };
     Self {
-      model: row
-        .params
-        .get("model")
-        .cloned()
-        .unwrap_or_else(|| crate::infer::aec::MODEL_AEC.to_string()),
+      // **模型是内置的**：网络 AEC 与独立 `echo_cancel` 行用同一个 `MODEL_AEC`，
+      // 计划里不再有 `model` 字段，界面也不再给选择（AGENTS 2026-10-27）。
       far: row
         .params
         .get("far_device")
@@ -330,7 +326,7 @@ fn aec_attach(
   hist: Arc<Mutex<FarHistory>>,
   near: &Arc<Fanout>,
 ) -> Result<(), String> {
-  let engine = Aec::load(&p.model)?;
+  let engine = Aec::load(crate::infer::aec::MODEL_AEC)?;
   row.aec = Some(AecRow {
     engine,
     hist,
@@ -1063,9 +1059,7 @@ fn build_column(
     .name(format!("column-{}@cpu{}", idx + 1, core))
     .spawn(move || {
       let _guard = AliveGuard(alive2);
-      if pin_core
-        && let Err(e) = super::affinity::pin_current(core)
-      {
+      if pin_core && let Err(e) = super::affinity::pin_current(core) {
         events::log(
           "warn",
           "engine",

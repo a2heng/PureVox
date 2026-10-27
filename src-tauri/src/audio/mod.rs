@@ -42,8 +42,8 @@ pub mod loopback;
 /// 输出设备的混音：多列 → 一个设备（逐源对齐后相加）
 pub mod mixer;
 pub mod playback;
-pub mod rt_guard;
 pub mod probe;
+pub mod rt_guard;
 pub mod tick;
 pub mod tone;
 /// Linux 虚拟麦克风（PipeWire）的创建 / 移除（「驱动」页面）。
@@ -224,12 +224,12 @@ impl AudioManager {
     g.session = Some(outcome.session);
     g.running = true;
     // 音频在跑：申请执行保活（失败只是没有保活，不致命；原因进事件日志）
-    if let Ok(mut k) = KEEPALIVE.lock() {
-      if k.is_none() {
-        *k = Some(crate::audio::rt_guard::acquire_execution_required());
-        if let Some(e) = crate::audio::rt_guard::last_error() {
-          crate::debug::events::log("warn", "audio", e.to_string());
-        }
+    if let Ok(mut k) = KEEPALIVE.lock()
+      && k.is_none()
+    {
+      *k = Some(crate::audio::rt_guard::acquire_execution_required());
+      if let Some(e) = crate::audio::rt_guard::last_error() {
+        crate::debug::events::log("warn", "audio", e.to_string());
       }
     }
     g.epoch = generation;
@@ -296,25 +296,85 @@ impl AudioManager {
     Ok(path.display().to_string())
   }
 
-  /// 测 AEC 延时：对计划里第一个 AEC 行采集 1.5 s，并向会话所有输出设备送扫频探针；
+  /// 测 AEC 延时：对指定的（缺省 = 第一个）AEC 行采集 1.5 s，并向会话所有输出设备送扫频探针；
   /// 结果见 `/debug` 的 `calib`。
+  ///
+  /// **目标行有两种**（2026-10-27 打通网络输入）：独立 `echo_cancel` 行，以及勾了
+  /// `aec` 的网络麦克风行（`remote_mic`）。两者的近端/远端在会话里走的是同一套
+  /// `AecRow`，所以校准算法与报告完全同构，只是近端（网络入站）与远端（`network`）
+  /// 的探针送法不同。
   ///
   /// **不需要先手动启动**：校准必须有列工作线程把「原始近端 hop + 远端窗口」喂进
   /// `calib::feed`（`engine/session.rs`），没有会话就没人喂。所以会话未运行时这里
   /// **临时启动**一个，第二个返回值是 `Some(运行代号)` 表示「本次是临时的，测完要收尾
   /// 停掉」——交给 [`Self::finish_temp_session`]（看门狗线程在 `main.rs`）。
-  pub fn calibrate_aec_delay(&self) -> Result<(String, Option<u64>), String> {
+  pub fn calibrate_aec_delay(
+    &self,
+    at: Option<(usize, usize)>,
+  ) -> Result<(String, Option<u64>), String> {
     let plan = self.plan();
-    let mut target = None;
-    'outer: for (ci, c) in plan.columns.iter().enumerate() {
-      for (ri, r) in c.rows.iter().enumerate() {
-        if r.ptype == "echo_cancel" {
-          target = Some((ci, ri));
-          break 'outer;
+    // 指定了 (列, 行) 就只测那一行 —— 界面上有多条 AEC（独立 AEC 行 + 网络麦克风），
+    // 各自卡片上的「校准」必须测自己那一行，不能永远测第一个。
+    let target = match at {
+      Some((ci, ri)) if plan.columns.get(ci).and_then(|c| c.rows.get(ri)).is_some() => {
+        Some((ci, ri))
+      }
+      Some((ci, ri)) => {
+        return Err(format!(
+          "校准目标（第 {} 列第 {} 行）已不在计划里，请刷新后再试",
+          ci + 1,
+          ri + 1
+        ));
+      }
+      None => {
+        let mut found = None;
+        'outer: for (ci, c) in plan.columns.iter().enumerate() {
+          for (ri, r) in c.rows.iter().enumerate() {
+            // 网络行只在勾了 AEC 时才是校准目标（没勾时它没有近端/远端这一对）
+            let net_aec = r.ptype == "remote_mic"
+              && r
+                .params
+                .get("aec")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            if r.ptype == "echo_cancel" || net_aec {
+              found = Some((ci, ri));
+              break 'outer;
+            }
+          }
         }
+        found
+      }
+    };
+    let (ci, ri) = target.ok_or_else(|| {
+      "计划里没有 AEC 行（或勾了 AEC 的网络麦克风）；请先加一个再测延时".to_string()
+    })?;
+    let target_row = &plan.columns[ci].rows[ri];
+    // 显式指定目标时也要验一下它**确实是 AEC 行**：界面卡片可能在「勾上 AEC → 重建」
+    // 之间有一小段错位，测一个没有 AEC 的行会一直停在「采集中」。
+    {
+      let net_aec = target_row.ptype == "remote_mic"
+        && target_row
+          .params
+          .get("aec")
+          .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+          .unwrap_or(false);
+      if target_row.ptype != "echo_cancel" && !net_aec {
+        return Err(format!(
+          "第 {} 列第 {} 行不是 AEC 行（网络麦克风要先勾上 AEC）",
+          ci + 1,
+          ri + 1
+        ));
       }
     }
-    let (ci, ri) = target.ok_or_else(|| "计划里没有 AEC 行；请先加一个再测延时".to_string())?;
+    let far = target_row
+      .params
+      .get("far_device")
+      .cloned()
+      .unwrap_or_default();
+    // 网络 AEC 的远端 = 网络出站：探针必须**从网络发出去**（手机扬声器放、手机麦克风收），
+    // 送本机输出设备改不了 far 历史，测出来的延时是假的。这里只注入网络出站。
+    let net_probe = far == crate::engine::aec::NET_FAR;
     // 探针送到会话里所有输出设备：保证 far 与 mic 都能收到同一段扫频
     let mut outs: Vec<String> = Vec::new();
     for c in &plan.columns {
@@ -329,13 +389,11 @@ impl AudioManager {
     }
     // 远端是输出回环时：探针必须送到被回环的那只输出（远端与 mic 听同一份，延时才有意义）。
     // Linux 用 `pacat` 直送 Pulse sink（cpal 打不开 sink 名）；Windows 目标本就是 cpal 输出端点。
-    let far = plan.columns[ci].rows[ri]
-      .params
-      .get("far_device")
-      .cloned()
-      .unwrap_or_default();
     let mut far_sink: Option<String> = None;
-    if let Some(id) = crate::engine::aec::far_loopback_id(&far) {
+    if net_probe {
+      // 网络出站就是 far：本机输出与它无关，别同时往外放（会污染 near 的声学路径）
+      outs.clear();
+    } else if let Some(id) = crate::engine::aec::far_loopback_id(&far) {
       if crate::audio::probe::NATIVE {
         // Linux：探针**只**从 far 的这只 sink 发出（探针发声的设备 = AEC 要消除的设备），
         // 不走 cpal 的输出（cpal 也打不开 Pulse sink 名）。
@@ -354,7 +412,7 @@ impl AudioManager {
         }
       }
     }
-    if outs.is_empty() && far_sink.is_none() {
+    if outs.is_empty() && far_sink.is_none() && !net_probe {
       return Err("没有输出设备可播放校准探针".into());
     }
     // 会话没在跑 → **临时启动**一个：校准要列线程喂数据，没有会话永远停在「采集中」。
@@ -378,10 +436,12 @@ impl AudioManager {
     };
     // 固定参考延时（见 calib::CALIB_REF_MS）：校准测的是绝对延时，不依赖当前存储值。
     // 设备标识只进报告（诊断 / AI 复现），不参与算法。
-    let mic_dev = plan.columns[ci].rows[ri]
-      .device
-      .clone()
-      .filter(|d| !d.is_empty());
+    // 网络麦克风没有采集设备（`device` 为空），报告里明确写成 `net`，不要看起来像「漏填」。
+    let mic_dev = if target_row.ptype == "remote_mic" {
+      Some("net".to_string())
+    } else {
+      target_row.device.clone().filter(|d| !d.is_empty())
+    };
     let far_dev = Some(far.clone()).filter(|d| !d.is_empty());
     if let Err(e) = self.calib.start(crate::engine::calib::CalibStart {
       col: ci,
@@ -399,9 +459,19 @@ impl AudioManager {
       }
       return Err(e);
     }
-    crate::engine::calib::play_probe(self.hub.clone(), outs, far_sink);
+    crate::engine::calib::play_probe(self.hub.clone(), outs, far_sink, net_probe);
     Ok((
-      format!("第 {} 列第 {} 行（探针已送出）", ci + 1, ri + 1),
+      format!(
+        "第 {} 列第 {} 行（{}{}）",
+        ci + 1,
+        ri + 1,
+        if net_probe {
+          "网络出站"
+        } else {
+          "输出设备"
+        },
+        "探针已送出"
+      ),
       temp_epoch,
     ))
   }
@@ -736,7 +806,9 @@ mod tests {
     let m = mgr();
     // 计划由 `mgr()` 置成 `Plan::default()`（一条输入 + 一条输出、没有 AEC 行），
     // 而配置目录已被 `use_test_dir()` 指到临时目录 —— 测试**不读也不写**用户真实配置。
-    let e = m.calibrate_aec_delay().expect_err("没有 AEC 行应当报错");
+    let e = m
+      .calibrate_aec_delay(None)
+      .expect_err("没有 AEC 行应当报错");
     assert!(e.contains("AEC"), "应报缺 AEC 行，实际：{e}");
     assert!(!m.is_running(), "前置检查失败不该留下运行中的会话");
   }

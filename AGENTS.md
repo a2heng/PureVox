@@ -186,9 +186,9 @@ release 构建同样保留（不允许用编译开关剔除）。
   `remote_mic` 输入行（手机麦克风→电脑，**不需要虚拟声卡驱动**，直接进引擎可降噪）、
   `remote_speaker` 输出行（电脑→手机扬声器，按位置 tap）、远程输入（`text` 打字 + `key`
   全尺寸键盘，**两件事分开**，用 `net_set_remote_input` 开关且**默认关闭**）。
-  命令 `net_start` / `net_stop` / `net_restart` / `net_status` / `net_running` /
+  命令 `net_start` / `net_stop` / `net_restart` / `net_status` / `net_card` / `net_running` /
   `net_set_remote_input` / `net_set_port` / `net_ifaces` / `net_select_ip` / `net_local_addr` /
-  `net_ca_pem`；状态进快照 `net` 段。
+  `net_ca_pem`；状态进快照 `net` 段（`net_card` 是卡片用的结构化短字段，与它同源）。
   - **只监听 HTTPS，证书自签（CA + 叶两级）**（DESIGN.md §4.1.12）：网页版客户端的麦克风靠
     `getUserMedia`，它**只在安全上下文里可用**，`http://<局域网IP>` 浏览器直接拒绝、**没有
     任何绕过办法**。CA（10 年）与叶证书（397 天，SAN 覆盖 `localhost` + 当前全部可直连 IPv4，
@@ -344,12 +344,17 @@ release 构建同样保留（不允许用编译开关剔除）。
   （`audio/loopback.rs`）；行内增益 `volume_db`（-30~6 dB，默认 -6 dB，系统混音偏响）。
 - **手机 / 客户端的入口 = 网络行卡片（`ui/netrow.js`，DESIGN.md §4.1.11）**：顶栏**没有**独立的
   「手机」面板——网络麦克风 / 网络扬声器那两类行就是全部的手机操作入口（没建网络行就先加行）。
-  卡片分三层职责，**不要混**：① **服务本身**（状态灯 + 状态串、`启动` / `停止` / `重启服务`）；
-  ② **面向客户端的地址**（网卡下拉 + 可编辑端口，二维码 / 复制 / 网址都跟着选中的地址走；
-  `net_ifaces` / `net_select_ip` / `net_set_port`）；③ **会话级开关**（远程输入**默认关**、
-  风险提示常驻、AEC 段只在 `remote_mic` 行存在：近端锁死为网络输入 + 近端增益 + 校准，
-  远端可选「系统默认输出」或「网络出站」）。另有「下载证书（手机装一次）」（`net_ca_pem`）。
-  调试面板只留 `net` 段的只读状态行。
+  卡片分三层职责，**不要混**：① **服务本身**（状态灯 + **一句短状态**、`启动` / `停止` /
+  `重启服务`；全文看 `/debug` 的 `net` 段，`net_card` 只给结构化短字段）；② **面向客户端的
+  地址**（网卡下拉 + 可编辑端口，二维码 / 复制 / 网址都跟着选中的地址走；`net_ifaces` /
+  `net_select_ip` / `net_set_port`）；③ **会话级开关**（远程输入**默认关**、风险提示在
+  tooltip、AEC 只在 `remote_mic` 行存在）。**极致紧凑**（用户 2026-10-27）：不可改的说明
+  文字一律不上卡片（「近端永远是网络输入」这种写一次设计不够，别每张卡占一行），**二维码
+  右边只放能点的东西**（证书 / 远程输入 / AEC / 缓冲），不铺说明栏。
+  **AEC 与独立 AEC 行是同一个 `AecRow`、同一个内置模型**（`infer::aec::MODEL_AEC`）：计划里
+  没有 `model`、界面不给选；`校准` / `结果` 都可用，命令 `calibrate_aec_delay(col, row)`
+  测卡片自己那一行，远端为 `network` 时探针注入网络出站。另有「下载证书（手机装一次）」
+  （`net_ca_pem`）。调试面板只留 `net` 段的只读状态行。
   本机地址取局域网 IP（`net_local_addr`，UDP connect 技巧，不发包）；远程输入注入见上文
   `net/keys.rs`（Windows 已实现，其余平台明确不可用）。
 - **更新（顶栏「更新」，`src/update/`）**：**唯一数据源 = 本仓库 GitHub Releases**

@@ -254,6 +254,59 @@ pub fn set_port(p: u16) -> Result<(), String> {
   crate::config::save_settings(&s)
 }
 
+/// 网络卡片用的紧凑状态（`net_card` 命令）。
+///
+/// **为什么不复用 `status()` 那句话**：卡片只有几行宽，而 `status()` 把端口、客户端、
+/// 订阅、水位、已发包数、远程输入后端、编解码器路径全串成一大段（调试面板 / AI 要看，
+/// 界面上就是一片读不完的文字）。这里给结构化字段，界面自己排成「就绪 · 1 客户端 · 1 订阅」，
+/// 需要全文时看 `/debug` 的 `net` 段（AGENTS §1.3 单一数据源：判定与数字仍出自 Rust）。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct NetCard {
+  pub running: bool,
+  pub port: u16,
+  pub clients: usize,
+  pub subs: usize,
+  /// 入站环水位 / 深度（ms）：没数据时是 `null`（不伪造 0）
+  pub rx_level_ms: Option<f32>,
+  pub rx_target_ms: f32,
+  pub remote_input: bool,
+  /// 远程输入后端（`SendInput` 等）；不可用时为 `null` + `keys_reason`
+  pub keys_backend: Option<String>,
+  pub keys_reason: Option<String>,
+  pub last_error: Option<String>,
+  pub codec_ok: bool,
+  pub codec_reason: Option<String>,
+}
+
+/// 读一份紧凑状态。与 `/debug` 的 `net` 段同源（`NetHub::stats`）。
+pub fn card() -> NetCard {
+  let s = hub().stats();
+  let (keys_backend, keys_reason) = match keys::backend() {
+    Ok(b) => (Some(b.to_string()), None),
+    Err(e) => (None, Some(e)),
+  };
+  let (codec_ok, codec_reason) = match &s.codec {
+    crate::debug::Probe::Ok { .. } => (true, None),
+    crate::debug::Probe::Unavailable { reason } => (false, Some(reason.clone())),
+    crate::debug::Probe::Pending => (false, Some("编解码器检测中".to_string())),
+  };
+  NetCard {
+    running: s.running,
+    port: s.port,
+    clients: s.clients,
+    subs: s.subs,
+    // 服务没跑 / 还没收到包时水位没有意义 —— 给 `null`，界面显示「—」
+    rx_level_ms: (s.rx_packets > 0).then_some(s.rx_level_ms),
+    rx_target_ms: s.rx_target_ms,
+    remote_input: s.remote_input,
+    keys_backend,
+    keys_reason,
+    last_error: s.last_error.clone(),
+    codec_ok,
+    codec_reason,
+  }
+}
+
 /// 服务状态文字（界面与调试接口共用）。
 pub fn status() -> String {
   let h = hub();

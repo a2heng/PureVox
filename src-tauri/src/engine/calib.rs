@@ -679,8 +679,36 @@ pub fn make_probe() -> Vec<f32> {
 /// - `far_sink`：远端回环的目标 sink（Linux 用 `pacat` 直送；`None`/空 = 默认 sink）。
 ///   探针必须从这只 sink 发出，far 才收得到（cpal 在 Linux 打不开 Pulse sink 名）。
 /// - `devices`：列计划的输出设备（cpal 路径）；Windows 的回环端点也在此。
-pub fn play_probe(hub: SharedHub, devices: Vec<String>, far_sink: Option<String>) {
+/// - `net_probe`：远端是**网络出站**（`remote_mic` 的 AEC、`far_device = network`）时，
+///   探针注入网络出站（手机放、手机麦克风收），`devices` / `far_sink` 应为空。
+pub fn play_probe(hub: SharedHub, devices: Vec<String>, far_sink: Option<String>, net_probe: bool) {
   let probe = Arc::new(make_probe());
+  // 网络 AEC 的 far = 网络出站：探针只能从网络发出去（手机放、手机麦克风收）。
+  // 按真实出站的 10 ms 节奏一格一格推 —— 一次倒进去会撞上出站交接格（4 格）被丢。
+  if net_probe {
+    let p = probe.clone();
+    let net = crate::net::hub();
+    let h = hub.clone();
+    std::thread::Builder::new()
+      .name("probe-net".into())
+      .spawn(move || {
+        // 等客户端环预热（与播放线程的 150 ms 对齐，起播前还有预缓冲）
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        for chunk in p.chunks(crate::audio::HOP) {
+          let mut hop = [0.0f32; crate::audio::HOP];
+          hop[..chunk.len()].copy_from_slice(chunk);
+          net.push_probe_hop(&hop);
+          std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if net.sub_count() == 0 {
+          h.push_ui(
+            "warn",
+            "校准探针已注入网络出站，但没有客户端在订阅音频：手机端不会放，麦克风也收不到".into(),
+          );
+        }
+      })
+      .ok();
+  }
   if let Some(sink) = far_sink {
     let p = probe.clone();
     let hub2 = hub.clone();

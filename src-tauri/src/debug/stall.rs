@@ -31,8 +31,8 @@
 //! 再加一个 [`spawn_watchdog`] 每 10 ms 量一次「实际睡了多久 vs 应该睡多久」，
 //! 把冻住的幅度与次数写进 `/debug/system` —— 修没修好不靠猜。
 
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
@@ -64,9 +64,7 @@ impl StallStat {
   fn note(&self, ms: f64) {
     // f64 → u64（毫秒的千分之一），只为无锁存一个数；读出来再除回去
     let v = (ms * 1000.0) as u64;
-    self
-      .worst_ms
-      .fetch_max(v, Relaxed);
+    self.worst_ms.fetch_max(v, Relaxed);
     if ms >= STALL_MS {
       self.count.fetch_add(1, Relaxed);
       self.last_ms.store(v, Relaxed);

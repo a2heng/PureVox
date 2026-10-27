@@ -66,6 +66,15 @@ interface Window {
   }
   /** 统一提示（shell.js 注册；任何模块都能调用） */
   __pvToast?: (text: string, level?: 'info' | 'ok' | 'warn' | 'error', ms?: number) => void
+  /** 参数控件渲染器（columns.js 注册）：网络行的 AEC 段复用同一份，避免两套漂移 */
+  __pvParams?: {
+    controls(
+      row: any,
+      ci: number,
+      ri: number,
+      keys?: string[]
+    ): HTMLElement
+  }
   /** AEC 校准结果面板（calib.js 注册）：快照里的结构化报告 → 曲线 + 结论 */
   __pvCalib?: {
     onSnapshot(probe: any): void

@@ -557,7 +557,7 @@ function rowElement(col, ci, row, ri) {
     cal.addEventListener('click', () => {
       cal.disabled = true
       cal.textContent = T('校准中')
-      invoke('calibrate_aec_delay')
+      invoke('calibrate_aec_delay', { col: ci, row: ri })
         .then((t) => window.__pvDebug?.('开始校准：' + t))
         .catch((e) => {
           // 失败原因必须**看得见**（顶栏校准状态串 + 右下角气泡），不能只进调试日志
@@ -838,9 +838,14 @@ window.__pvOnSnapshot = (s) => {
       r.far_gain_db != null
     ) {
       lastCalibMs = r.created_ms
-      const col = plan.columns.find((c) => c.rows.some((x) => x.ptype === 'echo_cancel'))
-      const row = col && col.rows.find((x) => x.ptype === 'echo_cancel')
-      if (row) {
+      // **按报告里的列 / 行回填**（不是「找第一个 echo_cancel」）：网络麦克风行
+      // （`remote_mic` + AEC）也是校准目标，按 ptype 找会永远回填到 AEC 行上去
+      // （或者一个都找不到）。报告里的 `col` / `row` 是校准启动时记下的同一份索引。
+      const col = plan.columns[r.col]
+      const row = col && col.rows[r.row]
+      const aecRow =
+        row && (row.ptype === 'echo_cancel' || row.ptype === 'remote_mic')
+      if (aecRow) {
         row.params.far_delay_ms = String(r.delay_ms)
         row.params.mic_gain_db = r.mic_gain_db.toFixed(1)
         row.params.far_gain_db = r.far_gain_db.toFixed(1)
@@ -854,6 +859,10 @@ window.__pvOnSnapshot = (s) => {
         )
         render()
         apply()
+      } else {
+        window.__pvDebug?.(
+          `校准报告指向第 ${r.col + 1} 列第 ${r.row + 1} 行，但它不是 AEC 行（计划可能刚改过），未回填`,
+        )
       }
     }
   }
