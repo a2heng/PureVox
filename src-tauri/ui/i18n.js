@@ -37,7 +37,7 @@
     更新: 'Update',
     开发构建: 'dev build',
     发布日期: 'Published',
-    匹配产物: 'Matched asset',
+    安装包: 'Installer',
     更新说明: 'Release notes',
     重新下载: 'Download again',
     '{n} 行': '{n} lines',

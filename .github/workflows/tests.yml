@@ -2,7 +2,7 @@
 # 分支推送 / PR **不触发**：日常提交零成本，要验证某分支手动 dispatch 一次即可。
 # 打包与发版见 release.yml（tag `v*` 触发，也可手动）。
 # 纪律（沿袭旧版）：
-#   - 缓存全部 restore-only（写入由 release.yml / sccache 自动完成）；
+#   - 无缓存：crate 每次现下、编译每次冷跑（理由见 release.yml 头部与 RELEASE.md）；
 #   - 键与版本的唯一来源是 tools/automation/versions.env（本文件只组合，不硬编码版本）；
 #   - 门禁实现只有一处 tools/automation/check.py（Python，跨平台唯一实现）；
 #   - `*.md` 改动不参与 CI。
@@ -21,9 +21,6 @@ jobs:
   rust:
     name: 测试 · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     strategy:
       fail-fast: false
       matrix:
@@ -36,13 +33,12 @@ jobs:
 
       # 下面所有 step 都是 bash（原来整份用 pwsh，是「门禁脚本是 PowerShell」的历史包袱；
       # 换成 check.py 之后就没有理由再依赖 pwsh 了）。Windows runner 上 bash 由 Git 自带。
-      - name: Load versions + cache keys (versions.env 是唯一来源)
+      - name: Load versions (versions.env 是唯一来源)
         shell: bash
         run: |
           # **必须 source，不能只写 GITHUB_ENV**：写进 GITHUB_ENV 的变量要到**后续 step**
-          # 才注入进程环境，而缓存键就在这一步里拼 —— 只写不 source 的话 $CACHE_GEN / $TCLI_VER
-          # 全是空串，拼出来的键是残的（踩过：键里少了 cache_gen。当时靠 restore-keys 兜底
-          # 才没炸，没有 restore-keys 的那一步直接失败）。
+          # 才注入进程环境，而 rustup 这一步就要用 $RUST_TOOLCHAIN —— 只写不 source 的话
+          # 变量是空串（曾因此让某一步直接失败）。
           set -a
           . tools/automation/versions.env
           set +a
@@ -53,22 +49,6 @@ jobs:
               *=*) printf '%s\n' "$line" >> "$GITHUB_ENV" ;;
             esac
           done < tools/automation/versions.env
-          # 缓存键 = 发行版 + 缓存代数 + Cargo.lock 哈希。写入由 release.yml / sccache 自动完成。
-          lock="${{ hashFiles('src-tauri/Cargo.lock') }}"
-          # 发行版标记：target/ 里是各发行版自己编出来的 C 依赖产物
-          # （ort-sys / aws-lc-sys / ring），跨发行版回读就是用错中间产物。
-          # 取值来自 versions.env 的 LINUX_CACHE_TAG —— `runs-on:` 是写死的（拿不到 env 上下文），
-          # 发行版本来就静态已知，没必要在 runner 上探测：探测不到就静默退化成同一个键，
-          # 不同版本又混回一起，等于白加这一段。
-          case "$RUNNER_OS" in
-            Windows) os_tag="windows" ;;
-            *)       os_tag="$LINUX_CACHE_TAG" ;;
-          esac
-          {
-            printf 'CARGO_CACHE_KEY=purevox-%s-%s-cargo-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$lock"
-          } >> "$GITHUB_ENV"
-          # 把算出来的键打进日志：键拼错时不必再猜，扫一眼日志就知道
-          echo "CARGO_CACHE_KEY=$CARGO_CACHE_KEY"
 
       # cpal 在 Linux 上要 ALSA 开发头（pkg-config 名字 `alsa`）；WebKitGTK 4.1 是 Tauri wry 运行时必需。
       - name: Install Linux system deps
@@ -80,9 +60,6 @@ jobs:
             libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev libgtk-3-dev libasound2-dev \
             libopus0 pkg-config file
 
-      - name: sccache（编译器对象缓存，自动更新）
-        uses: mozilla-actions/sccache-action@v0.0.9
-
       - name: Install Rust toolchain (rustfmt + clippy)
         shell: bash
         run: |
@@ -90,23 +67,7 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
           rustc --version
 
-      # 下面两个 restore **一律不写 restore-keys**：精确命中就是唯一路径（AGENTS §2.1）。
-      # 兜底键看着像优化，实际是自伤：
-      #   ① 键格式改版（加发行版段）时，旧格式的兜底键会跨发行版把旧 target/ 回读进来，
-      #      LINUX_CACHE_TAG 防的就是这个，被兜底键一绕就等于没加；
-      #   ② Cargo.lock 一变就静默回退到某个旧桶，此时「命中了缓存」这件事不再等于
-      #      「缓存内容对得上当前依赖」，排查时极具误导性。
-      # 依赖变更后由下一次 release 自动写新键（或按需 bump CACHE_GEN），
-      # 这本来就是手动流程，不值得用兜底键去换。
-      - name: Restore cargo registry (restore-only)
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ env.CARGO_CACHE_KEY }}
-
-
+      # 无缓存：crate 每次现下、编译每次冷跑。理由见 release.yml 头部与 RELEASE.md。
       - name: "Gate · fmt"
         shell: bash
         run: python tools/automation/check.py -Gate fmt

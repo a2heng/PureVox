@@ -68,8 +68,8 @@
   （`audio/loopback_linux.rs`），候选由 `list_loopback_targets` 给出。
 - **Tauri 依赖升到 `3.0.0-alpha.5`**（2026-10-14 上游发布）：`tauri` / `tauri-runtime-wry`
   alpha.4 → alpha.5、`tauri-build` alpha.3 → alpha.4（`tauri-codegen` / `tauri-macros` /
-  `tauri-utils` 随之到 alpha.4）；CLI 钉 `TCLI_VER=3.0.0-alpha.5`，同时把 `CACHE_GEN` 提到 **2**
-  （缓存键里含着 `TCLI_VER` 与代数，旧桶整体作废、必须重暖）。各 crate 版本号**不同步**，
+  `tauri-utils` 随之到 alpha.4）；CLI 钉 `TCLI_VER=3.0.0-alpha.5`（当时还把缓存代数提到 2，
+  缓存已于 2026-10-28 全部删除，见 §0 缓存纪律）。各 crate 版本号**不同步**，
   以 crates.io 实际发布为准（见 §2 版本锚点）。改了 `Cargo.toml` 之后，`src-tauri/Cargo.lock`
   由下一次 `cargo build` / `cargo update` 自动重新解析并生成，别手改锁文件（本条升级已用
   `cargo update -p tauri --precise 3.0.0-alpha.5` 落地并提交：只动 tauri 族 + `swift-rs`，
@@ -542,12 +542,13 @@ Android 那段写死了仓库路径，于是「试跑到临时目录」反而把
       `./gradlew assembleRelease` → **签名 release APK**（`PV_REQUIRE_SIGNING=1`，缺 secret 当场失败）。
     - tag 时 `release_notes.py`（上一 tag 区间）+ `gh release create` 附带全部产物；手动只打包、不建 release。
   - **没有 Lite 变体**（Lite 已取消，遗留资产已删除）。
-- **缓存纪律**：编译走 **sccache**（`SCCACHE_GHA_ENABLED`，对象级、按源码/编译器指纹复用，
-  跨 tag 自动更新），不需要手动预热；`release.yml` 构建后再自动 save cargo registry / cargo-tauri
-  （同键已存在则跳过）。键与版本唯一来源 = `tools/automation/versions.env`，工作流只组合
-  `hashFiles('src-tauri/Cargo.lock')`；`target/release` 不做目录缓存（太大）。
-  （`cargo-tauri`，未命中才 `cargo install tauri-cli --version 钉死`）。
-  为什么集中写：GitHub 缓存按触发 ref 分域，各工作流各写各的只会堆出没人回读的重复条目（tag 上尤甚）。
+- **缓存纪律（2026-10-28 起：一处都不缓存）**：`release.yml` / `tests.yml` 里没有任何
+  `actions/cache`；crate 每次现下、`cargo-tauri` 每次现编、编译每次冷跑（约 20~25 分钟，
+  Windows 为主）。删掉的理由：① sccache 对象级缓存一版写几千条（Windows 645/1985 写失败，
+  Linux 1430/2661），Rust 命中 0%；② GitHub 缓存作用域是「当前 ref + 默认分支」，发版跑在
+  tag 上，写的缓存下一个 tag 读不到（实测 A 的 registry 缓存 ref 是 `refs/tags/…`，B 和
+  `main` 都恢复不到），只能靠「main 上手动预热」，等于把删掉的 warm-cache 请回来；
+  ③ `target/` 目录缓存太大且总 miss。版本与工具链唯一来源 = `tools/automation/versions.env`。
 - **产物断言**（`assert_bundle.py` 是入口，平台差异拆到 `_windows.py` / `_linux.py`，
   见 CONTRIBUTING.md）：
   - Windows：安装包 ≥ 40 MB → NSIS `/S /D=` 静默安装 → 校验 `models\*.onnx` 7/7 →

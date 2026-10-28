@@ -106,14 +106,15 @@ mod tests {
   /// 引号/开关**逐字**钉死：这条字符串是 cmd 的输入，改错一位就是「点了没反应」。
   /// 曾经的两个坑（都实际发生过）：`.args` 把内部引号转义成 `\"`（安装器不启动）、
   /// `DETACHED_PROCESS` 让 `ping` 弹出可见控制台。这里同时钉住「路径被引号包住」。
+  /// 假路径按真实规则写：下载目录 `~/.purevox/update` + 产物名 `PureVox-<版本>-windows-x64-setup.exe`。
   #[test]
   fn install_cmdline_quotes_path_and_keeps_nsis_switches() {
     let exe = std::path::Path::new(
-      r"C:\Users\John Smith\AppData\Local\purevox\update\PureVox_26.10.28_x64-setup.exe",
+      r"C:\Users\John Smith\.purevox\update\PureVox-26.10.28-windows-x64-setup.exe",
     );
     assert_eq!(
       install_cmdline(exe),
-      r#"/S /C "ping -n 5 127.0.0.1 >nul & "C:\Users\John Smith\AppData\Local\purevox\update\PureVox_26.10.28_x64-setup.exe" /S /UPDATE /NS /R""#
+      r#"/S /C "ping -n 5 127.0.0.1 >nul & "C:\Users\John Smith\.purevox\update\PureVox-26.10.28-windows-x64-setup.exe" /S /UPDATE /NS /R""#
     );
   }
 }

@@ -66,19 +66,19 @@
       另一个查**每个产物名都落在运行期 `ASSET_SUFFIXES` 认的后缀里** —— 后缀对不上不会
       报任何错，只是自动更新静默失效，用户只看到「永远有新版本」。
        **没有 Lite 变体**（遗留资产已删除，见 §2.5）。
-   - **缓存纪律（sccache 自动写，不需要手动预热）**：编译走 `mozilla-actions/sccache-action`
-     + `SCCACHE_GHA_ENABLED=true`，按**源码/编译器的对象指纹**复用，跨 tag 自动命中、自动更新
-     （不会因为换依赖就整桶失效）；`release.yml` 另外在构建后自动 `actions/cache/save`
-     cargo registry 与 cargo-tauri（**同键已存在就跳过**，`continue-on-error`）。
-     `tests.yml` 仍只 restore（不抢写）。
-     - 键为 `purevox-<RUNNER_OS>-<发行版>-<桶>-<CACHE_GEN>-<Cargo.lock 哈希>`，发行版段来自
-       `versions.env` 的 `LINUX_CACHE_TAG`（`runs-on:` 写死，静态已知）。**不写 `restore-keys`**：
-       精确命中是唯一路径；兜底键会跨发行版回读旧 `target/`。
-     - **`target/release` 不再做目录缓存**（太大）；release 的编译复用由 sccache 承担，
-       所以「新依赖第一次冷、之后命中」不再依赖手动 `warm-cache.yml`。
-     - 键里的 `<Cargo.lock 哈希>` 是 `hashFiles()`，不是文件 sha256 —— 本地算出来对不上很正常。
-     - 缓存桶与版本（含 `JDK_VER` / `ANDROID_PLATFORM` / `ANDROID_BUILD_TOOLS`）的唯一来源 =
-       `tools/automation/versions.env`（其余 workflow 不得硬编码版本）。
+   - **缓存纪律：一处都不缓存（2026-10-28 决定）**：`release.yml` / `tests.yml` 里没有任何
+     `actions/cache` —— crate 每次现下、`cargo-tauri` 每次现编、编译每次冷跑。为什么连
+     registry 也不留：
+     - **sccache（对象级）**：一版要写几千条条目（Windows 未命中 1985、Linux 2661），写失败率
+       **32% / 54%**（run 40618911347），Rust 命中 0%，命中/未命中都无从解释；它还会和其它
+       缓存抢 GitHub 全库 10 GB / LRU 的配额。
+     - **registry / cargo-tauri（`actions/cache`）**：GitHub 的作用域是「当前 ref + 默认分支」，
+       而发版跑在 tag 上 —— **tag 写的缓存下一个 tag 读不到**。实测 A `v2026.10.28.1008` 存的
+       registry 缓存 ref 是 `refs/tags/…`，B 和 `main` 都恢复不到。要让它生效只能回到「在
+       `main` 上手动预热」，等于把删掉的 warm-cache 请回来。
+     - `target/` 目录缓存更早就因「太大且总是 miss」删掉。
+     代价是每版约 20~25 分钟（Windows 为主）；换来零写失败、零不可见状态、零作用域陷阱。
+     版本与工具链仍只来自 `tools/automation/versions.env`（其余 workflow 不得硬编码版本）。
    - **Linux 系统依赖**（本机与 CI 同）：`libwebkit2gtk-4.1-dev libssl-dev libxdo-dev
      librsvg2-dev libgtk-3-dev libasound2-dev pkg-config file rpm`（wry→WebKitGTK、
      cpal→ALSA、rpmbuild→rpm）；运行期还需系统 `libopus0`（缺时网络音频降级，见 §1.2）。
@@ -92,8 +92,7 @@
     门禁跑在最新上游上的价值（验没落后）由 `test_packages.py` 的容器档替代：deb 在
     26.04 容器里实测能跑，正是「向前兼容成立」的直接证据（理论不值钱，容器里跑一遍才算）。
     **下限 24.04 不是挑的**：ort 预编译包要求 glibc ≥ 2.39。唯一来源 = `versions.env` 的
-    `LINUX_RUNNER`；缓存键的发行版段是 `LINUX_CACHE_TAG=ubuntu24`（与 runner 分开是因为
-    键不可变，将来换 runner 时旧桶要靠不同的键段自然失效）。
+    `LINUX_RUNNER`（已无缓存键，因此也不再需要单独的发行版标记）。
   - **依赖声明：deb 要手写，rpm 不要手写**（两种格式的机制不同，别当同一件事）：
     - **deb 必须显式列** `bundle.linux.deb.depends`：dpkg **没有**自动依赖机制，Tauri 直接把它
       写进 `Depends:`，**没有内置默认值**（`Option<Vec<String>>` → `unwrap_or_default()` → 空）。

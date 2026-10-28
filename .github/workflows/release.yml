@@ -1,8 +1,10 @@
 # PureVox 打包 / 发版 —— **多平台**：Windows（NSIS 安装包）、Linux（deb+rpm+AppImage）、
 # Android（签名 release APK）。触发：推 tag `v*`（构建 + 建 release）或手动 `workflow_dispatch`
 # （只构建、不建 release）。**分支推送不触发**；代码门禁见 tests.yml（手动）。
-# 缓存：sccache 自动写（对象级、按源码/编译器指纹复用）；每次发版再自动 save
-# cargo registry / cargo-tauri（同键已存在则跳过）。不再需要手动 warm-cache。
+# 缓存：**一处都不缓存**（2026-10-28 决定）。sccache 一版要写几千条对象、写失败率
+# 32~54%；registry 缓存又受 GitHub 作用域限制（tag 上写的缓存别的 tag 读不到），于是全部
+# 删除：crate 每次现下、tauri-cli 每次现编、编译每次冷跑（约 20~25 分钟，Windows 为主）。
+# 理由与数据见 RELEASE.md「缓存纪律」。
 # 版本/键唯一来源
 # tools/automation/versions.env；门禁实现唯一 = tools/automation/check.py。
 # 注意 AGENTS.md 维护准则：CI 失败、从未生成 release 的 tag 必须删除
@@ -27,9 +29,6 @@ jobs:
   windows:
     name: 打包 · Windows（NSIS 安装包）
     runs-on: windows-latest
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     defaults:
       run:
         shell: bash
@@ -41,12 +40,12 @@ jobs:
         shell: bash
         run: python tools/automation/version.py >> "$GITHUB_ENV"
 
-      - name: Load versions + cache keys (versions.env 是唯一来源)
+      - name: Load versions (versions.env 是唯一来源)
         shell: bash
         run: |
           # **必须 source，不能只写 GITHUB_ENV**：写进 GITHUB_ENV 的变量要到**后续 step**
-          # 才注入进程环境，而缓存键就在这一步里拼 —— 只写不 source 的话 $CACHE_GEN / $TCLI_VER
-          # 全是空串，拼出来的键是残的（曾因此让 tauri-cli 那步直接失败）。理由见 tests.yml。
+          # 才注入进程环境，而下面 `Install tauri-cli` 这一步就要用 $TCLI_VER —— 只写不
+          # source 的话变量是空串（曾因此让那一步直接失败）。理由见 tests.yml。
           set -a
           . tools/automation/versions.env
           set +a
@@ -57,20 +56,6 @@ jobs:
               *=*) printf '%s\n' "$line" >> "$GITHUB_ENV" ;;
             esac
           done < tools/automation/versions.env
-          lock="${{ hashFiles('src-tauri/Cargo.lock') }}"
-          # 发行版标记来自 versions.env 的 LINUX_CACHE_TAG（runs-on 写死，静态已知）。理由见 tests.yml。
-          case "$RUNNER_OS" in
-            Windows) os_tag="windows" ;;
-            *)       os_tag="$LINUX_CACHE_TAG" ;;
-          esac
-          {
-            printf 'CARGO_CACHE_KEY=purevox-%s-%s-cargo-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$lock"
-            printf 'TAURI_CLI_KEY=purevox-%s-tauri-cli-%s\n' "$RUNNER_OS" "$TCLI_VER"
-          } >> "$GITHUB_ENV"
-          echo "CARGO_CACHE_KEY=$CARGO_CACHE_KEY"
-
-      - name: sccache（编译器对象缓存，自动更新）
-        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install Rust toolchain (rustfmt + clippy)
         shell: bash
@@ -78,32 +63,14 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
           rustup default "$RUST_TOOLCHAIN"
 
-      # restore 一律不写 restore-keys，理由见 tests.yml 同处注释。
-      # release 的编译复用由 sccache 负责；target/release 不做目录缓存（太大）。
-      - name: Restore cargo registry (restore-only)
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ env.CARGO_CACHE_KEY }}
-
-
-      - name: Restore cargo-tauri binary (restore-only)
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cargo/bin/cargo-tauri*
-          key: ${{ env.TAURI_CLI_KEY }}
-
-      - name: Install tauri-cli（仅在缺失时编译，版本钉死）
+      # 无缓存：crate 每次现下，tauri-cli 在干净 runner 上现编（版本钉死）。
+      - name: Install tauri-cli（版本钉死；无缓存，每次现编）
         shell: bash
         run: |
-          # 判据是「盘上有没有」，不是 cache-hit 输出 —— runner 镜像可能已预装 cargo-tauri，
-          # 那时 cache-hit 是 false 但二进制已在，`cargo install` 会撞
-          # "binary already exists in destination"。command -v 判断天然幂等。
-          # restore-keys 已全部去掉，所以「部分命中」这种情形不再存在。
+          # runner 镜像可能自带 cargo-tauri（那时不必再编），也可能没有。判据是「盘上有没有」：
+          # `cargo install` 撞 "binary already exists in destination" 比多编一次更难查。
           if command -v cargo-tauri >/dev/null 2>&1; then
-            echo "cargo-tauri 已存在（缓存或镜像预装），跳过安装"
+            echo "cargo-tauri 已存在（镜像预装），跳过安装"
           else
             cargo install tauri-cli --version "$TCLI_VER" --locked
           fi
@@ -148,26 +115,6 @@ jobs:
       # 每个都 `if-no-files-found: error`：少出一样就当场红，不产出残缺的包。
       # **Windows 只有 NSIS 一个安装包**（`tauri.windows.conf.json` 把 targets 收成 ["nsis"]）：
       # 只留一条安装/更新路径，不再出 MSI。
-      # 自动写缓存：新键才写，已有同键会失败（continue-on-error）；下次同 Cargo.lock 直接命中。
-      # 编译本身由 sccache 缓存（按对象指纹，跨 tag 复用），这里只保 registry / tauri-cli。
-      - name: Save cargo registry（自动）
-        if: always()
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ env.CARGO_CACHE_KEY }}
-
-      - name: Save cargo-tauri binary（自动）
-        if: always()
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cargo/bin/cargo-tauri*
-          key: ${{ env.TAURI_CLI_KEY }}
-
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v7
         with:
@@ -189,9 +136,6 @@ jobs:
     # 24.04 也不是随便挑的：onnxruntime（ort）预编译包要求 glibc ≥ 2.39，
     # 正好是 24.04 的版本 —— 再老就编不过了，这就是支持范围的下限。
     runs-on: ubuntu-24.04
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     defaults:
       run:
         shell: bash
@@ -202,12 +146,12 @@ jobs:
         shell: bash
         run: python tools/automation/version.py >> "$GITHUB_ENV"
 
-      - name: Load versions + cache keys (versions.env 是唯一来源)
+      - name: Load versions (versions.env 是唯一来源)
         shell: bash
         run: |
           # **必须 source，不能只写 GITHUB_ENV**：写进 GITHUB_ENV 的变量要到**后续 step**
-          # 才注入进程环境，而缓存键就在这一步里拼 —— 只写不 source 的话 $CACHE_GEN / $TCLI_VER
-          # 全是空串，拼出来的键是残的（曾因此让 tauri-cli 那步直接失败）。理由见 tests.yml。
+          # 才注入进程环境，而下面 `Install tauri-cli` 这一步就要用 $TCLI_VER —— 只写不
+          # source 的话变量是空串（曾因此让那一步直接失败）。理由见 tests.yml。
           set -a
           . tools/automation/versions.env
           set +a
@@ -218,18 +162,6 @@ jobs:
               *=*) printf '%s\n' "$line" >> "$GITHUB_ENV" ;;
             esac
           done < tools/automation/versions.env
-          lock="${{ hashFiles('src-tauri/Cargo.lock') }}"
-          # 发行版标记来自 versions.env；缓存键按发行版隔离（C 依赖的中间产物不能跨发行版回读）。
-          # release 的编译复用由 sccache 承担，不预暖 target/。
-          case "$RUNNER_OS" in
-            Windows) os_tag="windows" ;;
-            *)       os_tag="$LINUX_CACHE_TAG" ;;
-          esac
-          {
-            printf 'CARGO_CACHE_KEY=purevox-%s-%s-cargo-%s-%s\n' "$RUNNER_OS" "$os_tag" "$CACHE_GEN" "$lock"
-            printf 'TAURI_CLI_KEY=purevox-%s-tauri-cli-%s\n' "$RUNNER_OS" "$TCLI_VER"
-          } >> "$GITHUB_ENV"
-          echo "CARGO_CACHE_KEY=$CARGO_CACHE_KEY"
 
       # Tauri wry 运行时 (WebKitGTK 4.1) + cpal (ALSA) + 打 rpm 需要 rpmbuild。
       - name: Install Linux system deps
@@ -240,41 +172,20 @@ jobs:
             libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev libgtk-3-dev libasound2-dev \
             libopus0 xvfb pkg-config file rpm
 
-      - name: sccache（编译器对象缓存，自动更新）
-        uses: mozilla-actions/sccache-action@v0.0.9
-
       - name: Install Rust toolchain (rustfmt + clippy)
         shell: bash
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
           rustup default "$RUST_TOOLCHAIN"
 
-      # restore 一律不写 restore-keys，理由见 tests.yml 同处注释。
-      # release 的编译复用由 sccache 负责；target/release 不做目录缓存（太大）。
-      - name: Restore cargo registry (restore-only)
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ env.CARGO_CACHE_KEY }}
-
-
-      - name: Restore cargo-tauri binary (restore-only)
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cargo/bin/cargo-tauri*
-          key: ${{ env.TAURI_CLI_KEY }}
-
-      - name: Install tauri-cli（仅在缺失时编译，版本钉死）
+      # 无缓存：crate 每次现下，tauri-cli 在干净 runner 上现编（版本钉死）。
+      - name: Install tauri-cli（版本钉死；无缓存，每次现编）
         shell: bash
         run: |
-          # 判据是「盘上有没有」，不是 cache-hit 输出 —— runner 镜像可能已预装 cargo-tauri，
-          # 那时 cache-hit 是 false 但二进制已在，`cargo install` 会撞
-          # "binary already exists in destination"。command -v 判断天然幂等。
-          # restore-keys 已全部去掉，所以「部分命中」这种情形不再存在。
+          # runner 镜像可能自带 cargo-tauri（那时不必再编），也可能没有。判据是「盘上有没有」：
+          # `cargo install` 撞 "binary already exists in destination" 比多编一次更难查。
           if command -v cargo-tauri >/dev/null 2>&1; then
-            echo "cargo-tauri 已存在（缓存或镜像预装），跳过安装"
+            echo "cargo-tauri 已存在（镜像预装），跳过安装"
           else
             cargo install tauri-cli --version "$TCLI_VER" --locked
           fi
@@ -317,26 +228,6 @@ jobs:
         run: python tools/automation/test_packages.py
 
       # 一个格式一个 artifact，理由同上（AppImage 最大，单它就 ~200 MB）。
-      # 自动写缓存：新键才写，已有同键会失败（continue-on-error）；下次同 Cargo.lock 直接命中。
-      # 编译本身由 sccache 缓存（按对象指纹，跨 tag 复用），这里只保 registry / tauri-cli。
-      - name: Save cargo registry（自动）
-        if: always()
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ env.CARGO_CACHE_KEY }}
-
-      - name: Save cargo-tauri binary（自动）
-        if: always()
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cargo/bin/cargo-tauri*
-          key: ${{ env.TAURI_CLI_KEY }}
-
       - name: Upload deb
         uses: actions/upload-artifact@v7
         with:
