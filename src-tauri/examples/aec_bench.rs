@@ -17,19 +17,24 @@
 
 //! AEC 合成回声自检：mic = far 延迟 D 样本 × 增益，看模型能把回声压多少 dB。
 //! 用法：cargo run --release --example aec_bench [模型路径] [延迟ms] [增益]
-//! 默认：../models/purevox_aec_202610_ep0372.onnx  5ms  0.5
+//! 默认：../models/purevox_aec.onnx  5ms  0.5
+//!
+//! 走的是**应用侧真实链路**（`infer/spec.rs` 原样复用：两路分析 → 模型 → 合成）。
+
+#[path = "../src/infer/spec.rs"]
+mod spec;
 
 use ort::session::Session;
 use ort::value::{Tensor, ValueType};
 
-const HOP: usize = 480;
+use spec::{BINS, HOP, SPEC_LEN, SpecStream};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let args: Vec<String> = std::env::args().collect();
   let path = args
     .get(1)
     .cloned()
-    .unwrap_or_else(|| "../models/purevox_aec_202610_ep0372.onnx".to_string());
+    .unwrap_or_else(|| "../models/purevox_aec.onnx".to_string());
   let delay_ms: f64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5.0);
   let gain: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.5);
   let d = (delay_ms * 48.0) as usize;
@@ -54,6 +59,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   println!("model {path}  cache_in={dim}  delay={delay_ms}ms  gain={gain}");
 
   let mut cache = vec![0.0f32; dim];
+  let mut mic_stft = SpecStream::new();
+  let mut far_stft = SpecStream::new();
   let mut far_all: Vec<f32> = Vec::new();
   let mut seed = 12345u32;
   let mut rnd = || {
@@ -80,20 +87,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       .collect();
     far_all.extend_from_slice(&far_hop);
 
-    let mic = Tensor::from_array(([1i64, HOP as i64], mic_hop.clone()))?;
-    let far = Tensor::from_array(([1i64, HOP as i64], far_hop.clone()))?;
+    let mic_spec = mic_stft.analyze(&mic_hop).to_vec();
+    let far_spec = far_stft.analyze(&far_hop).to_vec();
+    let mic = Tensor::from_array(([1i64, 2, BINS as i64], mic_spec))?;
+    let far = Tensor::from_array(([1i64, 2, BINS as i64], far_spec))?;
     let cache_in = std::mem::take(&mut cache);
     let cache_t = Tensor::from_array(([1i64, dim as i64], cache_in))?;
     let outs =
-      session.run(ort::inputs!["mic_hop" => mic, "far_hop" => far, "cache_in" => cache_t])?;
-    let (_, enh) = outs["enh_hop"].try_extract_tensor::<f32>()?;
+      session.run(ort::inputs!["mic_spec" => mic, "far_spec" => far, "cache_in" => cache_t])?;
+    let (_, out_spec) = outs["mic_spec_out"].try_extract_tensor::<f32>()?;
+    let out_spec = out_spec.to_vec();
     let (_, cout) = outs["cache_out"].try_extract_tensor::<f32>()?;
     cache.clear();
     cache.extend_from_slice(cout);
 
+    let out = mic_stft.synthesize(&out_spec[..SPEC_LEN]).to_vec();
     if k > 60 {
       sum_mic += mic_hop.iter().map(|x| (*x as f64).powi(2)).sum::<f64>();
-      sum_out += enh[..HOP].iter().map(|x| (*x as f64).powi(2)).sum::<f64>();
+      sum_out += out.iter().map(|x| (*x as f64).powi(2)).sum::<f64>();
     }
   }
   let db = |e: f64, n: usize| 10.0 * (e / n as f64).max(1e-20).log10();

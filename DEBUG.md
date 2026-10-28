@@ -398,9 +398,11 @@ release 构建同样保留（不允许用编译开关剔除）。
     - 其它平台明确不可用。**不静默失败**。`/debug` 的 `install_kind` 一眼看出走的是哪条路。
   - HTTP 客户端用 `reqwest`（已随 `tauri` 进入依赖树，TLS 后端与 `ort` 的 `ureq` 同一套
     native-tls，不新增 C 编译链）。状态进快照 `update` 段（与界面同源）。
-- **推理链路**（`src-tauri/src/infer/`）：用 `ort`（onnxruntime）流式推理。模型契约统一为
-  `*_hop [1,480]`（10 ms 波形）+ `cache_in [1,D]`（扁平流式缓存，首帧零起）→ `enh_hop [1,480]`
-  （**滞后 1 hop**）+ `cache_out [1,D]`；缓存维度从模型输入读，不写死；STFT 在模型图内。
+- **推理链路**（`src-tauri/src/infer/`）：用 `ort`（onnxruntime）流式推理。**模型契约是谱接口**
+  （2026-10-29 起）：`(1,2,481)` 复数谱（= 960/480 周期 Hann 分析帧）+ `cache_in [1,D]`
+  （扁平流式缓存，首帧零起）→ 增强谱 + `cache_out [1,D]`。**傅里叶在图外**，由 `infer/spec.rs`
+  统一做分析/合成与 OLA（逐样本除 Σw²），输出**滞后 1 hop**；缓存维度、TSE 的 keys/gb 形状
+  都从模型输入读，不写死。
   降噪是**列里的处理行**（`engine/components/denoise.rs`，`Stage`），在**列工作线程**内惰性加载
   （每行一份，只加载一次）；模型文件选择存计划，改型号 = 结构性变更 → 重建会话。
   现役模型常量 `infer::MODEL_DENOISE`（降噪）、`infer::MODEL_AEC`（AEC，202610 单流：
@@ -414,7 +416,8 @@ release 构建同样保留（不允许用编译开关剔除）。
   窗口 = mic 采样序号 − 延时，历史不足先退最近段、再没有就直通 mic；far 与 mic 序号同原点
   （会话起步 / 校准开始归零）。TSE 是**处理行**
   （`ptype = tse`，参考固定为 `~/.purevox/tse_reference.wav`，须 48 kHz 单声道；界面不给路径设置，
-  只显示录制时间 + 打开文件夹；10 s → `enr_tok`，参考编码器是 Rust 内固定 DSP、不再带 ONNX；无参考直通）。
+  只显示录制时间 + 打开文件夹；10 s → `ref_encoder.onnx` → `keys`+`gb`（每句一次，与主图成对）；
+  无参考直通）。
   行状态（对齐计数 / 推理耗时 / 参考状态）经 `Stage::status` 进列概要。
 - **参考录制 / 延时校准**：命令 `record_tse_reference(seconds)` 录「降噪后、TSE 前」的信号（`recorder.rs`，
   **原样保存**，不做音量归一化 / 限幅；完成提示报实测 RMS 与峰值）→ `~/.purevox/tse_reference.wav`；命令 `calibrate_aec_delay()`

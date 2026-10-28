@@ -15,14 +15,20 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! ONNX 推理（onnxruntime，`ort`）。模型契约见 `denoise.rs`。
+//! ONNX 推理（onnxruntime，`ort`）。模型契约见 `denoise.rs` / `aec.rs` / `tse.rs`。
 //!
-//! 模型是流式的：每 10 ms 一个 `*_hop`（480 样本）+ 一个大的一维 `cache_in`，
-//! 返回处理后的 hop 与新的 `cache_out`；引擎只负责搬运波形与缓存，STFT 在模型图内。
+//! 模型是流式的：每 10 ms 一帧 `(1,2,481)` 复数谱 + 一个一维 `cache_in`，
+//! 返回增强谱与新的 `cache_out`。**傅里叶在图外**（2026-10-29 换代）：波形↔谱、OLA
+//! 与 1 hop 滞后全在 [`spec`]，三个模型共用同一份 DSP。
 
 pub mod aec;
 pub mod denoise;
+pub mod spec;
 pub mod tse;
+
+/// `spec` 的 hop 常量必须与音频引擎的 10 ms 网格一致（spec 不引 `crate::audio`，
+/// 好让 `examples/` 直接复用同一份 DSP）。
+const _: () = assert!(spec::HOP == crate::audio::HOP);
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -94,6 +100,36 @@ pub(crate) fn build_session(path: &Path) -> Result<Session, String> {
       ))
     }
   }
+}
+
+/// 读某个输入的形状（不写死维度；换一代模型不用改代码）。
+pub(crate) fn input_shape(session: &Session, name: &str) -> Result<Vec<usize>, String> {
+  use ort::value::ValueType;
+  session
+    .inputs()
+    .iter()
+    .find(|i| i.name() == name)
+    .and_then(|i| match i.dtype() {
+      ValueType::Tensor { shape, .. } => Some(shape.iter().map(|&d| d.max(0) as usize).collect()),
+      _ => None,
+    })
+    .ok_or_else(|| format!("模型缺少 {name} 输入或不是张量"))
+}
+
+/// 校验谱接口：`(1,2,481)`（= 960 点 FFT / 480 hop，2026-10 起的图外傅里叶契约）。
+///
+/// 旧模型（`mix_hop (1,480)`，STFT 在图内）在这里直接报错而不是悄悄跑出垃圾：
+/// 两代模型同名参数不同，静默错会表现为「降噪没效果」，比启动失败难查得多。
+pub(crate) fn check_spec(session: &Session, name: &str) -> Result<(), String> {
+  let shape = input_shape(session, name)?;
+  if shape != [1, 2, spec::BINS] {
+    return Err(format!(
+      "模型接口不是谱接口：{name} 的形状是 {shape:?}，期望 [1, 2, {}] \
+       （2026-10 起模型只吃/吐复数谱，傅里叶由应用侧做；旧波形契约的模型不能直接用）",
+      spec::BINS
+    ));
+  }
+  Ok(())
 }
 
 /// 从会话输入里读某个一维缓存的元素个数（不写死维度）。
@@ -274,6 +310,8 @@ pub fn preload_all() {
       files.extend(denoise_models().iter().map(|(f, _)| (*f).to_string()));
       files.extend(aec::aec_models().iter().map(|(f, _)| (*f).to_string()));
       files.extend(tse::tse_models().iter().map(|(f, _)| (*f).to_string()));
+      // 注册编码器不是「可选模型」，但同样要预热（每句只跑一次，慢一次就够了）
+      files.push(tse::MODEL_TSE_REF.to_string());
       files.sort();
       files.dedup();
       for f in files {
@@ -292,21 +330,35 @@ pub fn preload_all() {
     .ok();
 }
 
-/// 现役降噪模型（models/ 下的文件名）。
+/// 现役降噪模型（`models/` 下的文件名）。
 ///
-/// 2026-10-26 收模型体积：只留 `202609b`（现役）与 `202606`（旧版对照），
-/// `202609a` / `202609c` 已从 `models/` 删除（包里少 23 MB）。
-pub const MODEL_DENOISE: &str = "purevox_denoise_202609b_ep0046.onnx";
+/// **2026-10-29 起文件名不带版本号/epoch**：应用侧代码只认这四个固定名字，
+/// 换模型 = 换文件（训练侧的版本记在 ONNX metadata `model` 与 `models/README.md`）。
+/// 谱接口见 [`spec`]；权重更新用 `PureVoxModel/8_purevox_mic_net/publish_to_app.py`。
+pub const MODEL_DENOISE: &str = "purevox_denoise.onnx";
 
 /// 可选降噪模型 (文件名, 界面名)，供界面下拉（ARCHITECTURE.md §7）。
 pub fn denoise_models() -> &'static [(&'static str, &'static str)] {
-  &[
-    (MODEL_DENOISE, "降噪 202609b（现役）"),
-    (
-      "purevox_denoise_202606_ep0014_op17.onnx",
-      "降噪 202606（旧版）",
-    ),
-  ]
+  &[(MODEL_DENOISE, "降噪 202610a（现役）")]
+}
+
+/// 计划里存的模型名 → 现役模型（不在列表里就回落到第一个，并记一条事件日志）。
+///
+/// 为什么需要：2026-10-29 起模型文件名**不带版本号/epoch**（换模型 = 换文件），
+/// 用户在旧计划里存的是 `purevox_denoise_202609b_ep0046.onnx` 这类名字，文件已经不在包里。
+/// 直接按名字找会得到「找不到模型」的行，不如收敛到现役默认值（界面下拉也只是提示）。
+pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &str) -> &'static str {
+  match list.iter().find(|(f, _)| *f == requested) {
+    Some((f, _)) => f,
+    None => {
+      crate::debug::events::log(
+        "warn",
+        "infer",
+        format!("计划里的模型 {requested} 不在现役列表 → 用 {}", list[0].0),
+      );
+      list[0].0
+    }
+  }
 }
 
 /// 解析模型文件路径。开发时模型在仓库 `models/`，打包后应在可执行文件旁/资源目录。
@@ -344,4 +396,132 @@ pub fn model_path(file: &str) -> Result<PathBuf, String> {
     "找不到模型 {file}；可用 PUREVOX_MODEL_DIR 指定模型目录。已尝试：{}",
     tried.join("；")
   ))
+}
+
+#[cfg(test)]
+mod verify {
+  //! 手工回归（**默认 ignore**，要模型 + 训练产物）：用应用侧引擎逐 hop 复现训练侧
+  //! epoch 末的 `O-XXXX.wav`（那是「同一个 ONNX + 图外 Hann/OLA」的参考输出）。
+  //!
+  //! ```text
+  //! PUREVOX_MODEL_DIR=~/purevox/models \
+  //! PVM_ROOT=~/PureVoxModel \
+  //! cargo test --bin purevox matches_epoch -- --ignored --nocapture
+  //! ```
+  //!
+  //! 谱接口换代（2026-10-29）后 SNR 应在 60 dB 以上（同一 ORT、同一模型、同一 FFT 口径；
+  //! 实测差异只来自 float 累加顺序）。低于 40 dB 说明窗口/OLA/对齐有一处错了。
+
+  use super::*;
+  use crate::audio::HOP;
+
+  fn pvm(rel: &str) -> std::path::PathBuf {
+    let root = std::env::var("PVM_ROOT")
+      .unwrap_or_else(|_| format!("{}/PureVoxModel", std::env::var("HOME").unwrap_or_default()));
+    std::path::Path::new(&root).join(rel)
+  }
+
+  fn read(path: &std::path::Path) -> Vec<f32> {
+    let (x, rate) = crate::wav::read_mono(path).expect("读 wav");
+    assert_eq!(
+      rate,
+      crate::audio::SAMPLE_RATE,
+      "{} 不是 48 kHz",
+      path.display()
+    );
+    x
+  }
+
+  fn snr(reference: &[f32], got: &[f32]) -> f64 {
+    let n = reference.len().min(got.len());
+    let mut sig = 0.0f64;
+    let mut err = 0.0f64;
+    for i in 0..n {
+      let r = reference[i] as f64;
+      let g = got[i] as f64;
+      sig += r * r;
+      err += (r - g) * (r - g);
+    }
+    10.0 * (sig / err.max(1e-30)).log10()
+  }
+
+  #[test]
+  #[ignore]
+  fn matches_epoch_denoise() {
+    let path = model_path(MODEL_DENOISE).expect("找模型");
+    let mut eng = denoise::Denoise::load(&path).expect("加载降噪");
+    let x = read(&pvm("6_epoch_end_test_wav/purevox/merged_noisy_files.wav"));
+    let n_hops = x.len() / HOP;
+    let zero = [0.0f32; HOP];
+    let mut y = Vec::with_capacity(n_hops * HOP);
+    for t in 0..=n_hops {
+      let hop = if t < n_hops {
+        &x[t * HOP..(t + 1) * HOP]
+      } else {
+        &zero[..]
+      };
+      let out = eng.process(hop).expect("推理").to_vec();
+      if t > 0 {
+        y.extend_from_slice(&out); // 本 hop 出来的是上一个 hop
+      }
+    }
+    let want = read(&pvm("7_output/denoise_202610a/wav/O-0038.wav"));
+    let s = snr(&want, &y);
+    println!("降噪 vs O-0038.wav: SNR = {s:.1} dB（hop {}）", n_hops);
+    assert!(s > 40.0, "SNR 太低：{s:.1} dB");
+  }
+
+  #[test]
+  #[ignore]
+  fn matches_epoch_aec() {
+    let mut eng = aec::Aec::load(aec::MODEL_AEC).expect("加载 AEC");
+    let mic = read(&pvm("6_epoch_end_test_wav/aec/test_000019_mic.wav"));
+    let far = read(&pvm("6_epoch_end_test_wav/aec/test_000019_far.wav"));
+    let n = mic.len().min(far.len());
+    let n_hops = n / HOP;
+    let zero = [0.0f32; HOP];
+    let mut y = Vec::with_capacity(n_hops * HOP);
+    for t in 0..=n_hops {
+      let (m, f) = if t < n_hops {
+        (&mic[t * HOP..(t + 1) * HOP], &far[t * HOP..(t + 1) * HOP])
+      } else {
+        (&zero[..], &zero[..])
+      };
+      let out = eng.process(m, f).expect("推理").to_vec();
+      if t > 0 {
+        y.extend_from_slice(&out);
+      }
+    }
+    let want = read(&pvm("7_output/aec_202610/wav/O-0381.wav"));
+    let s = snr(&want, &y);
+    println!("AEC vs O-0381.wav: SNR = {s:.1} dB（hop {}）", n_hops);
+    assert!(s > 40.0, "SNR 太低：{s:.1} dB");
+  }
+
+  #[test]
+  #[ignore]
+  fn matches_epoch_tse() {
+    let mut eng = tse::Tse::load(tse::MODEL_TSE).expect("加载 TSE");
+    let reference = read(&pvm("6_epoch_end_test_wav/tse/myvoice.wav"));
+    eng.set_reference(&reference).expect("注册参考");
+    let x = read(&pvm("6_epoch_end_test_wav/tse/multi_voice.wav"));
+    let n_hops = x.len() / HOP;
+    let zero = [0.0f32; HOP];
+    let mut y = Vec::with_capacity(n_hops * HOP);
+    for t in 0..=n_hops {
+      let hop = if t < n_hops {
+        &x[t * HOP..(t + 1) * HOP]
+      } else {
+        &zero[..]
+      };
+      let out = eng.process(hop).expect("推理").to_vec();
+      if t > 0 {
+        y.extend_from_slice(&out);
+      }
+    }
+    let want = read(&pvm("7_output/tse_202610a/wav/O-0066.wav"));
+    let s = snr(&want, &y);
+    println!("TSE vs O-0066.wav: SNR = {s:.1} dB（hop {}）", n_hops);
+    assert!(s > 40.0, "SNR 太低：{s:.1} dB");
+  }
 }

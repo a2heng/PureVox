@@ -817,21 +817,21 @@ pub fn create_stage(
     }
     "denoise" => {
       let model = match params.get("model") {
-        Some(ParamValue::Text(t)) => t.clone(),
-        _ => crate::infer::MODEL_DENOISE.to_string(),
+        Some(ParamValue::Text(t)) => crate::infer::known_model(crate::infer::denoise_models(), t),
+        _ => crate::infer::MODEL_DENOISE,
       };
       Ok(Box::new(super::components::denoise::DenoiseStage::load(
-        &model,
+        model,
       )?))
     }
     "noise_gate" | "compressor" | "limiter" | "expander" | "upward_compressor" | "eq3"
     | "invert" => super::components::obs_dsp::stage(spec.ptype, params),
     "tse" => {
       let model = match params.get("model") {
-        Some(ParamValue::Text(t)) => t.clone(),
-        _ => crate::infer::tse::MODEL_TSE.to_string(),
+        Some(ParamValue::Text(t)) => crate::infer::known_model(crate::infer::tse::tse_models(), t),
+        _ => crate::infer::tse::MODEL_TSE,
       };
-      Ok(Box::new(super::components::tse::TseStage::load(&model)?))
+      Ok(Box::new(super::components::tse::TseStage::load(model)?))
     }
     "gain" => {
       let db = match params.get("gain_db") {

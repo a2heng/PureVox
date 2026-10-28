@@ -17,6 +17,12 @@
 
 //! 独立基准：加载降噪模型并连续推理，打印每 hop 耗时（不经过音频链路）。
 //! 运行：`cargo run --release --example ort_bench [模型路径]`
+//!
+//! 输出两行：**只算 ONNX** 与 **ONNX + 图外 FFT/OLA**（`infer/spec.rs` 原样复用，
+//! 不抄第二份）。两者之差就是「傅里叶出图」换来的应用侧开销。
+
+#[path = "../src/infer/spec.rs"]
+mod spec;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -29,8 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .nth(1)
     .map(PathBuf::from)
     .unwrap_or_else(|| {
-      PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../models/purevox_denoise_202609b_ep0046.onnx")
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../models/purevox_denoise.onnx")
     });
   println!("model: {}", path.display());
   let t = Instant::now();
@@ -59,26 +64,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .ok_or("no cache_in")?;
   println!("cache dim = {dim}");
 
-  // 与采集工作线程一致：在子线程里创建会话并推理
-  let handle = std::thread::spawn(move || {
-    println!("[thread] start");
-    let mut cache = vec![0.0f32; dim];
-    for i in 0..50 {
-      let mix = Tensor::from_array(([1i64, 480], vec![0.0f32; 480])).unwrap();
-      let t = Instant::now();
-      let cin = Tensor::from_array(([1i64, dim as i64], std::mem::take(&mut cache))).unwrap();
-      let outputs = session
-        .run(ort::inputs!["mix_hop" => mix, "cache_in" => cin])
-        .unwrap();
-      let (_, cache_out) = outputs["cache_out"].try_extract_tensor::<f32>().unwrap();
-      cache = cache_out.to_vec();
-      let ms = t.elapsed().as_secs_f64() * 1000.0;
-      if i < 5 || i % 10 == 0 {
-        println!("[thread] run {i:>3}: {ms:6.2} ms/hop");
-      }
+  // 输入名按谱接口写死（旧波形契约的模型会在下面的 session.run 里直接报错）
+  let (spec_in, spec_out) = if session.inputs().iter().any(|i| i.name() == "spec_in") {
+    ("spec_in", "spec_out")
+  } else {
+    return Err("模型不是谱接口（没有 spec_in）——本 bench 只支持 2026-10 起的模型".into());
+  };
+
+  let mut cache = vec![0.0f32; dim];
+  let mut stft = spec::SpecStream::new();
+  let hop = [0.0f32; spec::HOP];
+  let (mut model_ms, mut full_ms) = (Vec::new(), Vec::new());
+  for i in 0..300 {
+    // ① 只算模型
+    let t = Instant::now();
+    {
+      let sp = Tensor::from_array(([1i64, 2, spec::BINS as i64], vec![0.0f32; spec::SPEC_LEN]))?;
+      let cin = Tensor::from_array(([1i64, dim as i64], std::mem::take(&mut cache)))?;
+      let outs = session.run(ort::inputs![spec_in => sp, "cache_in" => cin])?;
+      let (_, cout) = outs["cache_out"].try_extract_tensor::<f32>()?;
+      cache.clear();
+      cache.extend_from_slice(cout);
     }
-    println!("[thread] done");
-  });
-  handle.join().unwrap();
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    if i >= 20 {
+      model_ms.push(ms);
+    }
+
+    // ② 模型 + 图外分析/合成（应用侧真实开销）
+    let t = Instant::now();
+    let spec = stft.analyze(&hop).to_vec();
+    let out_spec = {
+      let sp = Tensor::from_array(([1i64, 2, spec::BINS as i64], spec))?;
+      let cin = Tensor::from_array(([1i64, dim as i64], std::mem::take(&mut cache)))?;
+      let outs = session.run(ort::inputs![spec_in => sp, "cache_in" => cin])?;
+      let (_, out_spec) = outs[spec_out].try_extract_tensor::<f32>()?;
+      let out_spec = out_spec.to_vec();
+      let (_, cout) = outs["cache_out"].try_extract_tensor::<f32>()?;
+      cache.clear();
+      cache.extend_from_slice(cout);
+      out_spec
+    };
+    let _ = stft.synthesize(&out_spec);
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    if i >= 20 {
+      full_ms.push(ms);
+    }
+  }
+  let stat = |v: &mut Vec<f64>| {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    (v[v.len() / 2], v[(v.len() as f64 * 0.95) as usize - 1])
+  };
+  let (m_med, m_p95) = stat(&mut model_ms);
+  let (f_med, f_p95) = stat(&mut full_ms);
+  println!(
+    "  只算 ONNX      : {m_med:.3} ms/hop (p95 {m_p95:.3})  RTF {:.3}",
+    m_med / 10.0
+  );
+  println!(
+    "  ONNX + 图外 FFT: {f_med:.3} ms/hop (p95 {f_p95:.3})  RTF {:.3}   (FFT {:.3})",
+    f_med / 10.0,
+    f_med - m_med
+  );
   Ok(())
 }

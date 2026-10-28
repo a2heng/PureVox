@@ -815,11 +815,14 @@ fn build_column(
           .get("far_delay_ms")
           .and_then(|v| v.trim().parse().ok())
           .unwrap_or(0.0);
-        let model = r
-          .params
-          .get("model")
-          .cloned()
-          .unwrap_or_else(|| crate::infer::aec::MODEL_AEC.to_string());
+        let model = crate::infer::known_model(
+          crate::infer::aec::aec_models(),
+          r.params
+            .get("model")
+            .map(String::as_str)
+            .unwrap_or(crate::infer::aec::MODEL_AEC),
+        )
+        .to_string();
         let db = |k: &str| {
           r.params
             .get(k)
@@ -1230,6 +1233,9 @@ fn run_column(
                 if e != epoch_seen {
                   epoch_seen = e;
                   aec.mic_hops = 0;
+                  // 时间基归零 ⇒ 模型的流式缓存与两路拼帧/OLA 状态一起归零
+                  // （否则会话重启后前几帧会把上一次会话的尾巴叠进来）
+                  aec.engine.reset();
                 }
                 let hop_idx = aec.mic_hops;
                 aec.mic_hops += 1;

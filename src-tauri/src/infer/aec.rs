@@ -15,24 +15,26 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! AEC 回声消除流式推理（`purevox_aec_202610` 契约，STFT 在模型图内）：
+//! AEC 回声消除流式推理（谱接口，2026-10-29 起；傅里叶在图外）：
 //!
 //! ```text
-//! 输入  mic_hop  [1,480]   近端（本机麦克风）hop
-//!       far_hop  [1,480]   远端（扬声器回环 / 参考）hop，时间对齐后
-//!       cache_in [1,D]     扁平流式缓存（首帧零起；D 由模型决定，如 91920）
-//! 输出  enh_hop  [1,480]（滞后 1 hop）+ cache_out [1,D]
+//! 输入  mic_spec [1,2,481]  近端（本机麦克风）分析谱
+//!       far_spec [1,2,481]  远端（扬声器回环 / 参考）分析谱，时间对齐后
+//!       cache_in [1,D]      扁平流式缓存（首帧零起；D 由模型决定，如 91,920）
+//! 输出  mic_spec_out [1,2,481] + cache_out [1,D]
 //! ```
 //!
-//! far 的对齐/延时由 [`crate::engine::aec::AecRow`] 负责；本文件只做无状态会话 + 每行缓存。
+//! 远端的对齐/延时由 [`crate::engine::aec::AecRow`] 负责（它给的是两个 **480 样本 hop**）；
+//! 本文件把两路各自拼成 960 分析帧、跑模型、再把近端那路合成回波形（滞后 1 hop）。
 
 use ort::value::TensorRef;
 
 use crate::audio::HOP;
+use crate::infer::spec::{BINS, SPEC_LEN, SpecStream};
 
-/// 现役 AEC 模型（202610 单流：far/mic 各 5ch 在第 0 层 early fusion，无显式延迟线；
+/// 现役 AEC 模型（单流：far/mic 各 5ch 在第 0 层 early fusion，无显式延迟线；
 /// 对齐靠 GRU 隐状态，前端感受野 ≥ 数据最大延迟）。
-pub const MODEL_AEC: &str = "purevox_aec_202610_ep0372.onnx";
+pub const MODEL_AEC: &str = "purevox_aec.onnx";
 
 pub fn aec_models() -> &'static [(&'static str, &'static str)] {
   &[(MODEL_AEC, "AEC 202610（现役）")]
@@ -42,7 +44,10 @@ pub struct Aec {
   model: crate::infer::LeasedSession,
   dim: usize,
   cache: Vec<f32>,
-  out: Vec<f32>,
+  /// 近端 / 远端各一路分析与合成状态（合成只用近端那路）
+  mic: SpecStream,
+  far: SpecStream,
+  spec_out: [f32; SPEC_LEN],
 }
 
 impl Aec {
@@ -50,17 +55,28 @@ impl Aec {
     let path = crate::infer::model_path(model_file)?;
     let model = crate::infer::checkout(&path)?;
     let dim = crate::infer::cache_dim(&model.lock(), "cache_in")?;
+    crate::infer::check_spec(&model.lock(), "mic_spec")?;
+    crate::infer::check_spec(&model.lock(), "far_spec")?;
     Ok(Aec {
       model,
       dim,
       cache: vec![0.0; dim],
-      out: vec![0.0; HOP],
+      mic: SpecStream::new(),
+      far: SpecStream::new(),
+      spec_out: [0.0; SPEC_LEN],
     })
   }
 
-  /// 处理一对对齐好的 hop（mic + far），返回增强后的 hop（借用内部缓冲）。
+  /// 会话/行重启（同样给延时校准用）：缓存 + 两路 DSP 状态归零。
+  pub fn reset(&mut self) {
+    self.cache.fill(0.0);
+    self.mic.reset();
+    self.far.reset();
+  }
+
+  /// 处理一对对齐好的 hop（mic + far），返回增强后的 hop（借用内部缓冲，滞后 1 hop）。
   ///
-  /// **零分配**：mic/far/cache 都是借用张量，cache 输出拷回预分配缓冲。
+  /// **零分配**：mic/far/cache 都是借用张量，输出拷回预分配缓冲。
   pub fn process(&mut self, mic: &[f32], far: &[f32]) -> Result<&[f32], String> {
     debug_assert_eq!(mic.len(), HOP);
     debug_assert_eq!(far.len(), HOP);
@@ -68,45 +84,53 @@ impl Aec {
       model,
       dim,
       cache,
-      out,
+      mic: mic_stft,
+      far: far_stft,
+      spec_out,
     } = self;
     let dim = *dim;
     let mut guard = model.lock();
     let session = &mut *guard;
 
     let run = {
-      let mic_t = TensorRef::from_array_view(([1i64, HOP as i64], mic))
-        .map_err(|e| format!("构造 mic_hop 失败：{e}"))?;
-      let far_t = TensorRef::from_array_view(([1i64, HOP as i64], far))
-        .map_err(|e| format!("构造 far_hop 失败：{e}"))?;
+      let mic_spec = mic_stft.analyze(mic);
+      let far_spec = far_stft.analyze(far);
+      let mic_t = TensorRef::from_array_view(([1i64, 2, BINS as i64], mic_spec))
+        .map_err(|e| format!("构造 mic_spec 失败：{e}"))?;
+      let far_t = TensorRef::from_array_view(([1i64, 2, BINS as i64], far_spec))
+        .map_err(|e| format!("构造 far_spec 失败：{e}"))?;
       let cache_in = TensorRef::from_array_view(([1i64, dim as i64], cache.as_slice()))
         .map_err(|e| format!("构造 cache_in 失败：{e}"))?;
       session.run(ort::inputs![
-        "mic_hop" => mic_t, "far_hop" => far_t, "cache_in" => cache_in
+        "mic_spec" => mic_t, "far_spec" => far_t, "cache_in" => cache_in
       ])
     };
     let outputs = match run {
       Ok(o) => o,
       Err(e) => {
         cache.fill(0.0);
+        mic_stft.reset();
+        far_stft.reset();
         return Err(format!("AEC 推理失败：{e}"));
       }
     };
-    let (_, enh) = outputs["enh_hop"]
-      .try_extract_tensor::<f32>()
-      .map_err(|e| format!("读取 enh_hop 失败：{e}"))?;
-    let (_, cache_out) = outputs["cache_out"]
-      .try_extract_tensor::<f32>()
-      .map_err(|e| format!("读取 cache_out 失败：{e}"))?;
-    if enh.len() < HOP || cache_out.len() != dim {
-      return Err(format!(
-        "AEC 输出维度异常：enh_hop={}，cache_out={}（期望 {HOP} / {dim}）",
-        enh.len(),
-        cache_out.len()
-      ));
+    {
+      let (_, spec) = outputs["mic_spec_out"]
+        .try_extract_tensor::<f32>()
+        .map_err(|e| format!("读取 mic_spec_out 失败：{e}"))?;
+      let (_, cache_out) = outputs["cache_out"]
+        .try_extract_tensor::<f32>()
+        .map_err(|e| format!("读取 cache_out 失败：{e}"))?;
+      if spec.len() != SPEC_LEN || cache_out.len() != dim {
+        return Err(format!(
+          "AEC 输出维度异常：mic_spec_out={}，cache_out={}（期望 {SPEC_LEN} / {dim}）",
+          spec.len(),
+          cache_out.len()
+        ));
+      }
+      spec_out.copy_from_slice(&spec[..SPEC_LEN]);
+      cache.copy_from_slice(cache_out);
     }
-    out.copy_from_slice(&enh[..HOP]);
-    cache.copy_from_slice(cache_out);
-    Ok(out)
+    Ok(mic_stft.synthesize(&spec_out[..]))
   }
 }

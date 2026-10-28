@@ -68,4 +68,10 @@ impl Stage for TseStage {
     frame.copy_from_slice(out);
     Ok(())
   }
+
+  /// 行/会话重启：模型缓存与流式 DSP（拼帧 / OLA 尾巴）一起归零。
+  /// 参考 token 是加载时算好的，**不**随之丢弃。
+  fn reset(&mut self) {
+    self.engine.reset();
+  }
 }
