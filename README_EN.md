@@ -88,7 +88,9 @@ and the Tauri bundling tools. Linux also needs the system packages listed below.
 - Want to train or swap in MIT-licensed models:
   [lightweight-denoise-48k](https://github.com/a2heng/lightweight-denoise-48k) (denoise) and
   [lightweight-aec-48k](https://github.com/a2heng/lightweight-aec-48k) (echo cancellation).
-  They follow the same 10 ms / 48 kHz streaming contract, so they can replace the files under
-  `models/` directly.
+  ⚠ Those repos use the **old waveform-hop contract** (STFT inside the graph). Since 2026-10-29 the
+  built-in models speak the **complex-spectrum contract** (`(1,2,481)` in/out, FFT outside the graph,
+  see `models/README.md`), so they cannot be dropped into `models/` as-is — re-export them against
+  the same contract first (loading one as-is fails loudly with "not a spectrum interface").
 
 Copyright (C) 2024-2026 a2heng <752848283@qq.com>

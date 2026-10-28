@@ -77,6 +77,8 @@ Linux 还需要系统依赖（见下）。
 - 想自己训练 / 换成 MIT 授权的模型：
   [lightweight-denoise-48k](https://github.com/a2heng/lightweight-denoise-48k)（降噪）、
   [lightweight-aec-48k](https://github.com/a2heng/lightweight-aec-48k)（回声消除）。
-  两者与内置模型同一套 10 ms / 48 kHz 流式契约，可直接替换 `models/` 下的文件。
+  ⚠ 这两个仓库是**旧的波形 hop 契约**（STFT 在图内）；内置模型从 2026-10-29 起是**谱进谱出**
+  （`(1,2,481)` 复数谱 + 图外 FFT，见 `models/README.md`），所以**不能直接塞进 `models/`**
+  —— 得先按同一份契约重新导出（加载时会明确报「不是谱接口」）。
 
 Copyright (C) 2024-2026 a2heng <752848283@qq.com>
