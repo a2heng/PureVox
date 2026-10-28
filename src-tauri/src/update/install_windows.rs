@@ -67,20 +67,53 @@ pub fn install(st: &Status) -> Result<String, String> {
   if !exe.is_file() {
     return Err(format!("安装包不见了：{}", st.saved_path));
   }
-  let cmdline = format!(
-    "ping -n 5 127.0.0.1 >nul & \"{}\" /S /UPDATE /NS /R",
-    exe.display()
-  );
   use std::os::windows::process::CommandExt;
-  const DETACHED_PROCESS: u32 = 0x0000_0008;
+  // 只给一个**没有窗口**的控制台：cmd 与它拉起的 `ping` / 安装器都在这个控制台里，
+  // 全程不出窗口。**不能加 `DETACHED_PROCESS`**：那是「不给控制台」，cmd 的子进程
+  // `ping` 是控制台程序，系统会为它**新建一个可见控制台**（Windows 11 上就是一个
+  // 标题为 `ping -n 5 127.0.0.1` 的终端窗口 —— 2026-10-28 用户报的「出来的是 ping」）。
   const CREATE_NO_WINDOW: u32 = 0x0800_0000;
   std::process::Command::new("cmd")
-    .args(["/C", &cmdline])
-    .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+    // **必须 `raw_arg` 原样传**：`.args(["/C", cmdline])` 会让 Rust 给含空格的参数
+    // 自己加一层引号、把内部的 `"` 转义成 `\"`，cmd 收到的是坏路径 → 安装器根本不
+    // 启动（实测 rc=1，界面只看到 ping 跑完就没了）。
+    .raw_arg(install_cmdline(exe))
+    .creation_flags(CREATE_NO_WINDOW)
     .spawn()
     .map_err(|e| format!("拉起安装器失败：{e}"))?;
   // 显式写一次：Windows 的最终阶段就是 `Installing`（安装器接管、本进程退出，
   // 由安装器的 `/R` 重启），调用方据此决定是否退进程。Linux 那边最终是 `Installed`。
   super::with(|s| s.phase = Phase::Installing);
   Ok("安装器已启动，正在退出并更新…".into())
+}
+
+/// 交给 `cmd` 的完整命令行（含 `/S /C`）：`ping` 先歇约 4 s 等本进程退出，再静默装。
+///
+/// `/S` 让 cmd **只剥首尾一对引号**，里面给安装包路径的那一对引号原样保留 ——
+/// 路径带空格/中文（`C:\Users\John Smith\…`）也不会散架。没有 `/S` 时 cmd 的引号
+/// 剥离规则在「整行既有引号又有 `&`」时按位置猜，不值得赌。
+fn install_cmdline(exe: &std::path::Path) -> String {
+  format!(
+    r#"/S /C "ping -n 5 127.0.0.1 >nul & "{}" /S /UPDATE /NS /R""#,
+    exe.display()
+  )
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// 引号/开关**逐字**钉死：这条字符串是 cmd 的输入，改错一位就是「点了没反应」。
+  /// 曾经的两个坑（都实际发生过）：`.args` 把内部引号转义成 `\"`（安装器不启动）、
+  /// `DETACHED_PROCESS` 让 `ping` 弹出可见控制台。这里同时钉住「路径被引号包住」。
+  #[test]
+  fn install_cmdline_quotes_path_and_keeps_nsis_switches() {
+    let exe = std::path::Path::new(
+      r"C:\Users\John Smith\AppData\Local\purevox\update\PureVox_26.10.28_x64-setup.exe",
+    );
+    assert_eq!(
+      install_cmdline(exe),
+      r#"/S /C "ping -n 5 127.0.0.1 >nul & "C:\Users\John Smith\AppData\Local\purevox\update\PureVox_26.10.28_x64-setup.exe" /S /UPDATE /NS /R""#
+    );
+  }
 }

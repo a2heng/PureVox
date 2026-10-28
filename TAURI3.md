@@ -124,8 +124,14 @@
    （如 `'{state} {pos} / {dur}'`）不含中文，被 `CJK.test()` 过滤掉、永远进不了
    `usedKeys`，于是恒报孤儿。已修（先登记 `T()` 的 msgid 再按是否含中文决定查不查 E1/E2）。
 6. **Windows 静默自更新必须先退进程**：NSIS 安装器开头有 `CheckIfAppIsRunning`，
-   正在运行的 exe 会被拦下弹框。用**脱离的 cmd**（`ping -n 5 127.0.0.1 >nul & 安装器 /S
-   /UPDATE /NS /R`）先歇几秒等本进程退出，再由安装器接手并按 `/R` 重启应用。
+   正在运行的 exe 会被拦下弹框。用**没有窗口的 cmd**（`CREATE_NO_WINDOW` + `raw_arg`，
+   `ping -n 5 127.0.0.1 >nul & 安装器 /S /UPDATE /NS /R`）先歇几秒等本进程退出，
+   再由安装器接手并按 `/R` 重启应用。这一行有两个实测坑（2026-10-28 用户报
+   「点更新出来的是 ping」）：① **不能加 `DETACHED_PROCESS`** —— 那是「不给控制台」，
+   cmd 的子进程 `ping` 是控制台程序，系统会给它**新建一个可见控制台**（Win11 上是标题
+   `ping -n 5 127.0.0.1` 的终端窗口）；② **不能 `.args(["/C", cmdline])`** —— Rust 会给
+   含空格的参数自己加引号并把内部 `"` 转义成 `\"`，cmd 收到坏路径、安装器根本不启动
+   （实测 rc=1）；用 `raw_arg` 原样传 `/S /C "…"`（`/S` 只剥首尾一对引号，路径带空格也成立）。
 7. **「本机是哪种包」由二进制自己回答，别去问 dpkg/rpm**（2026-10-18）：bundler 打包时把
    `__TAURI_BUNDLE_TYPE_VAR_{APP,DEB,RPM,MSI,NSS}` 打进二进制，`tauri::utils::platform::bundle_type()`
    读它即可（`tauri::utils` = `pub use tauri_utils as utils`，`platform` 与 `config::BundleType`

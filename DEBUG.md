@@ -384,8 +384,10 @@ release 构建同样保留（不允许用编译开关剔除）。
       认不出安装方式（没打标的二进制，如直接跑 `target/debug/purevox`）→ 不下载，
       `unsupported` + 原因；release 里缺你那种包 → `failed` + 原因（都带 release 页面出口）。
     - **Windows** = NSIS 静默 `/S /UPDATE /NS /R`（**必须先退进程再装**：安装器开头有
-      `CheckIfAppIsRunning` 会拦下正在运行的 exe，故用脱离的 cmd 先歇几秒再拉安装器，
-      随后 `app.exit(0)`）。
+      `CheckIfAppIsRunning` 会拦下正在运行的 exe，故用**没有窗口的 cmd**（`CREATE_NO_WINDOW`；
+      **不能加 `DETACHED_PROCESS`**，否则 `ping` 会弹出一个可见终端窗口）先歇几秒再拉安装器，
+      随后 `app.exit(0)`；命令行必须 `raw_arg` 原样传，`.args` 会把内部引号转义坏，
+      详见 TAURI3.md §0 踩坑 6）。
     - **Linux = 三种包都能更新，分两条路**：AppImage 自身是可替换的文件 → 写同目录临时名
       再 `rename`（正在跑的进程用的是挂载副本，覆盖源文件不影响它；实测覆盖后挂载仍可读）；
       **deb / rpm 属于包管理器**（`/usr/bin/purevox` 是 root 所有，`cp` 覆盖运行中的二进制
