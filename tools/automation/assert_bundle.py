@@ -55,7 +55,7 @@ _utf8.force()
 # 2026-10-26 从 40 调到 20：模型瘦身（删 202609a/202609c，-23 MB）后 Windows 安装包
 # 只有 36.8 MB，旧下限把**正确的包**判成「疑似模型未随包」。这条只是「有没有模型」的
 # 粗筛，真正齐全与否由 `check_layout` 数 .onnx 个数；模型再瘦就跟着调这个数。
-MIN_MB = 20
+MIN_MB = 10
 DEBUG_URL = "http://127.0.0.1:47821/debug"
 SMOKE_POLL = 60      # 轮询次数
 SMOKE_INTERVAL = 0.5  # 秒
