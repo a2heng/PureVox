@@ -67,6 +67,9 @@ and the Tauri bundling tools. Linux also needs the system packages listed below.
 | Linux | WebKitGTK 4.1, GTK3, ALSA | UI and audio I/O |
 | Linux | PipeWire or PulseAudio | Device enumeration and capture (`pactl` / `parec` / `pw-dump`) |
 | Linux | `libopus0` (optional) | Network audio; without it that feature reports why, everything else works |
+| Linux | `pulseaudio-utils` (`paplay`) | Start/stop cue sounds; without it you only lose the sound |
+| Linux | `nvidia-smi` or `amdgpu` sysfs (optional) | GPU readouts in the debug panel; absent → hidden, audio unaffected |
+| Linux | `.desktop` entry (shipped in packages) | **Global hotkeys** need a desktop app id: start from the app grid, not a terminal (the UI says so) |
 | Linux | `pkexec` (deb/rpm self-update) | Graphical prompt, then the package manager installs |
 | Android | Android 8.0+ (API 26) | The web client needs no install — just open the desktop URL |
 

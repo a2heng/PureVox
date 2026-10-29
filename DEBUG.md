@@ -74,9 +74,16 @@ release 构建同样保留（不允许用编译开关剔除）。
 - **单一数据源**：Rust 侧 `DebugHub`（`src-tauri/src/debug/mod.rs`）维护唯一快照，UI 面板
   （Tauri 命令 `debug_snapshot`，2 Hz 轮询）与 HTTP 接口序列化的是**同一个 `DebugSnapshot`**；
   前端（`src-tauri/ui/debug.js`）只渲染，禁止自己另算一套。
-- **采集来源（Windows）**：CPU / 内存用 `sysinfo`，私有字节用 `GetProcessMemoryInfo`；GPU 适配器与
-  本进程显存用 DXGI，整卡占用率与显存已用用 PDH 计数器 `GPU Engine` / `GPU Adapter Memory`
-  （任务管理器同源）；设备用 `cpal`（后续音频 I/O 同用此库）。设备刷新单一入口
+- **采集来源**（`debug/{system,gpu_*,mem_*}.rs`，按平台分文件）：
+  - CPU / 内存总量与工作集：两平台都用 `sysinfo`，同一套口径。
+  - **私有字节**：Windows `GetProcessMemoryInfo`（`PrivateUsage`，含已换出）；
+    Linux `/proc/self/smaps_rollup` 的 `Private_Clean+Private_Dirty+Private_Hugetlb`
+    （**只算常驻**，换出后会变小 —— 口径差异写在这里，不假装等价）；
+  - **GPU**：Windows 用 DXGI（适配器 / 本进程显存）+ PDH 计数器 `GPU Engine` /
+    `GPU Adapter Memory`（任务管理器同源）；Linux 用 `nvidia-smi`（整卡占用 / 显存 /
+    计算上下文的进程显存，2 s 缓存）或 `amdgpu` 的 `/sys/class/drm/card*/device/{gpu_busy_percent,
+    mem_info_vram_*}`。单进程占用率两家 Linux 驱动都不提供 → 明确 `unavailable`，不编数。
+  设备用 `cpal`（后续音频 I/O 同用此库）。设备刷新单一入口
   `devices::spawn_refresh`（启动时 + 面板「刷新」按钮），后台线程执行。
 - 「本进程」指标不含 WebView2 子进程（界面渲染在 `msedgewebview2.exe`）。
 - **采集链路**（`src-tauri/src/audio/`）：设备按原生默认格式打开 → 回调线程只做下混单声道 +
@@ -493,8 +500,13 @@ release 构建同样保留（不允许用编译开关剔除）。
   只写 Run 键时任务管理器的「启动」页会当成被禁用，这就是旧版「开关没功能」的真因，
   2026-10-26 实测；不弹 UAC；`set_autostart` 失败会停在设置面板里显示原因）；**启动/停止**（命令 `set_running`/`get_running`，
   界面顶栏按钮（启动绿/停止红）、托盘、全局热键共用；快照带 `running`）；**全局热键**（`hotkey.rs`：
-  `RegisterHotKey` + 规范串「`Ctrl+Alt+Shift+Win` 顺序」，空串=不监听，注册结果进 `ui`）；
-  **提示音**（`cues.rs` 自合成 6 套预设，start 上行 / stop 下行，`PlaySound` SND_MEMORY）；
+  Windows `RegisterHotKey` + 规范串「`Ctrl+Alt+Shift+Win` 顺序」，空串=不监听，注册结果进 `ui`；
+  **Linux 走 XDG 门户 `org.freedesktop.portal.GlobalShortcuts`**（`hotkey_linux.rs`，Wayland 上唯一
+  可能的路）—— 门户按 systemd 用户单元名认应用身份，**只有从应用菜单/桌面图标启动**才有 app id，
+  终端里直接跑会被拒（`An app id is required`），此时界面上给的是这句可执行提示而不是「不支持」；
+  首次绑定会弹一次系统对话框，最终绑定以门户返回的 `trigger_description` 为准并写进事件日志）；
+  **提示音**（`cues.rs` 自合成 6 套预设，start 上行 / stop 下行；Windows `PlaySound` SND_MEMORY，
+  Linux `paplay` 播同一份合成 WAV，临时文件播完即删）；
   **设置**（`~/.purevox/settings.json`：语言 / 热键 / 提示音；顶栏「设置」面板，键位可录制）；
   中英文（`ui/i18n.js`，中文即 msgid，顶栏「EN/中」）。应用图标 `src-tauri/icons/` 与 Android 的
   `res/mipmap-*` 由 `tools/automation/gen_icons.py` 生成（**不参与 CI**，一次性生成、产物入库；

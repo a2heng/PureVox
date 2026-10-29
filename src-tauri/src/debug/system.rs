@@ -103,13 +103,19 @@ impl Default for SystemInfo {
 #[cfg(windows)]
 #[path = "gpu_windows.rs"]
 mod gpu;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "gpu_linux.rs"]
+mod gpu;
+#[cfg(not(any(windows, target_os = "linux")))]
 #[path = "gpu_other.rs"]
 mod gpu;
 #[cfg(windows)]
 #[path = "mem_windows.rs"]
 mod mem;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "mem_linux.rs"]
+mod mem;
+#[cfg(not(any(windows, target_os = "linux")))]
 #[path = "mem_other.rs"]
 mod mem;
 

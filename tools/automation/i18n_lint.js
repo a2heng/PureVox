@@ -363,6 +363,21 @@ const rustAll = [...rustFiles.values()].join('\n')
 
 // E6：Rust 侧的用户可见标签（注册表节点/参数名、模型表、提示音预设）必须都有 en 条目。
 // 界面侧经 T() 翻译（中文即 msgid），条目缺失就是漏译——直接对 Rust 源校验覆盖。
+//
+// **诊断宏里的中文不算标签**：`assert!(cond, "SNR 太低…")` / `panic!` / `eprintln!` 是
+// 开发者看的诊断文本（CONTRIBUTING「不翻译的边界」），既不上屏也不该逼着往字典里加条目 ——
+// 不按行排除的话，断言文案会被下面的正则当成标签（实测 2026-10-29 撞过三条）。
+const dropDiagnostics = (src) =>
+  src
+    .split('\n')
+    .filter(
+      (l) =>
+        !/^\s*(assert|assert_eq|assert_ne|debug_assert|debug_assert_eq|panic|eprintln|println|unreachable|todo)!\s*\(/.test(
+          l,
+        ),
+    )
+    .join('\n')
+
 const labelSources = [
   { file: 'src-tauri/src/engine/registry.rs', re: /label:\s*"([^"]+)"/g },
   { file: 'src-tauri/src/cues.rs', re: /,\s*"([^"]*[\u4e00-\u9fff][^"]*)"\s*\)/g },
@@ -371,11 +386,12 @@ const labelSources = [
   { file: 'src-tauri/src/infer/aec.rs', re: /,\s*"([^"]*[\u4e00-\u9fff][^"]*)"\s*\)/g },
 ]
 for (const { file, re } of labelSources) {
-  const src = rustFiles.get(file)
-  if (src === undefined) {
+  const raw = rustFiles.get(file)
+  if (raw === undefined) {
     err(file, 0, 'E6 Rust 标签源文件缺失')
     continue
   }
+  const src = dropDiagnostics(raw)
   const seen = new Set()
   let m
   re.lastIndex = 0

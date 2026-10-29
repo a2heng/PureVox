@@ -68,6 +68,37 @@
   Linux = 虚拟驱动（`audio/virtual_mic.rs`，照 legacy 建 `purevox_out`+monitor+`purevox_mic`，创建/移除），
   Windows = VB-CABLE 下载/教程/检测（`ui/drivers_windows.js`）。AEC 远端在 Linux 走 `parec` 监听 monitor
   （`audio/loopback_linux.rs`），候选由 `list_loopback_targets` 给出。
+- **Linux 向 Windows 对齐（2026-10-29，五项 + 一个真 bug）**：
+  - **窗口几何不再每启动一次长一圈**：tao/GTK 的 `inner_size()` 返回的是含 CSD 的窗口尺寸
+    （本机 2x 缩放实测多 52×89 逻辑像素），而 `set_size()` 设的是客户端区 → 读大写小、
+    每次启动 +104×178。改量 `Webview::size()`（wry `bounds()`：Wayland 取 `allocated_size()`、
+    X11 取 `XGetWindowAttributes`）。**不做显示器/最大化推断**：能放下就放下、要不要最大化
+    交给合成器，这里只如实读写。实测三轮同一尺寸 3128×2036 不变、`maximized` 稳定。
+  - **全局热键**（原来只有一句「仅 Windows 支持」）：`hotkey_linux.rs` 走 XDG 门户
+    `org.freedesktop.portal.GlobalShortcuts`（zbus，blocking 关掉；zbus 本就在依赖树里）。
+    实测 dconf 落表：`org/gnome/settings-daemon/global-shortcuts/com.purevox.desktop`
+    = `('hotkey0', {'shortcuts': <['<Alt>period']>})`。**限制**：门户按 systemd 单元名认身份，
+    只有从应用菜单/桌面图标启动才有 app id（终端直跑会被拒，界面给可执行提示）。
+    开发态要验证，照「桌面启动」的样子跑一遍（`Exec` 必须指向**存在**的可执行文件，
+    否则 GIO 解析桌面项失败、门户照样拒）：
+    ```sh
+    printf '[Desktop Entry]\nType=Application\nName=PureVox\nExec=%s\n' \
+      "$PWD/src-tauri/target/debug/purevox" > ~/.local/share/applications/com.purevox.desktop.desktop
+    update-desktop-database ~/.local/share/applications
+    systemd-run --user --scope --unit=app-com.purevox.desktop-$$ \
+      src-tauri/target/debug/purevox      # 屏幕上会弹一次「确认快捷键」系统对话框
+    gsettings get org.gnome.settings-daemon.global-shortcuts applications   # 验证落到系统里
+    ```
+    验证完记得删掉那个 `.desktop` 与 dconf 里的 `global-shortcuts/<app-id>`（否则快捷键会被
+    一个不存在的应用占着）。
+  - **提示音**：`cues_linux.rs` 用 `paplay` 播同一份自合成 WAV（临时文件，播完删）。
+  - **调试指标**：私有字节读 `/proc/self/smaps_rollup`（`mem_linux.rs`）；GPU 读 `nvidia-smi`
+    或 `amdgpu` sysfs（`gpu_linux.rs`，2 s 缓存、单进程占用明确不可用）。
+  - **音频线程实时优先级**：`rt_guard_linux.rs` 先试 `SCHED_FIFO(40)`，不行走 **rtkit**
+    （`MakeThreadRealtime`，桌面默认装、PipeWire 同款），实测音频线程 `RR/20`。
+    「执行保活」在 Linux 无对应物，保持空实现并写明理由。
+  - 未补：**手机远程键盘注入**（Linux 需 uinput，本机虽可写但别的机器要 udev 规则；
+    按用户决定这次不做，`net/keys_other.rs` 仍给明确原因）。
 - **Tauri 依赖升到 `3.0.0-alpha.5`**（2026-10-14 上游发布）：`tauri` / `tauri-runtime-wry`
   alpha.4 → alpha.5、`tauri-build` alpha.3 → alpha.4（`tauri-codegen` / `tauri-macros` /
   `tauri-utils` 随之到 alpha.4）；CLI 钉 `TCLI_VER=3.0.0-alpha.5`（当时还把缓存代数提到 2，

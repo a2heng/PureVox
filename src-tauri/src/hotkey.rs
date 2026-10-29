@@ -15,7 +15,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 全局热键（仅 Windows）：`RegisterHotKey` + 轮询消息队列。
+//! 全局热键：Windows `RegisterHotKey`；Linux XDG 门户 `GlobalShortcuts`（见 `hotkey_linux.rs`）。
 //!
 //! 一组绑定同时注册：① 启停热键（设置里的「全局热键」）、② 每个音效一个触发键
 //! （音效板处理行里逐个录制，同 legacy `uitk/main_window.py` 的 `pad:<i>` 语义）。
@@ -230,10 +230,14 @@ impl Hotkeys {
   }
 }
 
-// 平台实现分文件（CONTRIBUTING.md）：Windows 用 `RegisterHotKey`，其它平台明确不可用。
+// 平台实现分文件（CONTRIBUTING.md）：Windows 用 `RegisterHotKey`；Linux 走 XDG 门户
+// `GlobalShortcuts`（Wayland 唯一的全局快捷键通路）；其它平台明确不可用。
 #[cfg(windows)]
 #[path = "hotkey_windows.rs"]
 mod imp;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "hotkey_linux.rs"]
+mod imp;
+#[cfg(not(any(windows, target_os = "linux")))]
 #[path = "hotkey_other.rs"]
 mod imp;

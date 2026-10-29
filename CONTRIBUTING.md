@@ -12,8 +12,8 @@
   `<功能>_windows.rs` / `<功能>_linux.rs` / `<功能>_other.rs`（其它平台 = 明确不可用的桩，
   不静默失败），功能文件本身只保留共享部分 + `#[cfg] #[path = "…_<平台>.rs"]` 的平台分派；
   **禁止**在一个文件里用 `#[cfg(windows)]` 包住大段平台实现体。现状（全部按此分）：
-  `audio/loopback_{windows,linux,other}.rs`、`audio/virtual_mic*.rs`、`hotkey*.rs`、
-  `winstate*.rs`、`cues*.rs`、`net/keys*.rs`、`net/opus_sys*.rs`、`devices*.rs`、
+  `audio/loopback_{windows,linux,other}.rs`、`audio/virtual_mic*.rs`、`audio/rt_guard_*.rs`、
+  `hotkey*.rs`、`winstate*.rs`、`cues*.rs`、`net/keys*.rs`、`net/opus_sys*.rs`、`devices*.rs`、
   `debug/{mem,gpu}_*.rs`、`openurl_*.rs`。前端同理：`ui/drivers_linux.js` / `ui/drivers_windows.js`。
   开机自启**不在此列**：`tauri-plugin-autostart` 已是跨平台实现（见 §1.3 外围），不要再手写一份。
 - **但 Python 脚本反过来：尽可能一个 py 跨平台**（上面那条只管 `.rs` 与前端 JS）。理由：脚本

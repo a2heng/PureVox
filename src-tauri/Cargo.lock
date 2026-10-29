@@ -3630,6 +3630,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite 0.24.0",
  "windows",
+ "zbus",
 ]
 
 [[package]]

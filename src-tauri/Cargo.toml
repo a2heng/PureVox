@@ -139,6 +139,12 @@ windows = { version = "0.62", features = [
 # 与 Windows 加载 opus.dll 同一契约（不引入 C 编译链）。
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# 全局热键：XDG 桌面门户 `org.freedesktop.portal.GlobalShortcuts`（D-Bus）；实时优先级
+# 也要走 rtkit 的 D-Bus —— 两处都靠 zbus。它本来就在依赖树里（Linux 托盘 ksni 用的），
+# 这里只是把 blocking API 直接拿来用，不引入新的 C 编译链。
+zbus = "5"
+
 [dev-dependencies]
 # 网络回循测试的 WebSocket 客户端（不进产物）
 tokio-tungstenite = "0.24"

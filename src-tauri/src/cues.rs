@@ -17,7 +17,8 @@
 
 //! 启动 / 停止提示音：**自己合成**（短促、成对，start 上行 / stop 下行），
 //! 不依赖系统声音、不用音频文件。参照旧实现 `pvengine/cues.py` 的 6 套预设。
-//! 播放走系统默认输出（`PlaySoundW` + `SND_MEMORY`，短命线程，失败静默）。
+//! 播放走系统默认输出（短命线程，失败只记事件日志）：Windows `PlaySound` + `SND_MEMORY`，
+//! Linux `paplay`（临时 WAV 文件），见 `cues_<平台>.rs`。
 
 const SR: f64 = 48_000.0;
 const PEAK: f32 = 0.6;
@@ -201,10 +202,14 @@ pub fn play(preset: &str, kind: &str) {
     .ok();
 }
 
-// 平台实现分文件（CONTRIBUTING.md）：Windows 用 `PlaySound`；其它平台无提示音。
+// 平台实现分文件（CONTRIBUTING.md）：Windows 用 `PlaySound`；Linux 用 `paplay`
+// 播同一份合成 WAV；其它平台无提示音。
 #[cfg(windows)]
 #[path = "cues_windows.rs"]
 mod plat;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "cues_linux.rs"]
+mod plat;
+#[cfg(not(any(windows, target_os = "linux")))]
 #[path = "cues_other.rs"]
 mod plat;

@@ -34,12 +34,19 @@
 //! 两者都**只影响本进程**，不改任何全局注册表/电源计划（`timeBeginPeriod` 那种全局副作用不做）。
 //!
 //! 非 Windows：这里不做事（Linux 的实时性靠 cgroup/`sched_setscheduler`，另有安排）。
+//!
+//! 平台实现见 `rt_guard_windows.rs` / `rt_guard_linux.rs`（后者：`SCHED_FIFO` 或 rtkit，
+//! 对应 MMCSS「Pro Audio」；「执行保活」在 Linux 无对应物，见该文件注释）。
 
 #[cfg(windows)]
 #[path = "rt_guard_windows.rs"]
 mod imp;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "rt_guard_linux.rs"]
+mod imp;
+
+#[cfg(not(any(windows, target_os = "linux")))]
 #[path = "rt_guard_other.rs"]
 mod imp;
 
