@@ -1,42 +1,36 @@
 # `models/` — 内置模型（不进 GPL，见 `MODEL-LICENSE.md`）
 
-> ## 本次发布（2026-10-30）说明
->
-> 这一版换上的是**下一步将要使用**的新一代模型（降噪 `202610c`、TSE `202610e`），
-> **两者都还在训练中**，后续效果可能继续提升；
-> **但截至本次发版，实测效果已经打平历史版本**（`purevox_denoise_202610a` / `purevox_tse_202610a`）。
->
-> **发版的主要目的**是验证**新的 CPU 占用**与**真实场景效果**：
-> 这两代是按"单核占用预算"重新定档的（降噪目标 ≈10% 单核、TSE 目标 ≈8% 单核，
-> 均为 960/480 周期 Hann + 图外 FFT 的完整流式回路，单线程实测）。
-> **欢迎反馈**：卡顿/爆音/残留噪声/人声发闷都请带上机型与场景描述。
-
-**文件名固定、不带版本号/epoch**（2026-10-29 起）。应用代码只认这四个名字
+**文件名固定、不带版本号**（2026-10-29 起）。应用代码只认这四个名字
 （`infer::MODEL_DENOISE` / `infer::aec::MODEL_AEC` / `infer::tse::MODEL_TSE` /
 `infer::tse::MODEL_TSE_REF`）⇒ **换模型 = 换文件**，一行代码都不用改。
 
-| 文件 | 当前权重 | 接口（每 hop 10 ms / 48 kHz） | cache |
+| 文件 | 版本（代数 @ epoch） | 接口（每 hop 10 ms / 48 kHz） | cache |
 |---|---|---|---|
-| `purevox_denoise.onnx` | 降噪 **202610c** ep0042（训练中） | `spec_in (1,2,481) + cache_in` → `spec_out + cache_out` | **45,988** |
-| `purevox_aec.onnx` | AEC **202610** ep0381 | `mic_spec + far_spec + cache_in` → `mic_spec_out + cache_out` | 91,920 |
-| `purevox_tse.onnx` | TSE **202610e** ep0053（训练中） | `spec_in + keys (1,64,143) + gb (1,**144**) + cache_in` → `spec_out + cache_out` | **34,568** |
-| `purevox_tse_ref_encoder.onnx` | 与上一行**同一 epoch**（权重同源） | `ref_spec (1,2,1001,481)` → `keys + gb`（每句一次） | — |
+| `purevox_denoise.onnx` | `purevox_denoise_202610c` @ **E76** | `spec_in (1,2,481) + cache_in` → `spec_out + cache_out` | 45,988 |
+| `purevox_aec.onnx` | `purevox_aec_202610` @ **E381** | `mic_spec + far_spec + cache_in` → `mic_spec_out + cache_out` | 91,920 |
+| `purevox_tse.onnx` | `purevox_tse_202609c` @ **E205**（傅里叶出图重导出版） | `mix_spec (1,2,481) + enr_tok (1,2,1001,180) + cache_in` → `spec_out + cache_out` | 513,216 |
+| `purevox_tse_ref_encoder.onnx` | `purevox_tse_202609c` @ **E205**（与主图同批） | `ref_spec (1,2,1001,481)` → `enr_tok`（每句一次） | — |
 
-- ⚠ **`cache_in` 维度随模型变**（本次：降噪 15,668 → **45,988**、TSE 16,072 → **34,568**、
-  TSE 的 `gb` 64 → **144**）。应用侧是运行时用 `cache_dim()` 从 session 输入形状读的，
-  不写死维度；但**模型池按路径缓存 session**，所以**替换文件后必须重启应用**才生效。
-- 本次两代模型的算力（单线程 ONNX，含图外 FFT/OLA，100 s 音频实测）：
-  降噪 c ≈ **1.00 ms/hop（单核 10%）**、TSE e ≈ **0.76 ms/hop（单核 7.6%）**，
-  AEC 仍是 ≈ 1.19 ms/hop（单核 12%）。
+**版本号怎么读**：`model` 是 ONNX metadata 里的代数（`onnx.load('…').metadata_props`），epoch 对应
+训练侧 `7_output/<代>/onnx/*_epNNNN.onnx`（TSE 9c 的是 `7_output/onnx_selftest/purevox_tse_202609c.onnx`，
+即 `checkpoint_epoch_205.tar`）。本表四个 epoch 都是**按权重摘要比对训练侧 ONNX 核出来的**，
+不是照抄提交说明；换模型时先改这张表，再改文件（表是部署现状的唯一记录）。
 
+- **`cache_in` 维度随模型变**：应用侧运行时用 `cache_dim()` 从 session 输入形状读，不写死；
+  但**模型池按路径缓存 session**，所以**替换文件后必须重启应用**才生效。
 - **谱接口**：图内只有网络，输入/输出都是 `(1,2,481)` 复数谱；960/480 周期 Hann 分析与合成、
   OLA（逐样本除 Σw²）、1 hop 滞后都在应用侧（`src-tauri/src/infer/spec.rs`，三个模型共用一份）。
-- **TSE 的两个文件必须同源**：`ref_encoder` 里是键投影与 FiLM 的权重，跟主图不配套时
-  keys/gb 形状或数值对不上（应用侧加载时会明确报错）。
-- 每个文件里的 ONNX metadata 记着来源版本（`model=purevox_denoise_202610a` 等），
-  想确认当前权重是哪一代可以 `python -c "import onnx;print(onnx.load('…').metadata_props)"`。
-- 发布/替换流程在训练仓库 `PureVoxModel/8_purevox_mic_net/publish_to_app.py`
-  （内联外部数据 + 用 onnxruntime 真跑一遍 + 拷成上面的固定文件名）。
+- **TSE 的两个文件必须成对**：`ref_encoder` 里是参考通路的权重，跟主图不配套时形状对不上。
+  应用侧的契约**不写死名字**：取「主图输入里除 `spec_in` / `cache_in` 之外的项」当参考条件
+  （现役 202609c 线是 `enr_tok`，202610 线是 `keys`+`gb`，202611 线是 `enr_comp`），
+  注册编码器必须**同名输出、形状逐个对上**，另比 metadata `model`；不配套直接报错（硬失败），
+  不会退化成直通。
+- ⚠️ **逐位全零**输入可能出 NaN（2026-10-31 实测 202611a：图内归一 0/0；202609c / 202610 线没这
+  毛病，但保不齐下一代又踩）。应用侧对这一 hop 补零 + 清缓存并记 warn（`infer/tse.rs`）；
+  根治在训练侧（归一分母加 eps）。所以拿全零谱做前向自检会被误判成坏模型 —— 喂非零谱即可。
+- **替换流程**：成对文件必须同批替换；替换后重启应用。
+- 每个文件里的 ONNX metadata 记着模型标识（`model=…`），可用
+  `python -c "import onnx;print(onnx.load('…').metadata_props)"` 查看。
 
 **为什么文件名不带版本号**：版本号进文件名就必然要在代码里同步改名，"换模型"就又变成
-"改代码 + 重新发版"。现在的约定是文件内的 metadata 记版本、本表记部署现状，替换只动文件。
+"改代码 + 重新发版"。现在的约定是文件内的 metadata 记标识、本表记部署现状，替换只动文件。

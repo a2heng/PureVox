@@ -57,7 +57,7 @@ impl Denoise {
     })
   }
 
-  /// 会话/行重启：缓存与流式 DSP 状态一起归零（从零缓存起步即与训练契约一致）。
+  /// 会话/行重启：缓存与流式 DSP 状态一起归零（从零缓存起步即与模型契约一致）。
   pub fn reset(&mut self) {
     self.cache.fill(0.0);
     self.stft.reset();

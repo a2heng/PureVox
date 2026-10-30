@@ -30,12 +30,18 @@ pub struct TseStage {
 
 impl TseStage {
   /// 参考语音固定为 `~/.purevox/tse_reference.wav`（界面不给路径设置，见 ARCHITECTURE.md §7）。
+  ///
+  /// 没有参考文件 = 用户还没录，直通是正常态；**文件在却编码失败**（版本不配套、采样率
+  /// 不对、文件损坏）必须硬失败 —— 否则主图与注册编码器不同源时，界面照常显示
+  /// 「已录制」，用户只会觉得「TSE 完全没生效」（2026-10-30 实锤，见 UX.md「失败不静默」）。
   pub fn load(model_file: &str) -> Result<Self, String> {
     let mut engine = Tse::load(model_file)?;
     let path = crate::config::default_tse_reference();
-    let status = match load_reference(&mut engine, &path) {
-      Ok(secs) => format!("参考已加载（{secs:.1} s）"),
-      Err(e) => format!("未设置参考（直通）：{e}"),
+    let status = if path.exists() {
+      let secs = load_reference(&mut engine, &path)?;
+      format!("参考已加载（{secs:.1} s）")
+    } else {
+      "未设置参考（直通）：参考语音文件不存在".to_string()
     };
     Ok(TseStage { engine, status })
   }

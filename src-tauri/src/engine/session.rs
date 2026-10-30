@@ -1051,12 +1051,15 @@ fn build_column(
       // 关键失败：这一行是启用状态、已经配置了设备/模型，却打不开 —— 新会话不能提交。
       // 未配置（还没选设备）与停用行不算（那是用户的正常中间态）。
       //
-      // **模型类处理行例外**：denoise / TSE 的 `.onnx` 初始化失败时，这一行没有 Stage，
-      // 链路按直通继续（声音还在，行状态红色）。不让它回滚整个计划 —— 否则用户只是
-      // 想切换输出设备，也会因为模型版本不对被拒绝，界面显示新设备、引擎却还在旧设备
-      // （2026-10-25 实测：切到 R20 后调试面板仍是 USB Audio，R20 没声音）。
-      let model_optional = matches!(row.ptype.as_str(), "denoise" | "tse");
-      if row.enabled && !row.unconfigured && !model_optional {
+      // **模型类处理行不再例外**（2026-10-30 起，denoise / TSE 都一样）：
+      // 旧实现是 `let model_optional = matches!(row.ptype.as_str(), "denoise" | "tse");`
+      // 且 `if row.enabled && !row.unconfigured && !model_optional` —— 模型加载失败时
+      // 链路直通、只在调试面板留一行状态。2026-10-30 实锤：TSE 主图与注册编码器不同源，
+      // 用户录了参考、界面也显示「已生效」，实际全程直通，完全无感。
+      // 现在与其它行一致：启用了且已配置却起不来 = 关键失败，会话回滚并明确报错
+      // （UX.md「失败不静默」）。代价是模型坏了会挡住切设备 —— 这正是要的：先修模型，
+      // 不静默降级。
+      if row.enabled && !row.unconfigured {
         critical.push(format!(
           "第 {} 列第 {} 行「{}」：{e}",
           idx + 1,

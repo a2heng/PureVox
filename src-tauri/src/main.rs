@@ -367,15 +367,12 @@ fn list_nodes() -> Vec<NodeInfo> {
     .collect()
 }
 
-/// 录制 TSE 参考：录「降噪后、TSE 前」的信号 `seconds` 秒，**原样**写
-/// `~/.purevox/tse_reference.wav`；进度见 `/debug` 的 `recorder` 字段。
+/// 录制 TSE 参考：录「降噪后、TSE 前」的信号（时长见 [`recorder::REF_RECORD_SECONDS`]），
+/// **原样**写 `~/.purevox/tse_reference.wav`；进度见 `/debug` 的 `recorder` 字段。
 #[tauri::command]
-async fn record_tse_reference(
-  seconds: f64,
-  mgr: tauri::State<'_, Arc<AudioManager>>,
-) -> Result<String, String> {
+async fn record_tse_reference(mgr: tauri::State<'_, Arc<AudioManager>>) -> Result<String, String> {
   let mgr = mgr.inner().clone();
-  tauri::async_runtime::spawn_blocking(move || mgr.record_reference(seconds))
+  tauri::async_runtime::spawn_blocking(move || mgr.record_reference())
     .await
     .map_err(|e| format!("录制异常：{e}"))?
 }
@@ -388,6 +385,8 @@ struct TseRefInfo {
   size: u64,
   modified_ms: u64,
   duration_s: Option<f64>,
+  /// 下次「开始录音」要录多久（秒）：界面文案/按钮用它，**不另写一份常量**。
+  record_seconds: f64,
 }
 
 /// 读 TSE 参考状态（唯一路径：`~/.purevox/tse_reference.wav`）。
@@ -417,6 +416,7 @@ async fn tse_reference_info() -> Result<TseRefInfo, String> {
       size,
       modified_ms,
       duration_s,
+      record_seconds: recorder::REF_RECORD_SECONDS,
     })
   })
   .await

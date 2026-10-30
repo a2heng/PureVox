@@ -18,18 +18,22 @@
 //! TSE 目标说话人提取流式推理（谱接口，2026-10-29 起；傅里叶在图外）：
 //!
 //! ```text
-//! 主图  输入  spec_in  [1,2,481]   分析谱
-//!            keys     [1,K,Tk]     目标说话人 token（注册编码器算出；K/Tk 从模型读，如 64×143）
-//!            gb       [1,2C]       全局声纹条件（FiLM 的 γ/β 已预算好，如 64）
-//!            cache_in [1,D]        扁平流式缓存（首帧零起；D 由模型决定，如 16,072）
-//!       输出  spec_out [1,2,481] + cache_out [1,D]（滞后 1 hop）
+//! 主图  输入  <谱输入> [1,2,481]     分析谱（名字随代变：`spec_in` / `mix_spec`；从模型读）
+//!            <参考条件>                注册编码器一次算出、**每 hop 原样喂**（名字/形状随代变）
+//!            cache_in [1,D] / [D]     扁平流式缓存（首帧零起；D 与 rank 都从模型读）
+//!       输出  spec_out [1,2,481] + cache_out（滞后 1 hop）
 //!
 //! 注册编码器（`purevox_tse_ref_encoder.onnx`，**每句只跑一次**）
-//!        ref_spec [1,2,Te,481]（10 s / 1001 帧）→ keys + gb
+//!        单输入 `ref_spec`/`enr_spec` [1,2,Te,481] → 主图要的那些参考条件
 //! ```
 //!
-//! 两个模型文件必须**同源**（键投影 / FiLM 的权重都在里面）：epoch 末成对导出，
-//! 应用侧整对替换。缺注册编码器或未设置参考 → [`Tse::process`] 直通（不进模型、不动缓存）。
+//! **谱输入与参考条件都不写死名字**（2026-10-31）：现役 202609c 线是 `mix_spec` +
+//! `enr_tok (1,2,1001,180)`；202610 线是 `spec_in` + `keys (1,K,Tk)` + `gb (1,G)`（FiLM）；
+//! 202611 线是 `spec_in` + `enr_comp (1,2,Te2,166)`。应用侧按形状找谱输入，其余输入一律当
+//! 参考条件（注册编码器必须**同名输出**、形状逐个对上）。
+//!
+//! 两个模型文件必须**同源**（键投影 / 参考通路的权重都在里面），应用侧整对替换。
+//! 缺注册编码器或未设置参考 → [`Tse::process`] 直通（不进模型、不动缓存）。
 
 use ort::value::TensorRef;
 use rustfft::FftPlanner;
@@ -43,49 +47,89 @@ pub const MODEL_TSE: &str = "purevox_tse.onnx";
 /// 注册编码器（与主模型成对）。
 pub const MODEL_TSE_REF: &str = "purevox_tse_ref_encoder.onnx";
 
+/// 可选 TSE 模型 (文件名, 界面名)，供界面下拉。
+/// 界面名只是**显示用**，不重复版本号：真正的标识在 ONNX metadata `model`
+/// （主图与注册编码器必须同源）。
 pub fn tse_models() -> &'static [(&'static str, &'static str)] {
-  &[(MODEL_TSE, "TSE 202610a（现役）")]
+  &[(MODEL_TSE, "TSE（现役）")]
 }
 
 pub struct Tse {
   model: crate::infer::LeasedSession,
+  /// 主图的谱输入名（`spec_in` / `mix_spec`，随代变；从模型读，不写死）
+  spec_name: String,
   dim: usize,
+  /// 喂 `cache_in` 用的形状（`[1,D]` 或 `[D]`，照模型输入来）
+  cache_shape: Vec<i64>,
   cache: Vec<f32>,
   stft: SpecStream,
   spec_out: [f32; SPEC_LEN],
-  /// 主图对 keys / gb 的形状要求（从模型读：换一代模型不用改代码）
-  keys_shape: Vec<i64>,
-  gb_shape: Vec<i64>,
-  /// 注册 token（值 + 形状）；None = 未设置参考 → 直通
-  keys: Option<(Vec<f32>, [i64; 3])>,
-  gb: Option<Vec<f32>>,
+  /// 主图除 `spec_in` / `cache_in` 之外的输入（参考条件）：名字 + 期望形状，顺序同模型
+  ref_names: Vec<String>,
+  ref_shapes: Vec<Vec<i64>>,
+  /// 注册编码器算出的参考条件（值 + 形状）；None = 未设置参考 → 直通
+  ref_inputs: Option<Vec<RefInput>>,
   /// 直通缓冲（无参考时用：不推进进度、不加延迟）
   out: [f32; HOP],
+}
+
+/// 一个参考条件的张量（注册编码器输出，每 hop 原样重喂）。
+struct RefInput {
+  name: String,
+  shape: Vec<i64>,
+  data: Vec<f32>,
 }
 
 impl Tse {
   pub fn load(model_file: &str) -> Result<Self, String> {
     let path = crate::infer::model_path(model_file)?;
     let model = crate::infer::checkout(&path)?;
-    let dim = crate::infer::cache_dim(&model.lock(), "cache_in")?;
-    crate::infer::check_spec(&model.lock(), "spec_in")?;
-    let keys_shape = crate::infer::input_shape(&model.lock(), "keys")?;
-    let gb_shape = crate::infer::input_shape(&model.lock(), "gb")?;
-    if keys_shape.len() != 3 {
-      return Err(format!(
-        "TSE 的 keys 输入应为 (1,K,Tk)，模型给的是 {keys_shape:?}"
-      ));
-    }
+    let (spec_name, dim, cache_shape, ref_names, ref_shapes) = {
+      let guard = model.lock();
+      let spec_name = crate::infer::find_spec_input(&guard)?;
+      let dim = crate::infer::cache_dim(&guard, "cache_in")?;
+      let cache_shape: Vec<i64> = crate::infer::input_shape(&guard, "cache_in")?
+        .iter()
+        .map(|&d| d as i64)
+        .collect();
+      if cache_shape.is_empty() || cache_shape.iter().map(|&d| d as usize).product::<usize>() != dim {
+        return Err(format!(
+          "TSE 的 cache_in 形状异常：{cache_shape:?}（元素数应为 {dim}）"
+        ));
+      }
+      let mut names = Vec::new();
+      let mut shapes = Vec::new();
+      for i in guard.inputs() {
+        let name = i.name().to_string();
+        if name == spec_name || name == "cache_in" {
+          continue;
+        }
+        shapes.push(
+          crate::infer::input_shape(&guard, &name)?
+            .iter()
+            .map(|&d| d as i64)
+            .collect::<Vec<i64>>(),
+        );
+        names.push(name);
+      }
+      if names.is_empty() {
+        return Err(
+          "TSE 主图没有参考条件输入（应为 keys/gb 或 enr_comp 之类；傅里叶在应用侧）".into(),
+        );
+      }
+      (spec_name, dim, cache_shape, names, shapes)
+    };
     Ok(Tse {
       model,
+      spec_name,
       dim,
+      cache_shape,
       cache: vec![0.0; dim],
       stft: SpecStream::new(),
       spec_out: [0.0; SPEC_LEN],
-      keys_shape: keys_shape.iter().map(|&d| d as i64).collect(),
-      gb_shape: gb_shape.iter().map(|&d| d as i64).collect(),
-      keys: None,
-      gb: None,
+      ref_names,
+      ref_shapes,
+      ref_inputs: None,
       out: [0.0; HOP],
     })
   }
@@ -95,23 +139,47 @@ impl Tse {
     self.stft.reset();
   }
 
-  /// 用 48 kHz 单声道参考语音算 keys/gb（一次性；会话内不热切换）。
+  /// 用 48 kHz 单声道参考语音算参考条件（一次性；会话内不热切换）。
   ///
-  /// 参考固定 **10 s**（不足平铺、超出截断）→ 双端零 pad 一个 hop → 1001 帧周期 Hann →
-  /// rfft → `ref_spec (1,2,1001,481)` → 注册编码器。帧数与 bin 数**从模型输入读**，
-  /// 所以换一代注册长度也不用改代码。
+  /// 注册长度**跟着模型走**：注册编码器的单输入形状 `(1,2,Te,481)` 里的 Te 就是它要的帧数
+  /// （202610 线 1001 帧 ≈ 10 s，202611 线 201 帧 = 2 s）。参考语音不足 Te 帧就平铺、
+  /// 超出就截断（见 [`build_ref_spec`]），所以录 10 s 也能喂 2 s 的模型。
   pub fn set_reference(&mut self, samples: &[f32]) -> Result<(), String> {
     if samples.len() < HOP {
       return Err("参考语音太短（不足 10 ms）".into());
     }
     let path = crate::infer::model_path(MODEL_TSE_REF)?;
     let model = crate::infer::checkout(&path)?;
-    let (frames, bins) = {
+    // 成对校验（2026-10-30）：主图与注册编码器必须同一代。形状能挡住「尺寸不一致」，
+    // 但挡不住「同形状、不同权重」——再用 ONNX metadata `model` 比一次。换模型尺寸
+    // 或换代时配错文件会在加载期就报出来，而不是悄悄降质。
+    let tag = |s: &crate::infer::LeasedSession| {
+      let g = s.lock();
+      g.metadata().ok().and_then(|m| m.custom("model"))
+    };
+    if let (Some(a), Some(b)) = (tag(&self.model), tag(&model))
+      && a != b
+    {
+      return Err(format!(
+        "TSE 主图与注册编码器不同源：{a} vs {b}（两个文件必须成对发布）"
+      ));
+    }
+    // 注册编码器只有一个输入（`ref_spec` 或 `enr_spec`），名字与帧数都从模型读。
+    let (ref_in, frames, bins) = {
       let guard = model.lock();
-      let shape = crate::infer::input_shape(&guard, "ref_spec")?;
+      let inputs = guard.inputs();
+      if inputs.len() != 1 {
+        return Err(format!(
+          "注册编码器应只有 1 个输入（参考谱），模型给了 {} 个：{:?}",
+          inputs.len(),
+          inputs.iter().map(|i| i.name()).collect::<Vec<_>>()
+        ));
+      }
+      let name = inputs[0].name().to_string();
+      let shape = crate::infer::input_shape(&guard, &name)?;
       if shape.len() != 4 || shape[0] != 1 || shape[1] != 2 {
         return Err(format!(
-          "注册编码器的 ref_spec 应为 (1,2,Te,481)，模型给的是 {shape:?}"
+          "注册编码器的 {name} 应为 (1,2,Te,481)，模型给的是 {shape:?}"
         ));
       }
       if shape[3] != BINS {
@@ -120,7 +188,7 @@ impl Tse {
           shape[3]
         ));
       }
-      (shape[2], shape[3])
+      (name, shape[2], shape[3])
     };
     let spec = build_ref_spec(samples, frames, bins);
 
@@ -128,31 +196,39 @@ impl Tse {
     let session = &mut *guard;
     let outputs = {
       let t = TensorRef::from_array_view(([1i64, 2, frames as i64, bins as i64], spec.as_slice()))
-        .map_err(|e| format!("构造 ref_spec 失败：{e}"))?;
+        .map_err(|e| format!("构造 {ref_in} 失败：{e}"))?;
       session
-        .run(ort::inputs!["ref_spec" => t])
+        .run(ort::inputs![ref_in.as_str() => t])
         .map_err(|e| format!("注册编码器推理失败：{e}"))?
     };
-    let (_, keys) = outputs["keys"]
-      .try_extract_tensor::<f32>()
-      .map_err(|e| format!("读取 keys 失败：{e}"))?;
-    let (_, gb) = outputs["gb"]
-      .try_extract_tensor::<f32>()
-      .map_err(|e| format!("读取 gb 失败：{e}"))?;
-    let want_keys: usize = self.keys_shape.iter().product::<i64>() as usize;
-    let want_gb: usize = self.gb_shape.iter().product::<i64>() as usize;
-    if keys.len() != want_keys || gb.len() != want_gb {
-      return Err(format!(
-        "注册编码器与主模型不配套：keys {} / gb {}，主图要 {want_keys} / {want_gb}（请成对替换两个文件）",
-        keys.len(),
-        gb.len()
-      ));
+    // 主图要的每个参考条件，注册编码器都要**同名输出**、而且形状一模一样。
+    // 按形状比，不只比元素个数：形状变了但元素数恰好相同（如 [1,64,143] vs [1,143,64]）
+    // 时，只比个数会静默把错误布局喂进主图。
+    let mut refs = Vec::with_capacity(self.ref_names.len());
+    for (name, want) in self.ref_names.iter().zip(self.ref_shapes.iter()) {
+      let Some(out) = outputs.get(name.as_str()) else {
+        return Err(format!(
+          "注册编码器没有输出 {name}（主图要它）；现有输出：{:?}（请成对替换两个文件）",
+          outputs.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        ));
+      };
+      let (shape, data) = out
+        .try_extract_tensor::<f32>()
+        .map_err(|e| format!("读取 {name} 失败：{e}"))?;
+      let shape: Vec<i64> = shape.to_vec();
+      if shape != *want {
+        return Err(format!(
+          "注册编码器与主模型不配套：输出 {name} {shape:?}，主图要 {want:?}\
+           （请成对替换两个文件）"
+        ));
+      }
+      refs.push(RefInput {
+        name: name.clone(),
+        shape,
+        data: data.to_vec(),
+      });
     }
-    self.keys = Some((
-      keys.to_vec(),
-      [self.keys_shape[0], self.keys_shape[1], self.keys_shape[2]],
-    ));
-    self.gb = Some(gb.to_vec());
+    self.ref_inputs = Some(refs);
     Ok(())
   }
 
@@ -161,16 +237,17 @@ impl Tse {
     debug_assert_eq!(hop.len(), HOP);
     let Self {
       model,
+      spec_name,
       dim,
+      cache_shape,
       cache,
       stft,
       spec_out,
-      keys,
-      gb,
+      ref_inputs,
       out,
       ..
     } = self;
-    let (Some((keys, keys_shape)), Some(gb)) = (keys.as_ref(), gb.as_ref()) else {
+    let Some(refs) = ref_inputs.as_ref() else {
       // 无参考：直通（不进模型、不动缓存、不推进 DSP ⇒ 零额外延迟）。
       // 参考是加载时一次性算好的（不会中途变），所以不需要"预热" STFT。
       out.copy_from_slice(hop);
@@ -183,16 +260,19 @@ impl Tse {
     let run = {
       let spec = stft.analyze(hop);
       let spec_in = TensorRef::from_array_view(([1i64, 2, BINS as i64], spec))
-        .map_err(|e| format!("构造 spec_in 失败：{e}"))?;
-      let k = TensorRef::from_array_view((*keys_shape, keys.as_slice()))
-        .map_err(|e| format!("构造 keys 失败：{e}"))?;
-      let g = TensorRef::from_array_view(([1i64, gb.len() as i64], gb.as_slice()))
-        .map_err(|e| format!("构造 gb 失败：{e}"))?;
-      let cache_in = TensorRef::from_array_view(([1i64, dim as i64], cache.as_slice()))
+        .map_err(|e| format!("构造 {spec_name} 失败：{e}"))?;
+      let mut inputs: Vec<(&str, ort::session::SessionInputValue<'_>)> =
+        Vec::with_capacity(refs.len() + 2);
+      inputs.push((spec_name.as_str(), spec_in.into()));
+      for r in refs {
+        let t = TensorRef::from_array_view((r.shape.as_slice(), r.data.as_slice()))
+          .map_err(|e| format!("构造 {} 失败：{e}", r.name))?;
+        inputs.push((r.name.as_str(), t.into()));
+      }
+      let cache_in = TensorRef::from_array_view((cache_shape.as_slice(), cache.as_slice()))
         .map_err(|e| format!("构造 cache_in 失败：{e}"))?;
-      session.run(ort::inputs![
-        "spec_in" => spec_in, "keys" => k, "gb" => g, "cache_in" => cache_in
-      ])
+      inputs.push(("cache_in", cache_in.into()));
+      session.run(inputs)
     };
     let outputs = match run {
       Ok(o) => o,
@@ -219,11 +299,24 @@ impl Tse {
       spec_out.copy_from_slice(&spec[..SPEC_LEN]);
       cache.copy_from_slice(cache_out);
     }
+    // **逐位全零输入可能出 NaN**（2026-10-31 实测 202611a：谱全 0 时图内归一 0/0；现役 202609c /
+    // 202610 线没这毛病，但保不齐下一代又踩）。数字静音是真会出现的（设备静音 / 欠载补零），NaN 一旦进 OLA
+    // 就是持续爆音，所以这里丢**这一 hop** 的输出（照常走 OLA 补零，不破坏时序）、清掉缓存
+    // 让模型从零状态重新预热，并留一条 warn 事件（不静默）。根治在训练侧（归一分母加 eps）。
+    if !spec_out.iter().all(|v| v.is_finite()) || !cache.iter().all(|v| v.is_finite()) {
+      cache.fill(0.0);
+      spec_out.fill(0.0);
+      crate::debug::events::log(
+        "warn",
+        "infer",
+        "TSE 输出含 NaN/Inf（逐位全零输入）→ 该 hop 补零并清缓存".to_string(),
+      );
+    }
     Ok(stft.synthesize(&spec_out[..]))
   }
 }
 
-/// 参考语音 → `ref_spec (1,2,Te,481)`（与训练侧 `torch.stft(center=True, pad_mode='constant')` 同口径）。
+/// 参考语音 → `ref_spec (1,2,Te,481)`（与模型导出口径一致：`center=True` + 两端零 pad 半窗）。
 ///
 /// 参考归一为 `(Te-1)·hop` 个样本（不足平铺、超出截断），双端各零 pad 一个 hop，
 /// 第 k 帧 = `x[k·hop .. k·hop+960] · Hann` → rfft。

@@ -16,7 +16,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! TSE 参考录音（ARCHITECTURE.md §7）：在列工作线程里对「降噪后、TSE 前」的信号取样，
-//! 录满 N 秒后**原样**写 48 kHz 单声道 WAV，并把实测 RMS / 峰值一起报出来。
+//! 录满 [`REF_RECORD_SECONDS`] 秒后写 48 kHz 单声道 WAV，并把实测 RMS / 峰值一起报出来。
+//!
+//! **录完整 10 s，不裁剪**（2026-10-31）：现役 TSE（`202609c@E205`，傅里叶已在图外）注册是
+//! 1001 帧 = 10 s（`ref_spec (1,2,1001,481)` → `enr_tok (1,2,1001,180)`），录多少喂多少，
+//! 没有掐头去尾这一步（短了会平铺、长了会截断，见 `infer/tse.rs::build_ref_spec`）。
 //!
 //! **不做音量归一化 / 限幅**（2026-10-26 实测 + legacy 对照）：
 //! - 主模型对参考电平不敏感：同一段参考整体 ±20 dB 后喂 ref_encoder + 主模型，
@@ -30,9 +34,9 @@
 //! 启用降噪行的输出。进度与结果发布到调试快照的 `recorder` 字段。
 //!
 //! 三条纪律（对应 legacy `_Recorder` 的行为）：
-//! - **写盘不在音频线程**：录满后把缓冲交给后台线程归一化 + 写 WAV，列线程下一拍继续跑；
-//! - **看门狗**：`seconds + 2 s` 内没有收满（引擎没启动、行停用、麦克风没输入）就明确失败，
-//!   不会永远停在「录制中 0.0/10 s」；
+//! - **写盘不在音频线程**：录满后把缓冲交给后台线程写 WAV，列线程下一拍继续跑；
+//! - **看门狗**：`REF_RECORD_SECONDS + 2 s` 内没有收满（引擎没启动、行停用、麦克风没输入）
+//!   就明确失败，不会永远停在「录制中 0.0/10 s」；
 //! - **只录启用行**：停用的列/行不参与目标解析（否则录音永远收不到样本）。
 
 use std::path::{Path, PathBuf};
@@ -44,6 +48,9 @@ use std::time::Instant;
 use crate::audio::SAMPLE_RATE;
 use crate::debug::{Probe, SharedHub};
 use crate::plan::Plan;
+
+/// 参考录音时长（秒）：**完整录 10 s**（现役 TSE 注册 1001 帧 = 10 s，不裁剪）。
+pub const REF_RECORD_SECONDS: f64 = 10.0;
 
 /// 采样相位：处理行「处理前」= 上游输出；「处理后」= 本行输出。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,11 +100,12 @@ impl RecorderHub {
     )
   }
 
-  /// 开始录制：`seconds` 秒，写 `path`。返回本次录音代号（看门狗用）。
-  pub fn start(&self, plan: &Plan, seconds: f64, path: PathBuf) -> Result<u64, String> {
+  /// 开始录制参考：固定录 [`REF_RECORD_SECONDS`] 秒（原样写盘），写 `path`。
+  /// 返回本次录音代号（看门狗用）。
+  pub fn start(&self, plan: &Plan, path: PathBuf) -> Result<u64, String> {
     let target = resolve_target(plan)
       .ok_or_else(|| "计划里没有启用的 TSE 行，也没有降噪行；请先加一个再录参考".to_string())?;
-    let needed = (seconds.max(1.0) * SAMPLE_RATE as f64) as usize;
+    let needed = (REF_RECORD_SECONDS * SAMPLE_RATE as f64) as usize;
     let token = self.next_token.fetch_add(1, Relaxed);
     let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
     match &*st {
@@ -116,7 +124,7 @@ impl RecorderHub {
     drop(st);
     self
       .hub
-      .set_recorder(Probe::ok(format!("录制中 0.0/{seconds:.0} s")));
+      .set_recorder(Probe::ok(format!("录制中 0.0/{REF_RECORD_SECONDS:.0} s")));
     Ok(token)
   }
 
@@ -254,7 +262,7 @@ struct Level {
   peak_db: f32,
 }
 
-/// 原样写参考语音（16-bit WAV，**不做归一化 / 限幅**），返回实测电平。
+/// 原样写参考语音（16-bit WAV，**不做归一化 / 限幅 / 裁剪**），返回实测电平。
 ///
 /// 只拒绝近静音：几乎没声音的参考不如不录，明确失败比让 TSE 悄悄直通更好排查。
 fn write_reference(samples: &[f32], path: &Path) -> Result<Level, String> {

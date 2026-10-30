@@ -23,7 +23,7 @@
 // - 参考语音固定为 `~/.purevox/tse_reference.wav`，界面**不给路径输入**（用户 2026-10-26
 //   明确要求），只显示录制时间 + 一个「打开参考语音文件夹」入口；
 // - 「开始录音」录的是**降噪后、TSE 前**的信号（后端 `recorder.rs` 的 Pre 抽头）；
-// - 录音必须引擎在跑；10 秒内没收到音频由后端看门狗明确失败，不永远停在「录制中」；
+// - 录音必须引擎在跑；录满时间内没收到音频由后端看门狗明确失败，不永远停在「录制中」；
 // - 完成 / 失败走**右下角气泡**（与其它操作同一套 `__pvToast`），卡片里只留持久状态；
 // - 完成后由 `columns.js` 的全局逻辑重建会话加载新参考；卡片随后刷新参考信息。
 //
@@ -42,6 +42,13 @@
   /** @type {Set<any>} */
   const cards = new Set()
 
+  /**
+   * 录制时长由后端给（`tse_reference_info.record_seconds` = Rust 的 `REF_RECORD_SECONDS`），
+   * 界面不另写一份（现役 TSE 注册 1001 帧 = 10 s，录多少喂多少）。
+   * info 还没回来时先用 10 兜底（与后端常量同值）。
+   */
+  const FALLBACK_RECORD_SECONDS = 10
+
   /** 录制时间按固定格式显示（`YYYY/MM/DD HH:mm`）：不随系统 locale 变，行宽也稳定。 */
   function fmtTime(ms) {
     if (!ms) return '—'
@@ -51,20 +58,34 @@
     return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
   }
 
-  /** 参考信息一行：只有录制时间（时长恒为 10 s、文件名固定，都不占地方）。 */
+  /** 参考信息一行：只有录制时间（时长恒为 `REF_SECONDS`、文件名固定，都不占地方）。 */
   function setInfo(card, text, cls = '') {
     if (!card.info) return
     card.info.textContent = text
     card.info.className = 'tse-info mono ' + cls
   }
 
+  /** 介绍/按钮上的时长跟后端走（`record_seconds`）；info 没回来时用兜底值。 */
+  function applyTexts(card) {
+    const sec = card.recordSeconds ?? FALLBACK_RECORD_SECONDS
+    // 介绍只讲 TSE 是干什么的；「录的是什么信号」属于实现细节，不再上屏。
+    card.intro.textContent = T(
+      'TSE 介绍：只保留目标说话人的声音。先录 {sec} 秒自己的说话声作为参考，之后按这个声音过滤其他人；录制前请先启动音频处理，并对着麦克风持续说话。',
+      { sec },
+    )
+    card.btn.textContent = T('● 开始录音 ({sec}s)', { sec })
+  }
+
   async function refresh(card) {
     try {
       const info =
-        /** @type {{path:string,exists:boolean,size:number,modified_ms:number,duration_s:number|null}} */ (
+        /** @type {{path:string,exists:boolean,size:number,modified_ms:number,duration_s:number|null,record_seconds:number}} */ (
           await invoke('tse_reference_info')
         )
       if (!cards.has(card)) return
+      if (info && typeof info.record_seconds === 'number') card.recordSeconds = info.record_seconds
+      applyTexts(card)
+
       if (info && info.exists) {
         setInfo(card, T('参考语音：录制于 {time}', { time: fmtTime(info.modified_ms) }), 'ok')
       } else {
@@ -85,7 +106,10 @@
       row,
       ctx,
       recording: false,
+      /** 录制时长（秒）：首次刷新后由后端填，之前用兜底值 */
+      recordSeconds: FALLBACK_RECORD_SECONDS,
       info: document.createElement('div'),
+      intro: document.createElement('div'),
       btn: document.createElement('button'),
       folder: document.createElement('button'),
       progress: document.createElement('span'),
@@ -93,18 +117,14 @@
     card.info.className = 'tse-info mono'
     card.info.textContent = T('读取参考状态…')
 
-    // 介绍只讲 TSE 是干什么的；「录的是什么信号」属于实现细节，不再上屏。
-    const intro = document.createElement('div')
+    const intro = card.intro
     intro.className = 'note tse-intro'
-    intro.textContent = T(
-      'TSE 介绍：只保留目标说话人的声音。先录 10 秒自己的说话声作为参考，之后按这个声音过滤其他人；录制前请先启动音频处理，并对着麦克风持续说话。',
-    )
 
     const ctl = document.createElement('div')
     ctl.className = 'tse-controls'
     card.btn.type = 'button'
     card.btn.className = 'primary'
-    card.btn.textContent = T('● 开始录音 (10s)')
+    applyTexts(card)
     card.btn.addEventListener('click', async () => {
       if (card.recording) return
       if (ctx.running && !ctx.running()) {
@@ -113,9 +133,9 @@
       }
       card.recording = true
       card.btn.disabled = true
-      card.progress.textContent = T('录音中… {sec}s（请持续说话）', { sec: 10 })
+      card.progress.textContent = T('录音中… {sec}s（请持续说话）', { sec: card.recordSeconds })
       try {
-        await invoke('record_tse_reference', { seconds: 10 })
+        await invoke('record_tse_reference')
       } catch (e) {
         card.recording = false
         card.btn.disabled = false

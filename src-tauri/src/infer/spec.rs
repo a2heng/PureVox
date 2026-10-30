@@ -28,8 +28,8 @@
 //! - 帧 t 以 `t·480` 为中心、±480（= 上一 hop ‖ 本 hop），所以**输出固定滞后 1 hop(10 ms)**：
 //!   本 hop 进来时输出的是上一个 hop（它的两帧都已到齐）。
 //! - Hann+Hann 在 50% 交叠下 `Σw² = 0.75 + 0.25·cos(2πn/480) ∈ [0.5, 1]`，**必须逐样本除**，
-//!   否则每 10 ms 一次 6 dB 起伏（≈100 Hz 嗡声）。这条口径与训练侧 `torch.istft` 逐位等价
-//!   （训练侧 `Fourier` 注释、模型 metadata `stft_ola=div_sum_sq` 同源）。
+//!   否则每 10 ms 一次 6 dB 起伏（≈100 Hz 嗡声）。这条口径与模型导出时的 iSTFT 等价
+//!   （模型 metadata `stft_ola=div_sum_sq` 同源）。
 //! - 谱的扁平布局 = `[实部 0..480 ‖ 虚部 0..480]`，与 ONNX 输入 `(1,2,481)` 的连续内存一致。
 //!
 //! 谱缓冲区是 `(1,2,481)` 的 f32，**不入 cache**；每行每路一份 `SpecStream`（AEC 两路）。
@@ -73,7 +73,7 @@ impl SpecStream {
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(NFFT);
     let ifft = planner.plan_fft_inverse(NFFT);
-    // 周期 Hann（`torch.hann_window` 口径：分母 NFFT，不是 NFFT-1）
+    // 周期 Hann（分母 NFFT，不是 NFFT-1）
     let win = std::array::from_fn(|i| {
       let x = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / NFFT as f64).cos();
       x as f32
@@ -135,7 +135,7 @@ impl SpecStream {
     }
     self.work[BINS - 1] = Complex::new(spec_out[BINS - 1], 0.0);
     self.ifft.process(&mut self.work);
-    // rustfft 的逆变换不除 N（torch.fft.irfft 会除）⇒ 这里补 1/N
+    // rustfft 的逆变换不除 N ⇒ 这里补 1/N
     let k = 1.0 / NFFT as f32;
     for i in 0..NFFT {
       self.syn[i] = self.work[i].re * k * self.win[i];
@@ -190,7 +190,7 @@ mod tests {
   }
 
   /// 前两 hop 只有半窗（上一 hop 是零），所以输出的第一个 hop 不等于输入 —— 这是契约本身
-  /// （离线整段处理时训练侧同样丢掉第 0 个 hop）。这里只确认它不是 NaN/爆掉。
+  /// （离线整段处理时同样丢掉第 0 个 hop）。这里只确认它不是 NaN/爆掉。
   #[test]
   fn first_hop_is_finite() {
     let mut s = SpecStream::new();

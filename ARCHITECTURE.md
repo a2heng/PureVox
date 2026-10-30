@@ -331,16 +331,22 @@ pub fn models() -> &'static [ModelDesc];
 pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 ```
 
-- **四个文件、名字里不带版本号/epoch**（2026-10-29 起；训练侧的版本记在 ONNX metadata
+- **四个文件、名字里不带版本号**（2026-10-29 起；模型标识记在 ONNX metadata
   `model` 与 `models/README.md`）：`purevox_denoise.onnx`、`purevox_aec.onnx`、
-  `purevox_tse.onnx`、`purevox_tse_ref_encoder.onnx`（与 TSE 主图**成对**，权重同源）。
-  ⇒ **换模型 = 换文件**，代码零改动；发布用训练仓库的
-  `8_purevox_mic_net/publish_to_app.py`（内联外部数据 + 真跑一遍校验）。
+  `purevox_tse.onnx`、`purevox_tse_ref_encoder.onnx`（与 TSE 主图**成对**）。
+  ⇒ **换模型 = 换文件**，代码零改动；替换流程见 `models/README.md`。
 - **谱接口**（2026-10-29 换代）：图内只有网络，输入/输出都是 `(1,2,481)` 复数谱 + `cache_in`，
   傅里叶/OLA 在图外（`infer/spec.rs`，三个模型共用）。旧的 `*_hop [1,480]` 波形契约已废除；
   模型文件接错会在加载时报「不是谱接口」，不会静默跑出没效果。
-- **缓存维度从模型输入读，不写死**（TSE 的 keys/gb 形状同样从模型读）。
-- 选择存配置（`denoise_model` 等），计划构建时校验文件存在，缺失进 `problems`。
+  TSE 主图与注册编码器**成对校验**：取「主图输入里除 `spec_in` / `cache_in` 之外的项」当
+  参考条件（202610 线是 `keys`+`gb`，202611 线是 `enr_comp`），注册编码器必须**同名输出、
+  形状逐个对上**，另比 metadata `model`；参考语音文件在、却编码失败（不配套 / 采样率不对）
+  也是**硬失败**，不再退化成直通。
+- **缓存形状/维度从模型输入读，不写死**（`[1,D]` 或 `[D]` 都行；TSE 的参考条件名字与形状同样从模型读）。
+- 选择存配置（`denoise_model` 等），计划构建时校验文件存在；**启用的模型行**起不来
+  （文件缺失 / 维度或成对不配套）按**关键失败**处理：会话回滚并明确报错，不再直通降级
+  （2026-10-30 起。旧实现把 denoise / TSE 当「可选」，TSE 成对不配套时界面照常显示
+  「已生效」、实际全程直通，用户完全无感 —— 见 `UX.md`「失败不静默」）。
 - 会话配置：`with_intra_threads(1)` + `with_inter_threads(1)` + `with_intra_op_spinning(false)`
   （实时音频必须；默认多线程忙等会占满 CPU 并把推理拖慢 50 倍）。
 - **权重按文件共享一份**（`Arc<Session>`），**`cache` 每行一份**；惰性加载；行/会话停止即释放引用。
@@ -411,7 +417,7 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 | **列 UI（增删列、加/拖行、两端固定）** | ◑ 已实现（增删列、加/删/上下移行、两端固定）；**列头启用开关待做**（`ColumnSpec.enabled`，停用=保留配置、放掉设备引用，见 §6.5）、拖动待做 | §3.1 / §6.5 |
 | **设备接管（多路共用设备 + 软件混音）** | ✅ 已实现（2026-10-19）：`audio/device_pool.rs` 按 `(设备, 角色)` 只开一次 + 引用计数 + 跨重建存活；`audio/mixer.rs` 每源一路可调比例重采样 + 水位伺服后相加；行级/列头开关 = 订阅与引用的挂摘。**待做**：回环与 AEC 行的采集池化、面板逐源展示 | §6.5 |
 | **模型注册表 + 型号选择** | ◑ 降噪/TSE 型号下拉已接入；统一 `ModelDesc` 注册表待做 | §7 |
-| **TSE 目标说话人提取** | ✅ 已实现（参考 10 s → `ref_encoder.onnx` → `keys`/`gb`，每句一次；主图 0.37 ms/hop；参考可录制=降噪后原样；无参考直通） | §4 / §7 |
+| **TSE 目标说话人提取** | ✅ 已实现（录 10 s → `ref_encoder.onnx` → 参考条件（现役 `202609c` 线 `enr_tok`，202610 线 `keys`/`gb`，202611 线 `enr_comp`），每句一次；主图实时（≈2 ms/hop）；参考可录制=降噪后原样；无参考直通） | §4 / §7 |
 | **AEC 回声消除** | ✅ 已实现（far 参考采集 + 2 s 网格对齐 + 每行缓存 + 互相关延时校准） | §4 |
 | 回环 | ✅ 已实现（`audio/loopback.rs`，WASAPI loopback） | 作为「输入行」的源（`loopback`，电脑播放音频） |
 | 媒体 | ✅ 已实现（后端 + 界面，2026-10-12）：`soundpad` / `player` 处理行、媒体库导入（symphonia）、每音效热键、MediaHub 控制 | §4 |

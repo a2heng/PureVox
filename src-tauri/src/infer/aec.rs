@@ -36,8 +36,10 @@ use crate::infer::spec::{BINS, SPEC_LEN, SpecStream};
 /// 对齐靠 GRU 隐状态，前端感受野 ≥ 数据最大延迟）。
 pub const MODEL_AEC: &str = "purevox_aec.onnx";
 
+/// 可选 AEC 模型 (文件名, 界面名)，供界面下拉。
+/// 界面名只是**显示用**，不重复版本号：真正的标识在 ONNX metadata `model`。
 pub fn aec_models() -> &'static [(&'static str, &'static str)] {
-  &[(MODEL_AEC, "AEC 202610（现役）")]
+  &[(MODEL_AEC, "AEC（现役）")]
 }
 
 pub struct Aec {
