@@ -367,16 +367,41 @@ const rustAll = [...rustFiles.values()].join('\n')
 // **诊断宏里的中文不算标签**：`assert!(cond, "SNR 太低…")` / `panic!` / `eprintln!` 是
 // 开发者看的诊断文本（CONTRIBUTING「不翻译的边界」），既不上屏也不该逼着往字典里加条目 ——
 // 不按行排除的话，断言文案会被下面的正则当成标签（实测 2026-10-29 撞过三条）。
-const dropDiagnostics = (src) =>
-  src
-    .split('\n')
-    .filter(
-      (l) =>
-        !/^\s*(assert|assert_eq|assert_ne|debug_assert|debug_assert_eq|panic|eprintln|println|unreachable|todo)!\s*\(/.test(
-          l,
-        ),
-    )
-    .join('\n')
+//
+// 实现上要**跨行**：`cargo fmt` 会把长断言拆成
+//   assert!(
+//     cond,
+//     "中文…"
+//   );
+// 只按单行排除会漏掉后面那行，于是断言文案又被当成标签（2026-10-31 实测四条）。
+// 所以这里做一次带字符串感知的括号配平：宏开始后一直吞到括号闭合。
+const DIAG = /^\s*(assert|assert_eq|assert_ne|debug_assert|debug_assert_eq|panic|eprintln|println|unreachable|todo)!\s*\(/
+const dropDiagnostics = (src) => {
+  const out = []
+  let depth = 0
+  for (const line of src.split('\n')) {
+    if (depth === 0 && !DIAG.test(line)) {
+      out.push(line)
+      continue
+    }
+    // 括号从当前深度开始数：单行宏在这一行就回到 0，多行宏要等到闭合那行
+    // 括号配平（跳过双引号字符串与转义）
+    let inStr = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (inStr) {
+        if (ch === '\\') i++
+        else if (ch === '"') inStr = false
+        continue
+      }
+      if (ch === '"') inStr = true
+      else if (ch === '(') depth++
+      else if (ch === ')') depth--
+    }
+    if (depth <= 0) depth = 0
+  }
+  return out.join('\n')
+}
 
 const labelSources = [
   { file: 'src-tauri/src/engine/registry.rs', re: /label:\s*"([^"]+)"/g },

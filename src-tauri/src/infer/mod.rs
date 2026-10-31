@@ -152,7 +152,10 @@ pub(crate) fn find_spec_input(session: &Session) -> Result<String, String> {
       "模型没有 (1,2,{}) 复数谱输入（2026-10 起模型只吃/吐复数谱，旧波形契约的模型不能直接用）",
       spec::BINS
     )),
-    _ => Err(format!("模型有多个 (1,2,{}) 输入 {hit:?}，无法判断哪个是谱", spec::BINS)),
+    _ => Err(format!(
+      "模型有多个 (1,2,{}) 输入 {hit:?}，无法判断哪个是谱",
+      spec::BINS
+    )),
   }
 }
 
@@ -582,27 +585,18 @@ mod tests {
   #[test]
   #[ignore = "真要加载 ONNX + 读 RSS，手动跑"]
   fn memory_release_probe() {
-    let files = [MODEL_DENOISE, tse::MODEL_TSE, tse::MODEL_TSE_REF, aec::MODEL_AEC];
+    let files = [
+      MODEL_DENOISE,
+      tse::MODEL_TSE,
+      tse::MODEL_TSE_REF,
+      aec::MODEL_AEC,
+    ];
     let base = rss_kb();
     for f in files {
-      let _ = f;
       let path = model_path(f).expect(f);
-      let lease = checkout(&path).expect(f);
-      // 真跑一次，别只加载（ORT 首次会分配 arena）
-      let mut g = lease.lock();
-      let shape: Vec<i64> = g
-        .inputs()
-        .iter()
-        .find(|i| i.name() == "cache_in")
-        .and_then(|i| match i.dtype() {
-          ort::value::ValueType::Tensor { shape, .. } => Some(shape.to_vec()),
-          _ => None,
-        })
-        .unwrap_or_default();
-      drop(g);
-      drop(lease);
+      // 加载（并让 ORT 真的建好会话 / arena），再看 RSS
+      drop(checkout(&path).expect(f));
       println!("  加载 {f}: RSS {} KB", rss_kb());
-      let _ = shape;
     }
     let loaded = rss_kb();
     let freed = retain_models(&[]);
@@ -612,7 +606,10 @@ mod tests {
       loaded.saturating_sub(base),
       loaded.saturating_sub(trimmed)
     );
-    assert!(trimmed < loaded, "回收之后 RSS 没降：{loaded} → {trimmed} KB");
+    assert!(
+      trimmed < loaded,
+      "回收之后 RSS 没降：{loaded} → {trimmed} KB"
+    );
 
     // 模拟一次**重建**：旧行还攥着自己在用的那份，新会话只能再加载一份 → 两两并存。
     retain_models(&[MODEL_DENOISE.to_string()]);
@@ -685,7 +682,10 @@ mod tests {
 
     // 整列暂停：行还在 → 模型照样留着
     let col_off = Plan {
-      columns: vec![ColumnSpec { enabled: false, rows: on.columns[0].rows.clone() }],
+      columns: vec![ColumnSpec {
+        enabled: false,
+        rows: on.columns[0].rows.clone(),
+      }],
     };
     assert_eq!(models_in_plan(&col_off), got, "停用的列也不该回收模型");
 
@@ -701,15 +701,24 @@ mod tests {
         ],
       }],
     };
-    assert!(models_in_plan(&dsp_only).is_empty(), "纯 DSP 行不该出现任何模型");
+    assert!(
+      models_in_plan(&dsp_only).is_empty(),
+      "纯 DSP 行不该出现任何模型"
+    );
 
     // 真删掉（计划里没有这些行）= 回收
     let deleted = Plan {
       columns: vec![ColumnSpec {
         enabled: true,
-        rows: vec![row(RowKind::Input, "audio_input", true), row(RowKind::Output, "audio_output", true)],
+        rows: vec![
+          row(RowKind::Input, "audio_input", true),
+          row(RowKind::Output, "audio_output", true),
+        ],
       }],
     };
-    assert!(models_in_plan(&deleted).is_empty(), "删掉模型行之后必须回收");
+    assert!(
+      models_in_plan(&deleted).is_empty(),
+      "删掉模型行之后必须回收"
+    );
   }
 }

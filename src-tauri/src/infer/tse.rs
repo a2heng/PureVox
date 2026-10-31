@@ -92,7 +92,8 @@ impl Tse {
         .iter()
         .map(|&d| d as i64)
         .collect();
-      if cache_shape.is_empty() || cache_shape.iter().map(|&d| d as usize).product::<usize>() != dim {
+      if cache_shape.is_empty() || cache_shape.iter().map(|&d| d as usize).product::<usize>() != dim
+      {
         return Err(format!(
           "TSE 的 cache_in 形状异常：{cache_shape:?}（元素数应为 {dim}）"
         ));
