@@ -132,6 +132,9 @@
         return
       }
       card.recording = true
+      // 只有先见到本次的「录制中」快照，才认后面的「完成」：点下去的瞬间轮询可能
+      // 还带着上一轮的完成快照（那时会立刻弹「已录制」并把卡片复位）
+      card.awaiting = true
       card.btn.disabled = true
       card.progress.textContent = T('录音中… {sec}s（请持续说话）', { sec: card.recordSeconds })
       try {
@@ -176,6 +179,11 @@
       if (!card.recording) continue
       if (rec.state === 'ok') {
         const tpl = window.__pvTpl ? window.__pvTpl(rec.value) : null
+        if (card.awaiting) {
+          // 上一轮的残留（完成/失败）先丢掉；见到「录制中」才算这次真正开始
+          if (!tpl || tpl.id !== 'rec.progress') continue
+          card.awaiting = false
+        }
         card.progress.textContent = tpl ? tpl.text : rec.value
         if (tpl && tpl.id === 'rec.done') {
           card.recording = false

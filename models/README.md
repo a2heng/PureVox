@@ -6,14 +6,13 @@
 
 | 文件 | 版本（代数 @ epoch） | 接口（每 hop 10 ms / 48 kHz） | cache |
 |---|---|---|---|
-| `purevox_denoise.onnx` | `purevox_denoise_202610c` @ **E76** | `spec_in (1,2,481) + cache_in` → `spec_out + cache_out` | 45,988 |
+| `purevox_denoise.onnx` | `purevox_denoise_202610c` @ **E88** | `spec_in (1,2,481) + cache_in` → `spec_out + cache_out` | 45,988 |
 | `purevox_aec.onnx` | `purevox_aec_202610` @ **E381** | `mic_spec + far_spec + cache_in` → `mic_spec_out + cache_out` | 91,920 |
-| `purevox_tse.onnx` | `purevox_tse_202609c` @ **E205**（傅里叶出图重导出版） | `mix_spec (1,2,481) + enr_tok (1,2,1001,180) + cache_in` → `spec_out + cache_out` | 513,216 |
-| `purevox_tse_ref_encoder.onnx` | `purevox_tse_202609c` @ **E205**（与主图同批） | `ref_spec (1,2,1001,481)` → `enr_tok`（每句一次） | — |
+| `purevox_tse.onnx` | `purevox_tse_202610b` @ **E747** | `spec_in (1,2,481) + keys (1,64,143) + gb (1,64) + cache_in` → `spec_out + cache_out` | 16,072 |
+| `purevox_tse_ref_encoder.onnx` | `purevox_tse_202610b` @ **E747**（与主图同批） | `ref_spec (1,2,1001,481)` → `keys + gb`（每句一次，参考 10 s） | — |
 
 **版本号怎么读**：`model` 是 ONNX metadata 里的代数（`onnx.load('…').metadata_props`），epoch 对应
-训练侧 `7_output/<代>/onnx/*_epNNNN.onnx`（TSE 9c 的是 `7_output/onnx_selftest/purevox_tse_202609c.onnx`，
-即 `checkpoint_epoch_205.tar`）。本表四个 epoch 都是**按权重摘要比对训练侧 ONNX 核出来的**，
+训练侧 `7_output/<代>/onnx/*_epNNNN.onnx`。本表四个 epoch 都是**按权重摘要比对训练侧 ONNX 核出来的**，
 不是照抄提交说明；换模型时先改这张表，再改文件（表是部署现状的唯一记录）。
 
 - **`cache_in` 维度随模型变**：应用侧运行时用 `cache_dim()` 从 session 输入形状读，不写死；
@@ -22,7 +21,7 @@
   OLA（逐样本除 Σw²）、1 hop 滞后都在应用侧（`src-tauri/src/infer/spec.rs`，三个模型共用一份）。
 - **TSE 的两个文件必须成对**：`ref_encoder` 里是参考通路的权重，跟主图不配套时形状对不上。
   应用侧的契约**不写死名字**：取「主图输入里除 `spec_in` / `cache_in` 之外的项」当参考条件
-  （现役 202609c 线是 `enr_tok`，202610 线是 `keys`+`gb`，202611 线是 `enr_comp`），
+  （现役 202610b 线是 `keys`+`gb`，202609c 线是 `enr_tok`，202611 线是 `enr_comp`），
   注册编码器必须**同名输出、形状逐个对上**，另比 metadata `model`；不配套直接报错（硬失败），
   不会退化成直通。
 - ⚠️ **逐位全零**输入可能出 NaN（2026-10-31 实测 202611a：图内归一 0/0；202609c / 202610 线没这

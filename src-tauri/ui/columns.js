@@ -37,7 +37,10 @@ let devices = { inputs: [], outputs: [] }
 /** AEC 远端可回环的目标（默认输出 + 各输出/sink 的 monitor），由 `list_loopback_targets` 填充 */
 let loopTargets = []
 let deviceStamp = null
-let lastRec = ''
+// 本次录音是否已经「开始录了」（见到过 `录制中 x/y s`）。只有先见到进度、再见「完成」
+// 才算这一轮的完成 —— 2 Hz 轮询里点「开始录音」的瞬间可能还带着上一轮的完成快照，
+// 拿完成串比字面量会被它骗（两次的串还能一模一样），这里只认先后顺序。
+let recSawProgress = false
 /** 最近一份结构化校准报告（快照 `calib_report`）：按钮可用性与参数回填都看它 */
 let calibReport = null
 /** 已回填的报告时间戳：同一份报告只回填一次（2 Hz 轮询会重复到达） */
@@ -845,8 +848,9 @@ window.__pvOnSnapshot = (s) => {
     recSnap = { state: rec.state ?? '', value: rec.value ?? '', reason: rec.reason ?? '' }
     paintRecCal()
     const t = recSnap.state === 'ok' ? window.__pvTpl(recSnap.value) : null
-    if (t && t.id === 'rec.done' && recSnap.value !== lastRec) {
-      lastRec = recSnap.value
+    if (t && t.id === 'rec.progress') recSawProgress = true
+    if (t && t.id === 'rec.done' && recSawProgress) {
+      recSawProgress = false
       window.__pvDebug?.('参考录制完成，重建会话以加载新参考')
       apply()
     }
