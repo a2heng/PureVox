@@ -353,10 +353,28 @@ pub fn retain_models(keep: &[String]) -> usize {
   if let Ok(mut g) = allowed().lock() {
     *g = Some(set);
   }
+  // 正在被行占用的模型：名字集合。它们若还**额外**躺着一份空闲副本，那份是纯重复——
+  // 每次重建都是「新会话先加载（旧会话还攥着它那份）→ 旧会话再归还」，稳态就变成
+  // 一份在用 + 一份空闲（降噪实测 +40 MB）。这里把重复副本丢掉，稳态回到每个模型一份。
+  let in_use: std::collections::HashSet<String> = stats()
+    .lock()
+    .map(|st| {
+      st.iter()
+        .filter(|(_, e)| e.in_use > 0)
+        .filter_map(|(k, _)| k.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect()
+    })
+    .unwrap_or_default();
   let dropped = {
     let mut idle = pool().idle.lock().unwrap_or_else(|e| e.into_inner());
     let before: usize = idle.values().map(|v| v.len()).sum();
-    idle.retain(|k, _| is_allowed(k));
+    idle.retain(|k, _| {
+      is_allowed(k)
+        && !k
+          .file_name()
+          .map(|n| in_use.contains(&*n.to_string_lossy()))
+          .unwrap_or(false)
+    });
     let after: usize = idle.values().map(|v| v.len()).sum();
     before - after
   };
@@ -596,6 +614,22 @@ mod tests {
     );
     assert!(trimmed < loaded, "回收之后 RSS 没降：{loaded} → {trimmed} KB");
 
+    // 模拟一次**重建**：旧行还攥着自己在用的那份，新会话只能再加载一份 → 两两并存。
+    retain_models(&[MODEL_DENOISE.to_string()]);
+    let dn = model_path(MODEL_DENOISE).expect("denoise");
+    let old_row = checkout(&dn).expect("denoise");
+    let new_row = checkout(&dn).expect("denoise"); // 池子空 ⇒ 从磁盘再加载一份
+    drop(old_row); // 旧会话（旧行 stop 之后才会归还）
+    let dual = rss_kb();
+    let n = retain_models(&[MODEL_DENOISE.to_string()]);
+    let one = rss_kb();
+    println!(
+      "  重建瞬间（新旧两份并存）{dual} KB → 回收 {n} 个重复副本 {one} KB（-{} KB）",
+      dual.saturating_sub(one)
+    );
+    drop(new_row);
+    retain_models(&[]);
+
     // 再来两轮：残留在进程里的那部分是不是**一次性**的（ORT runtime / glibc arena），
     // 还是会随每次加载-回收越涨越高（真泄漏）。
     for round in 2..=3 {
@@ -654,6 +688,20 @@ mod tests {
       columns: vec![ColumnSpec { enabled: false, rows: on.columns[0].rows.clone() }],
     };
     assert_eq!(models_in_plan(&col_off), got, "停用的列也不该回收模型");
+
+    // 只有增益这类纯 DSP 行：一根 ONNX 都不涉及（增益不占模型内存，也不进白名单）
+    let dsp_only = Plan {
+      columns: vec![ColumnSpec {
+        enabled: true,
+        rows: vec![
+          row(RowKind::Input, "audio_input", true),
+          row(RowKind::Process, "gain", true),
+          row(RowKind::Process, "eq31", true),
+          row(RowKind::Output, "audio_output", true),
+        ],
+      }],
+    };
+    assert!(models_in_plan(&dsp_only).is_empty(), "纯 DSP 行不该出现任何模型");
 
     // 真删掉（计划里没有这些行）= 回收
     let deleted = Plan {

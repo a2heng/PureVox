@@ -354,6 +354,9 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
   设白名单（`infer::retain_models(models_in_plan(&plan))`），池子里白名单之外的空闲会话立即 drop；
   旧行归还时按同一份白名单丢弃。行/列**停用（暂停）不回收**——重新启用不该再花 40 ms 重新加载。
   口径覆盖降噪 / TSE（含注册编码器）/ AEC（`echo_cancel` 行与勾了 AEC 的 `remote_mic` 行）。
+- **重建不再留下空闲副本**（2026-10-31）：结构性重建时新会话先加载（旧会话还攥着自己那份），
+  旧会话停了之后那份又躺回池子 ⇒ 稳态变成「一份在用 + 一份空闲」。`retain_models` 现在把
+  **在用模型的空闲副本**一并丢掉（实测降噪一份重复 ≈16.6 MB 可回收）。
 - **drop 之后还要还堆**：ORT 权重是 malloc 的大块，glibc 只留在 arena 里，RSS 不降
   （实测 drop 4 个会话 79 MB 纹丝不动）。所以回收路径末尾 `malloc_trim(0)`（Linux；Windows CRT 会自己还）。
   实测：4 个模型全加载 +61 MB（降噪 +40、AEC +21、TSE 主图/注册各 +0.4）→ 删除后立刻回 32.7 MB；
