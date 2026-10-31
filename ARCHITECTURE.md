@@ -350,11 +350,14 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 - 会话配置：`with_intra_threads(1)` + `with_inter_threads(1)` + `with_intra_op_spinning(false)`
   （实时音频必须；默认多线程忙等会占满 CPU 并把推理拖慢 50 倍）。
 - **权重按文件共享一份**（`Arc<Session>`），**`cache` 每行一份**；惰性加载；行/会话停止即释放引用。
-- **不再被计划引用就真正卸载**（2026-10-31）：每次 `apply_plan` 之后按「**启用**行用到的模型文件名」
-  设白名单（`infer::retain_models(models_in_plan(&plan))`），池子里白名单之外的空闲会话立即 drop
-  （权重内存 + ORT 线程一起释放），旧行归还时按同一份白名单丢弃。口径覆盖降噪 / TSE（含注册编码器）/
-  AEC（`echo_cancel` 行与勾了 AEC 的 `remote_mic` 行）。没有这一步时，换模型/删行之后旧会话会一直
-  留在池子里占内存和线程。
+- **删除才回收，暂停不动内存**（2026-10-31）：每次 `apply_plan` 之后按「**计划里还留着的**模型文件名」
+  设白名单（`infer::retain_models(models_in_plan(&plan))`），池子里白名单之外的空闲会话立即 drop；
+  旧行归还时按同一份白名单丢弃。行/列**停用（暂停）不回收**——重新启用不该再花 40 ms 重新加载。
+  口径覆盖降噪 / TSE（含注册编码器）/ AEC（`echo_cancel` 行与勾了 AEC 的 `remote_mic` 行）。
+- **drop 之后还要还堆**：ORT 权重是 malloc 的大块，glibc 只留在 arena 里，RSS 不降
+  （实测 drop 4 个会话 79 MB 纹丝不动）。所以回收路径末尾 `malloc_trim(0)`（Linux；Windows CRT 会自己还）。
+  实测：4 个模型全加载 +61 MB（降噪 +40、AEC +21、TSE 主图/注册各 +0.4）→ 删除后立刻回 32.7 MB；
+  残留 ~28 MB 是 ORT runtime / arena，属一次性（第二轮起稳定，不随加载-回收增长）。
 - **不做空闲自动卸载**；**不热切换模型文件**（改型号 = 结构性变更 → 重启）。
 
 ---

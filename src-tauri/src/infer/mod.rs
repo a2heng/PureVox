@@ -228,6 +228,18 @@ fn allowed() -> &'static Mutex<Option<std::collections::HashSet<String>>> {
   ALLOWED.get_or_init(|| Mutex::new(None))
 }
 
+/// 把已经 free 掉的大块堆**还给系统**。
+///
+/// 光 drop 掉 `ort::Session` 不够：ORT 的权重是 malloc 出来的大块，glibc 只把它们留在
+/// 自己的 arena 里，RSS 一点不降（2026-10-31 实测：drop 4 个会话后 79 MB 纹丝不动，
+/// trim 之后 46 MB）。Windows 的 CRT 会把大块还给系统，不需要这一步。
+fn trim_heap() {
+  #[cfg(target_os = "linux")]
+  unsafe {
+    libc::malloc_trim(0)
+  };
+}
+
 fn is_allowed(key: &Path) -> bool {
   let Ok(g) = allowed().lock() else {
     return true;
@@ -272,7 +284,9 @@ impl Drop for LeasedSession {
     };
     if !is_allowed(&self.key) {
       // 计划里已经没有这个模型了：不回收进池子，`session` 在这里 drop ⇒ ORT 会话、
-      // 权重内存与它的线程一起释放（2026-10-31「不再列中就回收」）。
+      // 权重内存与它的线程一起释放（2026-10-31「删除就回收」）。顺手还堆给系统。
+      drop(session);
+      trim_heap();
       return;
     }
     let mut idle = self.pool.idle.lock().unwrap_or_else(|e| e.into_inner());
@@ -350,6 +364,7 @@ pub fn retain_models(keep: &[String]) -> usize {
     if let Ok(mut st) = stats().lock() {
       st.retain(|k, _| is_allowed(k));
     }
+    trim_heap();
     crate::debug::events::log(
       "info",
       "infer",
@@ -359,16 +374,19 @@ pub fn retain_models(keep: &[String]) -> usize {
   dropped
 }
 
-/// 计划里会用到的模型文件名（回收白名单的唯一来源，与 `engine::registry::create_stage`
-/// 的口径一致：只看**启用**的行）。
+/// 计划里**还留着**的模型文件名（回收白名单的唯一来源）。
+///
+/// 口径是「**删除才回收，暂停不动内存**」（2026-10-31 用户要求）：只要行还在计划里
+/// （哪怕停用了、整列暂停了），它的模型就留在池子里；只有行/列被**删掉**才回收。
+/// 停用只是挂起链路，重新启用时不该再花 40 ms 重新加载 + 抖一次内存。
 ///
 /// - `denoise` 行 → 计划里选的降噪模型
 /// - `tse` 行 → 主图 + 配套注册编码器（成对，缺一不可）
 /// - `echo_cancel` 行 / 勾了 AEC 的 `remote_mic` 行 → AEC 模型
 pub fn models_in_plan(plan: &crate::plan::Plan) -> Vec<String> {
   let mut out: Vec<String> = Vec::new();
-  for c in plan.columns.iter().filter(|c| c.enabled) {
-    for r in c.rows.iter().filter(|r| r.enabled) {
+  for c in plan.columns.iter() {
+    for r in c.rows.iter() {
       let model = r.params.get("model").map(|s| s.as_str()).unwrap_or("");
       match r.ptype.as_str() {
         "denoise" => out.push(known_model(denoise_models(), model).to_string()),
@@ -528,10 +546,75 @@ mod tests {
     }
   }
 
-  /// 回收白名单与 `create_stage` 同口径：**只看启用行**。
-  /// 停用的降噪/TSE 行不该把模型留在内存里（2026-10-31「不再列中就回收」）。
+  fn rss_kb() -> u64 {
+    // /proc/self/status 的 VmRSS（Linux）；其它平台回 0（这条探针只在 Linux 上跑）
+    std::fs::read_to_string("/proc/self/status")
+      .ok()
+      .and_then(|t| {
+        t.lines()
+          .find(|l| l.starts_with("VmRSS:"))
+          .and_then(|l| l.split_whitespace().nth(1).map(|v| v.parse().ok()))
+          .flatten()
+      })
+      .unwrap_or(0)
+  }
+
+  /// 内存是否**真的**退回去了：把三个模型都借出来（求值一次）→ 归还 → 回收 → 看 RSS。
+  /// 手动跑：`cargo test --release -- --ignored --nocapture memory_release`
   #[test]
-  fn models_in_plan_only_counts_enabled_rows() {
+  #[ignore = "真要加载 ONNX + 读 RSS，手动跑"]
+  fn memory_release_probe() {
+    let files = [MODEL_DENOISE, tse::MODEL_TSE, tse::MODEL_TSE_REF, aec::MODEL_AEC];
+    let base = rss_kb();
+    for f in files {
+      let _ = f;
+      let path = model_path(f).expect(f);
+      let lease = checkout(&path).expect(f);
+      // 真跑一次，别只加载（ORT 首次会分配 arena）
+      let mut g = lease.lock();
+      let shape: Vec<i64> = g
+        .inputs()
+        .iter()
+        .find(|i| i.name() == "cache_in")
+        .and_then(|i| match i.dtype() {
+          ort::value::ValueType::Tensor { shape, .. } => Some(shape.to_vec()),
+          _ => None,
+        })
+        .unwrap_or_default();
+      drop(g);
+      drop(lease);
+      println!("  加载 {f}: RSS {} KB", rss_kb());
+      let _ = shape;
+    }
+    let loaded = rss_kb();
+    let freed = retain_models(&[]);
+    let trimmed = rss_kb();
+    println!(
+      "  基线 {base} KB → 全加载 {loaded} KB（+{} KB）→ 回收 {freed} 个会话 {trimmed} KB（-{} KB）",
+      loaded.saturating_sub(base),
+      loaded.saturating_sub(trimmed)
+    );
+    assert!(trimmed < loaded, "回收之后 RSS 没降：{loaded} → {trimmed} KB");
+
+    // 再来两轮：残留在进程里的那部分是不是**一次性**的（ORT runtime / glibc arena），
+    // 还是会随每次加载-回收越涨越高（真泄漏）。
+    for round in 2..=3 {
+      for f in files {
+        let path = model_path(f).expect(f);
+        drop(checkout(&path).expect(f));
+      }
+      let up = rss_kb();
+      let n = retain_models(&[]);
+      println!(
+        "  第 {round} 轮：加载后 {up} KB → 回收 {n} 个会话 {s} KB",
+        s = rss_kb()
+      );
+    }
+  }
+
+  /// 白名单口径：**删除才回收，停用/暂停不回收**（2026-10-31）。
+  #[test]
+  fn models_in_plan_keeps_paused_rows() {
     let off = Plan {
       columns: vec![ColumnSpec {
         enabled: true,
@@ -543,7 +626,10 @@ mod tests {
         ],
       }],
     };
-    assert!(models_in_plan(&off).is_empty(), "停用的降噪行不该保留模型");
+    assert!(
+      models_in_plan(&off).contains(&MODEL_DENOISE.to_string()),
+      "停用（还在计划里）的降噪行必须保留模型，暂停不动内存"
+    );
 
     let on = Plan {
       columns: vec![ColumnSpec {
@@ -563,10 +649,19 @@ mod tests {
     assert!(got.contains(&tse::MODEL_TSE_REF.to_string()), "{got:?}");
     assert!(got.contains(&aec::MODEL_AEC.to_string()), "{got:?}");
 
-    // 整列停用 = 一个模型都不用
+    // 整列暂停：行还在 → 模型照样留着
     let col_off = Plan {
       columns: vec![ColumnSpec { enabled: false, rows: on.columns[0].rows.clone() }],
     };
-    assert!(models_in_plan(&col_off).is_empty(), "停用的列不该保留模型");
+    assert_eq!(models_in_plan(&col_off), got, "停用的列也不该回收模型");
+
+    // 真删掉（计划里没有这些行）= 回收
+    let deleted = Plan {
+      columns: vec![ColumnSpec {
+        enabled: true,
+        rows: vec![row(RowKind::Input, "audio_input", true), row(RowKind::Output, "audio_output", true)],
+      }],
+    };
+    assert!(models_in_plan(&deleted).is_empty(), "删掉模型行之后必须回收");
   }
 }
