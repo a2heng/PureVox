@@ -520,7 +520,9 @@ impl AudioManager {
     if !running {
       self.state.lock().unwrap().plan = plan.clone();
       let _ = config::save_plan(&plan);
-      self.hub.set_plan(plan);
+      self.hub.set_plan(plan.clone());
+      // 没在跑也要回收：删掉/停用模型行之后，池子里那份会话不该继续占内存
+      crate::infer::retain_models(&crate::infer::models_in_plan(&plan));
       return Ok(vec![]);
     }
     let old = self.state.lock().unwrap().session.take();
@@ -547,7 +549,9 @@ impl AudioManager {
       }
       self.hub.set_engine_running(old_generation);
       self.hub.clear_columns();
-      self.hub.set_plan(self.plan());
+      let effective = self.plan();
+      self.hub.set_plan(effective.clone());
+      crate::infer::retain_models(&crate::infer::models_in_plan(&effective));
       let msg = format!(
         "新计划未应用（旧会话保持运行）：{}",
         outcome.critical.join("；")
@@ -569,6 +573,10 @@ impl AudioManager {
     if let Some(mut s) = old {
       s.stop();
     }
+    // 计划换了之后，**不再被任何启用行引用**的模型会话在这里释放（内存 + ORT 线程）。
+    // 旧行刚 stop，它们的会话要么还在 `in_use`、要么在这个池子里；白名单先设好，
+    // 所以归还时会被 `LeasedSession::drop` 直接丢掉。
+    crate::infer::retain_models(&crate::infer::models_in_plan(&plan));
     crate::debug::events::log(
       "info",
       "engine",

@@ -123,8 +123,18 @@ function numParam(row, key, min, max, step, widthEm) {
   return input
 }
 
+/**
+ * 点「+」时默认加出来的节点。
+ *
+ * 处理行默认 **增益**（2026-10-31 用户要求）：加一行只想先调电平，不该顺手把降噪/TSE
+ * 模型加载进来（模型要内存和 CPU，且默认模型不一定已选好）。输入/输出仍取注册表第一个。
+ */
+const DEFAULT_PROCESS_PTYPE = 'gain'
+
 function defaultRow(kind) {
-  const spec = nodesOf(kind)[0]
+  const list = nodesOf(kind)
+  const want = kind === 'process' ? DEFAULT_PROCESS_PTYPE : ''
+  const spec = list.find((n) => n.ptype === want) || list[0]
   return { kind, ptype: spec ? spec.ptype : '', device: null, enabled: true, params: {} }
 }
 

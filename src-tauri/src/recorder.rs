@@ -335,9 +335,9 @@ mod tests {
       }],
     };
     let p = std::env::temp_dir().join("pv-rec-test.wav");
-    let t = rec.start(&plan, 1.0, p.clone()).expect("第一次应当开始");
+    let t = rec.start(&plan, p.clone()).expect("第一次应当开始");
     assert!(rec.active());
-    assert!(rec.start(&plan, 1.0, p).is_err(), "录制中不许再开一段");
+    assert!(rec.start(&plan, p).is_err(), "录制中不许再开一段");
     rec.timeout_if_recording(t, "测试超时".into());
     assert!(!rec.active(), "看门狗必须把状态置回非录制");
   }

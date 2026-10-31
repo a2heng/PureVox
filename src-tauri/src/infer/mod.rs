@@ -219,6 +219,28 @@ fn pool() -> &'static Arc<Pool> {
   })
 }
 
+/// 计划里**当前还引用**的模型文件名（小写不敏感无所谓，文件名本来就固定）。
+///
+/// `None` = 还没设置过（启动预热阶段）⇒ 不限制。`Some` 之后，归还到池子的会话若不在
+/// 名单里就**直接丢弃**（连 ORT 的线程一起释放）——这就是「模型不再列中」的回收钩子。
+fn allowed() -> &'static Mutex<Option<std::collections::HashSet<String>>> {
+  static ALLOWED: OnceLock<Mutex<Option<std::collections::HashSet<String>>>> = OnceLock::new();
+  ALLOWED.get_or_init(|| Mutex::new(None))
+}
+
+fn is_allowed(key: &Path) -> bool {
+  let Ok(g) = allowed().lock() else {
+    return true;
+  };
+  let Some(list) = g.as_ref() else {
+    return true;
+  };
+  key
+    .file_name()
+    .map(|n| list.contains(&*n.to_string_lossy()))
+    .unwrap_or(true)
+}
+
 fn stats() -> &'static Mutex<HashMap<PathBuf, StatEntry>> {
   static STATS: OnceLock<Mutex<HashMap<PathBuf, StatEntry>>> = OnceLock::new();
   STATS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -248,6 +270,11 @@ impl Drop for LeasedSession {
     let Some(session) = self.session.take() else {
       return;
     };
+    if !is_allowed(&self.key) {
+      // 计划里已经没有这个模型了：不回收进池子，`session` 在这里 drop ⇒ ORT 会话、
+      // 权重内存与它的线程一起释放（2026-10-31「不再列中就回收」）。
+      return;
+    }
     let mut idle = self.pool.idle.lock().unwrap_or_else(|e| e.into_inner());
     let slot = idle.entry(self.key.clone()).or_default();
     if slot.len() < SESSIONS_PER_MODEL {
@@ -301,6 +328,65 @@ pub fn checkout(path: &Path) -> Result<LeasedSession, String> {
     session: Some(session),
     pool: pool().clone(),
   })
+}
+
+/// 把「计划里还引用的模型」设为白名单，并**释放白名单之外的会话**（内存 + ORT 线程）。
+///
+/// 返回释放掉的空闲会话数。正在被行占用的会话不在池子里，等它们归还时由
+/// [`LeasedSession::drop`] 按同一份白名单丢弃 —— 所以调用时机不必卡在旧会话停掉之后。
+pub fn retain_models(keep: &[String]) -> usize {
+  let set: std::collections::HashSet<String> = keep.iter().cloned().collect();
+  if let Ok(mut g) = allowed().lock() {
+    *g = Some(set);
+  }
+  let dropped = {
+    let mut idle = pool().idle.lock().unwrap_or_else(|e| e.into_inner());
+    let before: usize = idle.values().map(|v| v.len()).sum();
+    idle.retain(|k, _| is_allowed(k));
+    let after: usize = idle.values().map(|v| v.len()).sum();
+    before - after
+  };
+  if dropped > 0 {
+    if let Ok(mut st) = stats().lock() {
+      st.retain(|k, _| is_allowed(k));
+    }
+    crate::debug::events::log(
+      "info",
+      "infer",
+      format!("模型回收：释放 {dropped} 个不再使用的会话（保留 {keep:?}）"),
+    );
+  }
+  dropped
+}
+
+/// 计划里会用到的模型文件名（回收白名单的唯一来源，与 `engine::registry::create_stage`
+/// 的口径一致：只看**启用**的行）。
+///
+/// - `denoise` 行 → 计划里选的降噪模型
+/// - `tse` 行 → 主图 + 配套注册编码器（成对，缺一不可）
+/// - `echo_cancel` 行 / 勾了 AEC 的 `remote_mic` 行 → AEC 模型
+pub fn models_in_plan(plan: &crate::plan::Plan) -> Vec<String> {
+  let mut out: Vec<String> = Vec::new();
+  for c in plan.columns.iter().filter(|c| c.enabled) {
+    for r in c.rows.iter().filter(|r| r.enabled) {
+      let model = r.params.get("model").map(|s| s.as_str()).unwrap_or("");
+      match r.ptype.as_str() {
+        "denoise" => out.push(known_model(denoise_models(), model).to_string()),
+        "tse" => {
+          out.push(known_model(tse::tse_models(), model).to_string());
+          out.push(tse::MODEL_TSE_REF.to_string());
+        }
+        "echo_cancel" => out.push(aec::MODEL_AEC.to_string()),
+        "remote_mic" if r.params.get("aec").map(|v| v == "1").unwrap_or(false) => {
+          out.push(aec::MODEL_AEC.to_string())
+        }
+        _ => {}
+      }
+    }
+  }
+  out.sort();
+  out.dedup();
+  out
 }
 
 /// 模型池统计（按文件名排序）。
@@ -424,4 +510,63 @@ pub fn model_path(file: &str) -> Result<PathBuf, String> {
     "找不到模型 {file}；可用 PUREVOX_MODEL_DIR 指定模型目录。已尝试：{}",
     tried.join("；")
   ))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::plan::{ColumnSpec, Plan, RowKind, RowSpec};
+  use std::collections::BTreeMap;
+
+  fn row(kind: RowKind, ptype: &str, enabled: bool) -> RowSpec {
+    RowSpec {
+      kind,
+      ptype: ptype.into(),
+      device: None,
+      enabled,
+      params: BTreeMap::new(),
+    }
+  }
+
+  /// 回收白名单与 `create_stage` 同口径：**只看启用行**。
+  /// 停用的降噪/TSE 行不该把模型留在内存里（2026-10-31「不再列中就回收」）。
+  #[test]
+  fn models_in_plan_only_counts_enabled_rows() {
+    let off = Plan {
+      columns: vec![ColumnSpec {
+        enabled: true,
+        rows: vec![
+          row(RowKind::Input, "audio_input", true),
+          row(RowKind::Process, "denoise", false),
+          row(RowKind::Process, "gain", true),
+          row(RowKind::Output, "audio_output", true),
+        ],
+      }],
+    };
+    assert!(models_in_plan(&off).is_empty(), "停用的降噪行不该保留模型");
+
+    let on = Plan {
+      columns: vec![ColumnSpec {
+        enabled: true,
+        rows: vec![
+          row(RowKind::Input, "audio_input", true),
+          row(RowKind::Process, "denoise", true),
+          row(RowKind::Process, "tse", true),
+          row(RowKind::Process, "echo_cancel", true),
+          row(RowKind::Output, "audio_output", true),
+        ],
+      }],
+    };
+    let got = models_in_plan(&on);
+    assert!(got.contains(&MODEL_DENOISE.to_string()), "{got:?}");
+    assert!(got.contains(&tse::MODEL_TSE.to_string()), "{got:?}");
+    assert!(got.contains(&tse::MODEL_TSE_REF.to_string()), "{got:?}");
+    assert!(got.contains(&aec::MODEL_AEC.to_string()), "{got:?}");
+
+    // 整列停用 = 一个模型都不用
+    let col_off = Plan {
+      columns: vec![ColumnSpec { enabled: false, rows: on.columns[0].rows.clone() }],
+    };
+    assert!(models_in_plan(&col_off).is_empty(), "停用的列不该保留模型");
+  }
 }
