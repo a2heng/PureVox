@@ -26,10 +26,6 @@ const $ = (id) => document.getElementById(id)
 const T = (s, vars) => (window.__pvT ? window.__pvT(s, vars) : s)
 
 let plan = null
-/** 上一次**成功应用**的计划（失败回滚用；否则界面显示新设备、引擎还在旧设备）。 */
-let appliedPlan = null
-const clonePlan = (p) =>
-  typeof structuredClone === 'function' ? structuredClone(p) : JSON.parse(JSON.stringify(p))
 let NODES = []
 /** ptype → 可选模型列表（每个处理节点类型各自一份） */
 let MODELS = {}
@@ -205,7 +201,6 @@ function persistPlan() {
 function apply() {
   invoke('apply_plan', { plan })
     .then((/** @type {string[]} */ problems) => {
-      appliedPlan = clonePlan(plan)
       setStatus(problems)
       if (problems && problems.length) {
         window.__pvToast?.(problems.join('；'), 'warn')
@@ -213,24 +208,14 @@ function apply() {
       }
     })
     .catch(async (e) => {
-      // 关键失败时 Rust **保留旧会话**；界面必须回到引擎真正在用的计划，
-      // 否则会显示 R20、调试面板却还是 USB Audio（2026-10-25 用户实测）。
-      try {
-        const actual = /** @type {any} */ (await invoke('get_plan'))
-        if (actual && actual.columns) {
-          plan = actual
-          appliedPlan = clonePlan(actual)
-          render()
-        }
-      } catch (_) {
-        if (appliedPlan) {
-          plan = clonePlan(appliedPlan)
-          render()
-        }
-      }
+      // 关键失败时 Rust **保留旧会话**。界面**不再**把正在编辑的计划打回引擎那份：
+      // issue #10 的现场是「两列都指向一只暂时不在的设备」，每改一列都应用失败一次，
+      // 而失败就回滚 → 用户永远只能修一列，改设备 / 删列 / 关开关全都没反应。
+      // 现在保留编辑、把「没生效」写清楚（状态条 + 气泡 + 调试日志），下一次应用成功
+      // 就自然对齐；行级错误由快照里的行状态继续显示（含设备自己恢复的进度）。
       setStatus([String(e)])
       window.__pvToast?.(T('应用计划失败：') + e, 'error', 7000)
-      window.__pvDebug?.('应用计划失败：' + e)
+      window.__pvDebug?.('应用计划失败（计划保留，旧会话仍在运行）：' + e)
     })
 }
 
@@ -247,12 +232,47 @@ function select(options, value, onChange, enabled = true) {
   return sel
 }
 
-function deviceOptions(kind, selectedId) {
+/**
+ * 记下选择时的显示名：**只给「设备不在」提示用**，不参与匹配（§6.2 身份仍是 ID）。
+ * 端点被 Windows 重建后，界面能说清这一条原本指向哪只设备，用户才知道该重选哪只。
+ */
+function rememberDeviceName(row, kind, id) {
+  if (!id) {
+    row.device_name = null
+    return
+  }
   const list = kind === 'input' ? devices.inputs : devices.outputs
-  const opts = [['', T('未选择设备')]].concat(
-    list.map((d) => [d.id, (d.is_default ? '★ ' : '') + d.name]))
+  const d = list.find((x) => x.id === id)
+  row.device_name = d ? d.name : row.device_name || null
+}
+
+function deviceOptions(kind, selectedId, selectedName) {
+  const list = kind === 'input' ? devices.inputs : devices.outputs
+  // 同名设备要能区分：Windows 给同名端点加「2-」前缀，仍可能撞名（同一只 USB 设备
+  // 被驱动的两个实例枚举出来），下拉里两条一模一样时用户根本没法判断选的是哪只。
+  // 先加接口名；连接口也一样（同一 WASAPI host 下的两条）就再带一小截 ID。
+  const byName = new Map()
+  const byHost = new Map()
+  for (const d of list) {
+    byName.set(d.name, (byName.get(d.name) ?? 0) + 1)
+    const k = d.name + '|' + d.host
+    byHost.set(k, (byHost.get(k) ?? 0) + 1)
+  }
+  const label = (d) => {
+    let s = (d.is_default ? '★ ' : '') + d.name
+    if (byName.get(d.name) > 1) {
+      s += byHost.get(d.name + '|' + d.host) > 1 ? ` · …${d.id.slice(-6)}` : ` · ${d.host}`
+    }
+    // 同一只设备被多列共用（设备池 refs>1）时标出来：这正是「一个输入喂多列 / 多列混到一个输出」
+    // 的正常状态，标出来才不会让人以为开重了（ARCHITECTURE.md §6.5）。
+    if (d.refs > 1) s += ` ×${d.refs}`
+    return s
+  }
+  const opts = [['', T('未选择设备')]].concat(list.map((d) => [d.id, label(d)]))
   if (selectedId && !opts.some((o) => o[0] === selectedId)) {
-    opts.push([selectedId, T('设备不在')])
+    // 枚举里没有它（拔出 / 端点被系统重建）：显示**上次选择时的名字**，用户才知道
+    // 这一条原本指向哪只设备（名字只做提示，匹配仍只用 ID，见 ARCHITECTURE.md §6.2）。
+    opts.push([selectedId, selectedName ? `${T('设备不在')} · ${selectedName}` : T('设备不在')])
   }
   return opts
 }
@@ -454,6 +474,8 @@ function rowElement(col, ci, row, ri) {
     else if (isLoopbackRow(kind, v)) row.device = 'loopback'
     // 反过来（回环 → 录音输入）也不能留着 `loopback`，那不是输入设备 ID。
     else if (isLoopbackRow(kind, prev)) row.device = null
+    // 设备换了体系（或无设备）：上次记住的显示名一起清掉，否则「设备不在」会挂着旧名字
+    if (!row.device) row.device_name = null
     render()
     apply()
   })
@@ -553,8 +575,9 @@ function rowElement(col, ci, row, ri) {
     // 设备下拉也要有标签：没有标签时既看不出这一行在选什么，控件也没法跟别行对齐
     // （以前用 margin-left 硬顶，等于留一大块空白，2026-10-26 用户指出）。
     detail.appendChild(lbl(T('设备')))
-    detail.appendChild(select(deviceOptions(kind, row.device), row.device ?? '', (v) => {
+    detail.appendChild(select(deviceOptions(kind, row.device, row.device_name), row.device ?? '', (v) => {
       row.device = v || null
+      rememberDeviceName(row, kind, row.device)
       apply()
     }))
   } else {
@@ -571,8 +594,9 @@ function rowElement(col, ci, row, ri) {
     el.classList.add('aec')
     // 麦克风 = 近端（AEC 要清理的那一路）；扬声器 = 远端参考（系统正在放的声音）。
     detail.appendChild(lbl(T('麦克风')))
-    detail.appendChild(select(deviceOptions('input', row.device), row.device ?? '', (v) => {
+    detail.appendChild(select(deviceOptions('input', row.device, row.device_name), row.device ?? '', (v) => {
       row.device = v || null
+      rememberDeviceName(row, 'input', row.device)
       apply()
     }))
     detail.appendChild(lbl(T('扬声器')))
@@ -989,7 +1013,6 @@ async function init() {
     NODES = await invoke('list_nodes')
     plan = await invoke('get_plan')
     if (!plan || !plan.columns) plan = { columns: [defaultColumn()] }
-    appliedPlan = clonePlan(plan)
     render()
     setStatus([])
     window.__pvDebug?.('界面就绪（首屏）')

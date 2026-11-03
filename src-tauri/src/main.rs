@@ -825,6 +825,7 @@ fn main() {
   debug::system::spawn_sampler(hub.clone());
   debug::http::spawn(hub.clone());
   devices::spawn_refresh(hub.clone());
+  devices::spawn_watch(hub.clone());
   let audio = Arc::new(AudioManager::new(hub.clone()));
   let hotkey_host = HotkeyHost(Mutex::new(hotkey::Hotkeys::start(Vec::new(), hub.clone())));
 

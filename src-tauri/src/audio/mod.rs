@@ -777,6 +777,7 @@ mod tests {
       kind,
       ptype: ptype.into(),
       device: None,
+      device_name: None,
       enabled: true,
       params: params
         .into_iter()

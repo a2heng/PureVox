@@ -58,6 +58,13 @@ const REOPEN_BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// 单拍处理耗时超过「一跳预算 - 2 ms」即计入节拍超时（留 2 ms 给调度）。
 const TICK_LATE_WARN: Duration = Duration::from_millis(2);
 
+/// 输入行「租约还在、却这么久一点 hop 都没拿到」= 流已经停了（设备拔出、休眠回来驱动没恢复、
+/// 驱动重置）。超过它就把租约放掉、让运行期重试重新打开（ARCHITECTURE.md §6.6）。
+///
+/// 为什么按「有没有 hop」判而不是看回调计数：设备活着时**静音也在出数据**，只有流真停了
+/// 才会一格都拿不到；这样不会把「用户不说话」误判成设备掉线。
+const INPUT_STALL_REOPEN: Duration = Duration::from_secs(5);
+
 struct Row {
   kind: RowKind,
   /// 注册表类型（`audio_input` / `denoise` / …）：调试接口按它识别行
@@ -107,6 +114,15 @@ struct Row {
     Option<std::sync::mpsc::Receiver<Result<crate::audio::device_pool::InputLease, String>>>,
   in_retry_at: Option<Instant>,
   in_failures: u32,
+  /// 设备打开失败、正按退避自动重试（设备不在 / 被独占 / USB 还没枚举完）。
+  ///
+  /// 这类失败**不进 `critical`**：整盘回滚会让用户连改设备、删列都做不到（issue #10：
+  /// 两列同时「设备不在」时，改好一列就被回滚，永远修不完），而设备回来之后运行期的
+  /// 退避重试会自己接上（§6.3）。模型类失败仍然 critical —— 那不会自己好。
+  device_pending: bool,
+  /// 输入行最后一次真正拿到 hop 的时刻：长于 [`INPUT_STALL_REOPEN`] 没数据 = 流已停，
+  /// 放掉租约重新打开（§6.6 自愈）。
+  last_hop_at: Instant,
   out_pending:
     Option<std::sync::mpsc::Receiver<Result<crate::audio::device_pool::OutputLease, String>>>,
   out_retry_at: Option<Instant>,
@@ -525,11 +541,14 @@ fn apply_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize) {
       r.in_lease = Some(lease);
       r.error = None;
       r.in_failures = 0;
+      r.device_pending = false;
+      r.last_hop_at = Instant::now();
       events::log("info", "engine", format!("输入设备已打开：{dev}"));
     }
     Err(e) => {
       r.error = Some(e.clone());
       r.in_failures = 1;
+      r.device_pending = true;
       r.in_retry_at = Some(Instant::now() + backoff(1));
       events::log("error", "engine", format!("输入设备打开失败：{dev}：{e}"));
     }
@@ -557,6 +576,8 @@ fn poll_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: In
     }
     r.in_pending = None;
     r.in_retry_at = None;
+    // 停用期间不产出：重新启用时重新计时，免得一开就撞上「停太久」的自愈判定
+    r.last_hop_at = now;
     return;
   }
   if r.in_lease.is_some() {
@@ -571,11 +592,14 @@ fn poll_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: In
         r.in_retry_at = None;
         r.in_failures = 0;
         r.error = None;
+        r.device_pending = false;
+        r.last_hop_at = Instant::now();
         events::log("info", "engine", format!("输入设备已恢复：{dev}"));
       }
       Ok(Err(e)) => {
         r.in_pending = None;
         r.in_failures = r.in_failures.saturating_add(1);
+        r.device_pending = true;
         r.in_retry_at = Some(now + backoff(r.in_failures));
         r.error = Some(e.clone());
         events::log(
@@ -592,6 +616,7 @@ fn poll_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: In
       Err(std::sync::mpsc::TryRecvError::Disconnected) => {
         r.in_pending = None;
         r.in_failures = r.in_failures.saturating_add(1);
+        r.device_pending = true;
         r.in_retry_at = Some(now + backoff(r.in_failures));
       }
     }
@@ -615,6 +640,7 @@ fn poll_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: In
     Ok(_) => r.in_pending = Some(rx),
     Err(e) => {
       r.in_failures = r.in_failures.saturating_add(1);
+      r.device_pending = true;
       r.in_retry_at = Some(now + backoff(r.in_failures));
       r.error = Some(format!("起设备打开线程失败：{e}"));
     }
@@ -643,11 +669,13 @@ fn apply_output_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize) {
       r.out_lease = Some(lease);
       r.error = None;
       r.out_failures = 0;
+      r.device_pending = false;
       events::log("info", "engine", format!("输出设备已打开：{dev}"));
     }
     Err(e) => {
       r.error = Some(e.clone());
       r.out_failures = 1;
+      r.device_pending = true;
       r.out_retry_at = Some(Instant::now() + backoff(1));
       events::log("error", "engine", format!("输出设备打开失败：{dev}：{e}"));
     }
@@ -689,11 +717,13 @@ fn poll_output_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: I
         r.out_retry_at = None;
         r.out_failures = 0;
         r.error = None;
+        r.device_pending = false;
         events::log("info", "engine", format!("输出设备已恢复：{dev}"));
       }
       Ok(Err(e)) => {
         r.out_pending = None;
         r.out_failures = r.out_failures.saturating_add(1);
+        r.device_pending = true;
         r.out_retry_at = Some(now + backoff(r.out_failures));
         r.error = Some(e.clone());
         events::log(
@@ -710,6 +740,7 @@ fn poll_output_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: I
       Err(std::sync::mpsc::TryRecvError::Disconnected) => {
         r.out_pending = None;
         r.out_failures = r.out_failures.saturating_add(1);
+        r.device_pending = true;
         r.out_retry_at = Some(now + backoff(r.out_failures));
       }
     }
@@ -732,6 +763,7 @@ fn poll_output_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: I
     Ok(_) => r.out_pending = Some(rx),
     Err(e) => {
       r.out_failures = r.out_failures.saturating_add(1);
+      r.device_pending = true;
       r.out_retry_at = Some(now + backoff(r.out_failures));
       r.error = Some(format!("起设备打开线程失败：{e}"));
     }
@@ -743,6 +775,26 @@ fn backoff(failures: u32) -> Duration {
   let exp = failures.saturating_sub(1).min(5);
   let secs = (1u64 << exp).min(REOPEN_BACKOFF_MAX.as_secs());
   Duration::from_secs(secs.max(REOPEN_BACKOFF_MIN.as_secs()))
+}
+
+/// 设备名兜底：枚举里暂时查不到这只设备时，用**上次选择时记下的显示名**（`RowSpec.device_name`），
+/// 连它也没有才退回设备 ID。名字只影响显示，不参与匹配（ARCHITECTURE.md §6.2）。
+fn saved_device_name(r: &crate::plan::RowSpec, dev: &str) -> String {
+  r.device_name
+    .as_deref()
+    .map(str::trim)
+    .filter(|s| !s.is_empty())
+    .map(str::to_string)
+    .unwrap_or_else(|| dev.to_string())
+}
+
+/// 这一行的失败要不要**回滚整份计划**（ARCHITECTURE.md §6.3）。
+///
+/// 只有「启用了、也配好了、但又不会自己好」的失败才算：模型加载失败、AEC 缺参考等。
+/// 设备类失败（`device_pending`）由运行期退避重开自己接上，回滚只会让用户失去修复能力
+/// （issue #10：两列同时「设备不在」，改一列就被打回原样）。
+fn blocks_plan(enabled: bool, unconfigured: bool, device_pending: bool) -> bool {
+  enabled && !unconfigured && !device_pending
 }
 
 #[allow(clippy::too_many_arguments)] // 构建期一次性传参；拆结构只会把同一件事分散到多处
@@ -793,6 +845,8 @@ fn build_column(
       in_pending: None,
       in_retry_at: None,
       in_failures: 0,
+      device_pending: false,
+      last_hop_at: Instant::now(),
       out_pending: None,
       out_retry_at: None,
       out_failures: 0,
@@ -991,17 +1045,19 @@ fn build_column(
       }
       RowKind::Input => match device {
         None => row.unconfigured = true,
-        Some(dev) => match crate::devices::display_name(dev, true) {
-          Err(e) => row.error = Some(e),
-          Ok(name) => {
-            row.label = name;
-            row.source = true;
-            // 设备由**池**持有（同一设备多列共用一条采集流），行只拿租约（ARCHITECTURE.md §6.5）
-            row.device = Some(dev.to_string());
-            row.pooled_input = true;
-            crate::engine::session::apply_input_lease(&mut row, hub, idx, ri);
-          }
-        },
+        Some(dev) => {
+          row.source = true;
+          // 设备由**池**持有（同一设备多列共用一条采集流），行只拿租约（ARCHITECTURE.md §6.5）
+          row.device = Some(dev.to_string());
+          row.pooled_input = true;
+          // 名字**只用于显示**：枚举里暂时没有这只设备（USB 还没枚举完 / 端点被重建）也照样
+          // 建行 —— 拿不到名字就退回上次选择时记下的名字，运行期会按退避一直重开（§6.3）。
+          row.label = match crate::devices::display_name(dev, true) {
+            Ok(name) => name,
+            Err(_) => saved_device_name(r, dev),
+          };
+          crate::engine::session::apply_input_lease(&mut row, hub, idx, ri);
+        }
       },
       RowKind::Process => {
         // 媒体行（音效板 / 播放器）：注册 (列,行) 槽位，供界面投递运行时命令
@@ -1034,16 +1090,16 @@ fn build_column(
       }
       RowKind::Output => match device {
         None => row.unconfigured = true,
-        Some(dev) => match crate::devices::find(dev, false) {
-          Err(e) => row.error = Some(e),
-          Ok((_, name)) => {
-            row.label = name;
-            // 输出也由池持有：一个设备**一条**混音，本行只是往里登记一路源（ARCHITECTURE.md §6.5）
-            row.device = Some(dev.to_string());
-            row.pooled_output = true;
-            crate::engine::session::apply_output_lease(&mut row, hub, idx, ri);
-          }
-        },
+        Some(dev) => {
+          // 输出也由池持有：一个设备**一条**混音，本行只是往里登记一路源（ARCHITECTURE.md §6.5）
+          row.device = Some(dev.to_string());
+          row.pooled_output = true;
+          row.label = match crate::devices::display_name(dev, false) {
+            Ok(name) => name,
+            Err(_) => saved_device_name(r, dev),
+          };
+          crate::engine::session::apply_output_lease(&mut row, hub, idx, ri);
+        }
       },
     }
     if let Some(e) = &row.error {
@@ -1059,7 +1115,13 @@ fn build_column(
       // 现在与其它行一致：启用了且已配置却起不来 = 关键失败，会话回滚并明确报错
       // （UX.md「失败不静默」）。代价是模型坏了会挡住切设备 —— 这正是要的：先修模型，
       // 不静默降级。
-      if row.enabled && !row.unconfigured {
+      //
+      // **设备类失败是例外（2026-11-03，issue #10）**：设备不在 / 被独占 / USB 还没枚举完
+      // 是**可自愈**的资源问题，运行期本来就会按 1→30 s 退避一直重开（`poll_*_lease`）。
+      // 把它当关键失败会让整份计划回滚，结果是「两列都指向一只暂时不在的设备」时用户
+      // 改一列就被打回原样，连删列、关开关都做不到。这里只把原因报给界面（`problems`），
+      // 会话照常提交，坏的那一行自己等设备回来。模型失败不会自己好，仍走 critical。
+      if blocks_plan(row.enabled, row.unconfigured, row.device_pending) {
         critical.push(format!(
           "第 {} 列第 {} 行「{}」：{e}",
           idx + 1,
@@ -1218,6 +1280,36 @@ fn run_column(
           RowKind::Input => {
             // 启用/停用：挂摘设备租约。运行期**只在后台打开**（poll），绝不阻塞这一拍。
             poll_input_lease(r, &hub, idx, ri, tick_start);
+            // 自愈（ARCHITECTURE.md §6.6）：租约还在、却**长时间一格 hop 都没有** = 流已经停了
+            // （设备拔出、系统休眠回来驱动没恢复、驱动重置）。放掉租约让 `poll_input_lease`
+            // 重新打开：引用归零时池会真关设备，之后按 1→30 s 退避重试。
+            // 只看「有没有 hop」而不是回调计数：设备活着时静音也在出数据，不会误判成掉线。
+            if r.enabled
+              && r.in_lease.is_some()
+              && tick_start.saturating_duration_since(r.last_hop_at) >= INPUT_STALL_REOPEN
+            {
+              let secs = tick_start
+                .saturating_duration_since(r.last_hop_at)
+                .as_secs();
+              events::log(
+                "warn",
+                "engine",
+                format!(
+                  "第 {} 列第 {} 行：输入流已 {} s 没有数据，重新打开设备{}",
+                  idx + 1,
+                  ri + 1,
+                  secs,
+                  r.device
+                    .as_deref()
+                    .map(|d| format!("（{d}）"))
+                    .unwrap_or_default()
+                ),
+              );
+              r.in_lease = None;
+              r.input = None;
+              r.in_retry_at = Some(tick_start);
+              r.last_hop_at = tick_start;
+            }
             if !r.enabled {
               // 停用的输入行不产出：AEC / 回环 / 网络 / 测试音都必须尊重行/列开关
               // （以前只有池化的普通输入看开关，其余几种停用后仍在混音）。
@@ -1321,6 +1413,7 @@ fn run_column(
               let (got, dropped) = take_hop(cons, &mut tmp);
               r.ring_dropped += dropped as u64;
               if got {
+                r.last_hop_at = tick_start;
                 // 行内增益（loopback 源：系统混音偏响）
                 if let Some(g) = r.gain.as_ref() {
                   let g = g.linear();
@@ -1582,5 +1675,46 @@ fn run_column(
     max_work_ms = max_work_ms.max(work_ms);
     // 等到下一拍。**这里绝不能再有「立刻跑下一轮追平」的分支** —— 那就是连发。
     tick.wait();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// 设备类失败**不回滚整份计划**（issue #10 的根因回归）。
+  ///
+  /// 两列都指向一只暂时不在的设备时，回滚会让「每改一列就被打回原样」——改设备、删列、
+  /// 关开关全都做不了。设备会回来，运行期退避重开自己接上（§6.3）。
+  #[test]
+  fn device_failures_do_not_block_the_plan() {
+    assert!(
+      !blocks_plan(true, false, true),
+      "设备打开失败（会自动重试）不能算关键失败"
+    );
+    assert!(!blocks_plan(true, true, false), "没配设备不算失败");
+    assert!(!blocks_plan(false, false, false), "停用的行不算失败");
+    assert!(
+      blocks_plan(true, false, false),
+      "模型/参考这类不会自愈的失败必须回滚"
+    );
+  }
+
+  /// 设备名兜底：枚举里查不到时用**上次记住的名字**，连名字都没有才退 ID。
+  #[test]
+  fn saved_device_name_prefers_remembered_name() {
+    let mut row = crate::plan::RowSpec {
+      kind: crate::plan::RowKind::Input,
+      ptype: "audio_input".into(),
+      device: Some("wasapi:{0.0.1.00000000}.{guid}".into()),
+      device_name: Some("  麦克风 (2- MMX 150)  ".into()),
+      enabled: true,
+      params: Default::default(),
+    };
+    assert_eq!(saved_device_name(&row, "wasapi:x"), "麦克风 (2- MMX 150)");
+    row.device_name = Some("   ".into());
+    assert_eq!(saved_device_name(&row, "wasapi:x"), "wasapi:x");
+    row.device_name = None;
+    assert_eq!(saved_device_name(&row, "wasapi:x"), "wasapi:x");
   }
 }

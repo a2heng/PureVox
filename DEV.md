@@ -18,6 +18,15 @@
     `[Console]::OutputEncoding = gb2312`、输出字节 `d6d0cec4b2e2cad4…`。
     （曾试过装便携版 PowerShell 7 想解决，**没用** —— `-NoProfile` 同样跳过它。
     顺带证明「换个新 shell 就好了」是想当然，已卸载，别再重装。）
+- **Windows 的 `cargo` 需要一个 VS 环境包装器**（2026-11-03 实测；新装的 Build Tools 不会自己进 PATH）：
+  rustc **不会**去注册表里找 MSVC，它只按 PATH 找 `link.exe`；而 Git Bash 的 `/usr/bin/link.exe`
+  是 **GNU coreutils 的 link**，先命中的症状是所有 build script 报
+  `link: extra operand … Try 'link --help'`。所以 `%USERPROFILE%\bin\cargo.cmd` 要排在 PATH
+  **最前**（早于 `%USERPROFILE%\.cargo\bin`）：它先 `call VsDevCmd.bat -arch=x64 -host_arch=x64`
+  再调真正的 `cargo.exe`，VS 升级后由 vswhere 自动解析新路径，不用改脚本。
+  少了它还有另一半症状：`LNK1181: 无法打开输入文件 kernel32.lib`（Windows SDK 的 LIB 没进来）。
+  **智体的 shell 用的是启动时的 PATH**：改完要么显式调 `/c/Users/<你>/bin/cargo.cmd`，
+  要么让 opencode 服务重启后再继续。
 - **Windows 上只有系统自带的 PowerShell 5.1**（`powershell.exe`），仓库脚本一律别写 `.ps1`：
   - **无 BOM 的 UTF-8 `.ps1` 按 GBK 解码**，中文把字符串引号吃掉 → 报
     `表达式或语句中包含意外的标记`，脚本根本没跑起来。写带中文的 `.ps1` 必须存成

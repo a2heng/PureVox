@@ -302,6 +302,7 @@ mod tests {
       kind,
       ptype: ptype.into(),
       device: None,
+      device_name: None,
       enabled,
       params: Default::default(),
     }

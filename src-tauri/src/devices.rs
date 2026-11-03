@@ -220,16 +220,146 @@ impl Drop for BusyGuard {
   }
 }
 
-/// 后台刷新设备列表。返回一句给界面**直接显示**的话——不做静默跳过：
+/// 抢占刷新槽：正在刷就返回 false（调用方照实说「正在刷新」）。
+fn claim_refresh() -> bool {
+  let mut g = REFRESH.lock().unwrap();
+  if g.refreshing {
+    return false;
+  }
+  g.refreshing = true;
+  g.last_error.clear();
+  true
+}
+
+/// 跑一次完整枚举并写回快照与缓存。调用方必须已 `claim_refresh()`，并持有 [`BusyGuard`]。
+///
+/// 抽成一个函数是为了让「手动刷新」与「热插拔监测」走**同一条**枚举路径：
+/// 两处各写一份迟早会分叉（一份记耗时、一份不记；一份 catch_unwind、一份崩掉整个程序）。
+fn run_refresh(hub: &SharedHub) {
+  let t0 = Instant::now();
+  // catch_unwind：枚举要碰到用户机器的驱动状态，任何 panic 都不该带走整个程序，
+  // 更不该把刷新锁死——记原因、报不可用，界面照常显示。
+  match std::panic::catch_unwind(std::panic::AssertUnwindSafe(enumerate)) {
+    Ok(list) => {
+      let ms = t0.elapsed().as_millis() as u64;
+      hub.set_devices(Probe::ok(list.clone()));
+      *ENUM_CACHE.lock().unwrap() = Some(list);
+      let mut g = REFRESH.lock().unwrap();
+      g.last_ms = ms;
+      g.last_ok_ms = now_ms();
+      g.last_error.clear();
+    }
+    Err(_) => {
+      hub.set_devices(Probe::unavailable(
+        "枚举设备时发生内部错误，已跳过本次刷新".to_string(),
+      ));
+      REFRESH.lock().unwrap().last_error = "枚举设备时发生内部错误".to_string();
+    }
+  }
+}
+
+/// 热插拔监测：**周期性比对设备指纹**（只有 ID + 支持的方向，不读格式），变了才走一次
+/// 完整枚举。这样用户插拔 USB 麦克风 / 装完 VB-CABLE 之后，设备列表与「设备不在」的行
+/// 会自己更新，不必回来点「刷新设备」（ARCHITECTURE.md §6.1）。
+///
+/// 之所以不做 Windows 的 `IMMNotificationClient`：那要长期持有一个 COM 回调对象并处理
+/// 跨线程生命周期，换来的只是「早 1~2 秒知道」。指纹比对的代价是每次几毫秒，且**跨平台
+/// 同一套**（Linux 的 `pactl` 枚举另走原路径，不在这里重复实现）。
+pub fn spawn_watch(hub: SharedHub) {
+  let interval = watch_interval();
+  let r = std::thread::Builder::new()
+    .name("device-watch".into())
+    .spawn(move || {
+      // 心跳粒度必须细于 `threads::STALE_MS`（3 s），否则自己会被判成「卡住」：
+      // 一秒一跳，睡够 `interval` 才做一次比对（DEBUG.md：看不见的状态等于不存在）。
+      let token = crate::debug::threads::ThreadToken::new("device-watch");
+      let mut seen = fingerprint();
+      // 防抖：一次枚举抖动（某个 host 临时打不开）不该让设备列表闪一下。
+      // 连续两次比对都看到同一个新指纹才算真变化（最多多等一个周期）。
+      let mut pending: Option<Vec<(String, bool, bool)>> = None;
+      loop {
+        for _ in 0..interval {
+          std::thread::sleep(std::time::Duration::from_secs(1));
+          token.beat();
+        }
+        let now = fingerprint();
+        if now == seen {
+          pending = None;
+          continue;
+        }
+        if pending.as_ref() != Some(&now) {
+          pending = Some(now);
+          continue;
+        }
+        // 抢占失败（正好有人在刷新）就**不要**更新 `seen`：下一轮再来一次，
+        // 否则这一次变化会被永久吞掉。
+        if !claim_refresh() {
+          continue;
+        }
+        let note = change_note(&seen, &now);
+        seen = now;
+        pending = None;
+        crate::debug::events::log(
+          "info",
+          "devices",
+          format!("设备列表已变化（{note}），正在重新枚举"),
+        );
+        let _busy = BusyGuard;
+        run_refresh(&hub);
+      }
+    });
+  if let Err(e) = r {
+    crate::debug::events::log(
+      "warn",
+      "devices",
+      format!("热插拔监测线程起不来（设备列表只能手动刷新）：{e}"),
+    );
+  }
+}
+
+/// 指纹比对周期（秒）：Windows 端点变化（USB 插拔 / 驱动安装）最频繁，3 s；其它平台 5 s。
+fn watch_interval() -> u64 {
+  #[cfg(windows)]
+  {
+    3
+  }
+  #[cfg(not(windows))]
+  {
+    5
+  }
+}
+
+/// 设备指纹：`(设备 ID, 能输入, 能输出)` 去重排序。**不读原生格式**——`native_of` 会
+/// 逐个打开端点问格式，代价高得多，而方向变化（插入 / 拔出 / 驱动重装）已经足够触发刷新。
+fn fingerprint() -> Vec<(String, bool, bool)> {
+  let mut out = Vec::new();
+  for host_id in cpal::available_hosts() {
+    let Ok(host) = cpal::host_from_id(host_id) else {
+      continue;
+    };
+    let Ok(devs) = host.devices() else { continue };
+    for d in devs {
+      if let Ok(id) = d.id() {
+        out.push((id.to_string(), d.supports_input(), d.supports_output()));
+      }
+    }
+  }
+  out.sort();
+  out.dedup();
+  out
+}
+
+/// 变化摘要（进事件日志）：新增 / 消失各几只。
+fn change_note(old: &[(String, bool, bool)], new: &[(String, bool, bool)]) -> String {
+  let added = new.iter().filter(|d| !old.contains(d)).count();
+  let removed = old.iter().filter(|d| !new.contains(d)).count();
+  format!("新增 {added} / 消失 {removed}")
+}
+
 /// 正在刷就如实说正在刷，线程起不来就把错误返回。
 pub fn spawn_refresh(hub: SharedHub) -> String {
-  {
-    let mut g = REFRESH.lock().unwrap();
-    if g.refreshing {
-      return "正在刷新设备，请稍候".to_string();
-    }
-    g.refreshing = true;
-    g.last_error.clear();
+  if !claim_refresh() {
+    return "正在刷新设备，请稍候".to_string();
   }
   let hub2 = hub.clone();
   let r = std::thread::Builder::new()
@@ -239,26 +369,7 @@ pub fn spawn_refresh(hub: SharedHub) -> String {
       // `refreshing` 置回 false（从前的 bug：刷新状态永远显示「没在刷」，
       // 而且第二次刷新会和第一条枚举并发抢驱动）。
       let _busy = BusyGuard;
-      let t0 = Instant::now();
-      // catch_unwind：枚举要碰到用户机器的驱动状态，任何 panic 都不该带走整个程序，
-      // 更不该把刷新锁死——记原因、报不可用，界面照常显示。
-      match std::panic::catch_unwind(std::panic::AssertUnwindSafe(enumerate)) {
-        Ok(list) => {
-          let ms = t0.elapsed().as_millis() as u64;
-          hub2.set_devices(Probe::ok(list.clone()));
-          *ENUM_CACHE.lock().unwrap() = Some(list);
-          let mut g = REFRESH.lock().unwrap();
-          g.last_ms = ms;
-          g.last_ok_ms = now_ms();
-          g.last_error.clear();
-        }
-        Err(_) => {
-          hub2.set_devices(Probe::unavailable(
-            "枚举设备时发生内部错误，已跳过本次刷新".to_string(),
-          ));
-          REFRESH.lock().unwrap().last_error = "枚举设备时发生内部错误".to_string();
-        }
-      }
+      run_refresh(&hub2);
     });
   match r {
     Ok(_) => "正在枚举设备…".to_string(),
@@ -430,5 +541,21 @@ mod tests {
     // 第二次：要么也开始刷（回「正在枚举」），要么如实说「正在刷新」
     let second = spawn_refresh(hub);
     assert!(!second.is_empty(), "并发刷新也必须回话，不能静默跳过");
+  }
+
+  /// 热插拔摘要：新增 / 消失各算各的，且**稳定**（同样的输入永远同一句话）。
+  ///
+  /// 它进事件日志，是「设备为什么突然变了」的唯一线索，不能算成 0/0 或互相抵消。
+  #[test]
+  fn change_note_counts_added_and_removed() {
+    let f = |id: &str, i: bool, o: bool| (id.to_string(), i, o);
+    let old = vec![f("wasapi:a", true, true), f("wasapi:b", false, true)];
+    let new = vec![f("wasapi:a", true, true), f("wasapi:c", true, false)];
+    assert_eq!(change_note(&old, &new), "新增 1 / 消失 1");
+    assert_eq!(change_note(&old, &old), "新增 0 / 消失 0");
+    // 方向变化（同一 ID 从「只能输入」变成「输入+输出」）也算一次变化
+    let duplex = vec![f("wasapi:a", true, true)];
+    let half = vec![f("wasapi:a", true, false)];
+    assert_eq!(change_note(&half, &duplex), "新增 1 / 消失 1");
   }
 }

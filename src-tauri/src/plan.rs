@@ -40,6 +40,13 @@ pub struct RowSpec {
   /// 输入/输出行绑定的设备 ID（cpal 稳定 ID）
   #[serde(default)]
   pub device: Option<String>,
+  /// 选设备时的**显示名**（只给界面/诊断看，**不参与设备匹配**）。
+  ///
+  /// 设备 ID 才是身份（§6.2）；名字只解决「ID 对不上时看不出这条指向哪只设备」：
+  /// 端点被 Windows 重建后，界面能显示「设备不在（原：麦克风 (2- MMX 150)）」，
+  /// 用户一眼知道该重选哪只。旧配置没有这个字段 → `None`。
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub device_name: Option<String>,
   #[serde(default = "default_true")]
   pub enabled: bool,
   #[serde(default)]
@@ -76,6 +83,7 @@ impl Default for Plan {
             kind: RowKind::Input,
             ptype: "audio_input".into(),
             device: None,
+            device_name: None,
             enabled: true,
             params: BTreeMap::new(),
           },
@@ -83,6 +91,7 @@ impl Default for Plan {
             kind: RowKind::Output,
             ptype: "audio_output".into(),
             device: None,
+            device_name: None,
             enabled: true,
             params: BTreeMap::new(),
           },
