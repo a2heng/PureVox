@@ -6,13 +6,14 @@
 
 | 文件 | 版本（代数 @ epoch） | 接口（每 hop 10 ms / 48 kHz） | cache |
 |---|---|---|---|
-| `purevox_denoise.onnx` | `purevox_denoise_202610c` @ **E88** | `spec_in (1,2,481) + cache_in` → `spec_out + cache_out` | 45,988 |
+| `purevox_denoise.onnx` | `purevox_denoise_202611d` @ **E27** | `spec_in (1,2,481) + cache_in` → `spec_out + cache_out` | 25,140 |
 | `purevox_aec.onnx` | `purevox_aec_202610` @ **E381** | `mic_spec + far_spec + cache_in` → `mic_spec_out + cache_out` | 91,920 |
 | `purevox_tse.onnx` | `purevox_tse_202609c` @ **E205** | `mix_spec (1,2,481) + enr_tok (1,2,1001,180) + cache_in` → `spec_out + cache_out` | 513,216 |
 | `purevox_tse_ref_encoder.onnx` | `purevox_tse_202609c` @ **E205**（与主图同批） | `ref_spec (1,2,1001,481)` → `enr_tok (1,2,1001,180)`（每句一次，参考 10 s） | — |
 
 **版本号怎么读**：`model` 是 ONNX metadata 里的代数（`onnx.load('…').metadata_props`），epoch 对应
-训练侧 `7_output/<代>/checkpoints/checkpoint_epoch_NNN.tar`。降噪 / AEC 的 epoch 按权重摘要比过训练侧
+训练侧 `7_output/<代>/checkpoints/checkpoint_epoch_NNN.tar`。降噪直接取训练侧 `onnx/` 的导出
+（本代是 `denoise_202611d_0002` 的 `ep0027`）；AEC 的 epoch 按权重摘要比过训练侧
 ONNX；TSE 是 2026-11-04 从 E205 的 checkpoint 现导出的（同一套训练脚本的 `export_onnx`）。
 换模型时先改这张表，再改文件（表是部署现状的唯一记录）。
 
@@ -25,6 +26,12 @@ ONNX；TSE 是 2026-11-04 从 E205 的 checkpoint 现导出的（同一套训练
   （现役 202609c 线是 `enr_tok`，202610 线是 `keys`+`gb`，202611 线是 `enr_comp`），
   注册编码器必须**同名输出、形状逐个对上**，另比 metadata `model`；不配套直接报错（硬失败），
   不会退化成直通。
+- **降噪现役是 `202611d@E27`（2026-11-04 换）**：直接取训练侧
+  `7_output/denoise_202611d_0002/onnx/purevox_denoise_202611d_ep0027.onnx`（`--out-seq 2` 那轮的
+  导出产物，**该轮训练还在跑**，换最终 epoch 只换文件）。这一代把 cache 从 45,988 缩到 **25,140**、
+  文件 **7.50 MB → 0.89 MB**；实测单 hop（机上 1 线程 CPU）**0.88 → 0.31 ms**，
+  val 集 SI-SDR **+1.37 dB**（202610c@E88 同口径 +1.51 dB，属早期轮次，别当回退看）。
+  同目录 `*.onnx.data` 是导出残留（该 `.onnx` 自包含），**只拷 `.onnx`**。
 - **TSE 现役是 `202609c@E205`（2026-11-04 更新）**：从训练侧
   `7_output/output_purevox_tse_202609c/checkpoints/checkpoint_epoch_205.tar` 用
   `legacy/202609/purevox_tse_202609c.py` 的 `export_onnx` / `export_ref_encoder` 导出
