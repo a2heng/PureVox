@@ -283,7 +283,7 @@ impl AudioManager {
     let path = config::default_tse_reference();
     let token = self.rec.start(&plan, path.clone())?;
     let rec = self.rec.clone();
-    let secs = crate::recorder::REF_RECORD_SECONDS;
+    let secs = crate::recorder::ref_capture_seconds();
     std::thread::Builder::new()
       .name("tse-rec-watchdog".into())
       .spawn(move || {
@@ -291,7 +291,7 @@ impl AudioManager {
         rec.timeout_if_recording(
           token,
           format!(
-            "录制失败：{secs:.0} 秒内没有收到音频（确认引擎已启动、TSE 行已启用、麦克风有输入）"
+            "录制失败：{secs:.1} 秒内没有收到足够的音频（确认引擎已启动、TSE 行已启用、麦克风有输入）"
           ),
         );
       })

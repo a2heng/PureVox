@@ -64,12 +64,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .ok_or("no cache_in")?;
   println!("cache dim = {dim}");
 
-  // 输入名按谱接口写死（旧波形契约的模型会在下面的 session.run 里直接报错）
-  let (spec_in, spec_out) = if session.inputs().iter().any(|i| i.name() == "spec_in") {
-    ("spec_in", "spec_out")
-  } else {
-    return Err("模型不是谱接口（没有 spec_in）——本 bench 只支持 2026-10 起的模型".into());
-  };
+  // 谱输入按**形状**找（名字随代变：`spec_in` / `mix_spec`），与应用侧 `find_spec_input` 同口径。
+  let spec_in = session
+    .inputs()
+    .iter()
+    .find_map(|i| match i.dtype() {
+      ValueType::Tensor { shape, .. } => {
+        let d: Vec<i64> = shape.iter().copied().collect();
+        (d == [1, 2, spec::BINS as i64]).then(|| i.name().to_string())
+      }
+      _ => None,
+    })
+    .ok_or("模型没有 (1,2,481) 复数谱输入——本 bench 只支持 2026-10 起的谱接口")?;
+  // 除谱与 cache 之外的输入（TSE 的参考条件等）：按声明形状补零，只为跑通时序、测真实耗时。
+  let extra: Vec<(String, Vec<i64>, Vec<f32>)> = session
+    .inputs()
+    .iter()
+    .filter(|i| i.name() != spec_in && i.name() != "cache_in")
+    .filter_map(|i| match i.dtype() {
+      ValueType::Tensor { shape, .. } => {
+        let d: Vec<i64> = shape.iter().copied().collect();
+        let n: i64 = d.iter().product();
+        Some((i.name().to_string(), d, vec![0.0f32; n as usize]))
+      }
+      _ => None,
+    })
+    .collect();
+  println!(
+    "spec input = {spec_in}，另补零 {} 个输入：{:?}",
+    extra.len(),
+    extra.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>()
+  );
 
   let mut cache = vec![0.0f32; dim];
   let mut stft = spec::SpecStream::new();
@@ -79,9 +104,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ① 只算模型
     let t = Instant::now();
     {
+      let mut inputs: Vec<(&str, ort::session::SessionInputValue<'_>)> = Vec::new();
       let sp = Tensor::from_array(([1i64, 2, spec::BINS as i64], vec![0.0f32; spec::SPEC_LEN]))?;
+      inputs.push((spec_in.as_str(), sp.into()));
+      for (name, shape, data) in &extra {
+        let t = Tensor::from_array((shape.clone(), data.clone()))?;
+        inputs.push((name.as_str(), t.into()));
+      }
       let cin = Tensor::from_array(([1i64, dim as i64], std::mem::take(&mut cache)))?;
-      let outs = session.run(ort::inputs![spec_in => sp, "cache_in" => cin])?;
+      inputs.push(("cache_in", cin.into()));
+      let outs = session.run(inputs)?;
       let (_, cout) = outs["cache_out"].try_extract_tensor::<f32>()?;
       cache.clear();
       cache.extend_from_slice(cout);
@@ -95,10 +127,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t = Instant::now();
     let spec = stft.analyze(&hop).to_vec();
     let out_spec = {
+      let mut inputs: Vec<(&str, ort::session::SessionInputValue<'_>)> = Vec::new();
       let sp = Tensor::from_array(([1i64, 2, spec::BINS as i64], spec))?;
+      inputs.push((spec_in.as_str(), sp.into()));
+      for (name, shape, data) in &extra {
+        let t = Tensor::from_array((shape.clone(), data.clone()))?;
+        inputs.push((name.as_str(), t.into()));
+      }
       let cin = Tensor::from_array(([1i64, dim as i64], std::mem::take(&mut cache)))?;
-      let outs = session.run(ort::inputs![spec_in => sp, "cache_in" => cin])?;
-      let (_, out_spec) = outs[spec_out].try_extract_tensor::<f32>()?;
+      inputs.push(("cache_in", cin.into()));
+      let outs = session.run(inputs)?;
+      let (_, out_spec) = outs["spec_out"].try_extract_tensor::<f32>()?;
       let out_spec = out_spec.to_vec();
       let (_, cout) = outs["cache_out"].try_extract_tensor::<f32>()?;
       cache.clear();

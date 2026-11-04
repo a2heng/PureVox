@@ -92,6 +92,33 @@ pub fn read_mono(path: &Path) -> Result<(Vec<f32>, u32), String> {
   Ok((mono, rate))
 }
 
+/// 写 32-bit float 单声道 WAV（TSE 参考专用）。
+///
+/// 为什么不是 16-bit：参考里要保住 **±1e-8 的底噪**（保证没有精确 0），16-bit 的 LSB
+/// ≈ 3e-5，量化会把底噪直接抹成 0。`read_mono` 两种都支持。
+pub fn write_mono_f32(path: &Path, samples: &[f32], rate: u32) -> Result<(), String> {
+  let n = samples.len() as u32;
+  let data_len = n * 4;
+  let mut out = Vec::with_capacity(44 + data_len as usize);
+  out.extend_from_slice(b"RIFF");
+  out.extend_from_slice(&(36 + data_len).to_le_bytes());
+  out.extend_from_slice(b"WAVE");
+  out.extend_from_slice(b"fmt ");
+  out.extend_from_slice(&16u32.to_le_bytes());
+  out.extend_from_slice(&3u16.to_le_bytes()); // IEEE float
+  out.extend_from_slice(&1u16.to_le_bytes()); // mono
+  out.extend_from_slice(&rate.to_le_bytes());
+  out.extend_from_slice(&(rate * 4).to_le_bytes()); // byte rate
+  out.extend_from_slice(&4u16.to_le_bytes()); // block align
+  out.extend_from_slice(&32u16.to_le_bytes()); // bits
+  out.extend_from_slice(b"data");
+  out.extend_from_slice(&data_len.to_le_bytes());
+  for &s in samples {
+    out.extend_from_slice(&s.to_le_bytes());
+  }
+  std::fs::write(path, out).map_err(|e| format!("写入 {} 失败：{e}", path.display()))
+}
+
 /// 写 16-bit PCM 单声道 WAV。
 pub fn write_mono_16(path: &Path, samples: &[f32], rate: u32) -> Result<(), String> {
   let n = samples.len() as u32;

@@ -8,22 +8,29 @@
 |---|---|---|---|
 | `purevox_denoise.onnx` | `purevox_denoise_202610c` @ **E88** | `spec_in (1,2,481) + cache_in` → `spec_out + cache_out` | 45,988 |
 | `purevox_aec.onnx` | `purevox_aec_202610` @ **E381** | `mic_spec + far_spec + cache_in` → `mic_spec_out + cache_out` | 91,920 |
-| `purevox_tse.onnx` | `purevox_tse_202610b` @ **E747** | `spec_in (1,2,481) + keys (1,64,143) + gb (1,64) + cache_in` → `spec_out + cache_out` | 16,072 |
-| `purevox_tse_ref_encoder.onnx` | `purevox_tse_202610b` @ **E747**（与主图同批） | `ref_spec (1,2,1001,481)` → `keys + gb`（每句一次，参考 10 s） | — |
+| `purevox_tse.onnx` | `purevox_tse_202609c` @ **E205** | `mix_spec (1,2,481) + enr_tok (1,2,1001,180) + cache_in` → `spec_out + cache_out` | 513,216 |
+| `purevox_tse_ref_encoder.onnx` | `purevox_tse_202609c` @ **E205**（与主图同批） | `ref_spec (1,2,1001,481)` → `enr_tok (1,2,1001,180)`（每句一次，参考 10 s） | — |
 
 **版本号怎么读**：`model` 是 ONNX metadata 里的代数（`onnx.load('…').metadata_props`），epoch 对应
-训练侧 `7_output/<代>/onnx/*_epNNNN.onnx`。本表四个 epoch 都是**按权重摘要比对训练侧 ONNX 核出来的**，
-不是照抄提交说明；换模型时先改这张表，再改文件（表是部署现状的唯一记录）。
+训练侧 `7_output/<代>/checkpoints/checkpoint_epoch_NNN.tar`。降噪 / AEC 的 epoch 按权重摘要比过训练侧
+ONNX；TSE 是 2026-11-04 从 E205 的 checkpoint 现导出的（同一套训练脚本的 `export_onnx`）。
+换模型时先改这张表，再改文件（表是部署现状的唯一记录）。
 
 - **`cache_in` 维度随模型变**：应用侧运行时用 `cache_dim()` 从 session 输入形状读，不写死；
   但**模型池按路径缓存 session**，所以**替换文件后必须重启应用**才生效。
 - **谱接口**：图内只有网络，输入/输出都是 `(1,2,481)` 复数谱；960/480 周期 Hann 分析与合成、
   OLA（逐样本除 Σw²）、1 hop 滞后都在应用侧（`src-tauri/src/infer/spec.rs`，三个模型共用一份）。
 - **TSE 的两个文件必须成对**：`ref_encoder` 里是参考通路的权重，跟主图不配套时形状对不上。
-  应用侧的契约**不写死名字**：取「主图输入里除 `spec_in` / `cache_in` 之外的项」当参考条件
-  （现役 202610b 线是 `keys`+`gb`，202609c 线是 `enr_tok`，202611 线是 `enr_comp`），
+  应用侧的契约**不写死名字**：取「主图输入里除 `spec_in`/`mix_spec` / `cache_in` 之外的项」当参考条件
+  （现役 202609c 线是 `enr_tok`，202610 线是 `keys`+`gb`，202611 线是 `enr_comp`），
   注册编码器必须**同名输出、形状逐个对上**，另比 metadata `model`；不配套直接报错（硬失败），
   不会退化成直通。
+- **TSE 现役是 `202609c@E205`（2026-11-04 更新）**：从训练侧
+  `7_output/output_purevox_tse_202609c/checkpoints/checkpoint_epoch_205.tar` 用
+  `legacy/202609/purevox_tse_202609c.py` 的 `export_onnx` / `export_ref_encoder` 导出
+  （`PureVoxTse202609CStreamSpec`：**傅里叶在图外**，图内只有网络）。
+  480 hop / 960 窗与引擎 10 ms 网格一致；参考 1001 帧 = 10 s；`enr_tok` 每 hop 原样重喂。
+  实测（`6_epoch_end_test_wav/tse`，mix→目标 −4.15 dB）：输出→目标 **+5.34 dB（Δ +9.5 dB）**。
 - ⚠️ **逐位全零**输入可能出 NaN（2026-10-31 实测 202611a：图内归一 0/0；202609c / 202610 线没这
   毛病，但保不齐下一代又踩）。应用侧对这一 hop 补零 + 清缓存并记 warn（`infer/tse.rs`）；
   根治在训练侧（归一分母加 eps）。所以拿全零谱做前向自检会被误判成坏模型 —— 喂非零谱即可。

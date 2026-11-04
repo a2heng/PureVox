@@ -16,11 +16,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! TSE 参考录音（ARCHITECTURE.md §7）：在列工作线程里对「降噪后、TSE 前」的信号取样，
-//! 录满 [`REF_RECORD_SECONDS`] 秒后写 48 kHz 单声道 WAV，并把实测 RMS / 峰值一起报出来。
+//! 写 48 kHz 单声道 WAV，并把实测 RMS / 峰值一起报出来。
 //!
-//! **录完整 10 s，不裁剪**（2026-10-31）：现役 TSE（`202609c@E205`，傅里叶已在图外）注册是
-//! 1001 帧 = 10 s（`ref_spec (1,2,1001,481)` → `enr_tok (1,2,1001,180)`），录多少喂多少，
-//! 没有掐头去尾这一步（短了会平铺、长了会截断，见 `infer/tse.rs::build_ref_spec`）。
+//! **保留窗口恒为 10 s，外面还有头尾**（2026-11-04）：点「录制」后**立刻开始采**，
+//! 先录 [`REF_WARMUP_SECONDS`] 预热（丢头，设备起流/重采样器稳定前不算数），再保留
+//! [`REF_RECORD_SECONDS`] 秒，最后录 [`REF_TAIL_SECONDS`] 余量（丢尾，TSE 有 1 hop 滞后 +
+//! 设备缓冲，保证第 10 s 的语音收全）。写盘只写中间那段，长度恒为 10 s。
 //!
 //! **不做音量归一化 / 限幅**（2026-10-26 实测 + legacy 对照）：
 //! - 主模型对参考电平不敏感：同一段参考整体 ±20 dB 后喂 ref_encoder + 主模型，
@@ -35,7 +36,7 @@
 //!
 //! 三条纪律（对应 legacy `_Recorder` 的行为）：
 //! - **写盘不在音频线程**：录满后把缓冲交给后台线程写 WAV，列线程下一拍继续跑；
-//! - **看门狗**：`REF_RECORD_SECONDS + 2 s` 内没有收满（引擎没启动、行停用、麦克风没输入）
+//! - **看门狗**：`ref_capture_seconds() + 2 s` 内没有收满（引擎没启动、行停用、麦克风没输入）
 //!   就明确失败，不会永远停在「录制中 0.0/10 s」；
 //! - **只录启用行**：停用的列/行不参与目标解析（否则录音永远收不到样本）。
 
@@ -49,8 +50,19 @@ use crate::audio::SAMPLE_RATE;
 use crate::debug::{Probe, SharedHub};
 use crate::plan::Plan;
 
-/// 参考录音时长（秒）：**完整录 10 s**（现役 TSE 注册 1001 帧 = 10 s，不裁剪）。
+/// 参考录音时长（秒）：**最终保留 10 s**（现役 TSE 注册 1001 帧 = 10 s，不裁剪）。
 pub const REF_RECORD_SECONDS: f64 = 10.0;
+
+/// 起录**预热**（丢头，秒）：设备刚起流/重采样器稳定前的声音不可信，先录一段再开始计数。
+pub const REF_WARMUP_SECONDS: f64 = 1.0;
+
+/// 收尾**余量**（丢尾，秒）：TSE 有 1 hop 滞后 + 设备缓冲，留一段尾巴保证第 10 s 的语音收全。
+pub const REF_TAIL_SECONDS: f64 = 0.5;
+
+/// 实际占用链路的总时长（预热 + 保留 + 余量）。
+pub fn ref_capture_seconds() -> f64 {
+  REF_WARMUP_SECONDS + REF_RECORD_SECONDS + REF_TAIL_SECONDS
+}
 
 /// 采样相位：处理行「处理前」= 上游输出；「处理后」= 本行输出。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,7 +78,12 @@ enum State {
     token: u64,
     target: (usize, usize, Phase),
     buf: Vec<f32>,
+    /// 保留窗口的样本数（10 s）
     needed: usize,
+    /// 开头丢掉的预热样本数
+    skip: usize,
+    /// 含预热 + 保留 + 余量的总样本数（收满才写盘）
+    total: usize,
     path: PathBuf,
     last_pub: Instant,
   },
@@ -100,12 +117,15 @@ impl RecorderHub {
     )
   }
 
-  /// 开始录制参考：固定录 [`REF_RECORD_SECONDS`] 秒（原样写盘），写 `path`。
+  /// 开始录制参考：先录 [`REF_WARMUP_SECONDS`] 预热（丢头），再保留
+  /// [`REF_RECORD_SECONDS`] 秒，最后录 [`REF_TAIL_SECONDS`] 余量（丢尾），写完 `path`。
   /// 返回本次录音代号（看门狗用）。
   pub fn start(&self, plan: &Plan, path: PathBuf) -> Result<u64, String> {
     let target = resolve_target(plan)
       .ok_or_else(|| "计划里没有启用的 TSE 行，也没有降噪行；请先加一个再录参考".to_string())?;
     let needed = (REF_RECORD_SECONDS * SAMPLE_RATE as f64) as usize;
+    let skip = (REF_WARMUP_SECONDS * SAMPLE_RATE as f64) as usize;
+    let total = (ref_capture_seconds() * SAMPLE_RATE as f64) as usize;
     let token = self.next_token.fetch_add(1, Relaxed);
     let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
     match &*st {
@@ -116,8 +136,10 @@ impl RecorderHub {
     *st = State::Recording {
       token,
       target,
-      buf: Vec::with_capacity(needed),
+      buf: Vec::with_capacity(total),
       needed,
+      skip,
+      total,
       path,
       last_pub: Instant::now(),
     };
@@ -148,10 +170,7 @@ impl RecorderHub {
     let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
     let full = {
       let State::Recording {
-        target,
-        buf,
-        needed,
-        ..
+        target, buf, total, ..
       } = &mut *st
       else {
         return;
@@ -160,19 +179,21 @@ impl RecorderHub {
         return;
       }
       buf.extend_from_slice(samples);
-      buf.len() >= *needed
+      buf.len() >= *total
     };
     if !full {
       if let State::Recording {
         buf,
         needed,
+        skip,
         last_pub,
         ..
       } = &mut *st
         && last_pub.elapsed().as_millis() >= 200
       {
         *last_pub = Instant::now();
-        let secs = buf.len() as f64 / SAMPLE_RATE as f64;
+        let got = buf.len().saturating_sub(*skip).min(*needed);
+        let secs = got as f64 / SAMPLE_RATE as f64;
         let total = *needed as f64 / SAMPLE_RATE as f64;
         self
           .hub
@@ -181,12 +202,16 @@ impl RecorderHub {
       return;
     }
 
-    // 收满：立刻把状态切成 Encoding 并 release 锁；归一化/写盘在后台线程做，
+    // 收满：立刻把状态切成 Encoding 并 release 锁；裁剪/写盘在后台线程做，
     // 绝不占住列工作线程的 10 ms 节拍。
     let prev = std::mem::replace(&mut *st, State::Encoding);
     drop(st);
     let State::Recording {
-      buf, needed, path, ..
+      buf,
+      needed,
+      skip,
+      path,
+      ..
     } = prev
     else {
       return;
@@ -196,7 +221,8 @@ impl RecorderHub {
     let spawned = std::thread::Builder::new()
       .name("tse-ref-write".into())
       .spawn(move || {
-        let result = write_reference(&buf[..needed], &path);
+        // 只写保留窗口：丢掉预热（头）与余量（尾），长度恒为 `needed` = 10 s。
+        let result = write_reference(&buf[skip..skip + needed], &path);
         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
         match result {
           Ok(level) => {
@@ -266,6 +292,11 @@ struct Level {
 ///
 /// 只拒绝近静音：几乎没声音的参考不如不录，明确失败比让 TSE 悄悄直通更好排查。
 fn write_reference(samples: &[f32], path: &Path) -> Result<Level, String> {
+  // 落盘前垫底噪（±1e-8，≈ −160 dBFS，听不见）：参考文件里**永远没有精确 0**，
+  // 下游（注册编码器 / 训练侧）不会因为全零帧踩 0/0。正常音频逐位不动。
+  let mut v = samples.to_vec();
+  crate::infer::tse::floor_silence(&mut v);
+  let samples = &v[..];
   let r = rms(samples);
   let p = peak(samples);
   if r < 1e-5 || p < 1e-4 {
@@ -274,7 +305,7 @@ fn write_reference(samples: &[f32], path: &Path) -> Result<Level, String> {
   if let Some(dir) = path.parent() {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败：{e}"))?;
   }
-  crate::wav::write_mono_16(path, samples, SAMPLE_RATE)?;
+  crate::wav::write_mono_f32(path, samples, SAMPLE_RATE)?;
   Ok(Level {
     rms_db: 20.0 * r.max(1e-6).log10(),
     peak_db: 20.0 * p.max(1e-6).log10(),
@@ -344,7 +375,8 @@ mod tests {
   }
 
   /// 参考语音**原样写盘**：不做归一化 / 限幅（用户 2026-10-26 要求「更真实」）。
-  /// 写进去的波形与录到的一致，只差 16-bit 量化；回报的电平就是这段录音的实测值。
+  /// 写的是 float32 WAV（16-bit 会把 ±1e-8 底噪量化成 0），波形与录到的一致；
+  /// 回报的电平就是这段录音的实测值。
   #[test]
   fn write_reference_keeps_waveform_unchanged() {
     let v: Vec<f32> = (0..4_800)

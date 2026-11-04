@@ -47,6 +47,26 @@ pub const MODEL_TSE: &str = "purevox_tse.onnx";
 /// 注册编码器（与主模型成对）。
 pub const MODEL_TSE_REF: &str = "purevox_tse_ref_encoder.onnx";
 
+/// 极小底噪（≈ −160 dBFS，听不见）：**保证信号里永远没有精确 0**（2026-11-04）。
+///
+/// 模型图内的 `log1p(α|X|)/(|X|+eps)` 在 |X|=0 时会被 onnxruntime 优化成 0/0 → NaN，
+/// 而设备静音/欠载补零很常见。这里是**一层保险**：绝对值小于它的样本换成 ±它（交替）,
+/// 正常音频一个比特都不动。参考录音写盘前也做同一件事（`recorder::write_reference`）。
+pub const SILENCE_FLOOR: f32 = 1e-8;
+
+/// 给整数位静音垫底噪：`|x| < SILENCE_FLOOR` 的样本按索引交替取 ±SILENCE_FLOOR。
+pub(crate) fn floor_silence(buf: &mut [f32]) {
+  for (i, v) in buf.iter_mut().enumerate() {
+    if v.abs() < SILENCE_FLOOR {
+      *v = if i % 2 == 0 {
+        SILENCE_FLOOR
+      } else {
+        -SILENCE_FLOOR
+      };
+    }
+  }
+}
+
 /// 可选 TSE 模型 (文件名, 界面名)，供界面下拉。
 /// 界面名只是**显示用**，不重复版本号：真正的标识在 ONNX metadata `model`
 /// （主图与注册编码器必须同源）。
@@ -71,6 +91,8 @@ pub struct Tse {
   ref_inputs: Option<Vec<RefInput>>,
   /// 直通缓冲（无参考时用：不推进进度、不加延迟）
   out: [f32; HOP],
+  /// 推理输入（垫过底噪的 hop；不改调用方的缓冲）
+  inp: [f32; HOP],
 }
 
 /// 一个参考条件的张量（注册编码器输出，每 hop 原样重喂）。
@@ -132,6 +154,7 @@ impl Tse {
       ref_shapes,
       ref_inputs: None,
       out: [0.0; HOP],
+      inp: [0.0; HOP],
     })
   }
 
@@ -191,7 +214,11 @@ impl Tse {
       }
       (name, shape[2], shape[3])
     };
-    let spec = build_ref_spec(samples, frames, bins);
+    // 参考也垫底噪：录音里的数字静音帧不会让注册编码器在图内出 0/0 → NaN
+    // （下面还有一层「非有限值置 0」兜底，两道保险）。
+    let mut ref_samples = samples.to_vec();
+    floor_silence(&mut ref_samples);
+    let spec = build_ref_spec(&ref_samples, frames, bins);
 
     let mut guard = model.lock();
     let session = &mut *guard;
@@ -206,6 +233,7 @@ impl Tse {
     // 按形状比，不只比元素个数：形状变了但元素数恰好相同（如 [1,64,143] vs [1,143,64]）
     // 时，只比个数会静默把错误布局喂进主图。
     let mut refs = Vec::with_capacity(self.ref_names.len());
+    let mut nonfinite = 0usize;
     for (name, want) in self.ref_names.iter().zip(self.ref_shapes.iter()) {
       let Some(out) = outputs.get(name.as_str()) else {
         return Err(format!(
@@ -223,11 +251,32 @@ impl Tse {
            （请成对替换两个文件）"
         ));
       }
+      // **逐位全零的谱帧会让注册编码器在图内出 NaN**（2026-11-04 实锤）：
+      // `log1p(α·|X|)/(|X|+eps)` 在 |X|=0 时被 onnxruntime 优化成 0/0；训练侧 torch
+      // 算出来是 0（`drc(0)=0`），ONNX 图却给 NaN。数字静音帧（录音起止的精确 0）很常见，
+      // 一旦进 enr_tok 就会**污染每一跳**的主图输出（mask 全 NaN → 应用侧 NaN 守卫逐跳补零
+      // → 用户听到「完全没声音」）。这里按训练侧口径把非有限值置 0，等价于 torch 的结果，
+      // 只作用于坏帧，正常帧逐位不动；数量记事件日志（不静默）。
+      let mut data = data.to_vec();
+      let bad = data.iter().filter(|v| !v.is_finite()).count();
+      if bad > 0 {
+        for v in data.iter_mut().filter(|v| !v.is_finite()) {
+          *v = 0.0;
+        }
+        nonfinite += bad;
+      }
       refs.push(RefInput {
         name: name.clone(),
         shape,
-        data: data.to_vec(),
+        data,
       });
+    }
+    if nonfinite > 0 {
+      crate::debug::events::log(
+        "warn",
+        "infer",
+        format!("TSE 参考条件有 {nonfinite} 个非有限值（参考里的数字静音帧）→ 按训练侧口径置 0"),
+      );
     }
     self.ref_inputs = Some(refs);
     Ok(())
@@ -246,6 +295,7 @@ impl Tse {
       spec_out,
       ref_inputs,
       out,
+      inp,
       ..
     } = self;
     let Some(refs) = ref_inputs.as_ref() else {
@@ -258,8 +308,12 @@ impl Tse {
     let mut guard = model.lock();
     let session = &mut *guard;
 
+    // 垫底噪（|x|<1e-8 的样本换成 ±1e-8）：设备静音/欠载补零时模型图内也不会再出
+    // 0/0 → NaN。正常音频逐位不动。
+    inp.copy_from_slice(hop);
+    floor_silence(inp);
     let run = {
-      let spec = stft.analyze(hop);
+      let spec = stft.analyze(inp);
       let spec_in = TensorRef::from_array_view(([1i64, 2, BINS as i64], spec))
         .map_err(|e| format!("构造 {spec_name} 失败：{e}"))?;
       let mut inputs: Vec<(&str, ort::session::SessionInputValue<'_>)> =
