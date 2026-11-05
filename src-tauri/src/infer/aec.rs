@@ -32,14 +32,14 @@ use ort::value::TensorRef;
 use crate::audio::HOP;
 use crate::infer::spec::{BINS, SPEC_LEN, SpecStream};
 
-/// 现役 AEC 模型（单流：far/mic 各 5ch 在第 0 层 early fusion，无显式延迟线；
+/// AEC 模型（单流：far/mic 各 5ch 在第 0 层 early fusion，无显式延迟线；
 /// 对齐靠 GRU 隐状态，前端感受野 ≥ 数据最大延迟）。
 pub const MODEL_AEC: &str = "purevox_aec.onnx";
 
 /// 可选 AEC 模型 (文件名, 界面名)，供界面下拉。
 /// 界面名只是**显示用**，不重复版本号：真正的标识在 ONNX metadata `model`。
 pub fn aec_models() -> &'static [(&'static str, &'static str)] {
-  &[(MODEL_AEC, "AEC（现役）")]
+  &[(MODEL_AEC, "AEC")]
 }
 
 pub struct Aec {

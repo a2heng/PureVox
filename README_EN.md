@@ -10,7 +10,7 @@ shelf of tools.
 ## Features
 
 - **AI denoise**: ONNX streaming model on a 10 ms grid (48 kHz / 480 samples), single-threaded,
-  measured ~1.8–6 ms per hop.
+  measured ~0.3 ms per hop (denoise small 0.28 / medium 0.30).
 - **Target speaker extraction (TSE)**: record a 10 s reference and keep only that voice.
 - **Echo cancellation (AEC)**: remove speaker sound picked up by the microphone (calls, streaming,
   speakerphone), with delay calibration and level matching.

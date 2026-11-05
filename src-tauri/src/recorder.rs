@@ -50,7 +50,7 @@ use crate::audio::SAMPLE_RATE;
 use crate::debug::{Probe, SharedHub};
 use crate::plan::Plan;
 
-/// 参考录音时长（秒）：**最终保留 10 s**（现役 TSE 注册 1001 帧 = 10 s，不裁剪）。
+/// 参考录音时长（秒）：**最终保留 10 s**（TSE 注册 1001 帧 = 10 s，不裁剪）。
 pub const REF_RECORD_SECONDS: f64 = 10.0;
 
 /// 起录**预热**（丢头，秒）：设备刚起流/重采样器稳定前的声音不可信，先录一段再开始计数。

@@ -24,7 +24,7 @@
 //!       cache_out[1,D]
 //! ```
 //!
-//! 波形↔谱、OLA 与滞后 1 hop 全在 [`crate::infer::spec`]（三个模型共用一份 DSP），
+//! 波形↔谱、OLA 与滞后 1 hop 全在 [`crate::infer::spec`]（三类模型共用一份 DSP），
 //! 本文件只做会话 + 每行缓存。缓存维度从模型输入读，不写死。
 
 use std::path::Path;

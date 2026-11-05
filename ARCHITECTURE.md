@@ -355,25 +355,29 @@ mic/far 仍各自持有采集路径；面板还没把 `mix_sources` 画出来（
 ## 7. 模型生命周期
 
 ```rust
-pub enum ModelKind { Denoise, Tse, Aec }
-pub struct ModelDesc { pub key: &'static str, pub file: &'static str, pub label: &'static str, pub kind: ModelKind }
-pub fn models() -> &'static [ModelDesc];
-pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
+// 每类处理行一组「可选模型」(文件名, 界面名)：界面下拉直接渲染，标签只写档位、不写版本号
+pub fn denoise_models() -> &'static [(&'static str, &'static str)];  // 小 / 中
+pub fn aec_models()     -> &'static [(&'static str, &'static str)];
+pub fn tse_models()     -> &'static [(&'static str, &'static str)];
+// 计划里存的文件名 → 列表里的模型；不在列表里就回落到第一个并记一条事件日志
+pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &str) -> &'static str;
 ```
 
-- **四个文件、名字里不带版本号**（2026-10-29 起；模型标识记在 ONNX metadata
-  `model` 与 `models/README.md`）：`purevox_denoise.onnx`、`purevox_aec.onnx`、
+- **五个文件、名字里不带版本号**（2026-10-29 起；模型标识记在 ONNX metadata
+  `model` 与 `models/README.md`）：`purevox_denoise.onnx`（降噪小档）、
+  `purevox_denoise_medium.onnx`（降噪中档，2026-11-05 加）、`purevox_aec.onnx`、
   `purevox_tse.onnx`、`purevox_tse_ref_encoder.onnx`（与 TSE 主图**成对**）。
+  降噪两档**接口完全一致、只是容量不同**，界面下拉按「小 / 中」选，默认小档。
   ⇒ **换模型 = 换文件**，代码零改动；替换流程见 `models/README.md`。
 - **谱接口**（2026-10-29 换代）：图内只有网络，输入/输出都是 `(1,2,481)` 复数谱 + `cache_in`，
-  傅里叶/OLA 在图外（`infer/spec.rs`，三个模型共用）。旧的 `*_hop [1,480]` 波形契约已废除；
+  傅里叶/OLA 在图外（`infer/spec.rs`，三类模型共用）。旧的 `*_hop [1,480]` 波形契约已废除；
   模型文件接错会在加载时报「不是谱接口」，不会静默跑出没效果。
   TSE 主图与注册编码器**成对校验**：取「主图输入里除 `spec_in` / `cache_in` 之外的项」当
   参考条件（202610 线是 `keys`+`gb`，202611 线是 `enr_comp`），注册编码器必须**同名输出、
   形状逐个对上**，另比 metadata `model`；参考语音文件在、却编码失败（不配套 / 采样率不对）
   也是**硬失败**，不再退化成直通。
 - **缓存形状/维度从模型输入读，不写死**（`[1,D]` 或 `[D]` 都行；TSE 的参考条件名字与形状同样从模型读）。
-- 选择存配置（`denoise_model` 等），计划构建时校验文件存在；**启用的模型行**起不来
+- 选择存在**行的 `params.model`**（计划的一部分），计划构建时校验文件存在；**启用的模型行**起不来
   （文件缺失 / 维度或成对不配套）按**关键失败**处理：会话回滚并明确报错，不再直通降级
   （2026-10-30 起。旧实现把 denoise / TSE 当「可选」，TSE 成对不配套时界面照常显示
   「已生效」、实际全程直通，用户完全无感 —— 见 `UX.md`「失败不静默」）。
@@ -389,8 +393,9 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
   **在用模型的空闲副本**一并丢掉（实测降噪一份重复 ≈16.6 MB 可回收）。
 - **drop 之后还要还堆**：ORT 权重是 malloc 的大块，glibc 只留在 arena 里，RSS 不降
   （实测 drop 4 个会话 79 MB 纹丝不动）。所以回收路径末尾 `malloc_trim(0)`（Linux；Windows CRT 会自己还）。
-  实测：4 个模型全加载 +61 MB（降噪 +40、AEC +21、TSE 主图/注册各 +0.4）→ 删除后立刻回 32.7 MB；
-  残留 ~28 MB 是 ORT runtime / arena，属一次性（第二轮起稳定，不随加载-回收增长）。
+  实测（2026-11-05，降噪 0.89 MB 小档）：基线 17.7 MB → 全加载 84.8 MB（+67.1 MB；**首个模型要付
+  ORT runtime 初始化 ~20 MB**，之后才是权重：降噪 +2、AEC +11、TSE 主图 +30）→ 回收 4 个会话回
+  47.7 MB；残留 ~30 MB 是 ORT runtime / arena，属一次性（第二、三轮加载-回收稳定在 47–50 MB）。
 - **不做空闲自动卸载**；**不热切换模型文件**（改型号 = 结构性变更 → 重启）。
 
 ---
@@ -412,7 +417,7 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 | 音效板声部 | `engine` | 每个音效一段 48k/mono 样本（短音效整段入内存） |
 | 播放器环形缓冲 | `engine` | 3 s（48k f32），解码线程写、音频线程读，超限丢最旧 |
 | 网络 acc | `net/remote_mic` / `net/remote_speaker` | 进出各一环，目标 50 ms，硬顶 80 ms（超限丢最旧）；水位超目标时按 1 s 丢 1 hop **慢慢收回目标**（推取同速、水位只靠硬顶回不来）；取不足一个 hop 补静音 |
-| 模型 `cache` | `infer` | 由模型决定（降噪 36506 / AEC 91920 / TSE 513216 f32），**每行一份** |
+| 模型 `cache` | `infer` | 由模型决定（降噪小档 25,140 / 中档 22,964 / AEC 91,920 / TSE 513,216 f32），**每行一份** |
 
 规则：**音频回调零分配零加锁零日志**；工作线程预分配复用；任何进入数据面的容器都必须有上限与丢弃策略。
 
@@ -458,7 +463,7 @@ pub fn resolve(key: &str, kind: ModelKind) -> Option<&'static ModelDesc>;
 | **列 UI（增删列、加/拖行、两端固定）** | ◑ 已实现（增删列、加/删/上下移行、两端固定）；**列头启用开关待做**（`ColumnSpec.enabled`，停用=保留配置、放掉设备引用，见 §6.5）、拖动待做 | §3.1 / §6.5 |
 | **设备接管（多路共用设备 + 软件混音）** | ✅ 已实现（2026-10-19）：`audio/device_pool.rs` 按 `(设备, 角色)` 只开一次 + 引用计数 + 跨重建存活；`audio/mixer.rs` 每源一路可调比例重采样 + 水位伺服后相加；行级/列头开关 = 订阅与引用的挂摘。**待做**：回环与 AEC 行的采集池化、面板逐源展示 | §6.5 |
 | **模型注册表 + 型号选择** | ◑ 降噪/TSE 型号下拉已接入；统一 `ModelDesc` 注册表待做 | §7 |
-| **TSE 目标说话人提取** | ✅ 已实现（录 10 s → `ref_encoder.onnx` → 参考条件（现役 `202609c` 线 `enr_tok`，202610 线 `keys`/`gb`，202611 线 `enr_comp`），每句一次；主图实时（≈2 ms/hop）；参考可录制=降噪后原样；无参考直通） | §4 / §7 |
+| **TSE 目标说话人提取** | ✅ 已实现（录 10 s → `ref_encoder.onnx` → 参考条件（`202609c` 线 `enr_tok`，202610 线 `keys`/`gb`，202611 线 `enr_comp`），每句一次；主图实时（≈2 ms/hop）；参考可录制=降噪后原样；无参考直通） | §4 / §7 |
 | **AEC 回声消除** | ✅ 已实现（far 参考采集 + 2 s 网格对齐 + 每行缓存 + 互相关延时校准） | §4 |
 | 回环 | ✅ 已实现（`audio/loopback.rs`，WASAPI loopback） | 作为「输入行」的源（`loopback`，电脑播放音频） |
 | 媒体 | ✅ 已实现（后端 + 界面，2026-10-12）：`soundpad` / `player` 处理行、媒体库导入（symphonia）、每音效热键、MediaHub 控制 | §4 |

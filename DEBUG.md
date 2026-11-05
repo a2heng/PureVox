@@ -414,11 +414,12 @@ release 构建同样保留（不允许用编译开关剔除）。
   （2026-10-29 起）：`(1,2,481)` 复数谱（= 960/480 周期 Hann 分析帧）+ `cache_in [1,D]`
   （扁平流式缓存，首帧零起）→ 增强谱 + `cache_out [1,D]`。**傅里叶在图外**，由 `infer/spec.rs`
   统一做分析/合成与 OLA（逐样本除 Σw²），输出**滞后 1 hop**；缓存形状（`[1,D]` / `[D]`）与
-  TSE 的参考条件（现役 202609c 线 `enr_tok [1,2,1001,180]` / 202610 线 `keys`+`gb` / 202611 线
+  TSE 的参考条件（202609c 线 `enr_tok [1,2,1001,180]` / 202610 线 `keys`+`gb` / 202611 线
   `enr_comp`…）都从模型输入读，不写死。
   降噪是**列里的处理行**（`engine/components/denoise.rs`，`Stage`），在**列工作线程**内惰性加载
   （每行一份，只加载一次）；模型文件选择存计划，改型号 = 结构性变更 → 重建会话。
-  现役模型常量 `infer::MODEL_DENOISE`（降噪）、`infer::MODEL_AEC`（AEC，202610 单流：
+  模型常量 `infer::MODEL_DENOISE`（降噪小档）/ `infer::MODEL_DENOISE_M`（降噪中档，宽通道版，
+  同一套谱接口，界面下拉按「小 / 中」选，默认小档）；`infer::MODEL_AEC`（AEC，202610 单流：
   far/mic 各 5ch 第 0 层 early fusion + iLN，**无显式延迟线**（对齐靠 GRU 隐状态）、cache 91,920；
   2026-10-18 换下 202609cpx，旧文件已从 `models/` 移除）。
 - **AEC 行 / TSE 行**：AEC 是**输入行**（`ptype = echo_cancel`，本行 `device` = 近端 mic，

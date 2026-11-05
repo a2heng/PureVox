@@ -19,7 +19,7 @@
 //!
 //! 模型是流式的：每 10 ms 一帧 `(1,2,481)` 复数谱 + 一个一维 `cache_in`，
 //! 返回增强谱与新的 `cache_out`。**傅里叶在图外**（2026-10-29 换代）：波形↔谱、OLA
-//! 与 1 hop 滞后全在 [`spec`]，三个模型共用同一份 DSP。
+//! 与 1 hop 滞后全在 [`spec`]，三类模型共用同一份 DSP。
 
 pub mod aec;
 pub mod denoise;
@@ -448,7 +448,7 @@ pub fn models_stats() -> Vec<ModelStat> {
   out
 }
 
-/// 后台预热：把现役与可选模型都加载一遍（开销不计；换来第一次启动/重建不再卡在磁盘与 ORT 初始化）。
+/// 后台预热：把可选模型都加载一遍（开销不计；换来第一次启动/重建不再卡在磁盘与 ORT 初始化）。
 ///
 /// 只做**加载 + 归还**，不占住会话；失败的模型写事件日志（缺文件不算致命）。
 pub fn preload_all() {
@@ -479,24 +479,30 @@ pub fn preload_all() {
     .ok();
 }
 
-/// 现役降噪模型（`models/` 下的文件名）。
+/// 小尺寸降噪模型（`models/` 下的文件名，界面「降噪（小）」）。
 ///
-/// **2026-10-29 起文件名不带版本号**：应用侧代码只认这四个固定名字，
+/// **2026-10-29 起文件名不带版本号**：应用侧代码只认这些固定名字，
 /// 换模型 = 换文件（模型标识记在 ONNX metadata `model` 与 `models/README.md`）。
 /// 谱接口见 [`spec`]。
 pub const MODEL_DENOISE: &str = "purevox_denoise.onnx";
 
+/// 中尺寸降噪模型（宽通道版，与 [`MODEL_DENOISE`] 同一套谱接口，只是容量更大）。
+pub const MODEL_DENOISE_M: &str = "purevox_denoise_medium.onnx";
+
 /// 可选降噪模型 (文件名, 界面名)，供界面下拉（ARCHITECTURE.md §7）。
-/// 界面名只是**显示用**，不重复版本号：真正的标识在 ONNX metadata `model`。
+/// 界面名只是**尺寸档位**，不重复版本号：真正的标识在 ONNX metadata `model`。
 pub fn denoise_models() -> &'static [(&'static str, &'static str)] {
-  &[(MODEL_DENOISE, "降噪（现役）")]
+  &[
+    (MODEL_DENOISE, "降噪（小）"),
+    (MODEL_DENOISE_M, "降噪（中）"),
+  ]
 }
 
-/// 计划里存的模型名 → 现役模型（不在列表里就回落到第一个，并记一条事件日志）。
+/// 计划里存的模型名 → 列表里的模型（不在列表里就回落到第一个，并记一条事件日志）。
 ///
 /// 为什么需要：2026-10-29 起模型文件名**不带版本号**（换模型 = 换文件），
 /// 用户在旧计划里存的是带版本号的旧文件名，文件已经不在包里。
-/// 直接按名字找会得到「找不到模型」的行，不如收敛到现役默认值（界面下拉也只是提示）。
+/// 直接按名字找会得到「找不到模型」的行，不如收敛到默认值（界面下拉也只是提示）。
 pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &str) -> &'static str {
   match list.iter().find(|(f, _)| *f == requested) {
     Some((f, _)) => f,
@@ -504,7 +510,7 @@ pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &st
       crate::debug::events::log(
         "warn",
         "infer",
-        format!("计划里的模型 {requested} 不在现役列表 → 用 {}", list[0].0),
+        format!("计划里的模型 {requested} 不在可选列表 → 用 {}", list[0].0),
       );
       list[0].0
     }
@@ -581,7 +587,7 @@ mod tests {
       .unwrap_or(0)
   }
 
-  /// 内存是否**真的**退回去了：把三个模型都借出来（求值一次）→ 归还 → 回收 → 看 RSS。
+  /// 内存是否**真的**退回去了：把各类模型都借出来（求值一次）→ 归还 → 回收 → 看 RSS。
   /// 手动跑：`cargo test --release -- --ignored --nocapture memory_release`
   #[test]
   #[ignore = "真要加载 ONNX + 读 RSS，手动跑"]

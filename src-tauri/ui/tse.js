@@ -44,7 +44,7 @@
 
   /**
    * 录制时长由后端给（`tse_reference_info.record_seconds` = Rust 的 `REF_RECORD_SECONDS`），
-   * 界面不另写一份（现役 TSE 注册 1001 帧 = 10 s，录多少喂多少）。
+   * 界面不另写一份（TSE 注册 1001 帧 = 10 s，录多少喂多少）。
    * info 还没回来时先用 10 兜底（与后端常量同值）。
    */
   const FALLBACK_RECORD_SECONDS = 10

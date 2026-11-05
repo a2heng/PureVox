@@ -27,7 +27,7 @@
 //!        单输入 `ref_spec`/`enr_spec` [1,2,Te,481] → 主图要的那些参考条件
 //! ```
 //!
-//! **谱输入与参考条件都不写死名字**（2026-10-31）：现役 202609c 线是 `mix_spec` +
+//! **谱输入与参考条件都不写死名字**（2026-10-31）：202609c 线是 `mix_spec` +
 //! `enr_tok (1,2,1001,180)`；202610 线是 `spec_in` + `keys (1,K,Tk)` + `gb (1,G)`（FiLM）；
 //! 202611 线是 `spec_in` + `enr_comp (1,2,Te2,166)`。应用侧按形状找谱输入，其余输入一律当
 //! 参考条件（注册编码器必须**同名输出**、形状逐个对上）。
@@ -42,7 +42,7 @@ use rustfft::num_complex::Complex;
 use crate::audio::HOP;
 use crate::infer::spec::{BINS, NFFT, SPEC_LEN, SpecStream};
 
-/// 现役 TSE 主模型。
+/// TSE 主模型。
 pub const MODEL_TSE: &str = "purevox_tse.onnx";
 /// 注册编码器（与主模型成对）。
 pub const MODEL_TSE_REF: &str = "purevox_tse_ref_encoder.onnx";
@@ -71,7 +71,7 @@ pub(crate) fn floor_silence(buf: &mut [f32]) {
 /// 界面名只是**显示用**，不重复版本号：真正的标识在 ONNX metadata `model`
 /// （主图与注册编码器必须同源）。
 pub fn tse_models() -> &'static [(&'static str, &'static str)] {
-  &[(MODEL_TSE, "TSE（现役）")]
+  &[(MODEL_TSE, "TSE")]
 }
 
 pub struct Tse {
@@ -354,7 +354,7 @@ impl Tse {
       spec_out.copy_from_slice(&spec[..SPEC_LEN]);
       cache.copy_from_slice(cache_out);
     }
-    // **逐位全零输入可能出 NaN**（2026-10-31 实测 202611a：谱全 0 时图内归一 0/0；现役 202609c /
+    // **逐位全零输入可能出 NaN**（2026-10-31 实测 202611a：谱全 0 时图内归一 0/0；202609c /
     // 202610 线没这毛病，但保不齐下一代又踩）。数字静音是真会出现的（设备静音 / 欠载补零），NaN 一旦进 OLA
     // 就是持续爆音，所以这里丢**这一 hop** 的输出（照常走 OLA 补零，不破坏时序）、清掉缓存
     // 让模型从零状态重新预热，并留一条 warn 事件（不静默）。根治在训练侧（归一分母加 eps）。
