@@ -489,12 +489,16 @@ pub const MODEL_DENOISE: &str = "purevox_denoise.onnx";
 /// 中尺寸降噪模型（宽通道版，与 [`MODEL_DENOISE`] 同一套谱接口，只是容量更大）。
 pub const MODEL_DENOISE_M: &str = "purevox_denoise_medium.onnx";
 
+/// 大尺寸降噪模型（新骨架，通道峰 96 占两级；同一套谱接口）。
+pub const MODEL_DENOISE_L: &str = "purevox_denoise_large.onnx";
+
 /// 可选降噪模型 (文件名, 界面名)，供界面下拉（ARCHITECTURE.md §7）。
 /// 界面名只是**尺寸档位**，不重复版本号：真正的标识在 ONNX metadata `model`。
 pub fn denoise_models() -> &'static [(&'static str, &'static str)] {
   &[
     (MODEL_DENOISE, "降噪（小）"),
     (MODEL_DENOISE_M, "降噪（中）"),
+    (MODEL_DENOISE_L, "降噪（大）"),
   ]
 }
 

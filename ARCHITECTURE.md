@@ -363,11 +363,12 @@ pub fn tse_models()     -> &'static [(&'static str, &'static str)];
 pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &str) -> &'static str;
 ```
 
-- **五个文件、名字里不带版本号**（2026-10-29 起；模型标识记在 ONNX metadata
+- **六个文件、名字里不带版本号**（2026-10-29 起；模型标识记在 ONNX metadata
   `model` 与 `models/README.md`）：`purevox_denoise.onnx`（降噪小档）、
-  `purevox_denoise_medium.onnx`（降噪中档，2026-11-05 加）、`purevox_aec.onnx`、
-  `purevox_tse.onnx`、`purevox_tse_ref_encoder.onnx`（与 TSE 主图**成对**）。
-  降噪两档**接口完全一致、只是容量不同**，界面下拉按「小 / 中」选，默认小档。
+  `purevox_denoise_medium.onnx`（降噪中档）、`purevox_denoise_large.onnx`（降噪大档；
+  三档均为 2026-11-05 定档）、`purevox_aec.onnx`、`purevox_tse.onnx`、
+  `purevox_tse_ref_encoder.onnx`（与 TSE 主图**成对**）。
+  降噪三档**接口完全一致、只是容量不同**，界面下拉按「小 / 中 / 大」选，默认小档。
   ⇒ **换模型 = 换文件**，代码零改动；替换流程见 `models/README.md`。
 - **谱接口**（2026-10-29 换代）：图内只有网络，输入/输出都是 `(1,2,481)` 复数谱 + `cache_in`，
   傅里叶/OLA 在图外（`infer/spec.rs`，三类模型共用）。旧的 `*_hop [1,480]` 波形契约已废除；
@@ -417,7 +418,7 @@ pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &st
 | 音效板声部 | `engine` | 每个音效一段 48k/mono 样本（短音效整段入内存） |
 | 播放器环形缓冲 | `engine` | 3 s（48k f32），解码线程写、音频线程读，超限丢最旧 |
 | 网络 acc | `net/remote_mic` / `net/remote_speaker` | 进出各一环，目标 50 ms，硬顶 80 ms（超限丢最旧）；水位超目标时按 1 s 丢 1 hop **慢慢收回目标**（推取同速、水位只靠硬顶回不来）；取不足一个 hop 补静音 |
-| 模型 `cache` | `infer` | 由模型决定（降噪小档 25,140 / 中档 22,964 / AEC 91,920 / TSE 513,216 f32），**每行一份** |
+| 模型 `cache` | `infer` | 由模型决定（降噪小 25,140 / 中 22,964 / 大 31,860 / AEC 91,920 / TSE 513,216 f32），**每行一份** |
 
 规则：**音频回调零分配零加锁零日志**；工作线程预分配复用；任何进入数据面的容器都必须有上限与丢弃策略。
 

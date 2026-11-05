@@ -465,6 +465,7 @@
     续播位置: 'Resume at',
     '降噪（小）': 'Denoise (small)',
     '降噪（中）': 'Denoise (medium)',
+    '降噪（大）': 'Denoise (large)',
     柔和: 'Soft',
     清脆: 'Crisp',
     气泡: 'Pop',

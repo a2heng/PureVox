@@ -418,8 +418,9 @@ release 构建同样保留（不允许用编译开关剔除）。
   `enr_comp`…）都从模型输入读，不写死。
   降噪是**列里的处理行**（`engine/components/denoise.rs`，`Stage`），在**列工作线程**内惰性加载
   （每行一份，只加载一次）；模型文件选择存计划，改型号 = 结构性变更 → 重建会话。
-  模型常量 `infer::MODEL_DENOISE`（降噪小档）/ `infer::MODEL_DENOISE_M`（降噪中档，宽通道版，
-  同一套谱接口，界面下拉按「小 / 中」选，默认小档）；`infer::MODEL_AEC`（AEC，202610 单流：
+  模型常量 `infer::MODEL_DENOISE`（降噪小档）/ `infer::MODEL_DENOISE_M`（中档，宽通道版）/
+  `infer::MODEL_DENOISE_L`（大档，新骨架）—— 三档同一套谱接口，界面下拉按「小 / 中 / 大」选，
+  默认小档；`infer::MODEL_AEC`（AEC，202610 单流：
   far/mic 各 5ch 第 0 层 early fusion + iLN，**无显式延迟线**（对齐靠 GRU 隐状态）、cache 91,920；
   2026-10-18 换下 202609cpx，旧文件已从 `models/` 移除）。
 - **AEC 行 / TSE 行**：AEC 是**输入行**（`ptype = echo_cancel`，本行 `device` = 近端 mic，

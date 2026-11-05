@@ -1,21 +1,24 @@
 # `models/` — 内置模型（不进 GPL，见 `MODEL-LICENSE.md`）
 
 **文件名固定、不带版本号**（2026-10-29 起）。应用代码只认这些名字
-（`infer::MODEL_DENOISE` / `infer::MODEL_DENOISE_M` / `infer::aec::MODEL_AEC` /
-`infer::tse::MODEL_TSE` / `infer::tse::MODEL_TSE_REF`）⇒ **换模型 = 换文件**，一行代码都不用改。
-降噪有**两个尺寸档**（界面下拉「降噪（小）/（中）」），只是容量不同，接口完全一致。
+（`infer::MODEL_DENOISE` / `infer::MODEL_DENOISE_M` / `infer::MODEL_DENOISE_L` /
+`infer::aec::MODEL_AEC` / `infer::tse::MODEL_TSE` / `infer::tse::MODEL_TSE_REF`）⇒
+**换模型 = 换文件**，一行代码都不用改。
+降噪有**三个尺寸档**（界面下拉「降噪（小）/（中）/（大）」），只是容量不同，接口完全一致。
 
 | 文件 | 版本（代数 @ epoch） | 接口（每 hop 10 ms / 48 kHz） | cache |
 |---|---|---|---|
 | `purevox_denoise.onnx`（小） | `purevox_denoise_202611d` @ **E27** | `spec_in (1,2,481) + cache_in` → `spec_out + cache_out` | 25,140 |
 | `purevox_denoise_medium.onnx`（中） | `purevox_denoise_202611e` @ **E87** | 同上（同一套谱接口） | 22,964 |
+| `purevox_denoise_large.onnx`（大） | `purevox_denoise_202611f` @ **E8** | 同上（同一套谱接口） | 31,860 |
 | `purevox_aec.onnx` | `purevox_aec_202610` @ **E381** | `mic_spec + far_spec + cache_in` → `mic_spec_out + cache_out` | 91,920 |
 | `purevox_tse.onnx` | `purevox_tse_202609c` @ **E205** | `mix_spec (1,2,481) + enr_tok (1,2,1001,180) + cache_in` → `spec_out + cache_out` | 513,216 |
 | `purevox_tse_ref_encoder.onnx` | `purevox_tse_202609c` @ **E205**（与主图同批） | `ref_spec (1,2,1001,481)` → `enr_tok (1,2,1001,180)`（每句一次，参考 10 s） | — |
 
 **版本号怎么读**：`model` 是 ONNX metadata 里的代数（`onnx.load('…').metadata_props`），epoch 对应
 训练侧 `7_output/<代>/checkpoints/checkpoint_epoch_NNN.tar`。降噪直接取训练侧 `onnx/` 的导出
-（小档 `denoise_202611d_0002/ep0027`，中档 `denoise_202611e_0010/ep0087`）；AEC 的 epoch 按权重
+（小档 `denoise_202611d_0002/ep0027`，中档 `denoise_202611e_0010/ep0087`，
+大档 `denoise_202611f_0001/ep0008`）；AEC 的 epoch 按权重
 摘要比过训练侧 ONNX；TSE 是 2026-11-04 从 E205 的 checkpoint 现导出的（同一套训练脚本的 `export_onnx`）。
 换模型时先改这张表，再改文件（表是部署现状的唯一记录）。
 
@@ -42,6 +45,14 @@
   ⚠️ DNS5 val 上 SI-SDR **+0.38 dB**（小档同口径 +1.37 dB），是训练中版本、未经听感筛选 ——
   界面给的是**选项**，默认仍走小档。
   同目录 `*.onnx.data` 同样是导出残留，**只拷 `.onnx`**。
+- **降噪大档是 `202611f@E8`（2026-11-05 加）**：取训练侧
+  `7_output/denoise_202611f_0001/onnx/purevox_denoise_202611f_ep0008.onnx`（`ep0008`，该轮刚起步）。
+  202611f 是**新骨架**（CH `[24,48,96,96,64,48]`，通道峰 96 占两级；cTFA 时间门用逐通道 C·5），
+  谱接口不变、cache 略大（**31,860**）：文件 **1.10 MB**、参数 16.7 万，
+  单 hop（机上 1 线程 CPU，`ort_bench`）**0.51 ms**（p95 0.99）、RTF 0.051。
+  ⚠️ DNS5 val 上 SI-SDR **+0.54 dB**（小档 +1.37 / 中档 +0.38），**只练到 E8**、远未收敛，
+  界面给的是选项，默认仍走小档。
+  同目录 `*.onnx.data` 同样是导出残留，**只拷 `.onnx`**。
 - **TSE 是 `202609c@E205`（2026-11-04 更新）**：从训练侧
   `7_output/output_purevox_tse_202609c/checkpoints/checkpoint_epoch_205.tar` 用
   `legacy/202609/purevox_tse_202609c.py` 的 `export_onnx` / `export_ref_encoder` 导出
@@ -51,7 +62,7 @@
 - ⚠️ **逐位全零**输入可能出 NaN（2026-10-31 实测 202611a：图内归一 0/0；202609c / 202610 线没这
   毛病，但保不齐下一代又踩）。应用侧对这一 hop 补零 + 清缓存并记 warn（`infer/tse.rs`）；
   根治在训练侧（归一分母加 eps）。所以拿全零谱做前向自检会被误判成坏模型 —— 喂非零谱即可。
-- **替换流程**：TSE 成对文件必须同批替换；降噪两档各自独立（换哪个档只动哪个文件）。替换后重启应用。
+- **替换流程**：TSE 成对文件必须同批替换；降噪三档各自独立（换哪个档只动哪个文件）。替换后重启应用。
 - 每个文件里的 ONNX metadata 记着模型标识（`model=…`），可用
   `python -c "import onnx;print(onnx.load('…').metadata_props)"` 查看。
 

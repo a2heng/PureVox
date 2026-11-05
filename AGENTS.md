@@ -53,7 +53,7 @@
 - **10 ms hop 网格**：`hop = SAMPLE_RATE / 100`（48 kHz 下 480 样本，FFT/OLA 窗 2×hop = 960）。
   所有数据面按 10 ms 整数倍前进，不引入 1024/2048 等错位块。**可视化频谱**用 4800 点
   （100 ms）分析窗只为频率分辨率，不进信号路径（见 `UI.md`）。
-- **模型**：`models/*.onnx` 为内置模型文件（降噪两档，见 `models/README.md`），不随 GPL 授权（`MODEL-LICENSE.md`），
+- **模型**：`models/*.onnx` 为内置模型文件（降噪三档，见 `models/README.md`），不随 GPL 授权（`MODEL-LICENSE.md`），
   禁止提取用于其他项目。
 - **一个功能只有一条实现路径**；被替代的实现直接删，不留备选。
 - **调试优先**：看不见的状态等于不存在的状态；新增模块必须同时接入 `/debug`（`DEBUG.md`）。
