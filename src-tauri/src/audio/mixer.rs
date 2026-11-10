@@ -266,6 +266,7 @@ impl Mixer {
     let join = std::thread::Builder::new()
       .name(format!("mix-{tag}"))
       .spawn(move || {
+        let _rt = crate::audio::rt_guard::enter_audio_thread();
         let token = crate::debug::threads::ThreadToken::new(format!("mix:{tag}"));
         let mut mixed = [0.0f32; HOP];
         let mut next = Instant::now();

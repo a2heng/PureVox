@@ -151,6 +151,8 @@ fn run(
   stop: Arc<AtomicBool>,
   tx: mpsc::Sender<Result<(), String>>,
 ) {
+  // 填设备环的线程同样要 MMCSS：回调是实时的，喂数据的不是实时的话低水位必欠载。
+  let _rt = crate::audio::rt_guard::enter_audio_thread();
   let stats = Arc::new(CallbackStats::new());
   let primed = Arc::new(AtomicBool::new(false));
 

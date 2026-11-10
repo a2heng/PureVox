@@ -399,6 +399,9 @@ pub(super) fn worker<K>(
   src: WorkerSrc<K>,
   tx: mpsc::Sender<Result<Arc<Fanout>, String>>,
 ) {
+  // 实时优先级：10 ms 级的小环（P1/低延迟目标）必须让采集工作线程拿到 MMCSS，
+  // 否则后台 CPU 一忙就被调度掉，设备环/行环直接欠载。
+  let _rt = crate::audio::rt_guard::enter_audio_thread();
   let WorkerSrc {
     mut cons,
     stats,
