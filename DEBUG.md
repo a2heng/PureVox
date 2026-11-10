@@ -87,11 +87,13 @@ release 构建同样保留（不允许用编译开关剔除）。
     `GPU Adapter Memory`（任务管理器同源）；Linux 用 `nvidia-smi`（整卡占用 / 显存 /
     计算上下文的进程显存，2 s 缓存）或 `amdgpu` 的 `/sys/class/drm/card*/device/{gpu_busy_percent,
     mem_info_vram_*}`。单进程占用率两家 Linux 驱动都不提供 → 明确 `unavailable`，不编数。
-  设备用 `cpal`（后续音频 I/O 同用此库）。设备刷新单一入口
+  设备**枚举**用 `cpal`（`devices.rs`）；**音频 I/O 不用 cpal**：输出直连 WASAPI
+  （`audio/wasapi_out.rs`，`IAudioClient3` 128 帧低延迟共享），其它平台走 `audio/cpal_out.rs`，
+  由 `audio/out.rs` 分平台选择。设备刷新单一入口
   `devices::spawn_refresh`（启动时 + 面板「刷新」按钮），后台线程执行。
 - 「本进程」指标不含 WebView2 子进程（界面渲染在 `msedgewebview2.exe`）。
 - **采集链路**（`src-tauri/src/audio/`）：设备按原生默认格式打开 → 回调线程只做下混单声道 +
-  写 `rtrb` 无锁环 + 原子计数 → 每路一个工作线程（独占 cpal 流）用 rubato `Async` sinc 重采样到
+  写 `rtrb` 无锁环 + 原子计数 → 每路一个工作线程（独占一条设备流）用 rubato `Async` sinc 重采样到
   48 kHz（`resampler::ToHops`，引擎唯一重采样实现；原生 48k 直通）并在 48k 输出侧切 480 样本 hop。
   **放行的节拍只看这一路自己的时钟**（`capture.rs` 的 `release_realtime` / `clamp_excess`）：
   ① **实时预算** —— 每拍只放「距上次放行这段时间该放的量」（上限一格），有些源是**突发**的

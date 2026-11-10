@@ -408,9 +408,9 @@ pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &st
 | 采集回调 → 工作线程环 | `audio::capture`（rtrb） | 原生 500 ms；满则丢样并计数；工作线程**按本路实时预算放行**（突发源如 `parec` 的整块被摊成平滑 hop 流），**PI 伺服按环水位（设定点 10 ms）微调放行速率与重采样比例**（吸收设备晶振差，±3%），**超 60 ms 才丢最旧到 10 ms**（延迟硬顶，只在伺服失效时兜底） |
 | 行输入环 | `engine` | 目标 2 hop，超 4 hop 丢最旧；空补静音 |
 | 输出扇出环 | `audio::fanout`（rtrb） | 1 s/订阅者；满则丢最旧 |
-| 源缓冲（输出侧） | `audio::playback` | 目标 20 ms，封顶 300 ms，超限丢最旧 |
-| 设备侧环 | `audio::playback` | 目标 20 ms（`dev_cap` 另加一个转换器输出块，面板水位约 30 ms） |
-| 混音源环 | `audio::mixer` | 目标 20 ms，封顶 100 ms |
+| 源缓冲（输出侧） | `audio::playback` | 目标 10 ms，封顶 300 ms，超限丢最旧 |
+| 设备侧环 | `audio::playback` | 目标 `max(3 × 回调周期, 10 ms)`（低延迟共享 128 帧时 = 10 ms；退回普通共享 480 帧时 = 30 ms）；容量另加两个转换器块；**按 1 帧粒度补水** |
+| 混音源环 | `audio::mixer` | 目标 10 ms，封顶 100 ms |
 
 **2026-11-10 实测**（Windows，CABLE 回环，4 列；逐列延迟探针）：采集环从 **47 ms → 5.5~11 ms**
 （Realtek 输入实测 48067 Hz / +1400 ppm，旧实现固定比例只能靠 60 ms 硬顶丢最旧；伺服后
@@ -420,6 +420,16 @@ pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &st
 1.33 播放重采样 + 10 输出回调。可见处理本身是 0；68 ms 里 **20 ms 是两端设备回调、
 45 ms 是四段环**——下一步是把混音并进播放线程、无处理列直通（见 §6.5 的后续），
 目标是无处理本地 ≤ 40 ms、独占/低周期设备 ≤ 25 ms。
+
+**2026-11-10（输出后端）**：输出不再经 cpal，直连 WASAPI（`audio/out.rs` 选后端，
+Windows = `wasapi_out.rs`）。`IAudioClient3::InitializeSharedAudioStream` 把回调周期
+从引擎默认的 480 帧降到端点 `min`——本机实测 **CABLE Input = 128 帧 / 2.67 ms**
+（Realtek 端点 `min` 仍是 480 帧，降不了）。加 MMCSS 后 3 s 实测：p50 2.66 ms、
+p99 5.06 ms、max 7.06 ms（不加 MMCSS 会出现 15 ms 尾巴）。所以**设备环 10 ms + 输出回调
+2.67 ms**（原 19.9 + 10~20）。补设备环必须**逐样本**补到目标水位：按 hop 整块推会让水位
+在 0/480 之间跳，128 帧的回调必然抽到 0。60 s 实测：设备环 10.0 ms、`und/s = 0`、
+`overrun/s = 0`、`ppm ≈ -41`；无处理列合计 65 ms（采集环 10 + 行环 10 + 混音源环 10 +
+48k 环 10 + 设备环 10 四段环仍是主要成本）。
 | 重采样状态 | `dsp::resampler`（rubato） | 固定（数帧） |
 | viz 缓冲 | `engine` | 5 s，丢最旧 |
 | 频谱 / 波形 | `dsp::meter` | 波形 50 ms、频谱 481 bin，固定 |
