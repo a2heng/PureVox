@@ -59,8 +59,8 @@ const ANALYZE_PERIOD: Duration = Duration::from_millis(500);
 /// 落盘周期：覆盖写（DEBUG.md §1.4），不追求实时。
 const DUMP_PERIOD: Duration = Duration::from_secs(10);
 
-/// 做相关的输出窗口（ms）。太长会被处理后的差异稀释，太短统计不稳。
-const WIN_MS: usize = 300;
+/// 波形相关的输出窗口（ms）。太长会被处理后的差异稀释，太短统计不稳。
+const WF_WIN_MS: usize = 300;
 /// 搜索的最大延时（ms）。TSE / 大缓存之外再大就该看别处了。
 const MAX_LAG_MS: usize = 500;
 /// 相关用的采样率（抽取后）：0.083 ms 分辨率，延迟诊断足够。
@@ -372,10 +372,16 @@ struct ChanState {
   last_input_ms: u64,
 }
 
-const HIST_SAMPLES: usize = (WIN_MS + MAX_LAG_MS + 2 * SLACK_MS) * PROBE_PER_MS;
-const OUT_SAMPLES: usize = WIN_MS * PROBE_PER_MS;
-/// 输出历史里除了相关窗，还要留出 `SLACK_MS` 的位移。
-const OUT_HIST: usize = OUT_SAMPLES + SLACK_MS * PROBE_PER_MS;
+/// 波形窗口 / 输入历史。
+const WF_HIST_SAMPLES: usize = (WF_WIN_MS + MAX_LAG_MS + 2 * SLACK_MS) * PROBE_PER_MS;
+const WF_OUT_SAMPLES: usize = WF_WIN_MS * PROBE_PER_MS;
+/// 包络窗口要**长得多**：300 ms 的语音片段自相似，容易出现「主峰 0.87 / 次峰 0.86」
+/// 这种分不清的情况（实测）。1 s 的响度起伏才足够唯一。
+const ENV_WIN_MS: usize = 1000;
+const ENV_HIST_SAMPLES: usize = (ENV_WIN_MS + MAX_LAG_MS + 2 * SLACK_MS) * PROBE_PER_MS;
+const ENV_OUT_SAMPLES: usize = ENV_WIN_MS * PROBE_PER_MS;
+/// 输出历史里除了包络窗，还要留出 `SLACK_MS` 的位移（波形窗更短，共用这份）。
+const OUT_HIST: usize = ENV_OUT_SAMPLES + SLACK_MS * PROBE_PER_MS;
 /// `k` 里对应 0 ms 的那个位置：输入窗比输出窗早 `MAX_LAG_MS + SLACK_MS`
 /// （再多留一个 `SLACK_MS` 让 0 ms 不贴搜索边界）。
 const ZERO_K: usize = (MAX_LAG_MS + SLACK_MS) * PROBE_PER_MS;
@@ -419,22 +425,22 @@ impl Analyzer {
       fft_inv,
       a: vec![Complex::new(0.0, 0.0); FFT_N],
       b: vec![Complex::new(0.0, 0.0); FFT_N],
-      in_dec: vec![0.0; HIST_SAMPLES],
-      out_dec: vec![0.0; OUT_SAMPLES],
-      prefix: vec![0.0; HIST_SAMPLES + 1],
+      in_dec: vec![0.0; WF_HIST_SAMPLES],
+      out_dec: vec![0.0; WF_OUT_SAMPLES],
+      prefix: vec![0.0; WF_HIST_SAMPLES + 1],
       corr: vec![0.0; K_MAX + 1],
     }
   }
 
   fn measure(&mut self, in_hist: &VecDeque<f32>, out_hist: &VecDeque<f32>) -> Result<Peak, String> {
-    if in_hist.len() < HIST_SAMPLES || out_hist.len() < OUT_HIST {
+    if in_hist.len() < WF_HIST_SAMPLES || out_hist.len() < OUT_HIST {
       return Err("历史还不够（至少 1 秒有效信号）".into());
     }
     // 两端都按 tick 对齐写入。输入取到「现在」，输出窗整体后移 `SLACK_MS`：
     // 于是 0 ms 延时的峰落在搜索窗中间，而不是贴着边界。
     for (i, v) in in_hist
       .iter()
-      .skip(in_hist.len() - HIST_SAMPLES)
+      .skip(in_hist.len() - WF_HIST_SAMPLES)
       .enumerate()
     {
       self.in_dec[i] = *v;
@@ -442,14 +448,14 @@ impl Analyzer {
     let out_end = out_hist.len() - SLACK_MS * PROBE_PER_MS;
     for (i, v) in out_hist
       .iter()
-      .skip(out_end - OUT_SAMPLES)
-      .take(OUT_SAMPLES)
+      .skip(out_end - WF_OUT_SAMPLES)
+      .take(WF_OUT_SAMPLES)
       .enumerate()
     {
       self.out_dec[i] = *v;
     }
     let e_out: f64 = self.out_dec.iter().map(|x| (*x as f64) * (*x as f64)).sum();
-    let rms = (e_out / OUT_SAMPLES as f64).sqrt() as f32;
+    let rms = (e_out / WF_OUT_SAMPLES as f64).sqrt() as f32;
     if rms <= 0.0 || 20.0 * rms.log10() < MIN_RMS_DBFS {
       return Err(format!(
         "输出信号太弱（{:.0} dBFS，低于 {MIN_RMS_DBFS:.0} dBFS）",
@@ -457,14 +463,14 @@ impl Analyzer {
       ));
     }
     self.prefix[0] = 0.0;
-    for i in 0..HIST_SAMPLES {
+    for i in 0..WF_HIST_SAMPLES {
       let x = self.in_dec[i] as f64;
       self.prefix[i + 1] = self.prefix[i] + x * x;
     }
     let n = FFT_N;
     for i in 0..n {
       self.a[i] = Complex::new(
-        if i < HIST_SAMPLES {
+        if i < WF_HIST_SAMPLES {
           self.in_dec[i]
         } else {
           0.0
@@ -472,7 +478,7 @@ impl Analyzer {
         0.0,
       );
       self.b[i] = Complex::new(
-        if i < OUT_SAMPLES {
+        if i < WF_OUT_SAMPLES {
           self.out_dec[i]
         } else {
           0.0
@@ -490,7 +496,7 @@ impl Analyzer {
     let scale = 1.0 / n as f32;
     for k in 0..=K_MAX {
       let num = self.a[k].re * scale;
-      let e_in = self.prefix[k + OUT_SAMPLES] - self.prefix[k];
+      let e_in = self.prefix[k + WF_OUT_SAMPLES] - self.prefix[k];
       let den = (e_in * e_out).sqrt() as f32;
       self.corr[k] = if den > 1e-12 { num / den } else { 0.0 };
     }
@@ -559,19 +565,19 @@ impl Analyzer {
     out_hist: &VecDeque<f32>,
     why: &str,
   ) -> Result<Peak, String> {
-    if in_hist.len() < HIST_SAMPLES || out_hist.len() < OUT_HIST {
+    if in_hist.len() < ENV_HIST_SAMPLES || out_hist.len() < OUT_HIST {
       return Err("历史还不够（至少 1 秒有效信号）".into());
     }
     let in_dec: Vec<f32> = in_hist
       .iter()
-      .skip(in_hist.len() - HIST_SAMPLES)
+      .skip(in_hist.len() - ENV_HIST_SAMPLES)
       .copied()
       .collect();
     let out_end = out_hist.len() - SLACK_MS * PROBE_PER_MS;
     let out_dec: Vec<f32> = out_hist
       .iter()
-      .skip(out_end - OUT_SAMPLES)
-      .take(OUT_SAMPLES)
+      .skip(out_end - ENV_OUT_SAMPLES)
+      .take(ENV_OUT_SAMPLES)
       .copied()
       .collect();
     let hop_samples = PROBE_PER_MS * 10;
@@ -709,7 +715,7 @@ fn run(hub: SharedHub, taps: Vec<(usize, Arc<LatencyTap>)>, stop: Arc<AtomicBool
       tap,
       input: ic,
       output: oc,
-      in_hist: VecDeque::with_capacity(HIST_SAMPLES + 512),
+      in_hist: VecDeque::with_capacity(ENV_HIST_SAMPLES + 512),
       out_hist: VecDeque::with_capacity(OUT_HIST + 512),
       history: VecDeque::new(),
       last_input_ms: now_ms(),
@@ -732,9 +738,9 @@ fn run(hub: SharedHub, taps: Vec<(usize, Arc<LatencyTap>)>, stop: Arc<AtomicBool
     let mut columns: Vec<ColumnLatency> = Vec::with_capacity(chans.len());
     for ch in chans.iter_mut() {
       let rows = ch.tap.rows.lock().map(|r| r.clone()).unwrap_or_default();
-      let in_added = drain_hops(&mut ch.input, &mut ch.in_hist, HIST_SAMPLES);
+      let in_added = drain_hops(&mut ch.input, &mut ch.in_hist, ENV_HIST_SAMPLES);
       drain_hops(&mut ch.output, &mut ch.out_hist, OUT_HIST);
-      if in_added > 0 || ch.in_hist.len() < HIST_SAMPLES {
+      if in_added > 0 || ch.in_hist.len() < ENV_HIST_SAMPLES {
         ch.last_input_ms = now;
       }
       let stalled = now.saturating_sub(ch.last_input_ms) > 1500;
@@ -1125,19 +1131,21 @@ mod tests {
       seed ^= seed << 5;
       (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
     };
-    let x: Vec<f32> = (0..HIST_SAMPLES).map(|_| rand() * 0.25).collect();
-    let start = HIST_SAMPLES - SLACK_MS * PROBE_PER_MS - OUT_SAMPLES;
+    let x: Vec<f32> = (0..WF_HIST_SAMPLES).map(|_| rand() * 0.25).collect();
+    let start = WF_HIST_SAMPLES - SLACK_MS * PROBE_PER_MS - WF_OUT_SAMPLES;
     for delay_ms in [0usize, 10, 37, 120, 480] {
       let d = delay_ms * PROBE_PER_MS;
-      let mut out_hist: VecDeque<f32> = VecDeque::with_capacity(OUT_HIST);
-      for j in 0..OUT_SAMPLES {
+      // 输出历史 = 前面的空位 + 波形窗 + 末尾被 SLACK 丢掉的一截
+      let before = OUT_HIST - SLACK_MS * PROBE_PER_MS - WF_OUT_SAMPLES;
+      let mut out_hist: VecDeque<f32> = std::iter::repeat_n(0.0, before).collect();
+      for j in 0..WF_OUT_SAMPLES {
         let idx = start as isize + j as isize - d as isize;
         out_hist.push_back(if idx >= 0 { x[idx as usize] } else { 0.0 });
       }
-      // 末尾是「被 SLACK_MS 丢掉」的那一截（输出窗相对现在后移）
-      for _ in 0..(OUT_HIST - OUT_SAMPLES) {
+      for _ in 0..(SLACK_MS * PROBE_PER_MS) {
         out_hist.push_back(0.0);
       }
+      assert_eq!(out_hist.len(), OUT_HIST);
       let in_hist: VecDeque<f32> = x.iter().copied().collect();
       let p = analyzer
         .measure(&in_hist, &out_hist)
@@ -1155,15 +1163,15 @@ mod tests {
   #[test]
   fn refuses_silence_and_periodic_signal() {
     let mut analyzer = Analyzer::new();
-    let silence: VecDeque<f32> = std::iter::repeat_n(0.0, HIST_SAMPLES).collect();
+    let silence: VecDeque<f32> = std::iter::repeat_n(0.0, ENV_HIST_SAMPLES).collect();
     assert!(analyzer.measure(&silence, &silence).is_err());
-    // 周期 = 24 个抽取样本（3 kHz）：「延时」每 24 个点就有一个同样高的峰
-    let tone: Vec<f32> = (0..HIST_SAMPLES)
+    // 周期 = 24 个抽取样本（3 kHz）：每 24 个点就有一个同样高的峰；
+    // 包络也是常数（周期信号的整体响度不变）。
+    let tone: Vec<f32> = (0..ENV_HIST_SAMPLES)
       .map(|i| (i as f32 * std::f32::consts::TAU / 24.0).sin() * 0.2)
       .collect();
-    let start = HIST_SAMPLES - SLACK_MS * PROBE_PER_MS - OUT_SAMPLES;
-    let mut out_hist: VecDeque<f32> = tone[start..start + OUT_SAMPLES].iter().copied().collect();
-    for _ in 0..(OUT_HIST - OUT_SAMPLES) {
+    let mut out_hist: VecDeque<f32> = tone[..ENV_OUT_SAMPLES].iter().copied().collect();
+    for _ in 0..(OUT_HIST - ENV_OUT_SAMPLES) {
       out_hist.push_back(0.0);
     }
     let in_hist: VecDeque<f32> = tone.into_iter().collect();
@@ -1183,8 +1191,9 @@ mod tests {
       seed ^= seed << 5;
       (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
     };
-    // 包络：92 个 hop 的慢变起伏（10 ms 一格），有明显峰谷
-    let hops = HIST_SAMPLES / (PROBE_PER_MS * 10);
+    let per_hop = PROBE_PER_MS * 10;
+    let hops = ENV_HIST_SAMPLES / per_hop;
+    // 慢变起伏（10 ms 一格），有明显峰谷
     let env: Vec<f32> = (0..hops)
       .map(|i| {
         0.05
@@ -1193,18 +1202,17 @@ mod tests {
             * (i as f32 * 1.9).sin().abs()
       })
       .collect();
-    let per_hop = PROBE_PER_MS * 10;
-    let mut a = Vec::with_capacity(HIST_SAMPLES);
-    for i in 0..hops {
+    let mut a = Vec::with_capacity(ENV_HIST_SAMPLES);
+    for e in &env {
       for _ in 0..per_hop {
-        a.push(env[i] * rand());
+        a.push(*e * rand());
       }
     }
     let d_hops = 12; // 120 ms
-    let start = hops - SLACK_MS / 10 - OUT_SAMPLES / per_hop;
+    let start = hops - SLACK_MS / 10 - ENV_OUT_SAMPLES / per_hop;
     let mut out_hist: VecDeque<f32> = VecDeque::with_capacity(OUT_HIST);
     // 输出用**另一段独立噪声**乘同一条包络（波形不相关、包络相关），延时 120 ms
-    for j in 0..(OUT_SAMPLES / per_hop) {
+    for j in 0..(ENV_OUT_SAMPLES / per_hop) {
       let e = if start + j >= d_hops {
         env[start + j - d_hops]
       } else {
@@ -1214,7 +1222,7 @@ mod tests {
         out_hist.push_back(e * rand());
       }
     }
-    for _ in 0..(OUT_HIST - OUT_SAMPLES) {
+    for _ in 0..(OUT_HIST - ENV_OUT_SAMPLES) {
       out_hist.push_back(0.0);
     }
     let in_hist: VecDeque<f32> = a.into_iter().collect();
