@@ -31,9 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, StreamTrait};
-use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
-use rtrb::{Consumer, RingBuffer};
+use rtrb::RingBuffer;
 
 use super::capture::{CallbackStats, OPEN_TIMEOUT, PUBLISH_PERIOD, StallWatch, stalled_state};
 use super::fanout::Fanout;
@@ -52,59 +50,34 @@ use crate::dsp::servo::Servo;
 pub(crate) const TARGET_MS: f64 = 10.0;
 /// 48k 源缓冲封顶。
 const CAP_MS: f64 = 300.0;
-/// 设备侧缓冲：工作线程尽量保持约此时长的数据在设备环中。
+/// 设备侧缓冲下限：工作线程至少保持约此时长的数据在设备环中。
 ///
-/// 10 ms = 一个回调块（实测设备回调 480 帧）。`dev_cap` 还要加
-/// `conv.output_frames_max()`（约一个块），所以 `/debug` 里看到的水位约 20 ms。
+/// 实际目标水位取 `max(3 × 回调周期, 这个值)`：
+/// - `IAudioClient3` 低延迟共享（实测 128 帧 / 2.67 ms）→ 10 ms 就够；
+/// - 退回普通共享（480 帧 / 10 ms，且会把两次回调并成 22 ms 的大请求）→ 30 ms。
 pub(crate) const DEVICE_RING_MS: usize = 10;
 const POLL_PERIOD: Duration = Duration::from_millis(2);
 
 /// 比例更新周期。
 const RATIO_PERIOD: Duration = Duration::from_millis(50);
 
-fn ms_to_samples(ms: f64) -> usize {
-  (ms * SAMPLE_RATE as f64 / 1000.0) as usize
+/// 一次打开的输出：流 + 设备环 + 格式信息。
+struct Setup {
+  stream: crate::audio::out::Stream,
+  prod: rtrb::Producer<f32>,
+  /// 设备环容量（帧）。
+  dev_cap: usize,
+  /// 设备环目标水位（帧）：工作线程只填到这里，多出来的容量是给回调抽水用的余量。
+  dev_target: usize,
+  dev_rate: u32,
+  channels: u16,
+  sample_text: String,
+  name: String,
+  conv: Converter,
 }
 
-fn build_stream<T>(
-  dev: &cpal::Device,
-  cfg: &StreamConfig,
-  mut cons: Consumer<f32>,
-  stats: Arc<CallbackStats>,
-  primed: Arc<AtomicBool>,
-) -> Result<cpal::Stream, String>
-where
-  T: SizedSample + FromSample<f32>,
-{
-  let ch = cfg.channels.max(1) as usize;
-  let err_stats = stats.clone();
-  dev
-    .build_output_stream::<T, _, _>(
-      *cfg,
-      move |data: &mut [T], _info| {
-        stats.on_block((data.len() / ch) as u32);
-        let mut silent = 0u64;
-        for f in data.chunks_exact_mut(ch) {
-          let s = match cons.pop() {
-            Ok(v) => v,
-            Err(_) => {
-              silent += 1;
-              0.0
-            }
-          };
-          let v = <T as FromSample<f32>>::from_sample_(s);
-          for x in f.iter_mut() {
-            *x = v;
-          }
-        }
-        if silent > 0 && primed.load(Relaxed) {
-          stats.xruns.fetch_add(silent, Relaxed);
-        }
-      },
-      move |e| err_stats.on_error(e.to_string()),
-      None,
-    )
-    .map_err(|e| format!("打开输出流失败：{e}"))
+fn ms_to_samples(ms: f64) -> usize {
+  (ms * SAMPLE_RATE as f64 / 1000.0) as usize
 }
 
 /// 打开输出设备并开始播放 `source`；阻塞到打开成功/失败（最多 5 s）。
@@ -156,31 +129,50 @@ fn run(
   let stats = Arc::new(CallbackStats::new());
   let primed = Arc::new(AtomicBool::new(false));
 
-  // ---- 打开设备 ----
-  let setup = crate::audio::with_device_retry(|| -> Result<_, String> {
-    let (dev, raw_name) = crate::devices::find(&device_id, false)?;
+  // ---- 打开设备（WASAPI 直连：低延迟共享优先）----
+  let setup = crate::audio::with_device_retry(|| -> Result<Setup, String> {
+    let (_, raw_name) = crate::devices::find(&device_id, false)?;
     // 调试面板/流名字用枚举缓存里的系统名（Pulse 的 Description），不要 cpal 的裸名。
     let name = crate::devices::display_name(&device_id, false).unwrap_or(raw_name);
-    let supported = dev
-      .default_output_config()
-      .map_err(|e| format!("读取默认格式失败：{e}"))?;
-    let cfg = supported.config();
-    let fmt = supported.sample_format();
-    let conv = Converter::new(SAMPLE_RATE, cfg.sample_rate, HOP, true)?;
-    let dev_cap = cfg.sample_rate as usize * DEVICE_RING_MS / 1000 + conv.output_frames_max();
+    let format = crate::audio::out::probe(&device_id)?;
+    let conv = Converter::new(SAMPLE_RATE, format.rate, HOP, true)?;
+    // 设备环目标水位：低延迟共享（2.67 ms 周期）10 ms 就够；退回普通共享（10 ms 周期、
+    // 还会并成 22 ms 的大请求）要 30 ms。容量多留两个转换器块。
+    let dev_target =
+      (format.period_frames as usize * 3).max(format.rate as usize * DEVICE_RING_MS / 1000);
+    let dev_cap = dev_target + conv.output_frames_max() * 2;
     let (prod, cons) = RingBuffer::<f32>::new(dev_cap);
-    let stream = match fmt {
-      SampleFormat::F32 => build_stream::<f32>(&dev, &cfg, cons, stats.clone(), primed.clone()),
-      SampleFormat::I16 => build_stream::<i16>(&dev, &cfg, cons, stats.clone(), primed.clone()),
-      SampleFormat::I32 => build_stream::<i32>(&dev, &cfg, cons, stats.clone(), primed.clone()),
-      SampleFormat::U16 => build_stream::<u16>(&dev, &cfg, cons, stats.clone(), primed.clone()),
-      other => Err(format!("不支持的采样格式 {other}")),
-    }?;
-    stream.play().map_err(|e| format!("启动输出流失败：{e}"))?;
-    Ok((stream, prod, dev_cap, cfg, fmt, name, conv))
+    let stream = crate::audio::out::start(
+      device_id.clone(),
+      format.clone(),
+      cons,
+      stats.clone(),
+      primed.clone(),
+    )?;
+    Ok(Setup {
+      stream,
+      prod,
+      dev_cap,
+      dev_target,
+      dev_rate: format.rate,
+      channels: format.channels,
+      sample_text: format.sample_text(),
+      name,
+      conv,
+    })
   });
 
-  let (stream, mut dev_prod, dev_cap, cfg, fmt, name, mut conv) = match setup {
+  let Setup {
+    stream,
+    prod: mut dev_prod,
+    dev_cap,
+    dev_target,
+    dev_rate,
+    channels,
+    sample_text,
+    name,
+    mut conv,
+  } = match setup {
     Ok(v) => v,
     Err(e) => {
       let _ = tx.send(Err(e));
@@ -195,12 +187,11 @@ fn run(
 
   // ---- 工作循环 ----
   let started_at = now_ms();
-  let dev_rate = cfg.sample_rate;
   let target = ms_to_samples(TARGET_MS);
   let cap = ms_to_samples(CAP_MS);
   // 预热量 = 目标水位 + 首次填满设备环要消耗的量；否则预热一结束，填设备环就把 48k 环抽到目标以下，
   // 立刻触发重同步，且伺服积分在低水位期间被带偏
-  let prewarm_level = target + ms_to_samples(DEVICE_RING_MS as f64) + HOP;
+  let prewarm_level = target + dev_target + HOP;
   let mut hop = vec![0.0f32; HOP];
   let mut meter = Meter::new();
   let mut in_rate = RateMeter::new();
@@ -212,6 +203,9 @@ fn run(
   let mut stall = StallWatch::new();
   let mut servo = Servo::new(TARGET_MS);
   let mut prewarm = true;
+  // 一个 hop 的转换器输出暂存（按目标水位逐样本推设备环，见下面的填环循环）。
+  let mut stage: Vec<f32> = Vec::with_capacity(conv.output_frames_max() * 2);
+  let mut stage_pos = 0usize;
   let mut consumed: u64 = 0;
   let mut hops: u64 = 0;
   let mut dropped: u64 = 0;
@@ -235,16 +229,35 @@ fn run(
       }
     }
 
-    // 填设备环
-    while worker_error.is_none() && dev_prod.slots() >= conv.output_frames_max() {
+    // 填设备环：逐**样本**补到目标水位。
+    //
+    // 不能按 hop 整块推：转换器一次出 480 帧，整块推的话水位只在 0/480 之间跳，
+    // 回调（128 帧一次）必然抽到 0 → 欠载。这里用 `stage` 暂存转换器输出，
+    // 按目标水位一次推多少算多少，粒度降到 1 帧。一轮里能喂多少喂多少，
+    // 喂不进去（设备环到目标水位）就留到下一轮。
+    loop {
+      if worker_error.is_some() {
+        break;
+      }
+      while stage_pos < stage.len()
+        && dev_prod.slots() > 0
+        && dev_cap - dev_prod.slots() < dev_target
+      {
+        let _ = dev_prod.push(stage[stage_pos]);
+        stage_pos += 1;
+      }
+      if stage_pos < stage.len() {
+        break; // 设备环到水位了
+      }
+      stage.clear();
+      stage_pos = 0;
       if prewarm {
-        if src.slots() >= prewarm_level {
-          prewarm = false;
-          servo.reset_level();
-          primed.store(true, Relaxed);
-        } else {
+        if src.slots() < prewarm_level {
           break;
         }
+        prewarm = false;
+        servo.reset_level();
+        primed.store(true, Relaxed);
       }
       if src.slots() < HOP {
         // 源断流：设备环耗尽后回调补静音，回到预热
@@ -262,11 +275,7 @@ fn run(
       hops += 1;
       meter.on_hop(&hop);
       match conv.process(&hop) {
-        Ok(out) => {
-          for &x in out {
-            let _ = dev_prod.push(x);
-          }
-        }
+        Ok(out) => stage.extend_from_slice(out),
         Err(e) => worker_error = Some(e),
       }
     }
@@ -322,8 +331,8 @@ fn run(
         source: Some(source.name().to_string()),
         denoise: Probe::unavailable("输出流不适用（降噪在输入侧）"),
         sample_rate: dev_rate,
-        channels: cfg.channels as u32,
-        sample_format: fmt.to_string(),
+        channels: channels as u32,
+        sample_format: sample_text.clone(),
         measured_input_rate: in_rate.push(now, consumed),
         output_rate: SAMPLE_RATE,
         measured_output_rate: out_rate.push(now, stats.frames.load(Relaxed)),

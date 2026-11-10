@@ -253,7 +253,7 @@ fn open_and_poll(
   }
 }
 
-fn resolve_device(id: Option<&str>) -> Result<IMMDevice, String> {
+pub(super) fn resolve_device(id: Option<&str>) -> Result<IMMDevice, String> {
   let enumerator: IMMDeviceEnumerator =
     unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
       .map_err(|e| format!("创建 MMDeviceEnumerator 失败：{e}"))?;
@@ -268,7 +268,7 @@ fn resolve_device(id: Option<&str>) -> Result<IMMDevice, String> {
   }
 }
 
-unsafe fn read_format(wfx: *const WAVEFORMATEX) -> (u32, u16, u16) {
+pub(super) unsafe fn read_format(wfx: *const WAVEFORMATEX) -> (u32, u16, u16) {
   let f = unsafe { &*wfx };
   (f.nSamplesPerSec, f.nChannels, f.wBitsPerSample)
 }

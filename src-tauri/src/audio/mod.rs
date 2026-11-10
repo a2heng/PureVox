@@ -48,6 +48,13 @@ pub mod tick;
 pub mod tone;
 /// Linux 虚拟麦克风（PipeWire）的创建 / 移除（「驱动」页面）。
 pub mod virtual_mic;
+/// 输出后端选择层：Windows = WASAPI（`IAudioClient3` 低延迟共享），其它 = cpal。
+pub mod out;
+#[cfg(not(windows))]
+mod cpal_out;
+/// Windows 输出：WASAPI（`IAudioClient3` 低延迟共享 → 普通共享回退）。
+#[cfg(windows)]
+pub mod wasapi_out;
 
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};

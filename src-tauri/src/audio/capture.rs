@@ -75,7 +75,7 @@ pub(super) const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const STALL_LIMIT: Duration = Duration::from_secs(1);
 
 /// 回调线程写、工作线程读的计数器（输入/输出流共用）。
-pub(super) struct CallbackStats {
+pub(crate) struct CallbackStats {
   pub callbacks: AtomicU64,
   pub frames: AtomicU64,
   last_block: AtomicU32,
