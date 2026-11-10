@@ -36,6 +36,7 @@ use super::{HOP, SAMPLE_RATE, WorkerHandle};
 use crate::debug::{Probe, SharedHub, StreamInfo, now_ms};
 use crate::dsp::meter::{Meter, RateMeter, SPECTRUM_BIN_HZ};
 use crate::dsp::resampler::ToHops;
+use crate::dsp::servo::Servo;
 
 /// 一路采集：工作线程句柄 + 本源的 48k hop 扇出。
 pub struct Capture {
@@ -64,6 +65,10 @@ const DEV_MAX_MS: usize = 60;
 /// 单拍放行上限（格）：恒等于实时 —— 突发源的整块因此被摊成平滑 hop 流，
 /// 不会把下游 10 ms 级的有界环一次冲爆（`ROW_CAP` 丢最旧，听感是规律地卡）。
 const RELEASE_SLOTS: usize = 1;
+/// 采集侧时钟伺服的设定点 = 设备环目标水位（ms）；比例修正上限由 `dsp::servo` 统一给。
+const SERVO_TARGET_MS: f64 = DEV_TARGET_MS as f64;
+/// 比例下发周期（ms）：rubato 改比例本身是平滑的，50 ms 足够跟上 ppm 级漂移。
+const RATIO_PERIOD: Duration = Duration::from_millis(50);
 pub(super) const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 /// 超过此时长没有回调即判定流已停止（设备拔出、驱动异常等）。
 pub(super) const STALL_LIMIT: Duration = Duration::from_secs(1);
@@ -407,6 +412,12 @@ pub(super) fn worker<K>(
       return;
     }
   };
+  // **采集侧时钟伺服**（与播放侧同一套 `Servo`，设定点 = 设备环目标 10 ms）：
+  // 设备晶振比标称快（本机 Realtek 实测 48067 Hz，+1400 ppm）时，固定比例放行会让
+  // 设备环一路涨到 60 ms 硬顶再丢最旧（实测累计 147990 样本）；伺服把放行速率连续调到
+  // 设备真实速率，同时把重采样比例压回 48 kHz —— 水位稳在 10 ms，**一点不丢**。
+  let mut servo = Servo::new(SERVO_TARGET_MS);
+  let mut last_ratio = Instant::now();
   let fanout = Arc::new(Fanout::new(format!("输入：{}", info.name)));
   let _ = tx.send(Ok(fanout.clone()));
 
@@ -459,7 +470,15 @@ pub(super) fn worker<K>(
     // 随机游走，一旦被垫高就再也降不回来（设备预填的那一块会永久留在环里）。
     let dt = now.duration_since(last_budget).as_secs_f64();
     last_budget = now;
-    let take = release_realtime(n, &mut budget, dt, native_rate as f64, slot_frames);
+    // 伺服输出 = 「放行速率修正」；比例同时反向修正，保证 48k 输出速率不变。
+    let adj = servo.adj();
+    let take = release_realtime(
+      n,
+      &mut budget,
+      dt,
+      native_rate as f64 * (1.0 + adj),
+      slot_frames,
+    );
     if take > 0
       && let Ok(chunk) = cons.read_chunk(take)
     {
@@ -475,6 +494,15 @@ pub(super) fn worker<K>(
         }
       }
       chunk.commit_all();
+    }
+    // 用**放行前**的水位更新伺服：那才是信号真正在设备环里等待的深度。
+    // 比例按伺服输出（正 = 放行更快 → 输出比例 < 1）。
+    servo.update(ring_level_ms as f64, dt);
+    if now.duration_since(last_ratio) >= RATIO_PERIOD {
+      last_ratio = now;
+      if let Err(e) = to_hops.set_relative_ratio(1.0 - servo.adj()) {
+        resample_error = Some(e);
+      }
     }
 
     if now.duration_since(last_publish) >= PUBLISH_PERIOD {

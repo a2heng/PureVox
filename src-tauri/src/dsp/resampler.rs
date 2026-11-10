@@ -131,9 +131,11 @@ pub struct ToHops {
 
 impl ToHops {
   pub fn new(native_rate: u32) -> Result<Self, String> {
-    // 原生 10 ms 块；非 100 整除的采样率（如 22050）取整，输出侧 hop 网格不受影响
+    // 原生 10 ms 块；非 100 整除的采样率（如 22050）取整，输出侧 hop 网格不受影响。
+    // **一律走可调比例**（即使 48k→48k）：采集侧要用环水位伺服吸收设备时钟差
+    // （实测 Realtek 输入 48067 Hz，+1400 ppm；固定比例只能靠 60 ms 硬顶丢最旧）。
     let chunk = ((native_rate as usize) / 100).max(1);
-    let conv = Converter::new(native_rate, SAMPLE_RATE, chunk, false)?;
+    let conv = Converter::new(native_rate, SAMPLE_RATE, chunk, true)?;
     Ok(ToHops {
       conv,
       in_buf: Vec::with_capacity(chunk * 8),
@@ -147,6 +149,11 @@ impl ToHops {
 
   pub fn delay_frames(&self) -> usize {
     self.conv.delay_frames()
+  }
+
+  /// 采集侧时钟伺服：微调比例，保持设备环水位（相对标称比例，±3% 由调用方限幅）。
+  pub fn set_relative_ratio(&mut self, rel: f64) -> Result<(), String> {
+    self.conv.set_relative_ratio(rel)
   }
 
   /// 已重采样但不足一个 hop 的剩余帧数（恒 < HOP）。

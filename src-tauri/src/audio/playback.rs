@@ -44,11 +44,18 @@ use crate::dsp::resampler::Converter;
 use crate::dsp::servo::Servo;
 
 /// 48k 源缓冲目标水位（伺服设定点，也是预热量）。
-const TARGET_MS: f64 = 40.0;
+///
+/// 2026-11-10 从 40 降到 **20 ms**：逐列延迟探针实测「播放 48k 环 40 ms」是全链最大的一段。
+/// 20 ms = 两个 hop，仍能吸收列线程与设备回调的相位抖动；ppm 级时钟差由 PI 伺服（±3%）
+/// 连续吸收，不靠这个水位兜底。再往下降（10 ms）就只剩一个 hop，调度抖一下就会欠载。
+const TARGET_MS: f64 = 20.0;
 /// 48k 源缓冲封顶。
 const CAP_MS: f64 = 300.0;
 /// 设备侧缓冲：工作线程尽量保持约此时长的数据在设备环中。
-const DEVICE_RING_MS: usize = 30;
+///
+/// 20 ms = 两个 10 ms 回调块（实测设备回调 480 帧）。`dev_cap` 还要加
+/// `conv.output_frames_max()`（约一个块），所以 `/debug` 里看到的水位约 30 ms。
+const DEVICE_RING_MS: usize = 20;
 const POLL_PERIOD: Duration = Duration::from_millis(2);
 
 /// 比例更新周期。

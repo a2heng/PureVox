@@ -405,11 +405,12 @@ pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &st
 
 | 缓冲 | 位置 | 容量 / 策略 |
 | --- | --- | --- |
-| 采集回调 → 工作线程环 | `audio::capture`（rtrb） | 原生 500 ms；满则丢样并计数；工作线程**按本路实时预算放行**（突发源如 `parec` 的整块被摊成平滑 hop 流）、**超 60 ms 丢最旧到 10 ms**（延迟硬顶） |
+| 采集回调 → 工作线程环 | `audio::capture`（rtrb） | 原生 500 ms；满则丢样并计数；工作线程**按本路实时预算放行**（突发源如 `parec` 的整块被摊成平滑 hop 流），**PI 伺服按环水位（设定点 10 ms）微调放行速率与重采样比例**（吸收设备晶振差，±3%），**超 60 ms 才丢最旧到 10 ms**（延迟硬顶，只在伺服失效时兜底） |
 | 行输入环 | `engine` | 目标 2 hop，超 4 hop 丢最旧；空补静音 |
 | 输出扇出环 | `audio::fanout`（rtrb） | 1 s/订阅者；满则丢最旧 |
-| 源缓冲（输出侧） | `audio::playback` | 目标 40 ms，封顶 300 ms，超限丢最旧 |
-| 设备侧环 | `audio::playback` | 目标 30 ms |
+| 源缓冲（输出侧） | `audio::playback` | 目标 20 ms，封顶 300 ms，超限丢最旧 |
+| 设备侧环 | `audio::playback` | 目标 20 ms（`dev_cap` 另加一个转换器输出块，面板水位约 30 ms） |
+| 混音源环 | `audio::mixer` | 目标 20 ms，封顶 100 ms |
 | 重采样状态 | `dsp::resampler`（rubato） | 固定（数帧） |
 | viz 缓冲 | `engine` | 5 s，丢最旧 |
 | 频谱 / 波形 | `dsp::meter` | 波形 50 ms、频谱 481 bin，固定 |
