@@ -906,7 +906,11 @@ fn assemble(
           "采集环形缓冲",
           Some(st.buffer_level_ms),
           StageSource::Buffer,
-          "回调 → 采集工作线程（硬顶 60 ms，目标 10 ms）",
+          format!(
+            "回调 → 采集工作线程（PI 伺服目标 {} ms，硬顶 {} ms）",
+            crate::audio::capture::DEV_TARGET_MS,
+            crate::audio::capture::DEV_MAX_MS
+          ),
         ));
         stages.push(LatencyStage::new(
           "采集重采样",
@@ -971,7 +975,12 @@ fn assemble(
         "输出混音源环",
         out.buffer_ms,
         StageSource::Buffer,
-        format!("{}：目标 30 ms，硬顶 100 ms（每源各自伺服）", out.label),
+        format!(
+          "{}：目标 {} ms，硬顶 {} ms（每源各自伺服）",
+          out.label,
+          crate::audio::mixer::SRC_TARGET_MS,
+          crate::audio::mixer::SRC_CAP_MS
+        ),
       ));
       let st = out.stream_id.as_deref().and_then(|id| hub.stream(id));
       if let Some(st) = st.as_ref() {
@@ -979,14 +988,17 @@ fn assemble(
           "播放 48k 环",
           Some(st.buffer_level_ms),
           StageSource::Buffer,
-          "时钟伺服目标 40 ms",
+          format!("时钟伺服目标 {:.0} ms", crate::audio::playback::TARGET_MS),
         ));
         if let Probe::Ok { value } = &st.device_buffer_ms {
           stages.push(LatencyStage::new(
             "播放设备环",
             Some(*value),
             StageSource::Buffer,
-            "工作线程 → 设备回调（目标 30 ms）",
+            format!(
+              "工作线程 → 设备回调（目标 {} ms，另加一个转换器输出块）",
+              crate::audio::playback::DEVICE_RING_MS
+            ),
           ));
         } else {
           stages.push(LatencyStage::new(

@@ -411,6 +411,12 @@ pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &st
 | 源缓冲（输出侧） | `audio::playback` | 目标 20 ms，封顶 300 ms，超限丢最旧 |
 | 设备侧环 | `audio::playback` | 目标 20 ms（`dev_cap` 另加一个转换器输出块，面板水位约 30 ms） |
 | 混音源环 | `audio::mixer` | 目标 20 ms，封顶 100 ms |
+
+**2026-11-10 实测**（Windows，CABLE 回环，4 列；逐列延迟探针）：采集环从 **47 ms → 10.8 ms**
+（Realtek 输入实测 48067 Hz / +1400 ppm，旧实现固定比例只能靠 60 ms 硬顶丢最旧；伺服后
+`overruns = 0`）；播放 48k 环 **40 → 20 ms**、设备环 **40 → 29.9 ms**、混音源环 **20 → 10~20 ms**；
+单列（测试音 + 播放器 → CABLE）已知合计 **121 → 91 ms**，麦克风输入段约 **31 ms**（含 10 ms
+回调 + 10 ms 采集环 + 1.33 ms 重采样 + 10 ms 行环）。
 | 重采样状态 | `dsp::resampler`（rubato） | 固定（数帧） |
 | viz 缓冲 | `engine` | 5 s，丢最旧 |
 | 频谱 / 波形 | `dsp::meter` | 波形 50 ms、频谱 481 bin，固定 |

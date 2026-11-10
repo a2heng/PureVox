@@ -54,9 +54,9 @@ const GRID: Duration = Duration::from_millis(10);
 /// 2026-11-10 从 30 降到 **20 ms**（两格）：两个 10 ms 定时器（列 / 混音）的相位差最多
 /// 一格，两格足够；再降到一格就会周期性「这一拍源还没推上来」→ 补零（咔哒）。
 /// 各源时钟差由每源自己的重采样 PI 伺服吸收，不靠水位。
-const SRC_TARGET_MS: usize = 20;
+pub(crate) const SRC_TARGET_MS: usize = 20;
 /// 每源环硬顶（ms）：超过丢最旧到目标 —— 源停摆 / 某列卡住时不让水位无限涨。
-const SRC_CAP_MS: usize = 100;
+pub(crate) const SRC_CAP_MS: usize = 100;
 /// 累计器目标水位（ms）：转换器比例要维持的小数级余量（约一格，够吸收一次调度抖动）。
 const ACC_TARGET_MS: f64 = 10.0;
 /// 累计器硬顶（样本）：超过丢最旧（同样是「过时的样本」）。

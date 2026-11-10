@@ -48,7 +48,7 @@ pub(super) const PUBLISH_PERIOD: Duration = Duration::from_millis(200);
 const POLL_PERIOD: Duration = Duration::from_millis(5);
 /// 设备环**目标水位**（ms）：延迟封顶（[`DEV_MAX_MS`]）触发时保留这么多，其余丢掉。
 /// 取一格（10 ms）：保留垫层只为吸收本线程 5 ms 的轮询抖动，不参与「攒延迟」。
-const DEV_TARGET_MS: usize = 10;
+pub(crate) const DEV_TARGET_MS: usize = 10;
 /// 设备环**硬顶**（ms）：超过就丢最旧到 [`DEV_TARGET_MS`]。
 ///
 /// **这一条是本路源的延迟硬保证**，也是 v18 缺失的那一条。超硬顶的样本是
@@ -61,7 +61,7 @@ const DEV_TARGET_MS: usize = 10;
 /// 60 ms 的依据：必须**高于正常回调块**，否则每个块都要丢一次 —— cpal 实测块
 /// 5~21 ms（本机 PipeWire 241 帧 = 5 ms）、`parec` 块 = [`super::loopback::PARE_LATENCY_MS`]
 /// （30 ms）。块比硬顶还大的源要压的是**源自己的缓冲**，不是抬高这个值。
-const DEV_MAX_MS: usize = 60;
+pub(crate) const DEV_MAX_MS: usize = 60;
 /// 单拍放行上限（格）：恒等于实时 —— 突发源的整块因此被摊成平滑 hop 流，
 /// 不会把下游 10 ms 级的有界环一次冲爆（`ROW_CAP` 丢最旧，听感是规律地卡）。
 const RELEASE_SLOTS: usize = 1;
