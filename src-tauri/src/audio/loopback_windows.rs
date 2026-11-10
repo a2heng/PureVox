@@ -282,3 +282,253 @@ fn short_id(id: &str) -> String {
     .rev()
     .collect()
 }
+
+/// 端点缓冲能力探测：**只在本机手动跑**，用来决定要不要自写 WASAPI 后端。
+///
+/// ```text
+/// cargo test --bin purevox wasapi_caps -- --ignored --nocapture
+/// ```
+///
+/// 打印每个渲染/录音端点的：混音格式、`GetDevicePeriod`（共享模式的回调周期，
+/// 客户端**改不了**）、`IAudioClient3::GetSharedModeEnginePeriod`（能不能降到
+/// 更小的低延迟周期）、以及独占模式能不能开、开了以后缓冲多少帧。
+#[cfg(test)]
+mod wasapi_caps {
+  use super::*;
+  use cpal::traits::{DeviceTrait, HostTrait};
+  use windows::Win32::Media::Audio::{
+    AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioClient3,
+  };
+  use windows::core::Interface;
+
+  fn ms(hns: i64) -> f64 {
+    hns as f64 / 10_000.0
+  }
+
+  fn probe(kind: &str, name: &str, id: &str) {
+    let mut out = format!("\n[{kind}] {name}\n  id={id}");
+    let r = (|| -> Result<(), String> {
+      let device = resolve_device(Some(id))?;
+      let client: IAudioClient =
+        unsafe { device.Activate(CLSCTX_ALL, None) }.map_err(|e| format!("Activate 失败：{e}"))?;
+      let mix = unsafe { client.GetMixFormat() }.map_err(|e| format!("GetMixFormat 失败：{e}"))?;
+      let (rate, ch, bits) = unsafe { read_format(mix) };
+      out += &format!("\n  mix={rate} Hz / {ch} ch / {bits} bit");
+
+      let (mut def, mut min) = (0i64, 0i64);
+      match unsafe { client.GetDevicePeriod(Some(&mut def), Some(&mut min)) } {
+        Ok(()) => {
+          out += &format!(
+            "\n  GetDevicePeriod: default={:.2} ms ({} f)  min={:.2} ms ({} f)",
+            ms(def),
+            def as f64 * rate as f64 / 1e7,
+            ms(min),
+            min as f64 * rate as f64 / 1e7
+          );
+        }
+        Err(e) => out += &format!("\n  GetDevicePeriod 失败：{e}"),
+      }
+
+      match client.cast::<IAudioClient3>() {
+        Ok(c3) => {
+          let (mut pd, mut pf, mut pm, mut px) = (0u32, 0u32, 0u32, 0u32);
+          match unsafe { c3.GetSharedModeEnginePeriod(mix, &mut pd, &mut pf, &mut pm, &mut px) } {
+            Ok(()) => {
+              out += &format!(
+                "\n  shared3: default={pd} f  fundamental={pf} f  min={pm} f ({:.2} ms)  max={px} f",
+                pm as f64 * 1000.0 / rate as f64
+              )
+            }
+            Err(e) => out += &format!("\n  shared3: GetSharedModeEnginePeriod 失败：{e}"),
+          }
+        }
+        Err(_) => out += "\n  shared3: 端点没有 IAudioClient3（只能走 IAudioClient 的固定周期）",
+      }
+
+      let hr = unsafe { client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, mix, None) };
+      if hr.is_err() {
+        out += &format!("\n  exclusive: 混音格式不支持（{hr:?}）");
+      } else {
+        out += "\n  exclusive: 混音格式支持";
+        let init = unsafe {
+          client.Initialize(
+            AUDCLNT_SHAREMODE_EXCLUSIVE,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            min,
+            min,
+            mix,
+            None,
+          )
+        };
+        match init {
+          Ok(()) => {
+            let buf = unsafe { client.GetBufferSize() }.unwrap_or(0);
+            out += &format!(
+              "\n  exclusive init: ok, buffer={buf} f ({:.2} ms)",
+              buf as f64 * 1000.0 / rate as f64
+            );
+          }
+          Err(e) => out += &format!("\n  exclusive init 失败：{e}"),
+        }
+      }
+
+      unsafe { CoTaskMemFree(Some(mix as *const _)) };
+      Ok(())
+    })();
+    if let Err(e) = r {
+      out += &format!("\n  探测失败：{e}");
+    }
+    println!("{out}");
+  }
+
+  #[test]
+  #[ignore = "需要真实音频设备，只在本机手动跑"]
+  fn wasapi_caps() {
+    unsafe {
+      let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+    let host = cpal::default_host();
+    for (kind, list) in [
+      (
+        "输出",
+        host
+          .output_devices()
+          .map(|v| v.collect::<Vec<_>>())
+          .unwrap_or_default(),
+      ),
+      (
+        "输入",
+        host
+          .input_devices()
+          .map(|v| v.collect::<Vec<_>>())
+          .unwrap_or_default(),
+      ),
+    ] {
+      for d in list {
+        let name = d
+          .description()
+          .map(|x| x.name().to_string())
+          .unwrap_or_else(|_| "?".into());
+        let Ok(id) = d.id() else { continue };
+        probe(kind, &name, &id.to_string());
+      }
+    }
+  }
+}
+
+/// 低延迟共享模式**实测**：用 `IAudioClient3::InitializeSharedAudioStream` 把回调周期
+/// 压到 `min` 帧，看引擎是否真的按这个周期回调（而不是又合并成 1056 帧的大请求）。
+///
+/// ```text
+/// cargo test --bin purevox wasapi_lowlat -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod wasapi_lowlat {
+  use super::*;
+  use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+  use windows::Win32::Media::Audio::{
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioClient3, IAudioRenderClient,
+  };
+  use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+  use windows::core::Interface;
+
+  const ENDPOINT: &str = "wasapi:{0.0.0.00000000}.{dc3c156b-88e0-44b4-81d6-0167ae457462}";
+  const PERIOD_FRAMES: u32 = 128;
+  const RUN_MS: u64 = 3000;
+
+  #[test]
+  #[ignore = "需要 VB-CABLE 设备，只在本机手动跑"]
+  fn wasapi_lowlat() {
+    unsafe {
+      let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+    let device = match resolve_device(Some(ENDPOINT)) {
+      Ok(d) => d,
+      Err(e) => {
+        println!("找不到端点：{e}");
+        return;
+      }
+    };
+    let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }.expect("Activate 失败");
+    let mix = unsafe { client.GetMixFormat() }.expect("GetMixFormat 失败");
+    let (rate, ch, bits) = unsafe { read_format(mix) };
+    println!("mix={rate} Hz/{ch} ch/{bits} bit");
+
+    let c3: IAudioClient3 = client.cast().expect("没有 IAudioClient3");
+    let (mut pd, mut pf, mut pm, mut px) = (0u32, 0u32, 0u32, 0u32);
+    unsafe { c3.GetSharedModeEnginePeriod(mix, &mut pd, &mut pf, &mut pm, &mut px) }
+      .expect("GetSharedModeEnginePeriod 失败");
+    println!("period: default={pd} fundamental={pf} min={pm} max={px}");
+
+    let ev = unsafe { CreateEventW(None, false, false, None) }.expect("CreateEvent 失败");
+    unsafe {
+      c3.InitializeSharedAudioStream(AUDCLNT_STREAMFLAGS_EVENTCALLBACK, PERIOD_FRAMES, mix, None)
+    }
+    .expect("InitializeSharedAudioStream 失败");
+    // 事件句柄必须在 Initialize 之后、Start 之前设（先设会报 AUDCLNT_E_NOT_INITIALIZED）。
+    unsafe { client.SetEventHandle(ev) }.expect("SetEventHandle 失败");
+    unsafe { CoTaskMemFree(Some(mix as *const _)) };
+    let buf_frames = unsafe { client.GetBufferSize() }.unwrap_or(0);
+    println!(
+      "buffer={buf_frames} f ({:.2} ms)",
+      buf_frames as f64 * 1000.0 / rate as f64
+    );
+
+    let render: IAudioRenderClient = unsafe { client.GetService() }.expect("GetService 失败");
+    unsafe { client.Start() }.expect("Start 失败");
+
+    // 和正式代码一样进 MMCSS：不加的话这个测试线程自己就会被调度掉，
+    // 量出来的「15 ms 长间隔」是测试线程的锅，不是引擎的。
+    let _rt = crate::audio::rt_guard::enter_audio_thread();
+    let mut sizes: Vec<u32> = Vec::new();
+    let mut gaps_ms: Vec<f64> = Vec::new();
+    let start = std::time::Instant::now();
+    let mut last = start;
+    while start.elapsed().as_millis() < RUN_MS as u128 {
+      if unsafe { WaitForSingleObject(ev, 500) } != WAIT_OBJECT_0 {
+        println!("等事件超时");
+        break;
+      }
+      // 事件只表示「可以填了」；能填多少是 bufferSize - 已排队(padding)。
+      let pending = unsafe { client.GetCurrentPadding() }.unwrap_or(0);
+      let avail = buf_frames.saturating_sub(pending);
+      if avail == 0 {
+        continue;
+      }
+      let now = std::time::Instant::now();
+      gaps_ms.push(now.duration_since(last).as_secs_f64() * 1000.0);
+      last = now;
+      if let Ok(p) = unsafe { render.GetBuffer(avail) } {
+        unsafe { std::ptr::write_bytes(p, 0, (avail * ch as u32 * bits as u32 / 8) as usize) };
+        let _ = unsafe { render.ReleaseBuffer(avail, 0) };
+        sizes.push(avail);
+      }
+    }
+    let _ = unsafe { client.Stop() };
+    let _ = unsafe { CloseHandle(ev) };
+
+    sizes.sort_unstable();
+    gaps_ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let q = |v: &[f64], p: f64| -> f64 { v[((v.len().saturating_sub(1)) as f64 * p) as usize] };
+    println!(
+      "回调 {} 次，块大小 min={:?} p50={:?} p99={:?} max={:?}",
+      sizes.len(),
+      sizes.first(),
+      sizes.get(sizes.len() / 2),
+      sizes.get(sizes.len() * 99 / 100),
+      sizes.last()
+    );
+    if !gaps_ms.is_empty() {
+      let over6 = gaps_ms.iter().filter(|g| **g > 6.0).count();
+      let over10 = gaps_ms.iter().filter(|g| **g > 10.0).count();
+      println!(
+        "间隔 ms: p50={:.2} p99={:.2} max={:.2} | >6ms {} 次, >10ms {} 次",
+        q(&gaps_ms, 0.5),
+        q(&gaps_ms, 0.99),
+        gaps_ms.last().unwrap(),
+        over6,
+        over10
+      );
+    }
+  }
+}
