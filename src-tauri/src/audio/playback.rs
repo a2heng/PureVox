@@ -38,6 +38,7 @@ use rtrb::{Consumer, RingBuffer};
 use super::capture::{CallbackStats, OPEN_TIMEOUT, PUBLISH_PERIOD, StallWatch, stalled_state};
 use super::fanout::Fanout;
 use super::{HOP, SAMPLE_RATE, WorkerHandle};
+use crate::audio::tick::Tick;
 use crate::debug::{Probe, SharedHub, StreamInfo, now_ms};
 use crate::dsp::meter::{Meter, RateMeter, SPECTRUM_BIN_HZ};
 use crate::dsp::resampler::Converter;
@@ -45,17 +46,17 @@ use crate::dsp::servo::Servo;
 
 /// 48k 源缓冲目标水位（伺服设定点，也是预热量）。
 ///
-/// 2026-11-10 从 40 降到 **20 ms**：逐列延迟探针实测「播放 48k 环 40 ms」是全链最大的一段。
-/// 20 ms = 两个 hop，仍能吸收列线程与设备回调的相位抖动；ppm 级时钟差由 PI 伺服（±3%）
-/// 连续吸收，不靠这个水位兜底。再往下降（10 ms）就只剩一个 hop，调度抖一下就会欠载。
-pub(crate) const TARGET_MS: f64 = 20.0;
+/// 2026-11-10 从 40 → 20 → **10 ms**：逐列延迟探针实测「播放 48k 环」是全链最大的一段。
+/// 10 ms = 一个 hop；ppm 级时钟差由 PI 伺服（±3%）连续吸收，不靠这个水位兜底。
+/// 这是**能接受的最低值**：再低就要改 hop 网格。
+pub(crate) const TARGET_MS: f64 = 10.0;
 /// 48k 源缓冲封顶。
 const CAP_MS: f64 = 300.0;
 /// 设备侧缓冲：工作线程尽量保持约此时长的数据在设备环中。
 ///
-/// 20 ms = 两个 10 ms 回调块（实测设备回调 480 帧）。`dev_cap` 还要加
-/// `conv.output_frames_max()`（约一个块），所以 `/debug` 里看到的水位约 30 ms。
-pub(crate) const DEVICE_RING_MS: usize = 20;
+/// 10 ms = 一个回调块（实测设备回调 480 帧）。`dev_cap` 还要加
+/// `conv.output_frames_max()`（约一个块），所以 `/debug` 里看到的水位约 20 ms。
+pub(crate) const DEVICE_RING_MS: usize = 10;
 const POLL_PERIOD: Duration = Duration::from_millis(2);
 
 /// 比例更新周期。
@@ -217,6 +218,8 @@ fn run(
   let mut last_tick = Instant::now();
   let mut last_ratio = Instant::now();
   let mut last_publish = Instant::now() - PUBLISH_PERIOD;
+  // 2 ms 轮询同样用高精度等待（Windows 默认 sleep 粒度 15.6 ms 会直接把设备环抽干）。
+  let mut poll_tick = Tick::new(POLL_PERIOD);
 
   while !stop.load(Relaxed) {
     token.beat();
@@ -356,7 +359,7 @@ fn run(
       super::health::annotate(&mut st);
       hub.set_stream(st);
     }
-    std::thread::sleep(POLL_PERIOD);
+    poll_tick.wait();
   }
 
   source.unsubscribe(&stream_id);

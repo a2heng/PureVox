@@ -33,6 +33,7 @@ use serde::Serialize;
 
 use super::fanout::Fanout;
 use super::{HOP, SAMPLE_RATE, WorkerHandle};
+use crate::audio::tick::Tick;
 use crate::debug::{Probe, SharedHub, StreamInfo, now_ms};
 use crate::dsp::meter::{Meter, RateMeter, SPECTRUM_BIN_HZ};
 use crate::dsp::resampler::ToHops;
@@ -440,6 +441,9 @@ pub(super) fn worker<K>(
   let mut last_budget = Instant::now();
   // 延迟封顶丢掉的样本数：进 overruns（+ 速率），面板上看得见（丢了不报只剩一句「声音卡」）
   let mut clamped: u64 = 0;
+  // 5 ms 轮询用**高精度等待**：Windows 默认 `sleep` 粒度 15.6 ms，会让采集环被迫攒到
+  // 硬顶（旧实现 47 ms 的一部分原因）。`Tick` 是列线程同一套（`audio/tick.rs`）。
+  let mut poll_tick = Tick::new(POLL_PERIOD);
 
   while !stop.load(Relaxed) {
     token.beat();
@@ -577,7 +581,7 @@ pub(super) fn worker<K>(
       super::health::annotate(&mut st);
       hub.set_stream(st);
     }
-    std::thread::sleep(POLL_PERIOD);
+    poll_tick.wait();
   }
 
   fanout.close();
