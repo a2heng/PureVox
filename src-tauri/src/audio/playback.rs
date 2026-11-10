@@ -337,7 +337,7 @@ fn run(
         last_error,
         buffer_level_ms: src.slots() as f32 * 1000.0 / SAMPLE_RATE as f32,
         device_buffer_ms: Probe::ok(dev_level),
-        latency_ms: Probe::unavailable("端到端延迟尚未测量"),
+        latency_ms: Probe::unavailable("逐列延迟见 /debug/latency（单路流不含跨设备路径）"),
         inference_ms_avg: Probe::unavailable("未接入模型"),
         inference_ms_max: Probe::unavailable("未接入模型"),
         waveform: m.waveform,

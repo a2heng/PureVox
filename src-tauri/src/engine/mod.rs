@@ -25,6 +25,8 @@ pub mod calib;
 pub mod components;
 /// 热参数（与模型无关的标量：增益 / 音量）—— 运行中改它不重建会话
 pub mod hot;
+/// 逐列延迟探测：实测处理链延时 + 各段缓冲归因（DEBUG.md §1.4）
+pub mod latency;
 /// 媒体控制中枢（音效板 / 播放器的运行时命令与状态，ARCHITECTURE.md §4）
 pub mod media;
 pub mod pipeline;

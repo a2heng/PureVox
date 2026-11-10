@@ -27,6 +27,7 @@
 //! - `/debug/metrics` 2 分钟指标历史
 //! - `/debug/plan` 当前计划
 //! - `/debug/calib` AEC 校准的结构化报告（与快照 `calib_report`、`calib_last.json` 同源）
+//! - `/debug/latency` 逐列延迟预算（与快照 `latency`、`latency_last.json` 同源）
 //! - `/debug/bundle` 一键诊断包（快照 + 日志 + 指标）
 //! - `/debug/ui` 调试面板页面本身（**给浏览器打开**；CSS/JS 同源静态资源随二进制内嵌，
 //!   见 [`static_asset`]）。它只 `fetch('/debug')` 渲染，不经过 WebView2 / IPC。
@@ -42,9 +43,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{DEBUG_HTTP_PORT, Probe, SharedHub, events, metrics};
+use super::{Probe, SharedHub, events, http_port, metrics};
 
-const ENDPOINTS: [&str; 11] = [
+const ENDPOINTS: [&str; 12] = [
   "/debug",
   "/debug/system",
   "/debug/audio",
@@ -53,6 +54,7 @@ const ENDPOINTS: [&str; 11] = [
   "/debug/metrics",
   "/debug/plan",
   "/debug/calib",
+  "/debug/latency",
   "/debug/viz",
   "/debug/bundle",
   "/debug/ui",
@@ -79,7 +81,7 @@ fn static_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
 }
 
 pub fn spawn(hub: SharedHub) {
-  let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, DEBUG_HTTP_PORT));
+  let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, http_port()));
   let listener = match TcpListener::bind(addr) {
     Ok(l) => l,
     Err(e) => {
@@ -217,6 +219,13 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
           snap.ts,
           snap.uptime_ms,
         ),
+      )
+    }
+    "/debug/latency" => {
+      let snap = hub.snapshot();
+      (
+        "200 OK",
+        head(json!({ "latency": snap.latency }), snap.ts, snap.uptime_ms),
       )
     }
     "/debug/viz" => {

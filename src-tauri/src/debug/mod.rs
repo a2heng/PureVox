@@ -39,6 +39,16 @@ use system::SystemInfo;
 /// 本机 HTTP 调试接口端口（只绑 127.0.0.1）。改动须同步 AGENTS.md 1.2 节。
 pub const DEBUG_HTTP_PORT: u16 = 47821;
 
+/// 实际使用的调试端口。默认恒为 [`DEBUG_HTTP_PORT`]；只有自动化/隔离实例可以用
+/// `PUREVOX_DEBUG_PORT` 覆盖（本机已有 PureVox 在跑时，第二个实例不能抢 47821）。
+pub fn http_port() -> u16 {
+  std::env::var("PUREVOX_DEBUG_PORT")
+    .ok()
+    .and_then(|v| v.trim().parse::<u16>().ok())
+    .filter(|p| *p >= 1024)
+    .unwrap_or(DEBUG_HTTP_PORT)
+}
+
 /// 一项采集结果：成功 / 采集中 / 不可用（带原因）。不可用时禁止伪造 0。
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -135,6 +145,9 @@ pub struct ColumnInfo {
   /// 单拍处理耗时最大值（ms）：模型/解码一慢，这里先炸
   pub max_work_ms: f32,
   pub rows: Vec<RowInfo>,
+  /// 逐列延迟预算（DEBUG.md §1.4）：实测处理链延时 + 各段缓冲归因。
+  /// 与 `GET /debug/latency`、`~/.purevox/latency_last.json` 同源。
+  pub latency: crate::engine::latency::ColumnLatency,
   /// 人话概要（仍给旧面板/日志用；由结构派生）
   pub text: String,
 }
@@ -276,6 +289,9 @@ pub struct DebugSnapshot {
   /// AEC 校准的结构化结果（DEBUG.md §1.4：同一份进 `/debug/calib` 并落盘
   /// `~/.purevox/calib_last.json`；界面画图与回填都读它，不再解析上面那句串）
   pub calib_report: Probe<crate::engine::calib::CalibReport>,
+  /// 逐列延迟预算（实测处理链 + 各段缓冲归因）：`GET /debug/latency` 与
+  /// `~/.purevox/latency_last.json` 读同一份（DEBUG.md §1.4）。
+  pub latency: Probe<crate::engine::latency::LatencyReport>,
   /// 网络（手机 ⇄ 电脑，NETWORK.md §4.1）：端口、客户端数、进出计数、远程输入开关、Opus 探测
   pub net: crate::net::hub::NetStats,
   /// 可视化插件（处理行 `viz`）：每行当前位置的电平 + 64 段对数频谱
@@ -310,6 +326,8 @@ struct State {
   calib: Probe<String>,
   /// AEC 校准的结构化报告（与 `calib` 同一时刻发布；快照 / 端点 / 落盘同源）
   calib_report: Probe<crate::engine::calib::CalibReport>,
+  /// 逐列延迟预算（会话运行期间由延迟分析线程发布）
+  latency: Probe<crate::engine::latency::LatencyReport>,
   /// Linux 虚拟麦克风状态
   virtual_mic: Probe<crate::audio::virtual_mic::Status>,
   streams: BTreeMap<String, StreamInfo>,
@@ -347,6 +365,7 @@ impl DebugHub {
         recorder: Probe::Pending,
         calib: Probe::Pending,
         calib_report: Probe::Pending,
+        latency: Probe::Pending,
         virtual_mic: Probe::Pending,
         streams: BTreeMap::new(),
       }),
@@ -423,6 +442,17 @@ impl DebugHub {
     self.state.write().unwrap().calib_report = v;
   }
 
+  /// 逐列延迟预算（延迟分析线程每 500 ms 发布一次；`/debug/latency` 与快照同源）。
+  pub fn set_latency_report(&self, v: Probe<crate::engine::latency::LatencyReport>) {
+    self.state.write().unwrap().latency = v;
+  }
+
+  /// 按调试流 id 取一路流（延迟预算读设备的回调周期/水位/重采样延迟用）。
+  /// 读不到 = 这路流还没发布（刚打开/刚重启），调用方必须写成「不可用 + 原因」。
+  pub fn stream(&self, id: &str) -> Option<StreamInfo> {
+    self.state.read().ok()?.streams.get(id).cloned()
+  }
+
   pub fn set_virtual_mic(&self, v: Probe<crate::audio::virtual_mic::Status>) {
     self.state.write().unwrap().virtual_mic = v;
   }
@@ -497,6 +527,12 @@ impl DebugHub {
       );
       rec(format!("column.{i}.max_late_ms"), c.max_late_ms as f64);
       rec(format!("column.{i}.max_work_ms"), c.max_work_ms as f64);
+      if let Some(v) = c.latency.total_ms {
+        rec(format!("column.{i}.latency_total_ms"), v as f64);
+      }
+      if let Some(v) = c.latency.measured_ms {
+        rec(format!("column.{i}.latency_measured_ms"), v as f64);
+      }
       for r in &c.rows {
         let rid = format!("{i}.{}", r.index);
         if let Some(v) = r.buffer_ms {
@@ -538,6 +574,7 @@ impl DebugHub {
     let st_recorder = st.recorder.clone();
     let st_calib = st.calib.clone();
     let st_calib_report = st.calib_report.clone();
+    let st_latency = st.latency.clone();
     let st_virtual_mic = st.virtual_mic.clone();
     let st_running = st.running;
     let st_plan = st.plan.clone();
@@ -592,6 +629,7 @@ impl DebugHub {
       recorder: st_recorder,
       calib: st_calib,
       calib_report: st_calib_report,
+      latency: st_latency,
       net: crate::net::hub().stats(),
       viz: crate::engine::viz::snapshot(),
       update: crate::update::status(),

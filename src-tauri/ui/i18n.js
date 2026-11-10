@@ -407,6 +407,15 @@
     错误: 'Errors',
     端到端延迟: 'End-to-end latency',
     '推理 均/最大': 'Inference avg/max',
+    // 逐列延迟预算（debug.js renderLatency；分段名与结论来自 Rust，不翻译）
+    延迟: 'Latency',
+    '逐列实测：处理链互相关 + 缓冲水位归因':
+      'Per column: measured chain correlation + buffer attribution',
+    '第 {n} 列': 'Column {n}',
+    阶段: 'Stage',
+    毫秒: 'ms',
+    说明: 'Note',
+    未测到: 'not measured',
     // Rust 提供的用户可见标签（注册表节点/参数名、模型表、提示音预设）：界面侧经 T()
     // 翻译（中文即 msgid），条目缺失就是漏译——lint E6 直接对 Rust 源校验覆盖。
     麦克风: 'mic', // 左上角标签列只有几 em 宽，'Microphone' 会把整列撑开

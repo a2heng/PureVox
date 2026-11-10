@@ -32,6 +32,7 @@ use rtrb::Consumer;
 
 use super::aec::{AecRow, FAR_HIST_SAMPLES, FarHistory, FarWin, spawn_far_pump};
 use super::calib::CalibHub;
+use super::latency::{LatencyAnalyzer, LatencyTap, RowTapInfo};
 use super::media::{self, MediaCmd, MediaSlot};
 use super::registry::{self, ParamValue, Params};
 use super::stage::{FrameContext, Stage, StageError};
@@ -148,6 +149,8 @@ struct ColumnRuntime {
   captures: Vec<WorkerHandle>,
   /// 线程是否还活着（由列线程的 guard 置 false；监督线程据此报 degraded）
   alive: Arc<AtomicBool>,
+  /// 这一列的延迟探针（列线程写波形，分析线程读）
+  latency: Arc<LatencyTap>,
 }
 
 /// 一个已构建并正在运行的会话。
@@ -164,6 +167,8 @@ pub struct Session {
   pub media_gen: u64,
   /// 本次构建的引擎代次（进调试快照）
   pub generation: u64,
+  /// 逐列延迟分析线程（读到 stop 为止）
+  latency: Option<LatencyAnalyzer>,
 }
 
 /// 一次构建的结果。
@@ -215,6 +220,17 @@ impl Session {
       ));
     }
 
+    // 延迟分析线程：每 500 ms 把各列「输入 hop / 输出 hop」做互相关，并把各段缓冲
+    // 水位合成预算（DEBUG.md §1.4）。它只读探针、不在音频线程里做任何分析。
+    let latency = LatencyAnalyzer::spawn(
+      hub.clone(),
+      columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (i, c.latency.clone()))
+        .collect(),
+    );
+
     // 监督线程：列线程死了（panic / 意外退出）必须在一秒内变成 `degraded`，
     // 而不是让快照继续显示最后一帧「100 hop/s」。
     let watches: Vec<(usize, Arc<AtomicBool>, Arc<AtomicBool>)> = columns
@@ -265,6 +281,7 @@ impl Session {
         hot_eq,
         media_gen,
         generation,
+        latency: Some(latency),
       },
       problems,
       critical,
@@ -292,6 +309,10 @@ impl Session {
   }
 
   pub fn stop(&mut self) {
+    // 先停分析线程：它只读探针，停它不会影响列线程收尾
+    if let Some(mut l) = self.latency.take() {
+      l.stop();
+    }
     self.publisher_stop.store(true, Relaxed);
     if let Some(j) = self.publisher.take() {
       let _ = j.join();
@@ -1147,6 +1168,8 @@ fn build_column(
   let rec2 = rec.clone();
   let calib2 = calib.clone();
   let hub3 = hub.clone();
+  let latency = Arc::new(LatencyTap::new(idx));
+  let latency3 = latency.clone();
   // 一个模型一路核（见 `engine/affinity.rs`）：列线程 = 这一列推理的宿主线程，
   // 从 1 号核开始轮转分配，避免多列的模型被调度到同一个核上互相打断
   // （2026-10-26：后台 CPU 忙时两列抢核 → 采集环涨到硬顶 → 丢样本）。
@@ -1168,7 +1191,9 @@ fn build_column(
       }
       let token = threads::ThreadToken::new(format!("column-{}@cpu{}", idx + 1, core));
       let r = catch_unwind(AssertUnwindSafe(|| {
-        run_column(idx, column_on, rows2, stop2, rec2, calib2, hub3, token);
+        run_column(
+          idx, column_on, rows2, stop2, rec2, calib2, hub3, token, latency3,
+        );
       }));
       if r.is_err() {
         events::log(
@@ -1195,6 +1220,7 @@ fn build_column(
     join,
     captures,
     alive,
+    latency,
   }
 }
 
@@ -1215,6 +1241,7 @@ fn run_column(
   calib: Arc<CalibHub>,
   hub: SharedHub,
   token: threads::ThreadToken,
+  latency: Arc<LatencyTap>,
 ) {
   // 实时音频线程：向系统声明用途（Windows = MMCSS "Pro Audio"），
   // 否则播放/推流时会被当普通后台线程调度，出现几十毫秒的整体停顿（`debug/stall.rs` 量得到）。
@@ -1255,6 +1282,14 @@ fn run_column(
     }
     token.beat();
     let mut acc = [0.0f32; HOP];
+    // 延迟探针：本 tick 的第一路有数据的输入 hop / 第一路输出行取到的 hop（原样拷贝）
+    let mut probe_in = [0.0f32; HOP];
+    let mut probe_in_ok = false;
+    let mut probe_out = [0.0f32; HOP];
+    let mut probe_out_ok = false;
+    // 发布周期要写进延迟预算的「第一路输入 / 第一路输出」
+    let mut lat_in: Option<RowTapInfo> = None;
+    let mut lat_out: Option<RowTapInfo> = None;
     {
       let mut g = rows.lock().unwrap();
       // 混合系数按**配置的输入源**计数（`source`），不是按当前拿到租约的数量：
@@ -1318,6 +1353,10 @@ fn run_column(
               let (got, dropped) = take_hop(&mut aec.mic, &mut tmp);
               r.ring_dropped += dropped as u64;
               if got {
+                if !probe_in_ok {
+                  probe_in.copy_from_slice(&tmp);
+                  probe_in_ok = true;
+                }
                 // 会话起步：让 far 泵的时钟与 mic 序号同起点（否则两者相差设备打开时间，
                 // 校准会测出负延时且每次会话不同）；校准开始时代号变化 → 序号同样归零。
                 if aec_boot {
@@ -1406,6 +1445,10 @@ fn run_column(
             } else if let Some(net) = r.net_input.as_ref() {
               // 网络麦克风：按引擎 10 ms 节拍从**入站环**取一格（欠载补 PLC / 淡出，见 net/rt.rs）
               net.take_rx_hop(&mut tmp);
+              if !probe_in_ok {
+                probe_in.copy_from_slice(&tmp);
+                probe_in_ok = true;
+              }
               for i in 0..HOP {
                 acc[i] += tmp[i] * k;
               }
@@ -1414,6 +1457,10 @@ fn run_column(
               r.ring_dropped += dropped as u64;
               if got {
                 r.last_hop_at = tick_start;
+                if !probe_in_ok {
+                  probe_in.copy_from_slice(&tmp);
+                  probe_in_ok = true;
+                }
                 // 行内增益（loopback 源：系统混音偏响）
                 if let Some(g) = r.gain.as_ref() {
                   let g = g.linear();
@@ -1473,6 +1520,10 @@ fn run_column(
             // 启用/停用：挂摘设备租约（运行期在后台打开，绝不阻塞这一拍）
             poll_output_lease(r, &hub, idx, ri, tick_start);
             if r.enabled {
+              if !probe_out_ok {
+                probe_out.copy_from_slice(&acc);
+                probe_out_ok = true;
+              }
               if let Some(f) = r.output.as_ref() {
                 f.push_hop(&acc);
               }
@@ -1547,6 +1598,42 @@ fn run_column(
           } else {
             r.output.as_ref().map(|f| f.max_level_ms())
           };
+          // 延迟预算：第一路启用的输入 / 输出行（流 id 精确到这一行，见 `RowTapInfo`）
+          let has_source = r.input.is_some() || r.aec.is_some() || r.net_input.is_some();
+          let has_sink = r.output.is_some() || r.net_output;
+          if r.enabled && (has_source || has_sink) {
+            match r.kind {
+              RowKind::Input if lat_in.is_none() && has_source => {
+                let stream_id = if r.pooled_input {
+                  r.device.as_ref().map(|d| format!("input:{d}"))
+                } else if r.ptype == "loopback" {
+                  Some(format!("input:c{idx}r{ri}"))
+                } else if r.aec.is_some() {
+                  r.device.as_ref().map(|_| format!("input:c{idx}r{ri}m"))
+                } else {
+                  None
+                };
+                lat_in = Some(RowTapInfo {
+                  stream_id,
+                  buffer_ms,
+                  label: r.label.clone(),
+                });
+              }
+              RowKind::Output if lat_out.is_none() && has_sink => {
+                let stream_id = if r.pooled_output {
+                  r.device.as_ref().map(|d| format!("output:{d}"))
+                } else {
+                  None
+                };
+                lat_out = Some(RowTapInfo {
+                  stream_id,
+                  buffer_ms,
+                  label: r.label.clone(),
+                });
+              }
+              _ => {}
+            }
+          }
           let dropped_per_s = r.ring_drop_rate.push(now, r.ring_dropped);
           // 可视化行走的是同一个 Stage，但它没有模型：别把它算进「推理耗时」那一栏
           let has_model = (r.kind == RowKind::Process && r.ptype != "viz") || r.aec.is_some();
@@ -1658,6 +1745,7 @@ fn run_column(
           } else {
             "running".to_string()
           },
+          latency: latency.result(),
           hop_rate: rate,
           ticks,
           tick_overruns,
@@ -1668,8 +1756,24 @@ fn run_column(
           rows: rows_info,
           text: s,
         });
+        // 分析线程据此决定「测哪一路进 / 哪一路出」；停用列也要写（它据此报 disabled）
+        latency.set_rows(column_on && !stop.load(Relaxed), lat_in, lat_out);
       }
     }
+
+    // 探针写入放在行锁之外：分析线程从另一头取走，音频线程不等它
+    latency.push(
+      if probe_in_ok {
+        Some(&probe_in[..])
+      } else {
+        None
+      },
+      if probe_out_ok {
+        Some(&probe_out[..])
+      } else {
+        None
+      },
+    );
 
     let work_ms = tick_start.elapsed().as_secs_f32() * 1000.0;
     max_work_ms = max_work_ms.max(work_ms);

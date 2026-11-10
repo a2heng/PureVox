@@ -116,7 +116,7 @@ fn open_devtools(window: tauri::WebviewWindow) {
 /// 内置截屏已整体移除（用户 2026-10-26 决定），抓界面截图用系统截图工具。
 #[tauri::command]
 fn open_debug_window(hub: tauri::State<'_, SharedHub>) -> Result<(), String> {
-  let url = format!("http://127.0.0.1:{}/debug/ui", debug::DEBUG_HTTP_PORT);
+  let url = format!("http://127.0.0.1:{}/debug/ui", debug::http_port());
   match &hub.snapshot().app.debug_http {
     debug::Probe::Ok { .. } => openurl::open(&url),
     debug::Probe::Pending => Err(format!("调试接口还没起来（{url}）")),
@@ -677,7 +677,7 @@ fn net_set_port(port: u16) -> Result<String, String> {
       "端口 {port} 太小（要 ≥ 1024，低端口在 Linux 上需要管理员权限）"
     ));
   }
-  if port == debug::DEBUG_HTTP_PORT {
+  if port == debug::http_port() {
     return Err(format!("端口 {port} 是本机调试接口占着的，换一个"));
   }
   let was = net::hub().port();

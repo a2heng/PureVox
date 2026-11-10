@@ -58,6 +58,7 @@ USERPROFILE="$PV_HOME" HOME="$PV_HOME" \
 | `PUREVOX_AUTONET=1` | 启动后自动开网络服务（手机/网页客户端可连） |
 | `PUREVOX_AUTOCALIB_MS=<ms>` | 自动 `start()` 会话，`<ms>` 后跑一次 AEC 校准；**设大值 = 只为把引擎跑起来** |
 | `PUREVOX_AUTODEBUG=1` | 自动打开系统浏览器调试面板（本机 HTTP 47821） |
+| `PUREVOX_DEBUG_PORT=<port>` | 覆盖调试 HTTP 端口（默认 47821）。**本机已有 PureVox 在跑时，隔离实例必须换一个端口**，否则读到的会是用户那只 |
 
 读状态（中文用 Python/json，不用 PowerShell 解码）：
 

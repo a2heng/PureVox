@@ -537,7 +537,7 @@ pub(super) fn worker<K>(
         last_error,
         buffer_level_ms: ring_level_ms,
         device_buffer_ms: Probe::unavailable("输入流：环形缓冲即设备侧缓冲，见 buffer_level_ms"),
-        latency_ms: Probe::unavailable("端到端延迟尚未测量"),
+        latency_ms: Probe::unavailable("逐列延迟见 /debug/latency（单路流不含跨设备路径）"),
         inference_ms_avg: inf_avg,
         inference_ms_max: inf_max,
         waveform: m.waveform,

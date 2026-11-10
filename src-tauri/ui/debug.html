@@ -103,6 +103,12 @@
             <tr><th data-i18n="参考录制">参考录制</th><td id="audio-recorder" colspan="3"></td></tr>
             <tr><th data-i18n="延时校准">延时校准</th><td id="audio-calib" colspan="3"></td></tr>
           </table>
+          <!-- 逐列延迟预算（实测处理链 + 各段缓冲归因）：数据来自快照 latency，由 Rust 侧算好 -->
+          <h3><span data-i18n="延迟">延迟</span> <span id="latency-note" class="sub"></span></h3>
+          <table class="kv">
+            <tr><th data-i18n="结论">结论</th><td id="latency-verdict" colspan="3"></td></tr>
+          </table>
+          <div id="latency-columns"></div>
           <!-- 网络只留只读状态行；开关、二维码、远程输入都在网络行卡片里（见 netrow.js） -->
           <h3 data-i18n="网络">网络</h3>
           <table class="kv">

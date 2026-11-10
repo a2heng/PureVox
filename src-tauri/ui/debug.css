@@ -2151,3 +2151,29 @@ body.debug-window #debug {
   pointer-events: auto;
 }
 body.debug-window #debug > h2 { top: 0; margin: -12px -16px 10px; }
+
+/* 逐列延迟预算（debug.js 的 renderLatency）：每列一个可折叠块，
+   结构只随「列/段名」变化重建，数值原位更新（不跳动）。 */
+.latency-col {
+  margin: 6px 0;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.latency-col > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+}
+.latency-col .lc-title {
+  font-weight: 600;
+}
+.latency-col .lc-detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+.latency-col table.grid {
+  margin-top: 4px;
+}

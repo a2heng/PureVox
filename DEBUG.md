@@ -27,6 +27,8 @@ release 构建同样保留（不允许用编译开关剔除）。
 - 只绑 `127.0.0.1`（禁止监听 `0.0.0.0` 或局域网地址），只读（JSON + 面板静态页面），无鉴权、无写操作。
 - 端口 **47821**（`http://127.0.0.1:47821/debug`），唯一定义在 `src-tauri/src/debug/mod.rs` 的
   `DEBUG_HTTP_PORT`，改动须同步本节；端口被占用时日志报错并在 UI 面板「调试接口」行显示原因，不静默失败。
+  **隔离测试实例**可用环境变量 `PUREVOX_DEBUG_PORT` 覆盖（默认仍是 47821，`debug::http_port()` 是唯一入口），
+  这样本机已有 PureVox 在跑时第二个实例也能被脚本读到。
 - 每项指标是一个 Probe：`{"state":"ok","value":…}` / `{"state":"pending"}`（如 CPU、GPU 占用率首轮差分前）/
   `{"state":"unavailable","reason":"…"}`。未知路径返回 404 + 端点列表，非 GET 返回 405。
 - 端点（每个返回体都带 `ts`（毫秒时间戳）与 `uptime_ms`）：
@@ -37,6 +39,7 @@ release 构建同样保留（不允许用编译开关剔除）。
 | `GET /debug/system` | **CPU**：系统总占用、本进程占用、逻辑核数；**内存**：系统总量/可用、本进程工作集与私有字节；**GPU**：每块 GPU 的名称、占用率、显存总量/已用（含本进程）；**系统时钟粒度** `timer_resolution_ms`（Windows 默认 15.625 ms —— 它决定 `sleep` 的实际精度，见 `NETWORK.md` §3.3.2） |
 | `GET /debug/audio` | 每路音频流：**结论（`health`，Rust 侧统一判定的健康度 `{level, text}`，阈值集中在 `audio/health.rs`，面板只渲染不算，见 1.3）**、方向、设备、**信号源（仅输出）**、状态、降噪状态（字段保留但已废弃：降噪现为列处理行，见 `audio.engine`）、设备原生格式、实测**设备侧 / 引擎侧速率**（3 s 窗口）、重采样器与其延迟、**输出流的时钟伺服修正（ppm）**、回调块大小（最近/最小/最大）与**回调间隔（最近/最大 ms，音频回调里锁-free 实测：只看回调次数看不出「卡了 2 秒又继续」）**、帧与 hop 计数、不足一 hop 的剩余帧、峰值/RMS 电平、**输出流欠载补静音样本数与重同步次数**、溢出/丢弃样本、流错误计数、**上述事件的实测每秒速率（`underrun_per_s` / `resync_per_s` / `overrun_per_s` / `stream_error_per_s`，3 s 窗口；累计计数只涨不降，速率才看得出现在还在不在发生）**、48k 缓冲水位与**设备侧缓冲水位**、端到端延迟、**模型推理耗时（均值/最大）**；另有汇总结论 `audio.verdict`（全部流的整体判断）；最近 50 ms 波形与平均频谱（481 bin，NFFT 960，输入流为降噪后、输出流为重采样前） |
 | `GET /debug/devices` | 全部枚举到的输入/输出设备：ID、名称、接口、原生采样率/声道、是否默认、是否被选中、**是否已打开与设备池引用数**；以及最近一次枚举的时间与耗时。**热插拔监测**（`devices::spawn_watch`，Windows 3 s / 其它 5 s 比对一次 `(ID, 能输入, 能输出)` 指纹，连续两次一致才算变化）发现变化会自动重刷，事件日志留一行「设备列表已变化（新增 N / 消失 M）」 |
+| `GET /debug/latency` | **逐列延迟预算**：处理链（输入 hop → 输出 hop）的实测互相关延时、相关度、抖动，以及输入设备回调 / 采集环 / 行输入环 / 输出混音源环 / 播放 48k 环 / 播放设备环 / 输出设备回调各段（ms）与最大的一段（见 1.5）。与快照 `latency`、`~/.purevox/latency_last.json` 同一份 |
 | `GET /debug/calib` | AEC 校准的**结构化报告**（与快照 `calib_report`、`~/.purevox/calib_last.json` 同一份，见 1.4）：`schema_version` / `ok` / `created_ms` / 判定码与结论 / 两路峰值时刻与延时 / 回声路径 / 探针带电平与 SNR / 回填增益 / 平滑后的带内能量包络 `series` / 原始 dump 路径；未跑过时为 `pending` |
 | `GET /debug/ui` | **调试面板页面本体**（1.1 用系统浏览器打开它）：HTML + 同源静态资源（`/debug/ui/{debug.js,debug.css,i18n.js,snapshot.js,jsdebug.js}`）。页面只 `fetch('/debug')` 渲染，不经过 IPC；内嵌在二进制里，装完也能用 |
 
@@ -48,7 +51,8 @@ release 构建同样保留（不允许用编译开关剔除）。
   「参考没对齐」还是「麦克风里根本没有回声」；
   `recorder`（TSE 参考录制进度/结果）与 `calib`（AEC 延时校准进度/结果；
   **新代码读 `calib_report`**：结构化、带 `schema_version` 与曲线，见 1.4），以及
-  `virtual_mic`（Linux 虚拟驱动状态：sink / 真源是否已创建；非 Linux 为 `unavailable` + 原因）。
+  `latency`（**逐列延迟预算**：处理链互相关实测 + 各段缓冲归因，与 `columns[].latency` 同源，
+  见 1.5）、`virtual_mic`（Linux 虚拟驱动状态：sink / 真源是否已创建；非 Linux 为 `unavailable` + 原因）。
 - 另有 `net`（手机 ⇄ 电脑，NETWORK.md §4.1）：服务端口、已连接客户端数、订阅音频数、
   进出包与样本计数、**每方向的水位/深度/抖动（EMA + 最坏）/最大到达间隔**、
   **实测单向延迟**（NTP 偏移 + 帧头时间戳）、欠载 / PLC / 裁剪 / 空环到达 / 丢包计数、
@@ -566,3 +570,37 @@ release 构建同样保留（不允许用编译开关剔除）。
   不引入第二套判定标准。
 
 ---
+
+
+### 1.5 逐列延迟探测（唯一实现）
+
+`engine/latency.rs`。回答的问题不是「缓冲里还有多少样本」，而是**一列到底把信号推迟了多少、
+主要卡在哪一段**（ARCHITECTURE.md §8 的三条硬约束只管上界，不管归因）。
+
+- **测量点**：列线程每 tick 把「第一路有数据的输入 hop」与「第一路输出行取到的 hop」**原样**
+  拷进两条 `rtrb` 环（音频线程只 `push` 整 hop，不分配、不做 FFT、不等锁）；
+  `latency-analyzer` 线程每 500 ms 取走并分析。列与列各自独立，多列同时测，互不影响。
+- **算法**：两种波形 4:1 抽取到 **12 kHz（0.083 ms 分辨率）**，取 300 ms 输出窗与 920 ms
+  输入历史，FFT **归一化互相关**找峰：搜索 0~560 ms，换算 `delay = (560 ms − k)`（只接受
+  0~500 ms）。输出窗整体后移 60 ms，让 **0 ms 延时落在搜索窗中间**；边界 2 ms 不作结论。
+- **判据（集中在 `latency.rs` 顶部常量）**：输出窗 RMS ≥ −55 dBFS、峰值 ≥ 0.30、
+  主峰比 3 ms 外次峰高 ≥ 0.10。**任何一条不满足就 `measured_ms = null` 并写明原因**，
+  不编数字：静音、1 kHz 测试音（周期信号出现等高峰）、处理后波形差异过大（TSE/替换类）
+  都测不出来。连续 5 次取中位数，波动 > 3 ms 时一并告警。
+- **预算归因**：`stages[]` 逐段给 `ms`（`Option`）与来源（`measured` / `buffer` / `device` /
+  `resampler`）。输入侧读**这一行对应的设备流**（`input:<设备>` / AEC 的 `input:c{列}r{行}m`
+  / 回环的 `input:c{列}r{行}`）的回调周期、采集环水位、重采样延迟；输出侧同样是该行设备流的
+  播放 48k 环、设备环、重采样与回调周期，再加这一行自己的混音源环。
+  `total_ms` 是**已知段之和**；`complete=false` 时它只是下限，`detail` / `health` 会写明缺哪段。
+  `dominant` 指向最大的一段 —— 这就是「延迟原因」。
+- **不额外开设备**：设备侧只读已有流的实测值。**Windows 的设备侧缓冲以 WASAPI 共享模式的
+  「每回调帧数 / 采样率」为实测代理**（隐藏的系统内部缓冲不在其中），字段与文案都按代理写，
+  不假装是硬件的全部延迟。
+- **三处读同一份**（1.4）：快照 `latency`（以及每列的 `columns[].latency`）、
+  `GET /debug/latency`、`~/.purevox/latency_last.json`（每 10 s 覆盖写）。
+  调试面板只渲染 `stages[]` / `dominant` / `verdict`，不在前端重算。
+- **复现**：
+  `curl -s http://127.0.0.1:47821/debug/latency | jq '.latency.value.columns[] | {column, measured_ms, dominant, total_ms, complete}'`
+  —— 需要**非周期**信号（说话 / 音乐 / 噪声）；静音与测试音下 `measured_ms` 为 `null` 是预期。
+- **单测**：`cargo test --manifest-path src-tauri/Cargo.toml engine::latency`（合成宽带信号，
+  0 / 10 / 37 / 120 / 480 ms 全部落在 ±1.2 ms；静音与周期信号必须报错）。

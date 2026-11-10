@@ -300,6 +300,67 @@ function renderAudio(audio) {
   })
 }
 
+// ---------- 延迟（逐列：Rust 侧已算好处理链互相关与各段归因，前端只渲染）----------
+function makeLatencyCard(c) {
+  const d = document.createElement('details')
+  d.className = 'latency-col'
+  d.open = true
+  d.dataset.col = String(c.column)
+  d.innerHTML =
+    '<summary><span class="lc-title"></span> <span class="lc-detail"></span></summary>' +
+    '<table class="grid">' +
+    '<colgroup><col class="c-name" /><col class="c-num" /><col /></colgroup>' +
+    `<thead><tr><th>${T('阶段')}</th><th>${T('毫秒')}</th><th>${T('说明')}</th></tr></thead>` +
+    '<tbody></tbody></table>'
+  const tb = d.querySelector('tbody')
+  c.stages.forEach(() => {
+    const tr = document.createElement('tr')
+    tr.append(document.createElement('td'), document.createElement('td'), document.createElement('td'))
+    tb.appendChild(tr)
+  })
+  return d
+}
+
+function renderLatency(probe) {
+  put($('latency-note'), T('逐列实测：处理链互相关 + 缓冲水位归因'), 'sub')
+  const box = $('latency-columns')
+  if (!probe || probe.state !== 'ok') {
+    box.replaceChildren()
+    box.dataset.sig = ''
+    putProbe($('latency-verdict'), probe, () => '')
+    return
+  }
+  const r = probe.value
+  putHealth($('latency-verdict'), r.verdict)
+  // 结构只随「列 / 段的名字」变化重建；数值每轮原位更新（面板不跳动）
+  const sig = r.columns
+    .map((c) => `${c.column}:${c.state}:${c.stages.map((s) => s.name).join(',')}`)
+    .join('|')
+  if (box.dataset.sig !== sig) {
+    box.dataset.sig = sig
+    box.replaceChildren(...r.columns.map(makeLatencyCard))
+  }
+  r.columns.forEach((c, i) => {
+    const card = box.children[i]
+    // 标题行保留自己的 class（`put` 会重写 className，不能用它）
+    card.querySelector('.lc-title').textContent =
+      T('第 {n} 列', { n: c.column + 1 }) +
+      (c.measured_ms == null ? '' : ` · ${c.measured_ms.toFixed(1)} ms`)
+    card.querySelector('.lc-detail').textContent = c.detail || ''
+    const tds = card.querySelectorAll('tbody td')
+    c.stages.forEach((s, j) => {
+      const base = j * 3
+      put(tds[base], s.name)
+      put(
+        tds[base + 1],
+        s.ms == null ? T('未测到') : s.ms.toFixed(1),
+        s.ms == null ? 'na' : s.source === 'measured' ? 'ok' : '',
+      )
+      put(tds[base + 2], s.note || '')
+    })
+  })
+}
+
 // ---------- 网络（只读状态；开关 / 二维码 / 远程输入都在网络行卡片里，见 netrow.js）----------
 // 速率没采够一个窗口时写「采集中…」，不编数字（与音频流同一套约定）。
 function rateNum(p) {
@@ -377,6 +438,7 @@ function renderSnapshot(s) {
   renderSystem(s.system)
   renderGpu(s.system.gpu)
   renderAudio(s.audio)
+  renderLatency(s.latency)
   renderRecorder(s)
   renderNet(s.net)
   if (window.__pvOnSnapshot) window.__pvOnSnapshot(s)
@@ -410,6 +472,7 @@ document.addEventListener('pv-langchange', () => {
   renderSystem(last.system)
   renderGpu(last.system.gpu)
   renderAudio(last.audio)
+  renderLatency(last.latency)
   renderRecorder(last)
   renderNet(last.net)
 })
