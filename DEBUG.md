@@ -583,6 +583,9 @@ release 构建同样保留（不允许用编译开关剔除）。
 - **算法**：两种波形 4:1 抽取到 **12 kHz（0.083 ms 分辨率）**，取 300 ms 输出窗与 920 ms
   输入历史，FFT **归一化互相关**找峰：搜索 0~560 ms，换算 `delay = (560 ms − k)`（只接受
   0~500 ms）。输出窗整体后移 60 ms，让 **0 ms 延时落在搜索窗中间**；边界 2 ms 不作结论。
+  **波形对不上时退到 10 ms 能量包络**（降噪 / TSE 会改相位，实测波形相关只有 0.29；
+  包络只要求响度起伏一致，同一套峰值/突出度判据）。报告里用 `measured_method`
+  （`waveform` / `envelope`）与 `measured_resolution_ms` 标明这次是哪一种。
 - **判据（集中在 `latency.rs` 顶部常量）**：输出窗 RMS ≥ −55 dBFS、峰值 ≥ 0.30、
   主峰比 3 ms 外次峰高 ≥ 0.10。**任何一条不满足就 `measured_ms = null` 并写明原因**，
   不编数字：静音、1 kHz 测试音（周期信号出现等高峰）、处理后波形差异过大（TSE/替换类）
@@ -600,7 +603,7 @@ release 构建同样保留（不允许用编译开关剔除）。
   `GET /debug/latency`、`~/.purevox/latency_last.json`（每 10 s 覆盖写）。
   调试面板只渲染 `stages[]` / `dominant` / `verdict`，不在前端重算。
 - **复现**：
-  `curl -s http://127.0.0.1:47821/debug/latency | jq '.latency.value.columns[] | {column, measured_ms, dominant, total_ms, complete}'`
+  `curl -s http://127.0.0.1:47821/debug/latency | jq '.latency.value.columns[] | {column, measured_ms, measured_method, measured_resolution_ms, dominant, total_ms, complete}'`
   —— 需要**非周期**信号（说话 / 音乐 / 噪声）；静音与测试音下 `measured_ms` 为 `null` 是预期。
 - **单测**：`cargo test --manifest-path src-tauri/Cargo.toml engine::latency`（合成宽带信号，
   0 / 10 / 37 / 120 / 480 ms 全部落在 ±1.2 ms；静音与周期信号必须报错）。

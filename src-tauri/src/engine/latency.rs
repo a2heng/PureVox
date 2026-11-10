@@ -138,6 +138,10 @@ pub struct ColumnLatency {
   pub state: String,
   /// 处理链（输入 hop → 输出 hop）的实测延时；null 表示没测到
   pub measured_ms: Option<f32>,
+  /// 实测方法：`waveform`（12 kHz 波形）或 `envelope`（10 ms 能量包络；降噪/TSE 改了相位时用）
+  pub measured_method: Option<&'static str>,
+  /// 测量分辨率（ms）
+  pub measured_resolution_ms: Option<f32>,
   /// 互相关峰值（0~1）：越高越可信
   pub confidence: Option<f32>,
   /// 多个测量的波动（ms）：> 3 ms 说明水位在爬/信号在变，数字只能当参考
@@ -159,6 +163,8 @@ impl ColumnLatency {
       column,
       state: "pending".into(),
       measured_ms: None,
+      measured_method: None,
+      measured_resolution_ms: None,
       confidence: None,
       jitter_ms: None,
       total_ms: None,
@@ -175,6 +181,8 @@ impl ColumnLatency {
       column,
       state: "disabled".into(),
       measured_ms: None,
+      measured_method: None,
+      measured_resolution_ms: None,
       confidence: None,
       jitter_ms: None,
       total_ms: None,
@@ -384,6 +392,10 @@ struct Peak {
   confidence: f32,
   /// 主峰与次峰的差（越大越不模糊）
   margin: f32,
+  /// `waveform`（12 kHz 波形，0.083 ms）或 `envelope`（10 ms 能量包络）
+  method: &'static str,
+  /// 测量分辨率（ms）
+  resolution_ms: f32,
 }
 
 struct Analyzer {
@@ -494,10 +506,13 @@ impl Analyzer {
       }
     }
     if !best.is_finite() || best < MIN_CONFIDENCE {
-      return Err(format!(
-        "处理后波形与输入对不上（相关 {:.2}，低于 {MIN_CONFIDENCE:.2}；模型/替换类处理会这样）",
-        best.max(0.0)
-      ));
+      // 波形对不上（降噪/TSE 会改相位）→ 退到 10 ms 能量包络再试一次。
+      // 包络只要求「响度起伏」一致，对相位变化不敏感。
+      return self.measure_envelope(
+        in_hist,
+        out_hist,
+        &format!("波形相关 {:.2}（低于 {MIN_CONFIDENCE:.2}）", best.max(0.0)),
+      );
     }
     let guard_samples = 3 * PROBE_PER_MS; // 3 ms
     let mut second = f32::NEG_INFINITY;
@@ -529,7 +544,128 @@ impl Analyzer {
       ms,
       confidence: best,
       margin,
+      method: "waveform",
+      resolution_ms: 1000.0 / PROBE_RATE as f32,
     })
+  }
+
+  /// 10 ms 能量包络互相关（Pearson）：波形被模型改相位时的退路。
+  ///
+  /// 分辨率 10 ms —— 对「处理链 vs 缓冲」的归因足够（缓冲都是 10 ms 的整数倍），
+  /// 而且对降噪 / TSE 的相位重建不敏感。周期信号（测试音）的包络是常数，直接拒绝。
+  fn measure_envelope(
+    &mut self,
+    in_hist: &VecDeque<f32>,
+    out_hist: &VecDeque<f32>,
+    why: &str,
+  ) -> Result<Peak, String> {
+    if in_hist.len() < HIST_SAMPLES || out_hist.len() < OUT_HIST {
+      return Err("历史还不够（至少 1 秒有效信号）".into());
+    }
+    let in_dec: Vec<f32> = in_hist
+      .iter()
+      .skip(in_hist.len() - HIST_SAMPLES)
+      .copied()
+      .collect();
+    let out_end = out_hist.len() - SLACK_MS * PROBE_PER_MS;
+    let out_dec: Vec<f32> = out_hist
+      .iter()
+      .skip(out_end - OUT_SAMPLES)
+      .take(OUT_SAMPLES)
+      .copied()
+      .collect();
+    let hop_samples = PROBE_PER_MS * 10;
+    let in_env = hop_envelope(&in_dec, hop_samples);
+    let out_env = hop_envelope(&out_dec, hop_samples);
+    let out_hops = out_env.len();
+    let zero_hops = (MAX_LAG_MS + SLACK_MS) / 10; // 0 ms 对应的 hop 偏移
+    let max_k = (MAX_LAG_MS + 2 * SLACK_MS) / 10;
+    let guard = 1usize;
+    let mut best = f32::NEG_INFINITY;
+    let mut best_k = 0usize;
+    for k in guard..=max_k.saturating_sub(guard) {
+      if k + out_hops > in_env.len() {
+        break;
+      }
+      let c = pearson(&in_env[k..k + out_hops], &out_env);
+      if c > best {
+        best = c;
+        best_k = k;
+      }
+    }
+    if !best.is_finite() || best < 0.50 {
+      return Err(format!(
+        "{why}；能量包络也对不上（相关 {:.2}，低于 0.50；信号太弱或处理改变太大）",
+        best.max(0.0)
+      ));
+    }
+    let mut second = f32::NEG_INFINITY;
+    for k in guard..=max_k.saturating_sub(guard) {
+      if k + out_hops > in_env.len() {
+        break;
+      }
+      if k.abs_diff(best_k) > 2 {
+        second = second.max(pearson(&in_env[k..k + out_hops], &out_env));
+      }
+    }
+    let margin = if second.is_finite() {
+      best - second
+    } else {
+      best
+    };
+    if margin < 0.15 {
+      return Err(format!(
+        "{why}；包络峰值不突出（主 {best:.2} / 次 {:.2}；周期/重复信号会这样）",
+        second.max(0.0)
+      ));
+    }
+    let ms = (zero_hops as f32 - best_k as f32) * 10.0;
+    if !(0.0..=MAX_LAG_MS as f32).contains(&ms) {
+      return Err(format!("包络测到 {ms:.0} ms，超出 0~{MAX_LAG_MS} ms 范围"));
+    }
+    Ok(Peak {
+      ms,
+      confidence: best,
+      margin,
+      method: "envelope",
+      resolution_ms: 10.0,
+    })
+  }
+}
+
+/// 每 `hop` 个抽取样本求一次 RMS（包络）。
+fn hop_envelope(dec: &[f32], hop: usize) -> Vec<f32> {
+  dec
+    .chunks_exact(hop)
+    .map(|c| {
+      let e = c.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>() / hop as f64;
+      (e.sqrt() as f32).max(1e-6).ln()
+    })
+    .collect()
+}
+
+/// Pearson 相关系数（两段等长包络）。
+fn pearson(a: &[f32], b: &[f32]) -> f32 {
+  let n = a.len().min(b.len()) as f32;
+  if n < 2.0 {
+    return 0.0;
+  }
+  let ma = a.iter().take(n as usize).sum::<f32>() / n;
+  let mb = b.iter().take(n as usize).sum::<f32>() / n;
+  let mut num = 0.0f32;
+  let mut da = 0.0f32;
+  let mut db = 0.0f32;
+  for i in 0..n as usize {
+    let x = a[i] - ma;
+    let y = b[i] - mb;
+    num += x * y;
+    da += x * x;
+    db += y * y;
+  }
+  if da <= 1e-12 || db <= 1e-12 {
+    0.0
+  } else {
+    num / (da.sqrt() * db.sqrt())
   }
 }
 
@@ -802,10 +938,17 @@ fn assemble(
 
   // ---- 处理链（实测）----
   let chain_note = match measured {
-    Ok(p) => format!(
-      "输入 hop → 输出 hop 的波形互相关（峰值 {:.2}，领先次峰 {:.2}；12 kHz / 0.083 ms 分辨率）",
-      p.confidence, p.margin
-    ),
+    Ok(p) => {
+      let what = if p.method == "envelope" {
+        "能量包络互相关（波形被模型改相位，退到 10 ms 包络）"
+      } else {
+        "波形互相关（12 kHz）"
+      };
+      format!(
+        "输入 hop → 输出 hop 的{what}：峰值 {:.2}，领先次峰 {:.2}，分辨率 {:.2} ms",
+        p.confidence, p.margin, p.resolution_ms
+      )
+    }
     Err(e) => e.clone(),
   };
   stages.push(LatencyStage::new(
@@ -915,10 +1058,16 @@ fn assemble(
     Probe::ok(Health::ok(detail.clone()))
   };
 
+  let (measured_method, measured_resolution_ms) = match measured {
+    Ok(p) => (Some(p.method), Some(p.resolution_ms)),
+    Err(_) => (None, None),
+  };
   ColumnLatency {
     column,
     state: "running".into(),
     measured_ms,
+    measured_method,
+    measured_resolution_ms,
     confidence,
     jitter_ms: jitter,
     total_ms: if stages.iter().any(|s| s.ms.is_some()) {
@@ -948,8 +1097,8 @@ fn device_callback_stage(st: &crate::debug::StreamInfo, name: &str) -> LatencySt
         Some(ms),
         StageSource::Device,
         format!(
-          "{mode}：每回调 {} 帧 @ {} Hz（设备侧一个块的缓冲；抖动 {} ms）",
-          value.last, st.sample_rate, value.last_gap_ms
+          "{mode}：每回调 {} 帧 @ {} Hz（设备侧一个块的缓冲；最近间隔 {:.1} ms，最大 {:.1} ms）",
+          value.last, st.sample_rate, value.last_gap_ms, value.max_gap_ms
         ),
       );
     }
@@ -1022,6 +1171,63 @@ mod tests {
     assert!(e.is_err(), "周期信号不该给出确定延时");
   }
 
+  /// 降噪/TSE 会改相位：波形相关失效时必须退到 **10 ms 能量包络**，
+  /// 而且包络测出来的延时仍要落在 ±10 ms 内。
+  #[test]
+  fn envelope_fallback_for_phase_changing_processing() {
+    let mut analyzer = Analyzer::new();
+    let mut seed = 0x9e37_79b9u32;
+    let mut rand = || {
+      seed ^= seed << 13;
+      seed ^= seed >> 17;
+      seed ^= seed << 5;
+      (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
+    };
+    // 包络：92 个 hop 的慢变起伏（10 ms 一格），有明显峰谷
+    let hops = HIST_SAMPLES / (PROBE_PER_MS * 10);
+    let env: Vec<f32> = (0..hops)
+      .map(|i| {
+        0.05
+          + 0.20
+            * (0.7 * (i as f32 * 0.31).sin() + 0.5 * (i as f32 * 0.77).cos() + 1.5).max(0.0)
+            * (i as f32 * 1.9).sin().abs()
+      })
+      .collect();
+    let per_hop = PROBE_PER_MS * 10;
+    let mut a = Vec::with_capacity(HIST_SAMPLES);
+    for i in 0..hops {
+      for _ in 0..per_hop {
+        a.push(env[i] * rand());
+      }
+    }
+    let d_hops = 12; // 120 ms
+    let start = hops - SLACK_MS / 10 - OUT_SAMPLES / per_hop;
+    let mut out_hist: VecDeque<f32> = VecDeque::with_capacity(OUT_HIST);
+    // 输出用**另一段独立噪声**乘同一条包络（波形不相关、包络相关），延时 120 ms
+    for j in 0..(OUT_SAMPLES / per_hop) {
+      let e = if start + j >= d_hops {
+        env[start + j - d_hops]
+      } else {
+        0.0
+      };
+      for _ in 0..per_hop {
+        out_hist.push_back(e * rand());
+      }
+    }
+    for _ in 0..(OUT_HIST - OUT_SAMPLES) {
+      out_hist.push_back(0.0);
+    }
+    let in_hist: VecDeque<f32> = a.into_iter().collect();
+    let p = analyzer.measure(&in_hist, &out_hist).expect("包络应当可测");
+    assert_eq!(p.method, "envelope", "波形不相关时必须退到包络");
+    assert!(
+      (p.ms - 120.0).abs() <= 11.0,
+      "包络延时 120 ms，实测 {:.0} ms（相关 {:.2}）",
+      p.ms,
+      p.confidence
+    );
+  }
+
   /// 分段求和的语义：缺项时是下限，且 dominant 指向最大的一段。
   #[test]
   fn budget_reports_dominant_and_incomplete() {
@@ -1050,6 +1256,8 @@ mod tests {
         ms: 12.0,
         confidence: 0.9,
         margin: 0.5,
+        method: "waveform",
+        resolution_ms: 1000.0 / PROBE_RATE as f32,
       }),
     );
     assert_eq!(c.measured_ms, Some(12.0));
