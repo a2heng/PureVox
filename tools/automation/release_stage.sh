@@ -79,18 +79,24 @@ if [ "$PLATFORM" = "android" ]; then
   stage "out/PureVox-${VERSION}-android-arm64.apk" */*.apk *.apk || true
   want=1
   title="PureVox Android $VERSION"
-elif [ "$PLATFORM" = "portable" ]; then
-  # 桌面**便携测试通道**（安装包流水线恢复前的唯一桌面产物）
-  stage "out/PureVox-${VERSION}-windows-x64-portable.zip" */*portable.zip *portable.zip || true
-  want=1
-  title="PureVox $VERSION（便携测试版）"
 else
-  stage "out/PureVox-${VERSION}-windows-x64-setup.exe" */*-setup.exe *-setup.exe || true
-  stage "out/PureVox-${VERSION}-linux-x64.AppImage"    */*.AppImage *.AppImage || true
-  stage "out/PureVox-${VERSION}-linux-x64.deb"         */*.deb *.deb || true
-  stage "out/PureVox-${VERSION}-linux-x64.rpm"         */*.rpm *.rpm || true
-  want=4
-  title="PureVox $VERSION"
+  # Windows 安装包两条通道共用（Tauri 同款 NSIS）；写成函数，避免同一个产物模板
+  # 在脚本里出现两次（`ci_asset_names_match_the_tag_version` 会当成平台冲突）。
+  stage_win() {
+    stage "out/PureVox-${VERSION}-windows-x64-setup.exe" */*-setup.exe *-setup.exe || true
+  }
+  if [ "$PLATFORM" = "windows" ]; then
+    stage_win
+    want=1
+    title="PureVox $VERSION"
+  else
+    stage_win
+    stage "out/PureVox-${VERSION}-linux-x64.AppImage" */*.AppImage *.AppImage || true
+    stage "out/PureVox-${VERSION}-linux-x64.deb"      */*.deb *.deb || true
+    stage "out/PureVox-${VERSION}-linux-x64.rpm"      */*.rpm *.rpm || true
+    want=4
+    title="PureVox $VERSION"
+  fi
 fi
 
 # **缺任何一项都让 job 失败**（原来只 echo 一行警告就继续）。tag 已经推出去了，这时候发一个

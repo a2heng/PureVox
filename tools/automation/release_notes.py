@@ -53,10 +53,9 @@ ROOT = Path(__file__).resolve().parents[2]
 # 命名规则见 update/mod.rs 的 `ci_asset_names_match_the_tag_version` 测试（它直接读
 # release_stage.sh，改了会红）。
 PRODUCT_LINES_DESKTOP = (
-    "- **Windows（便携测试版）**：`PureVox-<版本>-windows-x64-portable.zip`"
-    "（解压双击即用；正式安装包流水线恢复后补 NSIS）",
+    "- **Windows**：`PureVox-<版本>-windows-x64-setup.exe`（NSIS 安装包，按用户安装）",
     "",
-    "桌面端内置 ONNX 模型；授权见 `MODEL-LICENSE.md`。",
+    "Linux 安装包（AppImage / deb / rpm）待恢复；桌面端内置 ONNX 模型，授权见 `MODEL-LICENSE.md`。",
 )
 
 PRODUCT_LINES_ANDROID = (

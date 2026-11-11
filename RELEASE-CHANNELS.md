@@ -9,8 +9,8 @@
 
 | 通道 | tag | 工作流 | 更新检查 | 更新日志范围 | 产物 |
 | --- | --- | --- | --- | --- | --- |
-| 桌面（当前：便携测试） | `v<yyyy.MM.dd.HHmm>` | `.github/workflows/release.yml` | 无（手动下载 zip） | 除 `android/` 外的提交 | Windows 便携 zip |
-| 桌面（安装包恢复后） | `v*` | 同上 | `src-tauri/src/update/` | 同上 | exe / AppImage / deb / rpm |
+| 桌面（当前：Windows NSIS） | `v<yyyy.MM.dd.HHmm>` | `.github/workflows/release.yml` | `src-tauri/src/update/`（`-setup.exe`） | 除 `android/` 外的提交 | `PureVox_<版本>_x64-setup.exe` |
+| 桌面（Linux 恢复后） | `v*` | 同上 | 同上 | 同上 | + AppImage / deb / rpm |
 | 安卓 | `android-v<yyyy.MM.dd.HHmm>` | `.github/workflows/android-release.yml` | `UpdateChecker`（只认 `android-v*`） | 只列 `android/` 下的提交 | 签名 APK |
 
 两条通道各自建 GitHub Release、各自写更新日志、各自检查更新。桌面发版**不会**让手机弹出
@@ -46,9 +46,9 @@ git tag v2026.11.12.1015
 git push origin v2026.11.12.1015
 ```
 
-`release.yml` 会构建 Windows 便携 zip、生成**桌面范围**的更新日志（排除 `android/`）、
-创建 `v*` release。`PLATFORM=portable` 传给 `release_stage.sh`，只认一个 zip。
-安装包流水线恢复后改回 4 件产物（`PLATFORM=desktop`）。
+`release.yml` 会构建 Windows NSIS 安装包、生成**桌面范围**的更新日志（排除 `android/`）、
+创建 `v*` release。`PLATFORM=windows` 传给 `release_stage.sh`，只认一个 `-setup.exe`
+（桌面自动更新认这个后缀）。Linux 安装包恢复后加回 Linux job 并切到 `PLATFORM=desktop`。
 
 ### 2.2 安卓
 

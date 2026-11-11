@@ -58,15 +58,15 @@ USERPROFILE="$PV_HOME" HOME="$PV_HOME" \
 
 ## 5. 打包
 
-**安装包流水线（NSIS / AppImage / deb）还没随 GPUI 重建恢复**。当前用便携测试包：
+**Windows 安装包用 NSIS**（Tauri 同款形状：按用户安装、开始菜单/桌面快捷方式、卸载项）：
 
 ```bash
-python tools/automation/package_portable.py          # cargo build --release + 目录 + zip
-python tools/automation/package_portable.py --no-build
+python tools/automation/package_windows.py          # cargo build --release + NSIS
+python tools/automation/package_windows.py --no-build
 ```
 
-产物：`dist/PureVox-<版本>-windows-x64-portable.zip`（exe + `opus.dll` + `models/`，解压双击即用，
-不写注册表、删目录即卸载）。适合内部测试版；正式安装包仍待恢复。
+产物：`dist/PureVox_<版本>_x64-setup.exe`（需要 `makensis`：`choco install nsis`）。
+Linux 的 AppImage / deb / rpm 流水线待恢复。
 
 `RELEASE.md` 里的版本号与产物命名规则仍然有效，打包命令部分待重写。
 

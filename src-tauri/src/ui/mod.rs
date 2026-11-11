@@ -10,6 +10,7 @@
 //!
 //! 画板只负责「节点 / 端口 / 线」；所有参数在右侧检查器，且**只显示选中的那一个节点**。
 
+mod i18n;
 mod qr;
 mod theme;
 
@@ -45,6 +46,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 type Job = Arc<std::sync::Mutex<Option<Result<String, String>>>>;
 
 fn quiet_button(cx: &App, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+  let label: SharedString = label.into();
+  let label = SharedString::from(i18n::tr(&label));
   Button::new(id)
     .xsmall()
     .custom(
@@ -58,6 +61,8 @@ fn quiet_button(cx: &App, id: impl Into<ElementId>, label: impl Into<SharedStrin
 }
 
 fn quiet_button_md(cx: &App, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+  let label: SharedString = label.into();
+  let label = SharedString::from(i18n::tr(&label));
   Button::new(id)
     .small()
     .custom(
@@ -184,6 +189,8 @@ pub struct Workspace {
   media_pick: Arc<std::sync::Mutex<Option<PendingMedia>>>,
   /// 正在出声的应用（单应用音频节点选源用；空 = 没刷新过）
   app_list: Vec<(u32, String)>,
+  /// 应用内更新状态（1 s 轮询；与 /debug 同源）
+  update_status: crate::update::Status,
 }
 
 impl Workspace {
@@ -193,6 +200,7 @@ impl Workspace {
     window: &mut Window,
     cx: &mut Context<Self>,
   ) -> Self {
+    crate::ui::i18n::set(&crate::config::load_lang());
     let focus_handle = cx.focus_handle();
     window.focus(&focus_handle, cx);
     let latency = hub.latency_report();
@@ -244,6 +252,7 @@ impl Workspace {
       pending_apply: None,
       media_pick: Arc::new(std::sync::Mutex::new(None)),
       app_list: Vec::new(),
+      update_status: crate::update::status(),
     };
     cx.spawn(async move |weak, cx| {
       loop {
@@ -301,6 +310,7 @@ impl Workspace {
       self.calib_report = self.hub.calib_report();
       // 手机端也可能改环深度（双向同步）：界面缓存跟着 hub 走。
       self.settings.net_ring_ms = crate::net::hub().ring_ms();
+      self.update_status = crate::update::status();
       let running = self.net_stats.as_ref().map(|s| s.running).unwrap_or(false);
       if running {
         let url = self.net_url();
@@ -648,7 +658,7 @@ impl Workspace {
     if let Some(d) = n.device.as_ref().filter(|x| !x.is_empty()) {
       return crate::devices::display_name(d, true).unwrap_or_else(|_| d.clone());
     }
-    Self::node_kind_label(n.kind, &n.ptype).to_string()
+    i18n::tr(Self::node_kind_label(n.kind, &n.ptype)).to_string()
   }
 
   fn card_size_parts(kind: RowKind, ptype: &str, channels: u32) -> (f32, f32) {
@@ -1173,9 +1183,9 @@ impl Workspace {
               .text_size(px(12.))
               .text_color(rgb(dot))
               .child(if running {
-                "引擎运行中"
+                i18n::tr("引擎运行中")
               } else {
-                "引擎已停止"
+                i18n::tr("引擎已停止")
               }),
           ),
       )
@@ -1265,7 +1275,7 @@ impl Workspace {
       .child(
         Button::new("debug")
           .small()
-          .label("调试")
+          .label(i18n::tr("调试"))
           .on_click(|_, _, _| {
             let url = format!("http://127.0.0.1:{}/debug/ui", crate::debug::http_port());
             let _ = crate::openurl::open(&url);
@@ -1565,7 +1575,7 @@ impl Workspace {
     };
     let selected = self.selected == Some(n.id);
     let id = n.id;
-    let label = Self::node_kind_label(n.kind, &n.ptype).to_string();
+    let label = i18n::tr(Self::node_kind_label(n.kind, &n.ptype)).to_string();
     let title = if n.kind == RowKind::Process {
       match n.ptype.as_str() {
         "gain" => n
@@ -1580,12 +1590,12 @@ impl Workspace {
             crate::infer::denoise_models()
               .iter()
               .find(|(f, _)| *f == m)
-              .map(|(_, l)| (*l).to_string())
-              .unwrap_or_else(|| "降噪".into())
+              .map(|(_, l)| i18n::tr(l).to_string())
+              .unwrap_or_else(|| i18n::tr("降噪").into())
           })
           .unwrap_or_else(|| "降噪".into()),
         "echo_cancel" => "近端 + 远端".into(),
-        _ => "处理".into(),
+        _ => i18n::tr("处理").into(),
       }
     } else {
       self.node_title(&n)
@@ -1672,7 +1682,11 @@ impl Workspace {
             div()
               .text_size(px(9.))
               .text_color(rgb(if on { t::MUTED } else { t::DANGER }))
-              .child(if on { "启用" } else { "静音" }),
+              .child(if on {
+                i18n::tr("启用")
+              } else {
+                i18n::tr("静音")
+              }),
           ),
       )
       .when(n.ptype == "echo_cancel", |card| {
@@ -1821,7 +1835,7 @@ impl Workspace {
         .flex()
         .flex_col()
         .gap_2()
-        .child(div().text_size(px(14.)).child("没有选中节点"))
+        .child(div().text_size(px(14.)).child(i18n::tr("没有选中节点")))
         .child(hint("点画板上的节点；拖动右侧端口连线。"))
         .into_any_element(),
     }
@@ -1854,7 +1868,8 @@ impl Workspace {
           .p(px(12.))
           .child(self.net_card(cx))
           .child(self.aec_card(cx))
-          .child(body),
+          .child(body)
+          .child(self.settings_card(cx)),
       )
       .into_any_element()
   }
@@ -1889,7 +1904,7 @@ impl Workspace {
         .items_center()
         .gap_2()
         .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(rgb(dot)))
-        .child(div().text_size(px(13.)).child("网络"))
+        .child(div().text_size(px(13.)).child(i18n::tr("网络")))
         .child(div().flex_1())
         .child(
           quiet_button(cx, "net-toggle", if running { "停止" } else { "启动" }).on_click(
@@ -2085,6 +2100,183 @@ impl Workspace {
       .into_any_element()
   }
 
+  /// 更新 / 虚拟驱动 / 系统声音：右侧常驻（不跟随选中节点）。
+  fn settings_card(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    use crate::update::Phase;
+    let st = self.update_status.clone();
+    let phase = match st.phase {
+      Phase::Idle => "还没检查".to_string(),
+      Phase::Checking => "正在检查…".to_string(),
+      Phase::UpToDate => "已是最新".to_string(),
+      Phase::Available => format!("发现新版本 {}", st.latest_version),
+      Phase::Downloading => {
+        let pct = st
+          .received
+          .checked_mul(100)
+          .and_then(|n| n.checked_div(st.asset_size))
+          .unwrap_or(0)
+          .min(100);
+        format!("正在下载 {pct}%")
+      }
+      Phase::Ready => "已下载，可安装".to_string(),
+      Phase::Installing => "正在安装…".to_string(),
+      Phase::Installed => "已安装，重启后生效".to_string(),
+      Phase::Unsupported => st.reason.clone(),
+      Phase::Failed => format!("失败：{}", st.reason),
+    };
+
+    let mut list = div()
+      .flex()
+      .flex_col()
+      .gap_2()
+      .child(section("更新"))
+      .child(field(
+        "当前版本",
+        if st.current_stamp.is_empty() {
+          format!("{}（开发构建）", st.current_version)
+        } else {
+          format!("{}（{}）", st.current_version, st.current_stamp)
+        },
+      ))
+      .child(field("状态", phase));
+    if !st.latest_version.is_empty() {
+      list = list.child(field("最新版本", st.latest_version.clone()));
+    }
+    if !st.asset_name.is_empty() {
+      list = list.child(field("安装包", st.asset_name.clone()));
+    }
+    if !st.notes.trim().is_empty() {
+      let notes: String = st.notes.trim().chars().take(240).collect();
+      list = list.child(hint(notes));
+    }
+
+    let mut row = div().flex().flex_wrap().gap_1();
+    row = row.child(
+      quiet_button(cx, "up-check", "检查更新").on_click(cx.listener(|this, _, _, cx| {
+        this.status = "正在检查更新…".into();
+        crate::rt::spawn(async {
+          let _ = crate::update::check().await;
+        });
+        cx.notify();
+      })),
+    );
+    if st.phase == Phase::Available {
+      row = row.child(quiet_button(cx, "up-dl", "下载更新").on_click(cx.listener(
+        |this, _, _, cx| {
+          this.status = "正在下载更新…".into();
+          crate::rt::spawn(async {
+            let _ = crate::update::download().await;
+          });
+          cx.notify();
+        },
+      )));
+    }
+    if st.phase == Phase::Ready {
+      row = row.child(
+        quiet_button(cx, "up-inst", "安装更新").on_click(cx.listener(|this, _, _, cx| {
+          this.status = match crate::update::install() {
+            Ok(m) => m,
+            Err(e) => format!("安装失败：{e}"),
+          };
+          cx.notify();
+        })),
+      );
+    }
+    if !st.url.is_empty() {
+      row = row.child(
+        quiet_button(cx, "up-page", "打开发布页").on_click(cx.listener(|this, _, _, cx| {
+          this.status = match crate::openurl::open(&this.update_status.url) {
+            Ok(()) => "已打开发布页".into(),
+            Err(e) => format!("打开失败：{e}"),
+          };
+          cx.notify();
+        })),
+      );
+    }
+    list = list.child(row);
+    if matches!(st.phase, Phase::Failed | Phase::Unsupported) {
+      list = list.child(hint(st.reason.clone()));
+    }
+
+    // ── 虚拟驱动（VB-CABLE）──────────────────────────────────────────
+    let vb = self
+      .devices
+      .iter()
+      .any(|d| d.direction == "output" && d.name.contains("CABLE Input"))
+      && self
+        .devices
+        .iter()
+        .any(|d| d.direction == "input" && d.name.contains("CABLE Output"));
+    list = list
+      .child(section("虚拟驱动"))
+      .child(field(
+        "VB-CABLE",
+        if vb {
+          "已安装".into()
+        } else {
+          "未检测到".into()
+        },
+      ))
+      .child(hint(
+        "链路：麦克风 → PureVox → CABLE Input → CABLE Output → 其它软件",
+      ))
+      .child(
+        div()
+          .flex()
+          .flex_wrap()
+          .gap_1()
+          .child(
+            quiet_button(cx, "vb-download", "驱动下载").on_click(cx.listener(|this, _, _, cx| {
+              let url = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip";
+              this.status = match crate::openurl::open(url) {
+                Ok(()) => "已打开 VB-CABLE 驱动下载页".into(),
+                Err(e) => format!("打开失败：{e}"),
+              };
+              cx.notify();
+            })),
+          )
+          .child(
+            quiet_button(cx, "vb-tutorial", "视频教程").on_click(cx.listener(|this, _, _, cx| {
+              let url = "https://www.bilibili.com/video/BV1i2bazGEKe/";
+              this.status = match crate::openurl::open(url) {
+                Ok(()) => "已打开视频教程".into(),
+                Err(e) => format!("打开失败：{e}"),
+              };
+              cx.notify();
+            })),
+          )
+          .child(
+            quiet_button(cx, "vb-panel", "VB 控制面板").on_click(cx.listener(|this, _, _, cx| {
+              this.status = match crate::vb_panel::open() {
+                Ok(()) => "已请求打开 VB-CABLE 控制面板".into(),
+                Err(e) => format!("打开失败：{e}"),
+              };
+              cx.notify();
+            })),
+          ),
+      );
+
+    // ── 系统声音 ─────────────────────────────────────────────────────
+    list = list
+      .child(section("系统声音"))
+      .child(
+        quiet_button(cx, "open-sound", "打开系统声音设置").on_click(cx.listener(
+          |this, _, _, cx| {
+            this.status = match crate::sound_panel::open() {
+              Ok(()) => "已打开系统声音设置".into(),
+              Err(e) => format!("打开失败：{e}"),
+            };
+            cx.notify();
+          },
+        )),
+      )
+      .child(hint(
+        "回环源在「＋ 输入 → 系统声音」里添加；这里只打开系统混音面板。",
+      ));
+
+    list.into_any_element()
+  }
+
   /// AEC 校准卡片：常驻右侧（不跟随选中节点）。没有 AEC 节点时只给入口提示。
   fn aec_card(&self, cx: &mut Context<Self>) -> AnyElement {
     let target = self
@@ -2096,7 +2288,7 @@ impl Workspace {
       .flex()
       .flex_col()
       .gap_2()
-      .child(div().text_size(px(13.)).child("AEC 校准"));
+      .child(div().text_size(px(13.)).child(i18n::tr("AEC 校准")));
     let Some((ci, ri)) = target else {
       return list
         .child(hint("画板里没有 AEC 节点（＋ AI → 回声消除）。"))
@@ -2194,7 +2386,7 @@ impl Workspace {
   ) -> AnyElement {
     let id = n.id;
     let color = Self::node_color(n.kind, &n.ptype);
-    let label = Self::node_kind_label(n.kind, &n.ptype).to_string();
+    let label = i18n::tr(Self::node_kind_label(n.kind, &n.ptype)).to_string();
     let title = if n.kind == RowKind::Process {
       match n.ptype.as_str() {
         "gain" => n
@@ -2209,12 +2401,12 @@ impl Workspace {
             crate::infer::denoise_models()
               .iter()
               .find(|(f, _)| *f == m)
-              .map(|(_, l)| (*l).to_string())
-              .unwrap_or_else(|| "降噪".into())
+              .map(|(_, l)| i18n::tr(l).to_string())
+              .unwrap_or_else(|| i18n::tr("降噪").into())
           })
           .unwrap_or_else(|| "降噪".into()),
         "echo_cancel" => "近端 + 远端".into(),
-        _ => "处理".into(),
+        _ => i18n::tr("处理").into(),
       }
     } else {
       self.node_title(&n)
@@ -2768,7 +2960,7 @@ impl Workspace {
       let label = div()
         .text_size(px(11.))
         .text_color(rgb(t::MUTED))
-        .child(p.label.to_string());
+        .child(i18n::tr(p.label).to_string());
       let ptype = ptype.clone();
       let control: AnyElement = match p.kind {
         crate::engine::registry::ParamKind::Number {
@@ -2851,15 +3043,15 @@ impl Workspace {
             let choices: Vec<(String, String)> = match ptype.as_str() {
               "denoise" => crate::infer::denoise_models()
                 .iter()
-                .map(|(f, l)| ((*f).to_string(), (*l).to_string()))
+                .map(|(f, l)| ((*f).to_string(), i18n::tr(l).to_string()))
                 .collect(),
               "tse" => crate::infer::tse::tse_models()
                 .iter()
-                .map(|(f, l)| ((*f).to_string(), (*l).to_string()))
+                .map(|(f, l)| ((*f).to_string(), i18n::tr(l).to_string()))
                 .collect(),
               "echo_cancel" => crate::infer::aec::aec_models()
                 .iter()
-                .map(|(f, l)| ((*f).to_string(), (*l).to_string()))
+                .map(|(f, l)| ((*f).to_string(), i18n::tr(l).to_string()))
                 .collect(),
               _ => Vec::new(),
             };
@@ -2934,9 +3126,9 @@ impl Workspace {
         self.plan.nodes().count(),
         self.plan.nodes().map(|n| n.inputs.len()).sum::<usize>(),
         if running {
-          "引擎运行中"
+          i18n::tr("引擎运行中")
         } else {
-          "引擎已停止"
+          i18n::tr("引擎已停止")
         }
       ))
   }
@@ -2952,10 +3144,11 @@ fn probe_rate(p: &crate::debug::Probe<f64>) -> String {
 }
 
 fn hint(text: impl Into<SharedString>) -> Div {
+  let text: SharedString = text.into();
   div()
     .text_size(px(11.))
     .text_color(rgb(t::MUTED))
-    .child(text.into())
+    .child(SharedString::from(i18n::tr(&text)))
 }
 
 fn field(label: &str, value: String) -> Div {
@@ -2965,7 +3158,11 @@ fn field(label: &str, value: String) -> Div {
     .justify_between()
     .gap_2()
     .text_size(px(11.))
-    .child(div().text_color(rgb(t::MUTED)).child(label.to_string()))
+    .child(
+      div()
+        .text_color(rgb(t::MUTED))
+        .child(i18n::tr(label).to_string()),
+    )
     .child(
       div()
         .flex_1()
@@ -2981,5 +3178,5 @@ fn section(text: &str) -> Div {
     .mt(px(4.))
     .text_size(px(11.))
     .text_color(rgb(t::ACCENT))
-    .child(text.to_string())
+    .child(i18n::tr(text).to_string())
 }

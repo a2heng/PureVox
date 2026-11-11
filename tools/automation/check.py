@@ -216,19 +216,22 @@ def gate_bundle() -> None:
     """
     import ast
 
-    portable = ROOT / "tools" / "automation" / "package_portable.py"
-    if not portable.is_file():
-        raise GateError(f"缺少便携包脚本：{portable}")
-    text = portable.read_text(encoding="utf-8")
+    installer = ROOT / "tools" / "automation" / "package_windows.py"
+    nsi = ROOT / "tools" / "automation" / "nsis" / "purevox.nsi"
+    if not installer.is_file():
+        raise GateError(f"缺少安装包脚本：{installer}")
+    if not nsi.is_file():
+        raise GateError(f"缺少 NSIS 脚本：{nsi}")
+    text = installer.read_text(encoding="utf-8")
     ast.parse(text)  # 语法错误当场暴露（这类脚本平时只在发版时跑）
     for token, why in (
         ("opus.dll", "网络音频运行时依赖，缺了网络功能全废"),
         ("models", "AI 模型目录，缺了降噪/TSE/AEC 全部不可用"),
-        ("zipfile", "产物必须是可下载的 zip"),
+        ("makensis", "安装包必须由 NSIS 生成（Tauri 同款布局）"),
     ):
         if token not in text:
-            raise GateError(f"package_portable.py 没有处理 {token}（{why}）")
-    print("  portable: exe + opus.dll + models/ + zip")
+            raise GateError(f"package_windows.py 没有处理 {token}（{why}）")
+    print("  installer: exe + opus.dll + models/ → NSIS setup.exe")
 
     # 发版那一步是独立文件：用假产物树 + 假 gh 在本地跑通（桌面 / 安卓 / 缺产物 / 缺 notes）。
     harness = ROOT / "tools" / "automation" / "run_release_stage.py"

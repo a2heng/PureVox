@@ -36,11 +36,11 @@
    - 工作流（`.github/workflows/`）：
      - `tests.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-24.04`
        （fmt/clippy/build/test）、`ui` 门禁（`ubuntu-24.04`：setup-node → `-Gate ui`）。**不打包**。
-     - `release.yml`：**桌面通道**，tag `v*` 或手动 → **Windows 便携测试版**：
-       门禁（fmt/clippy/test）+ `python tools/automation/package_portable.py`
-       （`cargo build --release` + exe/opus.dll/models → zip）→ `PLATFORM=portable`
-       发 release；更新日志排除 `android/`。**安装包流水线（NSIS / AppImage / deb）尚未恢复**，
-       恢复后改回 `PLATFORM=desktop` 的四件产物。
+     - `release.yml`：**桌面通道**，tag `v*` 或手动 → **Windows NSIS 安装包**：
+       门禁（fmt/clippy/test）+ `choco install nsis` + `python tools/automation/package_windows.py`
+       （`cargo build --release` + exe/opus.dll/models → `PureVox_<版本>_x64-setup.exe`）→
+       `PLATFORM=windows` 发 release；更新日志排除 `android/`。Linux 的 AppImage/deb/rpm 待恢复，
+       恢复后加回 Linux job 并切到 `PLATFORM=desktop`。
      - `android-release.yml`：**安卓通道**，tag `android-v*` 或手动 → 只跑 Android：
        JDK17 + `install_android_sdk.py` + 从 `gh secret` 还原 keystore →
        `./gradlew assembleRelease` → **已签名的 release APK**；release 只附 APK、

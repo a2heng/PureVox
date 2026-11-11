@@ -27,5 +27,5 @@
 # run_release_stage.py 的临时产物树（台子自己会删，这里兜底）
 .relstage_test/
 
-# 便携测试包产物（package_portable.py）
+# 安装包 / 测试产物（package_windows.py）
 /dist/

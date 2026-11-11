@@ -80,7 +80,6 @@ LAYOUT = {
     f"PureVox-Linux-x64-{VERSION}-rpm": [f"purevox-{VERSION}-1.x86_64.rpm"],
     f"PureVox-Linux-x64-{VERSION}-appimage": [f"purevox_{VERSION}_amd64.AppImage"],
     f"PureVox-Android-arm64-2026-10-15-0439-apk": ["PureVox-Android-arm64-2026-10-15-0439.apk"],
-    f"PureVox-portable-2026-10-15-0439": [f"PureVox-{VERSION}-windows-x64-portable.zip"],
 }
 
 # 假 gh：把参数打出来，并逐个检查附件是否真的存在 —— 真 gh 找不到文件时报的
@@ -207,7 +206,7 @@ def main() -> int:
         run_case("桌面通道：四种产物齐全（必须走到 gh，且用的是假 gh）", 0, expect_gh=True),
         run_case("桌面通道：缺 deb", 1, drop=f"PureVox-Linux-x64-{VERSION}-deb"),
         run_case("安卓通道：只发 APK", 0, expect_gh=True, platform="android"),
-        run_case("桌面便携通道：只发 zip", 0, expect_gh=True, platform="portable"),
+        run_case("桌面 Windows 安装包：只发 setup.exe", 0, expect_gh=True, platform="windows"),
         run_case("没有 notes 文件", 1, notes=False),
     ]
     shutil.rmtree(WORK, ignore_errors=True)
