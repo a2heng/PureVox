@@ -76,19 +76,19 @@ stage() { # <稳定名> <匹配通配…>；缺产物时记下来并返回 1
 }
 if [ "$PLATFORM" = "android" ]; then
   # 安卓通道**只**发 APK（`RELEASE-CHANNELS.md`：与桌面 release 完全分开）
-  stage "out/PureVox-${VERSION}-android-arm64.apk" */*.apk || true
+  stage "out/PureVox-${VERSION}-android-arm64.apk" */*.apk *.apk || true
   want=1
   title="PureVox Android $VERSION"
 elif [ "$PLATFORM" = "portable" ]; then
   # 桌面**便携测试通道**（安装包流水线恢复前的唯一桌面产物）
-  stage "out/PureVox-${VERSION}-windows-x64-portable.zip" */*portable.zip || true
+  stage "out/PureVox-${VERSION}-windows-x64-portable.zip" */*portable.zip *portable.zip || true
   want=1
   title="PureVox $VERSION（便携测试版）"
 else
-  stage "out/PureVox-${VERSION}-windows-x64-setup.exe" */*-setup.exe || true
-  stage "out/PureVox-${VERSION}-linux-x64.AppImage"    */*.AppImage  || true
-  stage "out/PureVox-${VERSION}-linux-x64.deb"         */*.deb       || true
-  stage "out/PureVox-${VERSION}-linux-x64.rpm"         */*.rpm       || true
+  stage "out/PureVox-${VERSION}-windows-x64-setup.exe" */*-setup.exe *-setup.exe || true
+  stage "out/PureVox-${VERSION}-linux-x64.AppImage"    */*.AppImage *.AppImage || true
+  stage "out/PureVox-${VERSION}-linux-x64.deb"         */*.deb *.deb || true
+  stage "out/PureVox-${VERSION}-linux-x64.rpm"         */*.rpm *.rpm || true
   want=4
   title="PureVox $VERSION"
 fi

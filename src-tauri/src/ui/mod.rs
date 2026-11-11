@@ -1916,30 +1916,39 @@ impl Workspace {
         .into_any_element();
     }
     let url = self.net_url();
-    list = list.child(field("地址", url.clone())).child(
-      div()
-        .flex()
-        .gap_1()
-        .child(
-          quiet_button(cx, "net-copy", "复制地址").on_click(cx.listener(move |this, _, _, cx| {
-            let url = this.net_url();
-            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(url.clone()));
-            this.status = format!("已复制：{url}");
-            cx.notify();
-          })),
-        )
-        .child(quiet_button(cx, "net-ca", "CA 证书").on_click(cx.listener(
-          move |this, _, _, cx| {
-            let url = format!("{}ca-cert", this.net_url());
-            match crate::openurl::open(&url) {
-              Ok(()) => this.status = format!("已打开 {url}"),
-              Err(e) => this.status = format!("打开 CA 失败：{e}"),
-            }
-            cx.notify();
-          },
-        ))),
-    );
-    // 网卡选择：只决定「告诉客户端哪个地址」，服务本来就监听所有网卡。
+    // ── 手机怎么连 ──────────────────────────────────────────────────
+    list = list
+      .child(section("手机连接"))
+      .child(hint(
+        "手机和电脑连同一个 Wi-Fi：用手机 App 扫下面的二维码；或者用浏览器直接打开地址。",
+      ))
+      .child(field("地址", url.clone()))
+      .child(
+        div()
+          .flex()
+          .flex_wrap()
+          .gap_1()
+          .child(
+            quiet_button(cx, "net-copy", "复制地址").on_click(cx.listener(
+              move |this, _, _, cx| {
+                let url = this.net_url();
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(url.clone()));
+                this.status = format!("已复制：{url}");
+                cx.notify();
+              },
+            )),
+          )
+          .child(quiet_button(cx, "net-ca", "安装 CA").on_click(cx.listener(
+            move |this, _, _, cx| {
+              let url = format!("{}ca-cert", this.net_url());
+              match crate::openurl::open(&url) {
+                Ok(()) => this.status = format!("已打开 {url}"),
+                Err(e) => this.status = format!("打开 CA 失败：{e}"),
+              }
+              cx.notify();
+            },
+          ))),
+      );
     if self.net_ifaces.len() > 1 {
       let mut row = div().flex().flex_wrap().gap_1();
       for i in self.net_ifaces.clone() {
@@ -1958,48 +1967,74 @@ impl Workspace {
             })),
         );
       }
-      list = list.child(row);
+      list = list
+        .child(hint(
+          "地址要告诉手机哪一张网卡？（服务本身监听所有网卡，这里只影响二维码/复制）",
+        ))
+        .child(row);
     }
     match &self.net_qr {
       Some(path) => {
         list = list.child(
           div()
             .flex()
-            .justify_center()
-            .py(px(4.))
-            .child(gpui_kit::img(path.clone()).w(px(148.)).h(px(148.))),
+            .flex_col()
+            .items_center()
+            .gap_1()
+            .py(px(2.))
+            .child(gpui_kit::img(path.clone()).w(px(152.)).h(px(152.)))
+            .child(hint("手机扫码连接")),
         );
       }
       None => {
-        list = list.child(hint("二维码生成中…（手机也可以自己发现本机）"));
+        list = list.child(hint("二维码生成中…（手机 App 也能在局域网里自动发现本机）"));
       }
     }
+    list = list.child(hint(
+      "浏览器打开会提示证书不安全：点「安装 CA」，按手机提示装到系统即可永久消除。",
+    ));
+
+    // ── 连上之后发生了什么 ──────────────────────────────────────────
     list = list
-      .child(field("客户端", st.clients.to_string()))
+      .child(section("连接状态"))
+      .child(field(
+        "客户端",
+        if st.clients == 0 {
+          "0（还没有手机连上）".to_string()
+        } else {
+          st.clients.to_string()
+        },
+      ))
       .child(field(
         "RTT",
         st.rtt_ms
           .map(|v| format!("{v:.1} ms"))
-          .unwrap_or_else(|| "—".into()),
+          .unwrap_or_else(|| "—（还没有 pong）".into()),
       ))
-      .child(field("上行", probe_rate(&st.tx_packets_per_s)))
-      .child(field("下行", probe_rate(&st.rx_packets_per_s)))
-      .child(field(
-        "环深度",
-        format!("{} ms", crate::net::hub().ring_ms()),
-      ))
-      .child(self.net_ring_slider(cx));
+      .child(field("电脑 → 手机", probe_rate(&st.tx_packets_per_s)))
+      .child(field("手机 → 电脑", probe_rate(&st.rx_packets_per_s)));
     if let Some(c) = &st.client {
       list = list.child(field(
-        "手机环",
-        format!("{:.0} / {:.0} ms", c.level_ms, c.target_ms),
+        "手机播放环",
+        format!("{:.0} / {:.0} ms（当前 / 目标）", c.level_ms, c.target_ms),
       ));
     }
     if !st.verdict.text.is_empty() {
-      list = list.child(hint(st.verdict.text.clone()));
+      list = list.child(hint(format!("网络结论：{}", st.verdict.text)));
     }
+    list = list.child(hint(
+      "包/s：每 10 ms 一个音频包，正常约 100 包/s；为 0 表示这个方向没在传。",
+    ));
+
+    // ── 缓冲 ────────────────────────────────────────────────────────
+    list = list
+      .child(section("播放缓冲"))
+      .child(hint(
+        "手机端的抖动缓冲（10–200 ms）：越大越抗网络抖动，但延迟越高；默认 50 ms。",
+      ))
+      .child(self.net_ring_slider(cx));
     if st.clients == 0 {
-      list = list.child(hint("还没有客户端连上（手机 / 网页扫码或自动发现）"));
+      list = list.child(hint("扫码 / 打开地址后，这里会显示客户端与速率。"));
     }
     list.into_any_element()
   }

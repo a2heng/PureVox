@@ -978,6 +978,11 @@ mod tests {
       if name.contains("-android-") {
         continue;
       }
+      // **便携测试包也是例外**：解压即用、没有安装器，不走桌面自动更新（手动下载）。
+      // 安装包流水线恢复、桌面通道回到 exe/AppImage/deb/rpm 后，这一行会一起删掉。
+      if name.ends_with("-portable.zip") {
+        continue;
+      }
       let claimed = known.iter().any(|s| name.ends_with(s.as_str()));
       assert!(
         claimed,
