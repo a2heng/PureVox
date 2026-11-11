@@ -70,8 +70,11 @@ def platform_tag_glob(platform: str) -> str:
 
 
 def platform_paths(platform: str) -> list[str]:
-    # git log 的 pathspec：安卓只看 `android/`；桌面排除 `android/`。
-    return ["android"] if platform == "android" else [".", ":(exclude)android"]
+    # git log 的 pathspec：安卓只看 `android/`；桌面排除 `android/` 和安卓工作流
+    # （后者在 `.github/workflows/` 根目录，不排除的话安卓提交会混进桌面日志）。
+    if platform == "android":
+        return ["android"]
+    return [".", ":(exclude)android", ":(exclude).github/workflows/android-release.yml"]
 
 
 def git(*args: str, check: bool = True) -> str:
