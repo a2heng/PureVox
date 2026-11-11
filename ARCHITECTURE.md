@@ -433,7 +433,7 @@ p99 5.06 ms、max 7.06 ms（不加 MMCSS 会出现 15 ms 尾巴）。所以**设
 在 0/480 之间跳，128 帧的回调必然抽到 0。60 s 实测：设备环 10.0 ms、`und/s = 0`、
 `overrun/s = 0`、`ppm ≈ -41`；无处理列合计 65 ms（采集环 10 + 行环 10 + 混音源环 10 +
 48k 环 10 + 设备环 10 四段环仍是主要成本）。
-| 重采样状态 | `dsp::resampler`（rubato） | 固定（数帧） |
+| 重采样状态 | `dsp::resampler`（整数倍/同率多相；其它 rubato sinc） | 固定（数帧） |
 | viz 缓冲 | `engine` | 5 s，丢最旧 |
 | 频谱 / 波形 | `dsp::meter` | 波形 50 ms、频谱 481 bin，固定 |
 | AEC far 历史 | `engine` | 2 s 网格；`far_delay` ≤ 1000 ms |

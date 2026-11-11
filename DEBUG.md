@@ -101,7 +101,7 @@ release 构建同样保留（不允许用编译开关剔除）。
   `devices::spawn_refresh`（启动时 + 面板「刷新」按钮），后台线程执行。
 - GPUI 界面在进程内绘制；「本进程」指标包含界面开销（不再有独立的 WebView2 子进程）。
 - **采集链路**（`src-tauri/src/audio/`）：设备按原生默认格式打开 → 回调线程只做交织样本写入 +
-  写 `rtrb` 无锁环 + 原子计数 → 每路一个工作线程（独占一条设备流）用 rubato `Async` sinc 重采样到
+  写 `rtrb` 无锁环 + 原子计数 → 每路一个工作线程（独占一条设备流）用 `dsp::resampler` 重采样到（整数倍/同采样率走多相，44.1k 等走 rubato sinc）
   48 kHz（`resampler::ToHops`，引擎唯一重采样实现；原生 48k 直通）并在 48k 输出侧切 480 样本 hop。
   **放行的节拍只看这一路自己的时钟**（`capture.rs` 的 `release_realtime` / `clamp_excess`）：
   ① **实时预算** —— 每拍只放「距上次放行这段时间该放的量」（上限一格），有些源是**突发**的
