@@ -1,0 +1,163 @@
+# PureVox 安卓端打包 / 发版 —— **独立通道**（`RELEASE-CHANNELS.md`）。
+#
+# 触发：推 tag `android-v*`（构建 + 建 release）或手动 `workflow_dispatch`
+# （只构建、不建 release）。桌面端的 `v*` 不会触发这里；这里也不会去发桌面产物。
+# 更新日志按 `android/` 路径筛（`release_notes.py --platform android`），
+# App 内更新只认 `android-v*` release（`UpdateChecker.TAG_PREFIX`）。
+#
+# 缓存：与桌面一致，一处都不缓存（理由见 RELEASE.md「缓存纪律」）。
+name: 安卓端打包发版（tag android-v* / 手动）
+
+on:
+  push:
+    tags: ["android-v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  android:
+    name: 打包 · Android（签名 release APK）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load versions (versions.env 是唯一来源)
+        shell: bash
+        run: |
+          while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+              ''|'#'*) continue ;;
+              *=*) printf '%s\n' "$line" >> "$GITHUB_ENV" ;;
+            esac
+          done < tools/automation/versions.env
+
+      - name: Set app version（tag / 日期）
+        shell: bash
+        run: python3 tools/automation/version.py >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JDK_VER }}
+
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK platform + build-tools
+        run: python tools/automation/install_android_sdk.py
+
+      # 凭据一律来自 secrets、keystore 还原到 $RUNNER_TEMP（仓库外）。
+      # PV_REQUIRE_SIGNING=1：缺凭据直接失败，绝不产出装不上的未签名包。
+      - name: Materialize signing keystore (from secrets)
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -z "$KEYSTORE_B64" ] && missing="$missing ANDROID_KEYSTORE_B64"
+          [ -z "$KEY_ALIAS" ]    && missing="$missing ANDROID_KEY_ALIAS"
+          [ -z "$KEY_PASS" ]     && missing="$missing ANDROID_KEY_PASS"
+          if [ -n "$missing" ]; then
+            echo "::error::secret 缺失或为空：$missing —— 无法签出可安装的 release APK"
+            echo "::error::Android 不允许安装未签名包；宁可当场失败，也不要发一个装不上的版本"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/purevox-release.jks"
+          echo "PV_KEYSTORE=$RUNNER_TEMP/purevox-release.jks" >> "$GITHUB_ENV"
+          echo "PV_KEY_ALIAS=$KEY_ALIAS"                     >> "$GITHUB_ENV"
+          echo "PV_KEY_PASS=$KEY_PASS"                       >> "$GITHUB_ENV"
+          echo "PV_REQUIRE_SIGNING=1"                        >> "$GITHUB_ENV"
+          "$JAVA_HOME/bin/keytool" -list -keystore "$RUNNER_TEMP/purevox-release.jks" \
+            -storepass "$KEY_PASS" -alias "$KEY_ALIAS" \
+            | sed 's/^/  [keystore] /'
+
+      - name: Build release APK（已签名）
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon -PpvVersion="$VERSION" -PpvVersionCode="$ACODE"
+
+      - name: Stage APK
+        run: |
+          shopt -s nullglob
+          apks=(android/app/build/outputs/apk/release/PureVox-*-android-arm64.apk)
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::预期恰好 1 个 release APK，实际 ${#apks[@]} 个：${apks[*]:-（一个都没有）}"
+            exit 1
+          fi
+          mv "${apks[0]}" "PureVox-Android-arm64-${{ env.STAMP }}.apk"
+
+      - name: Verify APK（签名 + 对齐）
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(PureVox-Android-arm64-*.apk)
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::预期恰好 1 个 APK，实际 ${#apks[@]} 个：${apks[*]:-（一个都没有）}"
+            exit 1
+          fi
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" verify \
+            --verbose --print-certs "${apks[0]}" | sed 's/^/  [apksigner] /'
+          verify_out=$("$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/apksigner" \
+            verify --verbose "${apks[0]}")
+          if ! grep -q 'v3 scheme.*: true' <<<"$verify_out"; then
+            echo "::error::APK 没有 v3 签名（enableV3Signing 没生效？密钥轮换能力就没了）"
+            printf '%s\n' "$verify_out" | sed 's/^/  [apksigner] /'
+            exit 1
+          fi
+          "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS/zipalign" -c -v 4 "${apks[0]}" \
+            | tail -1 | sed 's/^/  [zipalign] /'
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: PureVox-Android-arm64-${{ env.STAMP }}-apk
+          path: PureVox-Android-arm64-*.apk
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Release
+  release:
+    name: 发版（android tag → 只发 APK）
+    runs-on: ubuntu-24.04
+    needs: [android]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # release notes 需要上一个 android tag 起的完整历史
+
+      - name: Set app version（产物文件名要用）
+        shell: bash
+        run: python tools/automation/version.py >> "$GITHUB_ENV"
+
+      - name: Download APK
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Build release notes（只列 android/ 的提交）
+        shell: bash
+        run: |
+          python tools/automation/release_notes.py \
+            --platform android --tag "${{ github.ref_name }}" --out notes.md
+
+      - name: Create GitHub release（实现在 tools/automation/release_stage.sh）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ env.VERSION }}
+          PLATFORM: android
+          ARTIFACTS: artifacts
+        run: bash tools/automation/release_stage.sh

@@ -25,7 +25,6 @@
     <!-- 卡片标题色：亮色主题用深蓝；暗色主题在 values-night/colors.xml 覆盖成亮蓝 -->
     <color name="pv_accent">#1B3A63</color>
     <!-- 底栏选中态底衬（半透明品牌蓝） -->
-    <color name="pv_nav_indicator">#221B3A63</color>
     <!-- 电脑回 err / 本机故障：状态区红字行 -->
     <color name="pv_err">#C62828</color>
 

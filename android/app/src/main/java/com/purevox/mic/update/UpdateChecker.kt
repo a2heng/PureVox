@@ -23,30 +23,29 @@ import android.content.Context
 import android.os.Build
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * 应用内更新：**唯一数据源 = 本仓库 GitHub Releases**（与电脑端 `src-tauri/src/update/`
- * 同一个仓库、同一套命名规则）。
+ * 应用内更新：**唯一数据源 = 本仓库 GitHub Releases**。
  *
- * 判定依据是 **tag 的完整时间戳**，不是显示版本号：显示版本 `yy.M.d` 同日会重复，
- * 而 tag `v<yyyy.MM.dd.HHmm>` 按时间全序。本机版本则是安装包的 `versionCode`
- * （`yyMMddHHmm ÷ 10`，见 `tools/automation/version.py` 的 `ACODE`）—— 两者同源，直接比整数
- * 大小即可，且 **versionCode 单调递增**正是为此设计的（`build.gradle.kts` 注释）。
- * **÷10 必须两侧一致**（见 `stampToCode`）：versionCode 是 Int32，十位数值装不进去。
+ * **安卓与桌面是两条独立的发布通道**（见 `RELEASE-CHANNELS.md`）：
+ * - 桌面 tag：`v<yyyy.MM.dd.HHmm>`；
+ * - 安卓 tag：`android-v<yyyy.MM.dd.HHmm>`。
  *
- * 产物**按文件名后缀匹配**（`*.apk`），不看版本号（同 `update/install_*.rs` 的思路）：
- * `release.yml` 会统一重命名产物，后缀因此稳定。
- *
- * **开发构建不下结论**：本机 `versionCode = 1` 时（`-PpvVersionCode` 没传）没有可比的时间戳，
- * 报 [UpdateResult.DevBuild] 而不是「已是最新」。
+ * 这里只认 `android-v*`：用 `/releases/latest` 会拿到「全仓库最新」，桌面一发版，
+ * 手机上就会出现一个装不了的「新版本」。所以改成拉一页 release 列表自己筛，
+ * 既不看桌面 release，也不受它们的时间顺序影响。
  */
 object UpdateChecker {
 
     /** 唯一数据源。与电脑端 `update::REPO` 一致。 */
     private const val REPO = "a2heng/PureVox"
-    private const val API = "https://api.github.com/repos/$REPO/releases/latest"
+    private const val API = "https://api.github.com/repos/$REPO/releases?per_page=30"
+
+    /** 安卓发布通道的 tag 前缀。**桌面是 `v`，不要混用**。 */
+    private const val TAG_PREFIX = "android-v"
 
     /**
      * 没有版本时间戳的构建（本机 `assembleRelease` 默认 versionCode=1）。
@@ -121,7 +120,7 @@ object UpdateChecker {
      * 10 分钟粒度、单调、上限 991231235，与 `version.py` 一致。
      */
     fun stampToCode(tag: String): Int? {
-        val t = tag.trim().removePrefix("v")
+        val t = tag.trim().removePrefix(TAG_PREFIX).removePrefix("android-").removePrefix("v")
         val parts = t.split(".")
         if (parts.size != 4) return null
         val y = parts[0].toIntOrNull() ?: return null
@@ -137,9 +136,9 @@ object UpdateChecker {
         return code.toInt()
     }
 
-    /** `v2026.10.08.1430` → `26.10.8`（显示版本，去前导零，与 `version.py` 的 VERSION 同构）。 */
+    /** `android-v2026.10.08.1430` → `26.10.8`（显示版本，去前导零，与 `version.py` 的 VERSION 同构）。 */
     fun stampToVersion(tag: String): String? {
-        val t = tag.trim().removePrefix("v")
+        val t = tag.trim().removePrefix(TAG_PREFIX).removePrefix("android-").removePrefix("v")
         val parts = t.split(".")
         if (parts.size != 4) return null
         val y = parts[0].toIntOrNull() ?: return null
@@ -181,13 +180,13 @@ object UpdateChecker {
                         return
                     }
                     val info = try {
-                        parseRelease(body)
+                        parseReleases(body)
                     } catch (e: Exception) {
                         onDone(UpdateResult.Failed("解析失败：${e.message ?: e.javaClass.simpleName}"))
                         return
                     }
                     if (info == null) {
-                        onDone(UpdateResult.Failed("最新 release 没有可用的 APK 资产"))
+                        onDone(UpdateResult.Failed("还没有安卓版 release（或没有可用的 APK 资产）"))
                         return
                     }
                     onDone(
@@ -202,32 +201,46 @@ object UpdateChecker {
         })
     }
 
-    /** 从 `/releases/latest` 的 JSON 里取 tag + 第一个 `.apk` 资产；取不到返回 `null`。 */
-    private fun parseRelease(body: String): ReleaseInfo? {
-        val o = JSONObject(body)
-        val tag = o.optString("tag_name")
-        val code = stampToCode(tag) ?: return null
-        val ver = stampToVersion(tag) ?: return null
-        val assets = o.optJSONArray("assets") ?: return null
-        var apkName = ""
-        var apkUrl = ""
-        for (i in 0 until assets.length()) {
-            val a = assets.optJSONObject(i) ?: continue
-            val name = a.optString("name")
-            if (name.endsWith(".apk", ignoreCase = true)) {
-                apkName = name
-                apkUrl = a.optString("browser_download_url")
-                break
+    /**
+     * 从 `/releases?per_page=30` 的 JSON 数组里，只挑 **`android-v*`** 的 release，
+     * 取 versionCode 最大的那条，再取其中第一个 `.apk` 资产；没有返回 `null`。
+     *
+     * 不能直接用数组第一条：桌面 release 也会出现在同一个列表里，而且可能更新。
+     * 也不能混用桌面 tag —— 桌面包的手机装不上，装了也连不上同一个更新通道。
+     */
+    private fun parseReleases(body: String): ReleaseInfo? {
+        val arr = JSONArray(body)
+        var best: ReleaseInfo? = null
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val tag = o.optString("tag_name")
+            if (!tag.startsWith(TAG_PREFIX)) continue
+            val code = stampToCode(tag) ?: continue
+            val ver = stampToVersion(tag) ?: continue
+            val assets = o.optJSONArray("assets") ?: continue
+            var apkName = ""
+            var apkUrl = ""
+            for (j in 0 until assets.length()) {
+                val a = assets.optJSONObject(j) ?: continue
+                val name = a.optString("name")
+                if (name.endsWith(".apk", ignoreCase = true)) {
+                    apkName = name
+                    apkUrl = a.optString("browser_download_url")
+                    break
+                }
+            }
+            if (apkName.isEmpty() || apkUrl.isEmpty()) continue
+            if (best == null || code > best.versionCode) {
+                best = ReleaseInfo(
+                    tag = tag,
+                    versionCode = code,
+                    displayVersion = ver,
+                    apkName = apkName,
+                    apkUrl = apkUrl,
+                    notes = o.optString("body"),
+                )
             }
         }
-        if (apkName.isEmpty() || apkUrl.isEmpty()) return null
-        return ReleaseInfo(
-            tag = tag,
-            versionCode = code,
-            displayVersion = ver,
-            apkName = apkName,
-            apkUrl = apkUrl,
-            notes = o.optString("body"),
-        )
+        return best
     }
 }

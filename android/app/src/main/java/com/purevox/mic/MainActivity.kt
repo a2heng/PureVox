@@ -50,7 +50,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.ContextCompat
-import com.google.android.material.bottomnavigation.BottomNavigationView
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.slider.Slider
@@ -83,8 +83,8 @@ import org.json.JSONObject
  * 3. 远程输入：IME 已组合文本（`text`）+ 手机实体键（`key`）。电脑端**默认关闭**，
  *    没开开关时电脑会回 `err`，本界面把 `err` 原文显示出来，不静默丢弃。
  *
- * 界面按卡片分组（连接 / 功能 / 远程输入 / 后台保活 / 更新），底部「诊断」默认收起
- * （标题行点击展开）—— 迁移期调试信息仍在，只是不再一上来就占满整屏。
+ * 界面按一页式分组（头图 / 连接 / 功能 / 诊断），设置收进头图右上角圆点按钮的
+ * 弹出层（`sheet_settings.xml`）—— 保活 / 更新 / 关于不常看，不占一整页。
  *
  * 纪律：
  * - **收到 `ready` 之前不推流、不播放**（[applyState] 里 `ready` 是必要条件）。
@@ -197,8 +197,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnScan: ImageButton
     // 连接做成开关：滑块位置 = 连没连上（不用读文字判状态）
     private lateinit var swConnect: MaterialSwitch
-    private lateinit var navBottom: BottomNavigationView
-    private var pages: List<Pair<Int, android.view.View>> = emptyList()
+    private lateinit var btnMenu: ImageButton
+    private lateinit var tvDiagToggle: TextView
     /** 程序改开关状态时抑制监听器，避免「setChecked → 回调 → connect」自激。 */
     private var suppressConnectToggle = false
     private lateinit var btnHealth: Button
@@ -224,17 +224,25 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvRing: TextView
     /** 程序改滑块时抑制监听器，避免「setValue → 回调 → 再发 settarget」自激。 */
     private var suppressRing = false
-    private lateinit var tvBattery: TextView
-    private lateinit var tvKeepalive: TextView
-    private lateinit var tvNotifPerm: TextView
-    private lateinit var btnNotifSettings: Button
-    private lateinit var btnBattery: Button
-    private lateinit var tvUpdate: TextView
-    private lateinit var btnCheckUpdate: Button
-    private lateinit var btnDownload: Button
-    private lateinit var btnInstall: Button
     private lateinit var llDiag: LinearLayout
     private lateinit var tvLog: TextView
+
+    // 设置弹出层（`sheet_settings.xml`）。关掉后把引用置空，tick 不再碰它。
+    private var sheet: BottomSheetDialog? = null
+    private var shKeepalive: TextView? = null
+    private var shNotifPerm: TextView? = null
+    private var shBattery: TextView? = null
+    private var shUpdate: TextView? = null
+    private var shCheck: Button? = null
+    private var shDownload: Button? = null
+    private var shInstall: Button? = null
+    private var shAbout: TextView? = null
+
+    // 保活 / 更新状态字符串：设置层可能没开，复制诊断时仍要带上（不依赖视图存在）。
+    private var keepaliveText = ""
+    private var notifPermText = ""
+    private var batteryText = ""
+    private var updateText = ""
 
     /**
      * 通知栏按钮的接收端（前台服务发的是**广播**，不是服务调用）。注册在整个 Activity
@@ -334,18 +342,10 @@ class MainActivity : AppCompatActivity() {
             if (checked && ws == null && !connecting) connect() else if (!checked) disconnect()
         }
 
-        // 底部选项卡：一次只显示一页（每页自己滚，互不干扰）
-        // 第一页 = 连接 + 音频（一次会话的两半，分开要来回切）
-        pages = listOf(
-            R.id.tab_connect to findViewById(R.id.pageConnect),
-            R.id.tab_diag to findViewById(R.id.pageDiag),
-            R.id.tab_more to findViewById(R.id.pageMore),
-        )
-        navBottom.setOnItemSelectedListener { item ->
-            showPage(item.itemId)
-            true
+        // 一页式：没有底部选项卡了。诊断卡片默认收起，标题行下面的「展开诊断」切换。
+        tvDiagToggle.setOnClickListener {
+            setDiagExpanded(llDiag.visibility != View.VISIBLE)
         }
-        showPage(R.id.tab_connect)
         // 抖动缓冲滑块：**拖一下就生效**（不重建会话、不重连），并同步给电脑
         slRing.addOnChangeListener { _, value, fromUser ->
             val ms = value.toInt()
@@ -412,15 +412,8 @@ class MainActivity : AppCompatActivity() {
         // 「复制诊断」：把整块诊断（含日志）塞进剪贴板 —— 出错时不必让人截图
         btnCopyDiag.setOnClickListener { copyDiag() }
 
-        // 后台保活：电池优化白名单
-        btnBattery.setOnClickListener { requestIgnoreBattery() }
-        // 通知权限/渠道关掉了没有 —— 一键跳到本应用的通知设置（拒过之后系统不再弹窗）
-        btnNotifSettings.setOnClickListener { openNotifSettings() }
-
-        // 应用内更新：手动检查 → 下载 → 安装（不自动检查，见 UpdateChecker）
-        btnCheckUpdate.setOnClickListener { checkUpdate() }
-        btnDownload.setOnClickListener { downloadUpdate() }
-        btnInstall.setOnClickListener { installUpdate() }
+        // 设置：头图右上角圆点 → 底部弹出层（保活 / 更新 / 关于）
+        btnMenu.setOnClickListener { showSettings() }
 
         // 通知栏按钮（前台服务发广播回来）
         ContextCompat.registerReceiver(
@@ -994,8 +987,10 @@ class MainActivity : AppCompatActivity() {
                 getString(R.string.keepalive_notif_failed, CaptureService.lastError)
             else -> getString(R.string.keepalive_notif_off)
         }
-        tvKeepalive.text = s
-        tvNotifPerm.text = getString(notifPermissionText())
+        keepaliveText = s
+        notifPermText = getString(notifPermissionText())
+        shKeepalive?.text = keepaliveText
+        shNotifPerm?.text = notifPermText
     }
 
     /** 通知权限 / 通知渠道的**可读**结论：调不到就直说，不假装正常。 */
@@ -1098,18 +1093,69 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- 远程输入
 
+    /** 诊断卡片展开 / 收起（只改可见性，不重建视图）。 */
+    private fun setDiagExpanded(open: Boolean) {
+        llDiag.visibility = if (open) View.VISIBLE else View.GONE
+        tvDiagToggle.setText(if (open) R.string.diag_collapse else R.string.diag_expand)
+    }
+
     /**
-     * 切页：只显示一个 ScrollView。
-     *
-     * **不重建任何视图**：所有页都在同一棵树上，切页只是 visibility 变化 ——
-     * 这样切换不会打断正在跑的音频/日志刷新，也不需要每个页面各存一份状态。
+     * 打开设置弹出层。视图在**每次打开时**重新绑定：弹出层关掉即销毁，
+     * 常驻引用会让 tick 在关闭后继续写已经不在树上的 View。
      */
-    private fun showPage(itemId: Int) {
-        if (pages.isEmpty()) return
-        for ((tab, page) in pages) {
-            page.visibility = if (tab == itemId) android.view.View.VISIBLE else android.view.View.GONE
+    private fun showSettings() {
+        if (sheet != null) return
+        val dlg = BottomSheetDialog(this)
+        val content = layoutInflater.inflate(R.layout.sheet_settings, null)
+        dlg.setContentView(content)
+        dlg.window?.setBackgroundDrawable(
+            android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT),
+        )
+
+        shKeepalive = content.findViewById(R.id.tvKeepalive)
+        shNotifPerm = content.findViewById(R.id.tvNotifPerm)
+        shBattery = content.findViewById(R.id.tvBattery)
+        shUpdate = content.findViewById(R.id.tvUpdate)
+        shCheck = content.findViewById(R.id.btnCheckUpdate)
+        shDownload = content.findViewById(R.id.btnDownload)
+        shInstall = content.findViewById(R.id.btnInstall)
+        shAbout = content.findViewById(R.id.tvAbout)
+
+        shCheck?.setOnClickListener { checkUpdate() }
+        shDownload?.setOnClickListener { downloadUpdate() }
+        shInstall?.setOnClickListener { installUpdate() }
+        content.findViewById<Button>(R.id.btnNotifSettings).setOnClickListener {
+            openNotifSettings()
         }
-        if (itemId == R.id.tab_diag) updateStatus()
+        content.findViewById<Button>(R.id.btnBattery).setOnClickListener {
+            requestIgnoreBattery()
+        }
+        content.findViewById<Button>(R.id.btnSheetClose).setOnClickListener { dlg.dismiss() }
+
+        shAbout?.text = getString(
+            R.string.about_version,
+            UpdateChecker.installedName(this),
+            UpdateChecker.installedCode(this).toString(),
+        )
+
+        dlg.setOnDismissListener {
+            sheet = null
+            shKeepalive = null
+            shNotifPerm = null
+            shBattery = null
+            shUpdate = null
+            shCheck = null
+            shDownload = null
+            shInstall = null
+            shAbout = null
+        }
+        sheet = dlg
+        // 先填一次，再显示；之后 tick 会继续刷新
+        updateKeepalive()
+        refreshBattery()
+        renderUpdate()
+        updateButtons()
+        dlg.show()
     }
 
     // ---------------------------------------------------------------- 权限
@@ -1159,9 +1205,9 @@ class MainActivity : AppCompatActivity() {
         swConnect.isEnabled = !connecting
         swMic.isEnabled = online
         swSpeaker.isEnabled = online
-        btnCheckUpdate.isEnabled = !updateBusy
-        btnDownload.isEnabled = !updateBusy && updateRelease != null && updateApk == null
-        btnInstall.isEnabled = !updateBusy && updateApk != null
+        shCheck?.isEnabled = !updateBusy
+        shDownload?.isEnabled = !updateBusy && updateRelease != null && updateApk == null
+        shInstall?.isEnabled = !updateBusy && updateApk != null
     }
 
     /** 诊断区刷新：网络统计 + 音频电平/缓冲条 + 固定读数行（行数固定，数值变长也不跳）。 */
@@ -1474,9 +1520,9 @@ class MainActivity : AppCompatActivity() {
             append('\n')
             append(tvStatus.text)
             append(tvHealth.text).append('\n')
-            append(tvKeepalive.text).append('\n')
-            append(tvNotifPerm.text).append('\n')
-            append(tvBattery.text).append('\n')
+            append(keepaliveText).append('\n')
+            append(notifPermText).append('\n')
+            append(batteryText).append('\n')
             if (lastErr.isNotEmpty()) append(lastErr).append('\n')
             append('\n').append(tvLog.text).append('\n')
         }
@@ -1492,9 +1538,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshBattery() {
-        tvBattery.setText(
+        batteryText = getString(
             if (isIgnoringBattery()) R.string.battery_ignored else R.string.battery_not_ignored,
         )
+        shBattery?.text = batteryText
     }
 
     /**
@@ -1529,7 +1576,8 @@ class MainActivity : AppCompatActivity() {
             UpdateChecker.installedName(this),
             UpdateChecker.installedCode(this).toString(),
         )
-        tvUpdate.text = if (updateMsg.isEmpty()) base else "$base\n$updateMsg"
+        updateText = if (updateMsg.isEmpty()) base else "$base\n$updateMsg"
+        shUpdate?.text = updateText
     }
 
     private fun checkUpdate() {
@@ -1630,7 +1678,8 @@ class MainActivity : AppCompatActivity() {
         btnScan = findViewById(R.id.btnScan)
         btnScan.setOnClickListener { startScan() }
         swConnect = findViewById(R.id.swConnect)
-        navBottom = findViewById(R.id.navBottom)
+        btnMenu = findViewById(R.id.btnMenu)
+        tvDiagToggle = findViewById(R.id.tvDiagToggle)
         btnHealth = findViewById(R.id.btnHealth)
         btnRediscover = findViewById(R.id.btnRediscover)
         btnReconnect = findViewById(R.id.btnReconnect)
@@ -1652,15 +1701,6 @@ class MainActivity : AppCompatActivity() {
         swSpeaker = findViewById(R.id.swSpeaker)
         slRing = findViewById(R.id.slRing)
         tvRing = findViewById(R.id.tvRing)
-        tvBattery = findViewById(R.id.tvBattery)
-        tvKeepalive = findViewById(R.id.tvKeepalive)
-        tvNotifPerm = findViewById(R.id.tvNotifPerm)
-        btnNotifSettings = findViewById(R.id.btnNotifSettings)
-        btnBattery = findViewById(R.id.btnBattery)
-        tvUpdate = findViewById(R.id.tvUpdate)
-        btnCheckUpdate = findViewById(R.id.btnCheckUpdate)
-        btnDownload = findViewById(R.id.btnDownload)
-        btnInstall = findViewById(R.id.btnInstall)
         llDiag = findViewById(R.id.llDiag)
         tvLog = findViewById(R.id.tvLog)
     }

@@ -107,11 +107,7 @@
         <item name="android:textColor">?android:attr/textColorSecondary</item>
     </style>
 
-    <!-- 底栏选中态的胶囊（Material3 自带 active indicator） -->
-    <style name="PvNavIndicator" parent="Widget.Material3.BottomNavigationView.ActiveIndicator">
-        <item name="android:color">@color/pv_nav_indicator</item>
-    </style>
-
+    <!-- 状态读数底板 -->
     <style name="PvStatus">
         <item name="android:layout_width">match_parent</item>
         <item name="android:layout_height">wrap_content</item>

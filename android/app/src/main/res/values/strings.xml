@@ -32,10 +32,10 @@
     <string name="btn_connect">连接</string>
     <!-- 品牌字标的后半截：头图里「彩色 P + ureVox」拼成 PureVox。品牌名，不翻译。 -->
     <string name="wordmark_tail" translatable="false">ureVox</string>
-    <!-- 底部选项卡 -->
-    <string name="tab_connect">连接</string>
-    <string name="tab_diag">诊断</string>
-    <string name="tab_more">更多</string>
+    <!-- 头图右上角圆点：打开设置弹出层 -->
+    <string name="btn_settings">设置</string>
+    <string name="sheet_title">设置</string>
+    <string name="sheet_close">关闭</string>
     <!-- 连接做成开关：位置本身就是状态 -->
     <string name="sw_connect">连接</string>
     <string name="btn_disconnect">断开</string>
@@ -55,8 +55,10 @@
     <string name="section_keepalive">后台保活</string>
     <string name="section_update">更新</string>
 
-    <!-- 诊断页（独立页签，内容常显） -->
+    <!-- 诊断页（一页式：默认收起，点标题下的「展开诊断」） -->
     <string name="diag_title">诊断</string>
+    <string name="diag_expand">展开诊断</string>
+    <string name="diag_collapse">收起诊断</string>
 
     <!-- 实时监控两块（与 MainActivity.updateStatus 一一对应） -->
     <string name="diag_net">网络</string>
@@ -112,6 +114,9 @@
     <string name="msg_not_connected">未连接</string>
 
     <!-- 后台保活 -->
+    <string name="section_about">关于</string>
+    <string name="about_version">PureVox %1$s（versionCode %2$s）</string>
+    <string name="about_license">源码 GPL-3.0-or-later；内置 AI 模型不随 GPL 授权，仅随 PureVox 经授权使用（见 MODEL-LICENSE.md）。</string>
     <string name="keepalive_desc">应用开着就常驻前台服务通知（带「停止 / 断开」按钮）—— 撤掉通知系统会随手掐掉本进程。再允许「忽略电池优化」，息屏久一点也不会被系统冻结。</string>
     <string name="btn_battery_settings">忽略电池优化设置</string>
     <string name="battery_ignored">电池优化：已忽略 ✓（后台不易被冻结）</string>

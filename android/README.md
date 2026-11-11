@@ -148,11 +148,21 @@ app/src/main/jniLibs/arm64-v8a/libpvopus.so    libopus 1.5.2 + 转发层，预�
 
 ## 应用内更新（`update/`）
 
-**手动**触发（不自动检查：一打开就弹更新对低频工具是打扰），数据源就是本仓库的
-GitHub Releases，**与电脑端更新检查同一份数据**。
+**安卓是独立发布通道**（`RELEASE-CHANNELS.md`）：
+
+* 安卓 tag 是 `android-v<yyyy.MM.dd.HHmm>`；桌面是 `v*`，两边各自建 release；
+* `UpdateChecker` 拉 `/releases?per_page=30`，**只筛 `android-v*`**，再按 `versionCode`
+  取最大的一条 —— 不能直接用 `/releases/latest`，否则桌面一发版，手机上就会出现一个
+  「新版本」（实际上是桌面安装包，装不上）；
+* 更新日志只列 `android/` 下的提交（`release_notes.py --platform android`）；
+* 发版：`git tag android-v... && git push origin android-v...` 触发
+  `.github/workflows/android-release.yml`，只出签名 APK。
+
+**手动**触发（不自动检查：一打开就弹更新对低频工具是打扰），数据源是本仓库 GitHub
+Releases 里**安卓通道**的 release（`android-v*`），与桌面通道同一仓库但不同 tag。
 
 * **比较依据是 tag 的完整时间戳**映射出的 `yyMMddHHmm ÷ 10`
-  （`v2026.10.17.2359` → `261017235`，10 分钟粒度）与安装包 `versionCode` 比整数 ——
+  （`android-v2026.10.17.2359` → `261017235`，10 分钟粒度）与安装包 `versionCode` 比整数 ——
   与 `tools/automation/version.py` 同一套算法。显示版本 `yy.M.d` 同日会重复，比它没用。
 * **`÷ 10` 不能省**：`versionCode` 是 **Int32**（上限 2147483647），十位数的 `2610172359`
   装不进去。溢出的表现是**整条链静默失效** —— Gradle 侧 `toIntOrNull()` 返回 null 后
