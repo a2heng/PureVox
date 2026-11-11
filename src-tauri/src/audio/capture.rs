@@ -232,13 +232,23 @@ where
       *cfg,
       move |data: &[T], _info| {
         stats.on_block((data.len() / ch) as u32);
-        let mut dropped = 0u64;
         // **不下混**：原样写交织样本。通道拆分与单声道下混在行里做（端口 = 通道）。
-        for &x in data {
-          let v = <f32 as FromSample<T>>::from_sample_(x);
-          if prod.push(v).is_err() {
-            dropped += 1;
+        //
+        // 整块写（`write_chunk_uninit` + `fill_from_iter`）而不是逐样本 `push`：
+        // 192 kHz × 10 通道时逐样本 push 本身就要 2M 次/秒，回调里这笔开销很可观。
+        let mut dropped = 0u64;
+        match prod.write_chunk_uninit(data.len()) {
+          Ok(chunk) => {
+            let n = chunk.fill_from_iter(
+              data
+                .iter()
+                .map(|&x| <f32 as FromSample<T>>::from_sample_(x)),
+            );
+            if n < data.len() {
+              dropped += (data.len() - n) as u64;
+            }
           }
+          Err(_) => dropped += data.len() as u64,
         }
         if dropped > 0 {
           stats.xruns.fetch_add(dropped, Relaxed);
@@ -450,6 +460,7 @@ pub(super) fn worker<K>(
   let mut scratch: Vec<Vec<f32>> = (0..channels)
     .map(|_| Vec::with_capacity(slot_frames * 4))
     .collect();
+  let mut active: Vec<bool> = vec![false; channels];
   // 延迟封顶丢掉的样本数：进 overruns（+ 速率），面板上看得见（丢了不报只剩一句「声音卡」）
   let mut clamped: u64 = 0;
   // 5 ms 轮询用**高精度等待**：Windows 默认 `sleep` 粒度 15.6 ms，会让采集环被迫攒到
@@ -498,35 +509,51 @@ pub(super) fn worker<K>(
     if take > 0
       && let Ok(chunk) = cons.read_chunk(take * channels)
     {
-      // 交织 → 逐通道（一次块的样本量不大，复用 scratch，不分配）
-      for buf in scratch.iter_mut() {
-        buf.clear();
+      // **只用有人订阅的通道**：10 通道的设备接一个 2 通道节点时，另外 8 路不再
+      // 做重采样（这是高采样率多通道设备 CPU 高的主因，不是模型）。
+      active.resize(channels, false);
+      for (i, a) in active.iter_mut().enumerate() {
+        *a = fanout.channel_has_subscribers(i);
       }
-      let (a, b) = chunk.as_slices();
-      let mut phase = 0usize;
-      for part in [a, b] {
-        for &v in part {
-          scratch[phase].push(v);
-          phase += 1;
-          if phase == channels {
-            phase = 0;
-          }
+      let any = active.iter().any(|a| *a);
+      for (i, buf) in scratch.iter_mut().enumerate() {
+        if active[i] {
+          buf.clear();
         }
       }
-      for (i, buf) in scratch.iter().enumerate() {
-        let meter_ref = &mut meter;
-        let fanout_ref = &fanout;
-        let hop_count = &mut hops;
-        let r = to_hops[i].push(buf, |hop| {
-          if i == 0 {
-            meter_ref.on_hop(hop);
-            // `hops` 按**帧**计数（多通道的每个 hop 是同一帧的 N 个通道）
-            *hop_count += 1;
+      if any {
+        let (a, b) = chunk.as_slices();
+        let mut phase = 0usize;
+        for part in [a, b] {
+          for &v in part {
+            if active[phase] {
+              scratch[phase].push(v);
+            }
+            phase += 1;
+            if phase == channels {
+              phase = 0;
+            }
           }
-          fanout_ref.push_channel(i, hop);
-        });
-        if let Err(e) = r {
-          resample_error = Some(e);
+        }
+        let first = active.iter().position(|a| *a).unwrap_or(0);
+        for i in 0..channels {
+          if !active[i] {
+            continue;
+          }
+          let meter_ref = &mut meter;
+          let fanout_ref = &fanout;
+          let hop_count = &mut hops;
+          let r = to_hops[i].push(&scratch[i], |hop| {
+            if i == first {
+              meter_ref.on_hop(hop);
+              // `hops` 按**帧**计数（多通道的每个 hop 是同一帧的 N 个通道）
+              *hop_count += 1;
+            }
+            fanout_ref.push_channel(i, hop);
+          });
+          if let Err(e) = r {
+            resample_error = Some(e);
+          }
         }
       }
       chunk.commit_all();

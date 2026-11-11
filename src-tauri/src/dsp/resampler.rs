@@ -56,8 +56,19 @@ impl Converter {
       });
     }
     let ratio = out_rate as f64 / in_rate as f64;
-    let params = SincInterpolationParameters::new(128, WindowFunction::Blackman2)
-      .oversampling_factor(256)
+    // 同采样率（48k→48k）只是吸收设备晶振的 ±ppm 漂移，不需要 128 抽头：
+    // 16 抽头已经远好于可闻阈值，CPU 却只有原来的 ~1/8。
+    let (taps, oversample) = if in_rate == out_rate {
+      // 同采样率只吸收 ppm 漂移
+      (16, 64)
+    } else if in_rate >= out_rate * 2 {
+      // 大比例降采样（192k/96k → 48k）：32 抽头已足够，CPU 再砍一半
+      (32, 128)
+    } else {
+      (128, 256)
+    };
+    let params = SincInterpolationParameters::new(taps, WindowFunction::Blackman2)
+      .oversampling_factor(oversample)
       .interpolation(SincInterpolationType::Quadratic);
     let rs = Async::<f32>::new_sinc(ratio, MAX_RELATIVE, &params, chunk, 1, FixedAsync::Input)
       .map_err(|e| format!("创建重采样器失败：{e}"))?;

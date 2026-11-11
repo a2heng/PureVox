@@ -365,6 +365,14 @@ impl Plan {
           next += 1;
           changed = true;
         }
+        // 旧的 loopback「音量」/ 输出「发送增益」统一并进节点输入微调：
+        // 图里只留一个增益控制，引擎也只读 `input_gain_db`。
+        if let Some(v) = r.params.remove("volume_db") {
+          let a = r.input_gain_db.trim().parse::<f64>().unwrap_or(0.0);
+          let b = v.trim().parse::<f64>().unwrap_or(0.0);
+          r.input_gain_db = format!("{:.1}", a + b);
+          changed = true;
+        }
         if r.x == 0.0 && r.y == 0.0 {
           // 端子在上/下 => 同一条链自上而下；同一深度的分支横向排开。
           r.x = 64.0 + ci as f32 * 280.0;
@@ -726,12 +734,11 @@ pub fn pad_hotkeys(plan: &Plan, hub: crate::debug::SharedHub) -> Vec<crate::hotk
 /// 供 UI 使用：一个节点在画板上的默认尺寸（布局/碰撞用）。
 /// 卡片**主体**尺寸（不含上下端子排；UI 再按端口数加上端子高度）。
 pub fn node_size(kind: RowKind, ptype: &str, _channels: u32) -> (f32, f32) {
+  // 所有卡片同宽：端口固定在左侧固定槽位，换卡片也能一眼知道第 N 路的点在哪。
   match (kind, ptype) {
-    (RowKind::Input, _) => (240.0, 70.0),
-    (RowKind::Output, _) => (230.0, 70.0),
-    (_, "echo_cancel") => (250.0, 70.0),
+    (RowKind::Input, _) | (RowKind::Output, _) | (_, "echo_cancel") => (240.0, 70.0),
     (_, "eq31") => (240.0, 64.0),
-    _ => (220.0, 64.0),
+    _ => (240.0, 64.0),
   }
 }
 

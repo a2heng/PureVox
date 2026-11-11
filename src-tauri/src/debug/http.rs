@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Probe, SharedHub, events, http_port, metrics};
+use super::{Probe, SharedHub, UiCommand, events, http_port, metrics};
 
 const ENDPOINTS: [&str; 12] = [
   "/debug",
@@ -235,6 +235,81 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
         head(json!({ "viz": snap.viz }), snap.ts, snap.uptime_ms),
       )
     }
+    // 界面命令（开发/验收用）：用 API 驱动交互，不模拟鼠标点击。
+    "/debug/ui/move" => {
+      let u = |k: &str| query_param(query, k).and_then(|v| v.parse::<u32>().ok());
+      let f = |k: &str| query_param(query, k).and_then(|v| v.parse::<f32>().ok());
+      match (u("id"), f("x"), f("y")) {
+        (Some(id), Some(x), Some(y)) => {
+          hub.push_ui_command(UiCommand::Move { id, x, y });
+          ("200 OK", json!({"queued": true}))
+        }
+        _ => ("400 Bad Request", json!({"error": "需要 id,x,y"})),
+      }
+    }
+    "/debug/ui/connect" | "/debug/ui/disconnect" => {
+      let u = |k: &str| query_param(query, k).and_then(|v| v.parse::<u32>().ok());
+      match (u("from"), u("from_port"), u("to"), u("to_port")) {
+        (Some(from), Some(fp), Some(to), Some(tp)) => {
+          let c = if path == "/debug/ui/connect" {
+            UiCommand::Connect {
+              from,
+              from_port: fp as u8,
+              to,
+              to_port: tp as u8,
+            }
+          } else {
+            UiCommand::Disconnect {
+              from,
+              from_port: fp as u8,
+              to,
+              to_port: tp as u8,
+            }
+          };
+          hub.push_ui_command(c);
+          ("200 OK", json!({"queued": true}))
+        }
+        _ => (
+          "400 Bad Request",
+          json!({"error": "需要 from,from_port,to,to_port"}),
+        ),
+      }
+    }
+    "/debug/ui/channels" => {
+      let u = |k: &str| query_param(query, k).and_then(|v| v.parse::<u32>().ok());
+      match (u("id"), u("channels")) {
+        (Some(id), Some(channels)) => {
+          hub.push_ui_command(UiCommand::SetChannels { id, channels });
+          ("200 OK", json!({"queued": true}))
+        }
+        _ => ("400 Bad Request", json!({"error": "需要 id,channels"})),
+      }
+    }
+    "/debug/ui/enabled" => {
+      let u = |k: &str| query_param(query, k).and_then(|v| v.parse::<u32>().ok());
+      match (u("id"), u("enabled")) {
+        (Some(id), Some(enabled)) => {
+          hub.push_ui_command(UiCommand::SetEnabled {
+            id,
+            enabled: enabled != 0,
+          });
+          ("200 OK", json!({"queued": true}))
+        }
+        _ => ("400 Bad Request", json!({"error": "需要 id,enabled=0|1"})),
+      }
+    }
+    "/debug/ui/select" => match query_param(query, "id").and_then(|v| v.parse::<u32>().ok()) {
+      Some(id) => {
+        hub.push_ui_command(UiCommand::Select { id });
+        ("200 OK", json!({"queued": true}))
+      }
+      None => ("400 Bad Request", json!({"error": "需要 id"})),
+    },
+    "/debug/ui/arrange" => {
+      hub.push_ui_command(UiCommand::Arrange);
+      ("200 OK", json!({"queued": true}))
+    }
+
     "/debug/bundle" => {
       let snap = hub.snapshot();
       let bundle = json!({

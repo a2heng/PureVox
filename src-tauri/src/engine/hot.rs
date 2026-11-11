@@ -35,28 +35,33 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 #[derive(Debug)]
 pub struct HotGain {
   db_bits: AtomicU32,
+  /// 线性倍数与 dB 一起更新：每 hop 只读一次原子，不再做 `powf`。
+  linear_bits: AtomicU32,
 }
 
 impl HotGain {
   pub fn new(db: f32) -> Self {
     HotGain {
       db_bits: AtomicU32::new(db.to_bits()),
+      linear_bits: AtomicU32::new(10f32.powf(db / 20.0).to_bits()),
     }
   }
 
   /// 改成新的 dB 值（运行中**实时**生效，不重建会话）。
   pub fn set_db(&self, db: f32) {
     self.db_bits.store(db.to_bits(), Relaxed);
+    self
+      .linear_bits
+      .store(10f32.powf(db / 20.0).to_bits(), Relaxed);
   }
 
   pub fn db(&self) -> f32 {
     f32::from_bits(self.db_bits.load(Relaxed))
   }
 
-  /// 线性倍数。每 hop 现算 —— `powf` 每秒一百次可以忽略，换来的是「改了立刻准」，
-  /// 不用维护「dB 与倍数两份状态」。
+  /// 线性倍数（写入时算好，读端每 hop 只 load）。
   pub fn linear(&self) -> f32 {
-    10f32.powf(self.db() / 20.0)
+    f32::from_bits(self.linear_bits.load(Relaxed))
   }
 }
 

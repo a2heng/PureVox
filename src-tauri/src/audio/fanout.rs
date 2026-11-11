@@ -117,6 +117,19 @@ impl MultiFanout {
     self.subscribe_n(id, self.channels.len())
   }
 
+  /// 只订阅指定的物理通道（稀疏：例如 10 通道设备只接了第 1、6 路）。
+  pub fn subscribe_list(&self, id: &str, channels: &[usize]) -> Vec<Consumer<f32>> {
+    channels
+      .iter()
+      .filter_map(|&i| {
+        self
+          .channels
+          .get(i)
+          .map(|f| f.subscribe(&format!("{id}:{i}")))
+      })
+      .collect()
+  }
+
   pub fn push_channel(&self, i: usize, hop: &[f32]) {
     if let Some(f) = self.channels.get(i) {
       f.push_hop(hop);
@@ -142,6 +155,15 @@ impl MultiFanout {
       .iter()
       .map(|f| f.max_level_ms())
       .fold(0.0, f32::max)
+  }
+
+  /// 第 `i` 个通道有没有订阅者。
+  pub fn channel_has_subscribers(&self, i: usize) -> bool {
+    self
+      .channels
+      .get(i)
+      .map(|f| f.has_subscribers())
+      .unwrap_or(false)
   }
 
   /// 逐订阅者统计（调试用；通道前缀进 id）。
@@ -203,6 +225,14 @@ impl Fanout {
       stats: std::sync::Arc::new(SubStats::default()),
     });
     cons
+  }
+
+  /// 这个源当前有没有订阅者。采集端据此跳过没人用的通道（10 通道设备只用 2 路时
+  /// 不再为另外 8 路做重采样）。
+  pub fn has_subscribers(&self) -> bool {
+    let mut subs = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
+    subs.retain(|s| !s.prod.is_abandoned());
+    !subs.is_empty()
   }
 
   pub fn unsubscribe(&self, id: &str) {

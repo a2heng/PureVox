@@ -346,6 +346,42 @@ struct State {
 pub struct DebugHub {
   start: Instant,
   state: RwLock<State>,
+  ui_commands: std::sync::Mutex<std::collections::VecDeque<UiCommand>>,
+}
+
+/// 调试接口驱动界面的命令（用 API 做交互，不模拟鼠标点击）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum UiCommand {
+  Move {
+    id: u32,
+    x: f32,
+    y: f32,
+  },
+  Connect {
+    from: u32,
+    from_port: u8,
+    to: u32,
+    to_port: u8,
+  },
+  Disconnect {
+    from: u32,
+    from_port: u8,
+    to: u32,
+    to_port: u8,
+  },
+  SetChannels {
+    id: u32,
+    channels: u32,
+  },
+  SetEnabled {
+    id: u32,
+    enabled: bool,
+  },
+  Select {
+    id: u32,
+  },
+  Arrange,
 }
 
 pub type SharedHub = Arc<DebugHub>;
@@ -361,6 +397,7 @@ impl DebugHub {
   pub fn new() -> SharedHub {
     Arc::new(DebugHub {
       start: Instant::now(),
+      ui_commands: std::sync::Mutex::new(std::collections::VecDeque::new()),
       state: RwLock::new(State {
         system: SystemInfo::default(),
         devices: Probe::Pending,
@@ -630,6 +667,25 @@ impl DebugHub {
         t.age_ms as f64,
       );
     }
+  }
+
+  /// 投递一条界面命令（调试 HTTP 用；界面下一拍取走执行）。
+  pub fn push_ui_command(&self, cmd: UiCommand) {
+    if let Ok(mut q) = self.ui_commands.lock() {
+      if q.len() >= 64 {
+        q.pop_front();
+      }
+      q.push_back(cmd);
+    }
+  }
+
+  /// 取走全部待执行的界面命令。
+  pub fn take_ui_commands(&self) -> Vec<UiCommand> {
+    self
+      .ui_commands
+      .lock()
+      .map(|mut q| q.drain(..).collect())
+      .unwrap_or_default()
   }
 
   pub fn snapshot(&self) -> DebugSnapshot {

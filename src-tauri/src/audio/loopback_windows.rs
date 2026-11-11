@@ -222,20 +222,18 @@ fn open_and_poll(
         let silent = flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
         let total = n as usize * chn;
         // **不下混**：原样写交织样本（端口 = 通道；单声道下混在行里做）。
-        if silent || pdata.is_null() {
-          for _ in 0..total {
-            let _ = prod.push(0.0);
-          }
-        } else if bits == 32 {
-          let s = unsafe { std::slice::from_raw_parts(pdata as *const f32, total) };
-          for &v in s {
-            let _ = prod.push(v);
-          }
-        } else {
-          let s = unsafe { std::slice::from_raw_parts(pdata as *const i16, total) };
-          for &v in s {
-            let _ = prod.push(v as f32 / 32768.0);
-          }
+        // 整块写：192 kHz × 10 通道时逐样本 push 是 2M 次/秒，块写把这笔开销压掉。
+        if let Ok(chunk) = prod.write_chunk_uninit(total) {
+          let written = if silent || pdata.is_null() {
+            chunk.fill_from_iter(std::iter::repeat_n(0.0f32, total))
+          } else if bits == 32 {
+            let s = unsafe { std::slice::from_raw_parts(pdata as *const f32, total) };
+            chunk.fill_from_iter(s.iter().copied())
+          } else {
+            let s = unsafe { std::slice::from_raw_parts(pdata as *const i16, total) };
+            chunk.fill_from_iter(s.iter().map(|&v| v as f32 / 32768.0))
+          };
+          let _ = written;
         }
         let _ = unsafe { capture.ReleaseBuffer(n) };
       }

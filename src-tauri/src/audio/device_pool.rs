@@ -111,6 +111,11 @@ impl InputLease {
     self.fanout.subscribe_n(id, n)
   }
 
+  /// 只订阅指定的物理通道（稀疏订阅；采集端只重采样这些通道）。
+  pub fn subscribe_list(&self, id: &str, channels: &[usize]) -> Vec<rtrb::Consumer<f32>> {
+    self.fanout.subscribe_list(id, channels)
+  }
+
   /// 单声道订阅（取第 0 通道；AEC 的近端 / 旧的单声道行用）。
   pub fn subscribe(&self, id: &str) -> rtrb::Consumer<f32> {
     self.fanout.subscribe_n(id, 1).remove(0)

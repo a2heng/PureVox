@@ -35,6 +35,8 @@ const MAX_THREADS: usize = 64;
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ThreadInfo {
+  /// 操作系统线程 ID（Windows/Linux；其它平台为 0）。用任务管理器/PerfMon 对得上号。
+  pub tid: u32,
   pub name: String,
   pub started_at: u64,
   pub last_beat_ms: u64,
@@ -47,6 +49,7 @@ pub struct ThreadInfo {
 }
 
 struct Entry {
+  tid: u32,
   name: String,
   started_at: u64,
   last: Arc<AtomicU64>,
@@ -82,6 +85,7 @@ impl ThreadToken {
         }
       }
       reg.push(Entry {
+        tid: os_tid(),
         name: name.clone(),
         started_at: now_ms(),
         last: last.clone(),
@@ -111,6 +115,16 @@ impl Drop for ThreadToken {
   }
 }
 
+#[cfg(windows)]
+fn os_tid() -> u32 {
+  unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }
+}
+
+#[cfg(not(windows))]
+fn os_tid() -> u32 {
+  0
+}
+
 /// 当前登记表快照（按登记顺序；退出的也保留到下一次淘汰）。
 pub fn snapshot() -> Vec<ThreadInfo> {
   let now = now_ms();
@@ -124,6 +138,7 @@ pub fn snapshot() -> Vec<ThreadInfo> {
       let exited = e.exited.load(Relaxed);
       let age = now.saturating_sub(last);
       ThreadInfo {
+        tid: e.tid,
         name: e.name.clone(),
         started_at: e.started_at,
         last_beat_ms: last,

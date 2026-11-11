@@ -72,6 +72,8 @@ pub struct Meter {
   samples: u64,
   band_analyzer: BandAnalyzer,
   bands_buf: Vec<f32>,
+  /// 已处理的 hop 数：960 点频谱每 5 个 hop 算一次（20 Hz），不再每 hop 烧一次 FFT。
+  hops: u64,
 }
 
 impl Meter {
@@ -95,6 +97,7 @@ impl Meter {
       samples: 0,
       band_analyzer: BandAnalyzer::new(),
       bands_buf: Vec::new(),
+      hops: 0,
     }
   }
 
@@ -109,19 +112,23 @@ impl Meter {
     }
     self.samples += hop.len() as u64;
 
-    // 上一 hop + 本 hop 组成 960 点帧
-    for (i, &x) in hop.iter().enumerate() {
-      self.scratch[i] = Complex::new(self.prev_hop[i] * self.window[i], 0.0);
-      self.scratch[HOP + i] = Complex::new(x * self.window[HOP + i], 0.0);
+    self.hops += 1;
+    // 960 点频谱不需要每 hop 一帧：每 5 hop（20 Hz）算一次，发布时再平均。
+    if self.hops.is_multiple_of(5) {
+      for (i, &x) in hop.iter().enumerate() {
+        self.scratch[i] = Complex::new(self.prev_hop[i] * self.window[i], 0.0);
+        self.scratch[HOP + i] = Complex::new(x * self.window[HOP + i], 0.0);
+      }
+      self.fft.process(&mut self.scratch);
+      for (k, acc) in self.power_acc.iter_mut().enumerate() {
+        let a = self.scratch[k].norm() * self.amp_scale;
+        *acc += (a as f64) * (a as f64);
+      }
+      self.frames += 1;
     }
-    self.fft.process(&mut self.scratch);
-    for (k, acc) in self.power_acc.iter_mut().enumerate() {
-      let a = self.scratch[k].norm() * self.amp_scale;
-      *acc += (a as f64) * (a as f64);
-    }
-    self.frames += 1;
     self.prev_hop.copy_from_slice(hop);
-    self.band_analyzer.on_hop(hop, &mut self.bands_buf);
+    // 4800 点对数频谱只在发布（5 Hz）时算一次。
+    self.band_analyzer.push(hop);
   }
 
   /// 取出本发布周期的统计并清零累加器。
@@ -143,6 +150,8 @@ impl Meter {
         .map(|p| db((p / self.frames as f64).sqrt()))
         .collect()
     };
+    // 每 200 ms 一次 4800 点 FFT（不是每 hop）。
+    self.band_analyzer.analyze(&mut self.bands_buf);
     self.power_acc.iter_mut().for_each(|p| *p = 0.0);
     self.frames = 0;
     self.peak = 0.0;

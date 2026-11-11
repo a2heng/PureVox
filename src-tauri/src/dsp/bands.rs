@@ -170,12 +170,25 @@ impl BandAnalyzer {
     }
   }
 
-  /// 喂一个 hop，把 64 段 dBFS 写进 `out`。
+  /// 兼容旧调用：push + analyze（可视化插件要逐 hop 更新时用；调试面板用 `Meter` 的节流路径）。
   pub fn on_hop(&mut self, hop: &[f32], out: &mut Vec<f32>) {
+    self.push(hop);
+    self.analyze(out);
+  }
+
+  /// 只把 hop 写进 10 hop 的环形窗（每 hop 都做；很便宜）。
+  pub fn push(&mut self, hop: &[f32]) {
     for &x in hop {
       self.ring[self.pos] = x;
       self.pos = (self.pos + 1) % ANALYSIS_NFFT;
     }
+  }
+
+  /// 跑一次 4800 点 FFT，把 64 段 dBFS 写进 `out`。
+  ///
+  /// **不要每 hop 调它**：100 次/秒的 4800 点 FFT 纯粹是给调试面板烧 CPU；
+  /// 面板 5~12 Hz 刷新，按发布周期调用一次就够。
+  pub fn analyze(&mut self, out: &mut Vec<f32>) {
     for i in 0..ANALYSIS_NFFT {
       let x = self.ring[(self.pos + i) % ANALYSIS_NFFT] * self.window[i];
       self.scratch[i] = Complex::new(x, 0.0);

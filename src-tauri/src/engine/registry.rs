@@ -94,8 +94,6 @@ pub fn is_hot(ptype: &str, key: &str) -> bool {
   matches!(
     (ptype, key),
     ("gain", "gain_db")
-      | ("loopback", "volume_db")
-      | ("audio_output", "volume_db")
       | ("agc", "target_db")
       | ("agc", "speed")
       | ("agc", "floor_db")
@@ -200,17 +198,9 @@ static SPECS: &[NodeSpec] = &[
     kind: NodeKind::Input,
     // 无采集设备意义上的「输入」：捕获输出设备正在播放的系统混音（WASAPI loopback /
     // PipeWire monitor）。`device` = `loopback`（系统默认输出）或 `loopback:<端点ID｜sink>`
-    //（按平台，同 AEC 远端取值规则）；行内增益（系统混音偏响，默认压低 6 dB）。
-    params: &[ParamSpec {
-      key: "volume_db",
-      label: "音量(dB)",
-      kind: ParamKind::Number {
-        lo: -30.0,
-        hi: 6.0,
-        default: -6.0,
-        step: 1.0,
-      },
-    }],
+    //（按平台，同 AEC 远端取值规则）；电平统一用节点输入微调（`input_gain_db`），
+    // 不再有第二个「音量」参数。
+    params: &[],
   },
   NodeSpec {
     ptype: "echo_cancel",
@@ -726,16 +716,8 @@ static SPECS: &[NodeSpec] = &[
     ptype: "audio_output",
     label: "扬声器",
     kind: NodeKind::Output,
-    params: &[ParamSpec {
-      key: "volume_db",
-      label: "发送增益",
-      kind: ParamKind::Number {
-        lo: -60.0,
-        hi: 12.0,
-        default: 0.0,
-        step: 0.5,
-      },
-    }],
+    // 输出没有「发送增益」：电平统一用节点输入微调（Element 同款）。
+    params: &[],
   },
   NodeSpec {
     ptype: "remote_speaker",

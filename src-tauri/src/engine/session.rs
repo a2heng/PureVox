@@ -151,8 +151,14 @@ struct Row {
   inf_over_rate: RateMeter,
   /// 本节点的音频通道数（端口 = 通道）
   channels: u32,
-  /// 输入行：本行源的 48k hop 读端（**逐设备通道**；行再按节点通道数映射）
+  /// 输入行：本行源的 48k hop 读端（**只包含下面 `input_channels` 里的通道**）
   input: Vec<Consumer<f32>>,
+  /// 订阅的物理通道号（与 `input` 一一对应）
+  input_channels: Vec<usize>,
+  /// 设备原生通道数（用于「单声道设备铺到多通道节点」）
+  src_channels: usize,
+  /// 构建期算出的「需要订阅的通道」：只包含下游真正用到的端口
+  sub_channels: Vec<usize>,
   /// 输入行：行输入环累计丢弃的样本数（水位超 `ROW_CAP` 丢最旧）。
   ///
   /// 这个计数以前没有 ——源「一大块到达」时环被瞬间灌满、按策略丢最旧，**丢多少完全看不见**，
@@ -160,9 +166,6 @@ struct Row {
   ring_dropped: u64,
   /// 行输入环丢弃的实测速率（3 s 窗口；累计只涨不降，速率才看得出还在不在丢）
   ring_drop_rate: RateMeter,
-  /// 输入行（loopback）：行内增益（系统混音偏响，默认 -6 dB）——**热参数**
-  /// （`engine/hot.rs`：界面改它只写这个单元格，不重建会话）
-  gain: Option<Arc<crate::engine::hot::HotGain>>,
   /// 本行绑的设备 ID（重启用它按需取回设备租约；输入/输出行才有）
   device: Option<String>,
   /// 本行的采集是否**池化**（普通采集行 = 是；AEC 行 / 回环行各自持有采集路径，见 §6.5 待做）
@@ -634,8 +637,18 @@ fn apply_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize) {
   }
   match crate::audio::device_pool::hub().acquire_input(hub.clone(), &dev) {
     Ok(lease) => {
-      let n = lease.channels();
-      r.input = lease.subscribe_channels(&format!("col{idx}row{ri}"), n);
+      let phys = lease.channels();
+      // 只订阅下游真正用到的通道（稀疏也行）。
+      let chans: Vec<usize> = r
+        .sub_channels
+        .iter()
+        .copied()
+        .filter(|c| *c < phys)
+        .collect();
+      let chans = if chans.is_empty() { vec![0] } else { chans };
+      r.src_channels = phys;
+      r.input_channels = chans.clone();
+      r.input = lease.subscribe_list(&format!("col{idx}row{ri}"), &chans);
       r.in_lease = Some(lease);
       r.error = None;
       r.in_failures = 0;
@@ -684,8 +697,17 @@ fn poll_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: In
   if let Some(rx) = r.in_pending.as_ref() {
     match rx.try_recv() {
       Ok(Ok(lease)) => {
-        let n = lease.channels();
-        r.input = lease.subscribe_channels(&format!("col{idx}row{ri}"), n);
+        let phys = lease.channels();
+        let chans: Vec<usize> = r
+          .sub_channels
+          .iter()
+          .copied()
+          .filter(|c| *c < phys)
+          .collect();
+        let chans = if chans.is_empty() { vec![0] } else { chans };
+        r.src_channels = phys;
+        r.input_channels = chans.clone();
+        r.input = lease.subscribe_list(&format!("col{idx}row{ri}"), &chans);
         r.in_lease = Some(lease);
         r.in_pending = None;
         r.in_retry_at = None;
@@ -914,6 +936,14 @@ fn build_column(
 ) -> ColumnRuntime {
   let mut rows: Vec<Row> = Vec::new();
   let mut captures = Vec::new();
+  // 下游真正用到的端口（源节点只订阅这些通道；10 通道设备接 2 路时不再为 8 路做重采样）
+  let mut needed: std::collections::HashMap<u32, std::collections::BTreeSet<u8>> =
+    std::collections::HashMap::new();
+  for r in &spec.rows {
+    for e in &r.inputs {
+      needed.entry(e.from).or_default().insert(e.from_port);
+    }
+  }
   // `remote_mic` 入站是单队列，全会话只允许一行（SPEC 约束）
   let mut remote_mic_used = false;
 
@@ -939,7 +969,9 @@ fn build_column(
       inf_over: 0,
       inf_over_rate: RateMeter::new(),
       input: Vec::new(),
-      gain: None,
+      input_channels: Vec::new(),
+      src_channels: 1,
+      sub_channels: Vec::new(),
       device: None,
       pooled_input: false,
       pooled_output: false,
@@ -968,6 +1000,22 @@ fn build_column(
       edge_delays: Vec::new(),
       delay_lines: Vec::new(),
     };
+    if r.kind == RowKind::Input {
+      row.sub_channels = if r.channels <= 1 {
+        // 单声道节点：立体声设备取 L/R 平均；多声道设备也只取前两路（不吞 10 路把 CPU 拉满）
+        vec![0, 1]
+      } else {
+        let mut v: Vec<usize> = needed
+          .get(&r.id)
+          .map(|s| s.iter().map(|p| *p as usize).collect())
+          .unwrap_or_default();
+        if v.is_empty() {
+          v.push(0);
+        }
+        v
+      };
+      row.input_channels = row.sub_channels.clone();
+    }
     let device = r.device.as_deref().filter(|d| !d.is_empty());
     let trim: f64 = r.input_gain_db.trim().parse().unwrap_or(0.0);
     row.input_gain = Some(sink.gain("input_gain_db", trim));
@@ -1099,6 +1147,8 @@ fn build_column(
         row.label = "测试音（1kHz 测试用）".into();
         row.source = true;
         row.input = vec![crate::audio::tone::shared().subscribe(&format!("col{idx}row{ri}"))];
+        row.input_channels = vec![0];
+        row.src_channels = 1;
       }
       RowKind::Input if r.ptype == "remote_mic" => {
         // 网络麦克风：不需要虚拟声卡驱动，网络流直接进引擎（NETWORK.md §4.1）
@@ -1131,12 +1181,6 @@ fn build_column(
       RowKind::Input if r.ptype == "loopback" => {
         // 电脑播放音频：捕获输出设备正在播放的系统混音（复用 AEC 的回环采集）。
         // `device` = `loopback`（默认输出）/ `loopback:<端点ID｜sink>`；行内增益默认 -6 dB。
-        let db: f64 = r
-          .params
-          .get("volume_db")
-          .and_then(|v| v.trim().parse().ok())
-          .unwrap_or(-6.0);
-        row.gain = Some(sink.gain("volume_db", db));
         let target = match device {
           None => None,
           Some(d) if d == "loopback" || d.is_empty() => None,
@@ -1152,7 +1196,19 @@ fn build_column(
         row.source = true;
         match loopback::spawn(hub.clone(), target, format!("c{idx}r{ri}")) {
           Ok(cap) => {
-            row.input = cap.fanout.subscribe(&format!("col{idx}row{ri}"));
+            let phys = cap.fanout.len();
+            let chans: Vec<usize> = row
+              .sub_channels
+              .iter()
+              .copied()
+              .filter(|c| *c < phys)
+              .collect();
+            let chans = if chans.is_empty() { vec![0] } else { chans };
+            row.src_channels = phys;
+            row.input_channels = chans.clone();
+            row.input = cap
+              .fanout
+              .subscribe_list(&format!("col{idx}row{ri}"), &chans);
             captures.push(cap.handle);
           }
           Err(e) => row.error = Some(e),
@@ -1566,7 +1622,7 @@ fn run_column(
 
       for (ri, r) in g.iter_mut().enumerate() {
         let nch = r.channels.max(1) as usize;
-        let row_slots = slot_of[ri].clone();
+        let row_slots = &slot_of[ri];
         for c in 0..nch {
           accs[ri][c].fill(0.0);
         }
@@ -1743,15 +1799,8 @@ fn run_column(
                 probe_in.copy_from_slice(&src_hops[0]);
                 probe_in_ok = true;
               }
-              if let Some(g) = r.gain.as_ref() {
-                let g = g.linear();
-                for h in src_hops.iter_mut() {
-                  for x in h.iter_mut() {
-                    *x *= g;
-                  }
-                }
-              }
               if nch == 1 {
+                // 单声道节点 = 订阅到的通道平均（立体声设备就是 L/R 平均）
                 if sc == 1 {
                   accs[ri][0] = src_hops[0];
                 } else {
@@ -1763,14 +1812,18 @@ fn run_column(
                     accs[ri][0][i] = sum / sc as f32;
                   }
                 }
-              } else if sc == 1 {
+              } else if r.src_channels == 1 {
                 // 单声道设备喂多通道节点：铺到所有通道
                 for c in 0..nch {
                   accs[ri][c] = src_hops[0];
                 }
               } else {
-                for c in 0..nch {
-                  accs[ri][c] = if c < sc { src_hops[c] } else { [0.0f32; HOP] };
+                // 稀疏订阅：src_hops[i] 对应物理通道 input_channels[i]，落到同名端口
+                for i in 0..sc {
+                  let ch = r.input_channels.get(i).copied().unwrap_or(i);
+                  if ch < nch {
+                    accs[ri][ch] = src_hops[i];
+                  }
                 }
               }
             }
@@ -1815,6 +1868,7 @@ fn run_column(
             apply_trim(r, &mut near);
             apply_trim(r, &mut far);
             if r.enabled
+              && !r.inputs.is_empty()
               && let Some(st) = r.aec_stage.as_mut()
             {
               if recording {
@@ -1852,7 +1906,9 @@ fn run_column(
             for c in 0..nch {
               apply_trim(r, &mut accs[ri][c]);
             }
-            if r.enabled && !r.stage.is_empty() {
+            // 没有任何入线的处理节点（也不是媒体源）= 输出静音：不要白跑模型。
+            let runs = !r.inputs.is_empty() || r.media_slot.is_some();
+            if r.enabled && !r.stage.is_empty() && runs {
               if recording {
                 rec.tap(idx, ri, Phase::Pre, &accs[ri][0]);
               }

@@ -40,9 +40,17 @@ release 构建同样保留（不允许用编译开关剔除）。
 | `GET /debug/audio` | 每路音频流：**结论（`health`，Rust 侧统一判定的健康度 `{level, text}`，阈值集中在 `audio/health.rs`，面板只渲染不算，见 1.3）**、方向、设备、**信号源（仅输出）**、状态、降噪状态（字段保留但已废弃：降噪现为列处理行，见 `audio.engine`）、设备原生格式、实测**设备侧 / 引擎侧速率**（3 s 窗口）、重采样器与其延迟、**输出流的时钟伺服修正（ppm）**、回调块大小（最近/最小/最大）与**回调间隔（最近/最大 ms，音频回调里锁-free 实测：只看回调次数看不出「卡了 2 秒又继续」）**、帧与 hop 计数、不足一 hop 的剩余帧、峰值/RMS 电平、**输出流欠载补静音样本数与重同步次数**、溢出/丢弃样本、流错误计数、**上述事件的实测每秒速率（`underrun_per_s` / `resync_per_s` / `overrun_per_s` / `stream_error_per_s`，3 s 窗口；累计计数只涨不降，速率才看得出现在还在不在发生）**、48k 缓冲水位与**设备侧缓冲水位**、端到端延迟、**模型推理耗时（均值/最大）**；另有汇总结论 `audio.verdict`（全部流的整体判断）；最近 50 ms 波形与平均频谱（481 bin，NFFT 960，输入流为降噪后、输出流为重采样前） |
 | `GET /debug/devices` | 全部枚举到的输入/输出设备：ID、名称、接口、原生采样率/声道、是否默认、是否被选中、**是否已打开与设备池引用数**；以及最近一次枚举的时间与耗时。**热插拔监测**（`devices::spawn_watch`，Windows 3 s / 其它 5 s 比对一次 `(ID, 能输入, 能输出)` 指纹，连续两次一致才算变化）发现变化会自动重刷，事件日志留一行「设备列表已变化（新增 N / 消失 M）」 |
 | `GET /debug/latency` | **逐列延迟预算**：处理链（输入 hop → 输出 hop）的实测互相关延时、相关度、抖动，以及输入设备回调 / 采集环 / 行输入环 / 输出混音源环 / 播放 48k 环 / 播放设备环 / 输出设备回调各段（ms）与最大的一段（见 1.5）。与快照 `latency`、`~/.purevox/latency_last.json` 同一份 |
+| `GET /debug/ui/move?id&x&y` | 把节点移到画布坐标（界面命令队列；用 API 驱动，不模拟鼠标） |
+| `GET /debug/ui/connect?from&from_port&to&to_port` | 连一条线（跨列自动并组；成环会拒绝） |
+| `GET /debug/ui/disconnect?from&from_port&to&to_port` | 断一条线（节点保留，立即重建图） |
+| `GET /debug/ui/channels?id&channels` | 改节点通道数；只丢弃越界入线，合法连线保留 |
+| `GET /debug/ui/enabled?id&enabled=0\|1` | 启用 / 静音节点 |
+| `GET /debug/ui/select?id` / `GET /debug/ui/arrange` | 选中节点 / 按列整理 |
 | `GET /debug/calib` | AEC 校准的**结构化报告**（与快照 `calib_report`、`~/.purevox/calib_last.json` 同一份，见 1.4）：`schema_version` / `ok` / `created_ms` / 判定码与结论 / 两路峰值时刻与延时 / 回声路径 / 探针带电平与 SNR / 回填增益 / 平滑后的带内能量包络 `series` / 原始 dump 路径；未跑过时为 `pending` |
 | `GET /debug/ui` | **调试面板页面本体**（1.1 用系统浏览器打开它）：HTML + 同源静态资源（`/debug/ui/{debug.js,debug.css,i18n.js,snapshot.js,jsdebug.js}`）。页面只 `fetch('/debug')` 渲染，不经过 IPC；内嵌在二进制里，装完也能用 |
 
+- `engine_info.threads[]` 带 `tid`（操作系统线程 ID）：与任务管理器/PerfMon 的线程 CPU 对得上号，
+  排查「哪个线程在烧 CPU」不用猜。
 - 字段只增不改名；新增字段同步更新本表。
 - 快照另带 `ui`：界面自报的最近消息数组（新在前，最多 50 条，见 `ui_report` 命令）；
   `audio.engine`（列概要）含每列 `hop/s` 节拍速率（正常 100，见 ARCHITECTURE.md §3.3）；AEC 行另带
