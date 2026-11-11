@@ -523,6 +523,13 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("参数", "Parameters");
     m.insert("参考语音", "Reference voice");
     m.insert("录制 10 秒参考", "Record 10 s reference");
+    m.insert("＋ 输入", "＋ Input");
+    m.insert("＋ AI", "＋ AI");
+    m.insert("＋ 处理", "＋ Process");
+    m.insert("＋ 内容", "＋ Content");
+    m.insert("＋ 输出", "＋ Output");
+    m.insert("启动引擎", "Start engine");
+    m.insert("停止引擎", "Stop engine");
     m
   })
 }

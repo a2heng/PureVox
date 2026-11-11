@@ -1199,9 +1199,9 @@ impl Workspace {
             IconName::Play
           })
           .label(if running {
-            "停止引擎"
+            i18n::tr("停止引擎")
           } else {
-            "启动引擎"
+            i18n::tr("启动引擎")
           })
           .when(running, |b| b.danger())
           .when(!running, |b| b.success())
