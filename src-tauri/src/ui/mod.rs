@@ -10,6 +10,7 @@
 //!
 //! 画板只负责「节点 / 端口 / 线」；所有参数在右侧检查器，且**只显示选中的那一个节点**。
 
+mod qr;
 mod theme;
 
 use std::sync::Arc;
@@ -136,8 +137,16 @@ enum Drag {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Menu {
   Source,
+  Ai,
   Process,
+  Content,
   Output,
+}
+
+struct PendingMedia {
+  node: u32,
+  kind: crate::media::MediaKind,
+  result: Result<crate::media::Imported, String>,
 }
 
 pub struct Workspace {
@@ -158,6 +167,23 @@ pub struct Workspace {
   redo: Vec<Plan>,
   sliders: std::collections::HashMap<(u32, String), Entity<SliderState>>,
   subs: Vec<Subscription>,
+  /// 设置缓存（网络端口 / 抖动缓冲等；右侧网络卡片直接改它并落盘）
+  settings: crate::config::AppSettings,
+  /// 网络服务快照（每 1 s 刷一次；卡片常驻在右侧）
+  net_stats: Option<crate::net::hub::NetStats>,
+  net_ifaces: Vec<crate::net::addrs::NetIface>,
+  net_ip: String,
+  net_qr: Option<std::path::PathBuf>,
+  net_qr_url: String,
+  net_last: Instant,
+  /// AEC 校准结论（只取这一份，不拉整份调试快照）
+  calib_report: crate::debug::Probe<crate::engine::calib::CalibReport>,
+  /// 上一个重建还在跑时收到的最新计划：**只保留最后一份**（连点模型按钮不排长队）
+  pending_apply: Option<Plan>,
+  /// 文件对话框在后台线程跑，结果经这里交回界面线程（选中 → 导入媒体库 → 重建）
+  media_pick: Arc<std::sync::Mutex<Option<PendingMedia>>>,
+  /// 正在出声的应用（单应用音频节点选源用；空 = 没刷新过）
+  app_list: Vec<(u32, String)>,
 }
 
 impl Workspace {
@@ -176,6 +202,19 @@ impl Workspace {
       let _ = audio.persist_plan(plan.clone());
     }
     let selected = plan.nodes().next().map(|n| n.id);
+    let settings = crate::config::load_settings();
+    let net_ifaces = crate::net::addrs::list();
+    let net_ip = if !settings.net_ip.is_empty() {
+      settings.net_ip.clone()
+    } else {
+      net_ifaces
+        .iter()
+        .find(|i| i.is_default)
+        .or_else(|| net_ifaces.first())
+        .map(|i| i.ip.clone())
+        .unwrap_or_default()
+    };
+    let calib_report = hub.calib_report();
     let this = Workspace {
       focus_handle,
       audio,
@@ -184,7 +223,7 @@ impl Workspace {
       devices: crate::devices::cached().devices,
       last_refresh: Instant::now(),
       selected,
-      status: "从顶部添加输入 / 处理 / 输出；拖动端口连线，点节点改参数".into(),
+      status: "从顶部添加输入 / AI / 处理 / 内容 / 输出；拖动端口连线，点节点改参数".into(),
       job: None,
       latency,
       drag: None,
@@ -194,6 +233,17 @@ impl Workspace {
       redo: Vec::new(),
       sliders: std::collections::HashMap::new(),
       subs: Vec::new(),
+      settings,
+      net_stats: None,
+      net_ifaces,
+      net_ip,
+      net_qr: None,
+      net_qr_url: String::new(),
+      net_last: Instant::now() - Duration::from_secs(2),
+      calib_report,
+      pending_apply: None,
+      media_pick: Arc::new(std::sync::Mutex::new(None)),
+      app_list: Vec::new(),
     };
     cx.spawn(async move |weak, cx| {
       loop {
@@ -243,6 +293,32 @@ impl Workspace {
       self.latency = self.hub.latency_report();
       dirty = true;
     }
+    // 网络卡片常驻在右侧：1 s 刷一次统计；二维码只在地址变化时重新生成。
+    if self.net_last.elapsed() >= Duration::from_secs(1) {
+      self.net_last = Instant::now();
+      self.net_stats = Some(crate::net::hub().stats());
+      self.net_ifaces = crate::net::addrs::list();
+      self.calib_report = self.hub.calib_report();
+      // 手机端也可能改环深度（双向同步）：界面缓存跟着 hub 走。
+      self.settings.net_ring_ms = crate::net::hub().ring_ms();
+      let running = self.net_stats.as_ref().map(|s| s.running).unwrap_or(false);
+      if running {
+        let url = self.net_url();
+        if url != self.net_qr_url {
+          self.net_qr_url = url.clone();
+          self.net_qr = match qr::png_for(&url) {
+            Ok(p) => Some(p),
+            Err(e) => {
+              crate::debug::events::log("warn", "ui", format!("二维码不可用：{e}"));
+              None
+            }
+          };
+        }
+      } else if self.net_qr.take().is_some() {
+        self.net_qr_url.clear();
+      }
+      dirty = true;
+    }
     if let Some(job) = self.job.as_ref() {
       let msg = job.lock().unwrap().take();
       if let Some(Ok(msg)) = msg {
@@ -257,6 +333,23 @@ impl Workspace {
         self.job = None;
         dirty = true;
       }
+    }
+    // 文件选择器在别的线程里跑；结果到了就导入媒体库并重建会话。
+    let pick = self
+      .media_pick
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .take();
+    if let Some(pm) = pick {
+      self.finish_media_pick(pm, cx);
+      dirty = true;
+    }
+    // 上一个重建跑完后，应用排队里的**最后一份**计划（连点模型/结构参数不排长队）。
+    if self.job.is_none()
+      && let Some(plan) = self.pending_apply.take()
+    {
+      self.spawn_apply(plan);
+      dirty = true;
     }
     // 引擎运行时逐节点电平在动，必须重绘；停着就只等上面两件事。
     dirty || self.audio.is_running()
@@ -402,6 +495,19 @@ impl Workspace {
   fn apply_structure(&mut self, cx: &mut Context<Self>) {
     self.plan.normalize();
     let plan = self.plan.clone();
+    if self.job.is_some() {
+      // 重建是秒级的（模型加载 / 设备重开）。连点模型按钮时不要每个都起一条线程，
+      // 只留最后一份计划，当前这次跑完再应用 —— 否则界面会「点了半天，最后停在中间那版」。
+      self.pending_apply = Some(plan);
+      self.status = "排队应用图（上一个重建还在跑）…".into();
+      cx.notify();
+      return;
+    }
+    self.spawn_apply(plan);
+    cx.notify();
+  }
+
+  fn spawn_apply(&mut self, plan: Plan) {
     let mgr = self.audio.clone();
     self.spawn_job("应用图", move || {
       mgr.apply_plan(plan).map(|problems| {
@@ -412,6 +518,51 @@ impl Workspace {
         }
       })
     });
+  }
+
+  /// 文件对话框返回：把解码后的库内路径写进节点参数，再重建会话。
+  ///
+  /// `player` 用 `path`（单曲）；`soundpad` 把新音效追加到 `pads` JSON（保留已有）。
+  fn finish_media_pick(&mut self, pm: PendingMedia, cx: &mut Context<Self>) {
+    let imp = match pm.result {
+      Ok(v) => v,
+      Err(e) => {
+        self.status = format!("导入音频失败：{e}");
+        self.hub.push_ui("error", format!("导入音频失败：{e}"));
+        cx.notify();
+        return;
+      }
+    };
+    let path = imp.path.display().to_string();
+    let name = imp.name.clone();
+    if let Some(n) = self.plan.node_mut(pm.node) {
+      match pm.kind {
+        crate::media::MediaKind::Music => {
+          n.params.insert("path".into(), path.clone());
+        }
+        crate::media::MediaKind::Soundpad => {
+          let mut pads: Vec<serde_json::Value> = n
+            .params
+            .get("pads")
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+          pads.push(serde_json::json!({
+            "name": name,
+            "path": path,
+            "volume_db": 0.0,
+            "hotkey": "",
+          }));
+          n.params
+            .insert("pads".into(), serde_json::Value::Array(pads).to_string());
+        }
+      }
+    }
+    self.status = if imp.reused {
+      format!("已在媒体库中：{}", imp.path.display())
+    } else {
+      format!("已导入：{} → {}", imp.name, imp.path.display())
+    };
+    self.apply_structure(cx);
     cx.notify();
   }
 
@@ -470,6 +621,7 @@ impl Workspace {
       (RowKind::Process, _) => "处理",
       (RowKind::Input, "remote_mic") => "手机麦克风",
       (RowKind::Input, "loopback") => "系统声音",
+      (RowKind::Input, "app_capture") => "应用音频",
       (RowKind::Input, "tone") => "测试音",
       (RowKind::Input, _) => "麦克风",
       (RowKind::Output, "remote_speaker") => "手机 / 客户端",
@@ -481,6 +633,7 @@ impl Workspace {
     match (kind, ptype) {
       (RowKind::Input, "remote_mic") => t::NET,
       (RowKind::Input, "loopback") => t::LOOPBACK,
+      (RowKind::Input, "app_capture") => t::LOOPBACK,
       (RowKind::Input, _) => t::MIC,
       (RowKind::Process, "echo_cancel") => t::AEC,
       (RowKind::Process, _) => t::ACCENT,
@@ -568,6 +721,7 @@ impl Workspace {
         input_gain_db = "-6.0".into();
       }
       "remote_mic" => device_name = Some("手机（网络麦克风）".into()),
+      "app_capture" => device_name = Some("选择应用…".into()),
       "tone" => {}
       "denoise" => {
         if let Some((f, _)) = crate::infer::denoise_models().first() {
@@ -815,7 +969,7 @@ impl Workspace {
 
 impl Render for Workspace {
   fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    let inspector = self.inspector(window, cx);
+    let dock = self.dock(window, cx);
     div()
       .id("workspace")
       .relative()
@@ -969,7 +1123,7 @@ impl Render for Workspace {
               .overflow_scroll()
               .child(self.canvas(window, cx)),
           )
-          .child(inspector),
+          .child(dock),
       )
       .when_some(self.menu, |el, menu| el.child(self.menu_panel(menu, cx)))
       .child(self.status_bar())
@@ -1051,8 +1205,20 @@ impl Workspace {
         })),
       )
       .child(
+        quiet_button(cx, "menu-ai", "＋ AI").on_click(cx.listener(|this, _, _, cx| {
+          this.menu = Some(Menu::Ai);
+          cx.notify();
+        })),
+      )
+      .child(
         quiet_button(cx, "menu-process", "＋ 处理").on_click(cx.listener(|this, _, _, cx| {
           this.menu = Some(Menu::Process);
+          cx.notify();
+        })),
+      )
+      .child(
+        quiet_button(cx, "menu-content", "＋ 内容").on_click(cx.listener(|this, _, _, cx| {
+          this.menu = Some(Menu::Content);
           cx.notify();
         })),
       )
@@ -1112,29 +1278,49 @@ impl Workspace {
       Menu::Source => vec![
         ("麦克风", RowKind::Input, "audio_input"),
         ("系统声音（回环）", RowKind::Input, "loopback"),
+        ("应用音频（Windows）", RowKind::Input, "app_capture"),
         ("手机麦克风", RowKind::Input, "remote_mic"),
         ("测试音", RowKind::Input, "tone"),
-        ("AEC（两输入）", RowKind::Process, "echo_cancel"),
+      ],
+      // AI 三巨头单独一栏：它们都是模型节点，但语义不是「普通处理」（AEC 还是两输入）。
+      Menu::Ai => vec![
+        ("AI 降噪", RowKind::Process, "denoise"),
+        ("目标说话人 TSE", RowKind::Process, "tse"),
+        ("回声消除 AEC（两输入）", RowKind::Process, "echo_cancel"),
       ],
       Menu::Process => vec![
-        ("AI 降噪", RowKind::Process, "denoise"),
         ("增益", RowKind::Process, "gain"),
-        ("AGC", RowKind::Process, "agc"),
-        ("限幅", RowKind::Process, "limiter"),
-        ("31 段 EQ", RowKind::Process, "eq31"),
         ("噪声门", RowKind::Process, "noise_gate"),
-        ("压缩", RowKind::Process, "compressor"),
-        ("TSE", RowKind::Process, "tse"),
+        ("压缩器", RowKind::Process, "compressor"),
+        ("限制器", RowKind::Process, "limiter"),
+        ("扩展器", RowKind::Process, "expander"),
+        ("向上压缩器", RowKind::Process, "upward_compressor"),
+        ("31 段 EQ", RowKind::Process, "eq31"),
+        ("AGC", RowKind::Process, "agc"),
+        ("极性反转", RowKind::Process, "invert"),
+        ("可视化", RowKind::Process, "viz"),
+      ],
+      // 内容源：音效 / 音乐 / 文件。都是「自己产生声音」的源节点（0 个输入端口）。
+      Menu::Content => vec![
+        ("音效板", RowKind::Process, "soundpad"),
+        ("音乐播放器（音频文件）", RowKind::Process, "player"),
       ],
       Menu::Output => vec![
         ("输出设备", RowKind::Output, "audio_output"),
         ("手机 / 客户端", RowKind::Output, "remote_speaker"),
       ],
     };
+    let left = match menu {
+      Menu::Source => 361.0,
+      Menu::Ai => 441.0,
+      Menu::Process => 521.0,
+      Menu::Content => 601.0,
+      Menu::Output => 681.0,
+    };
     let mut list = div()
       .absolute()
       .top(px(t::TOP_H))
-      .left(px(230.))
+      .left(px(left))
       .flex()
       .flex_col()
       .gap_1()
@@ -1628,8 +1814,8 @@ impl Render for DragGhost {
 impl Workspace {
   // ── 检查器 ──────────────────────────────────────────────────────────
 
-  fn inspector(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-    let body: AnyElement = match self.selected.and_then(|id| self.plan.node(id).cloned()) {
+  fn inspector_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    match self.selected.and_then(|id| self.plan.node(id).cloned()) {
       Some(n) => self.inspect_node(n, window, cx),
       None => div()
         .flex()
@@ -1638,21 +1824,331 @@ impl Workspace {
         .child(div().text_size(px(14.)).child("没有选中节点"))
         .child(hint("点画板上的节点；拖动右侧端口连线。"))
         .into_any_element(),
-    };
+    }
+  }
+
+  /// 右侧常驻栏：网络 → AEC 校准 → 选中节点检查器。
+  ///
+  /// 网络二维码 / 网络状态 / AEC 校准**不跟随选中节点**（用户明确要求常驻）：
+  /// 它们回答的是「现在链路上在发生什么」，不是「这个节点有什么参数」。
+  fn dock(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    let body = self.inspector_body(window, cx);
     div()
-      .id("inspector")
+      .id("dock")
       .flex()
       .flex_col()
-      .gap_3()
-      .w(px(320.))
+      .w(px(340.))
       .h_full()
-      .p(px(12.))
       .bg(rgb(t::PANEL))
       .border_l_1()
       .border_color(rgb(t::BORDER))
-      .overflow_y_scroll()
-      .child(body)
+      .child(
+        div()
+          .id("dock-scroll")
+          .flex_1()
+          .min_h_0()
+          .overflow_y_scroll()
+          .flex()
+          .flex_col()
+          .gap_3()
+          .p(px(12.))
+          .child(self.net_card(cx))
+          .child(self.aec_card(cx))
+          .child(body),
+      )
       .into_any_element()
+  }
+
+  /// 网络服务地址（二维码 / 复制 / 显示共用同一个）。
+  fn net_url(&self) -> String {
+    let port = self
+      .net_stats
+      .as_ref()
+      .map(|s| s.port)
+      .filter(|p| *p != 0)
+      .unwrap_or_else(|| crate::net::hub().port());
+    let ip = if self.net_ip.is_empty() {
+      "127.0.0.1".to_string()
+    } else {
+      self.net_ip.clone()
+    };
+    format!("https://{ip}:{port}/")
+  }
+
+  /// 网络卡片：服务开关 / 地址 / 二维码 / 客户端状态 / 环深度。常驻右侧。
+  fn net_card(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    let st = self
+      .net_stats
+      .clone()
+      .unwrap_or_else(|| crate::net::hub().stats());
+    let running = st.running;
+    let dot = if running { t::OK } else { t::MUTED };
+    let mut list = div().flex().flex_col().gap_2().child(
+      div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(rgb(dot)))
+        .child(div().text_size(px(13.)).child("网络"))
+        .child(div().flex_1())
+        .child(
+          quiet_button(cx, "net-toggle", if running { "停止" } else { "启动" }).on_click(
+            cx.listener(|this, _, _, cx| {
+              let r = if crate::net::hub().is_running() {
+                crate::net::stop();
+                Ok("网络服务已停止".to_string())
+              } else {
+                crate::net::start()
+              };
+              this.status = match r {
+                Ok(m) => format!("网络服务：{m}"),
+                Err(e) => format!("网络服务：{e}"),
+              };
+              this.net_last = Instant::now() - Duration::from_secs(2);
+              cx.notify();
+            }),
+          ),
+        ),
+    );
+    if !running {
+      return list
+        .child(hint("服务未启动：启动后手机 / 网页才能连。"))
+        .into_any_element();
+    }
+    let url = self.net_url();
+    list = list.child(field("地址", url.clone())).child(
+      div()
+        .flex()
+        .gap_1()
+        .child(
+          quiet_button(cx, "net-copy", "复制地址").on_click(cx.listener(move |this, _, _, cx| {
+            let url = this.net_url();
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(url.clone()));
+            this.status = format!("已复制：{url}");
+            cx.notify();
+          })),
+        )
+        .child(quiet_button(cx, "net-ca", "CA 证书").on_click(cx.listener(
+          move |this, _, _, cx| {
+            let url = format!("{}ca-cert", this.net_url());
+            match crate::openurl::open(&url) {
+              Ok(()) => this.status = format!("已打开 {url}"),
+              Err(e) => this.status = format!("打开 CA 失败：{e}"),
+            }
+            cx.notify();
+          },
+        ))),
+    );
+    // 网卡选择：只决定「告诉客户端哪个地址」，服务本来就监听所有网卡。
+    if self.net_ifaces.len() > 1 {
+      let mut row = div().flex().flex_wrap().gap_1();
+      for i in self.net_ifaces.clone() {
+        let ip = i.ip.clone();
+        let on = self.net_ip == ip;
+        row = row.child(
+          quiet_button(cx, format!("net-ip:{ip}"), format!("{} {}", ip, i.name))
+            .when(on, |b| b.selected(true))
+            .on_click(cx.listener(move |this, _, _, cx| {
+              this.net_ip = ip.clone();
+              this.settings.net_ip = ip.clone();
+              let _ = crate::config::save_settings(&this.settings);
+              this.net_last = Instant::now() - Duration::from_secs(2);
+              this.status = format!("网络地址：{ip}");
+              cx.notify();
+            })),
+        );
+      }
+      list = list.child(row);
+    }
+    match &self.net_qr {
+      Some(path) => {
+        list = list.child(
+          div()
+            .flex()
+            .justify_center()
+            .py(px(4.))
+            .child(gpui_kit::img(path.clone()).w(px(148.)).h(px(148.))),
+        );
+      }
+      None => {
+        list = list.child(hint("二维码生成中…（手机也可以自己发现本机）"));
+      }
+    }
+    list = list
+      .child(field("客户端", st.clients.to_string()))
+      .child(field(
+        "RTT",
+        st.rtt_ms
+          .map(|v| format!("{v:.1} ms"))
+          .unwrap_or_else(|| "—".into()),
+      ))
+      .child(field("上行", probe_rate(&st.tx_packets_per_s)))
+      .child(field("下行", probe_rate(&st.rx_packets_per_s)))
+      .child(field(
+        "环深度",
+        format!("{} ms", crate::net::hub().ring_ms()),
+      ))
+      .child(self.net_ring_slider(cx));
+    if let Some(c) = &st.client {
+      list = list.child(field(
+        "手机环",
+        format!("{:.0} / {:.0} ms", c.level_ms, c.target_ms),
+      ));
+    }
+    if !st.verdict.text.is_empty() {
+      list = list.child(hint(st.verdict.text.clone()));
+    }
+    if st.clients == 0 {
+      list = list.child(hint("还没有客户端连上（手机 / 网页扫码或自动发现）"));
+    }
+    list.into_any_element()
+  }
+
+  /// 网络环深度滑杆（10–200 ms，10 ms 步进）。默认值在 `config::d_net_ring_ms`（50 ms）。
+  fn net_ring_slider(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    let cur = self.settings.net_ring_ms as f32;
+    let skey = (0u32, "net_ring_ms".to_string());
+    let state = match self.sliders.get(&skey) {
+      Some(s) => s.clone(),
+      None => {
+        let state = cx.new(|_| {
+          SliderState::new()
+            .min(10.)
+            .max(200.)
+            .step(10.)
+            .default_value(cur)
+        });
+        let sub = cx.subscribe(
+          &state,
+          move |this: &mut Workspace, _state, event: &SliderEvent, cx| {
+            if let SliderEvent::Change(SliderValue::Single(v)) = event {
+              let ms = v.round() as u32;
+              crate::net::set_ring_ms(ms);
+              this.settings.net_ring_ms = ms;
+              this.status = format!("网络环深度 = {ms} ms");
+              cx.notify();
+            }
+          },
+        );
+        self.subs.push(sub);
+        self.sliders.insert(skey, state.clone());
+        state
+      }
+    };
+    div()
+      .flex()
+      .items_center()
+      .gap_2()
+      .child(Slider::new(&state).horizontal())
+      .child(
+        div()
+          .w(px(56.))
+          .text_size(px(11.))
+          .text_color(rgb(t::TEXT))
+          .child(format!("{} ms", cur)),
+      )
+      .into_any_element()
+  }
+
+  /// AEC 校准卡片：常驻右侧（不跟随选中节点）。没有 AEC 节点时只给入口提示。
+  fn aec_card(&self, cx: &mut Context<Self>) -> AnyElement {
+    let target = self
+      .plan
+      .nodes()
+      .find(|n| n.ptype == "echo_cancel" && n.kind == RowKind::Process)
+      .and_then(|n| self.pos(n.id));
+    let mut list = div()
+      .flex()
+      .flex_col()
+      .gap_2()
+      .child(div().text_size(px(13.)).child("AEC 校准"));
+    let Some((ci, ri)) = target else {
+      return list
+        .child(hint("画板里没有 AEC 节点（＋ AI → 回声消除）。"))
+        .into_any_element();
+    };
+    list = list.child(
+      div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+          quiet_button(cx, "aec-calib", "开始校准").on_click(cx.listener(
+            move |this, _, _window, cx| {
+              let mgr = this.audio.clone();
+              this.spawn_job("AEC 校准", move || {
+                match mgr.calibrate_aec_delay(Some((ci, ri))) {
+                  Ok((msg, temp)) => {
+                    mgr.finish_temp_session(temp);
+                    Ok(msg)
+                  }
+                  Err(e) => Err(e),
+                }
+              });
+              cx.notify();
+            },
+          )),
+        )
+        .child(hint("播放一段系统声音，让麦克风听到")),
+    );
+    match &self.calib_report {
+      crate::debug::Probe::Ok { value } => {
+        if let Some(ms) = value.delay_ms {
+          list = list.child(field("远端延时", format!("{ms:.0} ms")));
+        }
+        if let Some(db) = value.echo_path_db {
+          list = list.child(field("回声路径", format!("{db:.1} dB")));
+        }
+        list = list.child(hint(value.verdict_text.clone()));
+        if let Some(next) = &value.next_step {
+          list = list.child(hint(next.clone()));
+        }
+        if let Some(s) = &value.series
+          && s.t_ms.len() >= 2
+        {
+          // 旧 Tauri 的校准曲线：近端 / 远端带内能量包络，画在同一时间轴上。
+          let ts = s.t_ms.clone();
+          let mic = s.mic_env_db.clone();
+          let far = s.far_env_db.clone();
+          list = list.child(div().h(px(96.)).w_full().child(canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+              let w = bounds.size.width.as_f32();
+              let h = bounds.size.height.as_f32();
+              let (t0, t1) = (ts[0], *ts.last().unwrap_or(&ts[0]));
+              let span = (t1 - t0).max(1e-3);
+              let (lo, hi) = (-80.0f64, 0.0f64);
+              let draw = |window: &mut Window, env: &[f64], color: u32| {
+                let mut pb = PathBuilder::stroke(px(1.3));
+                for (i, &db) in env.iter().enumerate().take(ts.len()) {
+                  let x = ((ts[i] - t0) / span) as f32 * w;
+                  let v = ((db - lo) / (hi - lo)).clamp(0.0, 1.0) as f32;
+                  let y = h - v * h;
+                  if i == 0 {
+                    pb.move_to(bounds.origin + point(px(x), px(y)));
+                  } else {
+                    pb.line_to(bounds.origin + point(px(x), px(y)));
+                  }
+                }
+                if let Ok(p) = pb.build() {
+                  window.paint_path(p, rgb(color));
+                }
+              };
+              draw(window, &far, t::NET);
+              draw(window, &mic, t::MIC);
+            },
+          )));
+          list = list.child(hint("蓝：远端参考 · 绿：麦克风"));
+        }
+      }
+      crate::debug::Probe::Pending => {
+        list = list.child(hint("还没校准（结果会写进 /debug/calib）"));
+      }
+      crate::debug::Probe::Unavailable { reason } => {
+        list = list.child(hint(reason.clone()));
+      }
+    }
+    list.into_any_element()
   }
 
   fn inspect_node(
@@ -1749,6 +2245,134 @@ impl Workspace {
         })),
       );
 
+    // 媒体源（音效板 / 播放器）：文件选择 → 库内 WAV → 重建。
+    if n.ptype == "soundpad" || n.ptype == "player" {
+      let kind = if n.ptype == "soundpad" {
+        crate::media::MediaKind::Soundpad
+      } else {
+        crate::media::MediaKind::Music
+      };
+      list = list.child(section("媒体"));
+      list = list.child(
+        quiet_button(cx, format!("pick:{id}"), "选择音频文件…").on_click(cx.listener(
+          move |this, _, _window, cx| {
+            let slot = this.media_pick.clone();
+            let node = id;
+            std::thread::spawn(move || {
+              let picked = rfd::FileDialog::new()
+                .add_filter("音频文件", &["wav", "mp3", "flac", "ogg", "m4a", "aac"])
+                .pick_file();
+              let Some(p) = picked else {
+                return;
+              };
+              let fname = p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("audio")
+                .to_string();
+              let result = match std::fs::read(&p) {
+                Ok(bytes) => crate::media::import(&bytes, &fname, kind),
+                Err(e) => Err(format!("读取文件失败：{e}")),
+              };
+              *slot.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(PendingMedia { node, kind, result });
+            });
+            this.status = "选择音频文件…".into();
+            cx.notify();
+          },
+        )),
+      );
+      if n.ptype == "player" {
+        let cur = n.params.get("path").cloned().unwrap_or_default();
+        let shown = if cur.is_empty() {
+          "（未选择）".to_string()
+        } else {
+          std::path::Path::new(&cur)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&cur)
+            .to_string()
+        };
+        list = list.child(field("当前曲目", shown)).child(
+          div()
+            .flex()
+            .gap_1()
+            .child(
+              quiet_button(cx, format!("pplay:{id}"), "播放").on_click(cx.listener(
+                move |this, _, _, cx| {
+                  if let Some((ci, ri)) = this.pos(id)
+                    && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+                  {
+                    s.send(crate::engine::media::MediaCmd::PlayerPlay);
+                    this.status = "播放器：播放".into();
+                  }
+                  cx.notify();
+                },
+              )),
+            )
+            .child(
+              quiet_button(cx, format!("ppause:{id}"), "暂停").on_click(cx.listener(
+                move |this, _, _, cx| {
+                  if let Some((ci, ri)) = this.pos(id)
+                    && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+                  {
+                    s.send(crate::engine::media::MediaCmd::PlayerPause);
+                    this.status = "播放器：暂停".into();
+                  }
+                  cx.notify();
+                },
+              )),
+            ),
+        );
+      } else {
+        let pads: Vec<serde_json::Value> = n
+          .params
+          .get("pads")
+          .and_then(|s| serde_json::from_str(s).ok())
+          .unwrap_or_default();
+        if pads.is_empty() {
+          list = list.child(hint("还没有音效：点上面的按钮导入。"));
+        }
+        for (i, pad) in pads.iter().enumerate() {
+          let name = pad
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("音效")
+            .to_string();
+          list = list.child(
+            quiet_button(cx, format!("pad:{id}:{i}"), format!("▶ {name}")).on_click(cx.listener(
+              move |this, _, _, cx| {
+                if let Some((ci, ri)) = this.pos(id)
+                  && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+                {
+                  s.send(crate::engine::media::MediaCmd::SoundpadPlay(i));
+                  this.status = format!("播放音效：{name}");
+                } else {
+                  this.status = "引擎未运行：先启动再播放".into();
+                }
+                cx.notify();
+              },
+            )),
+          );
+        }
+        if !pads.is_empty() {
+          list = list.child(
+            quiet_button(cx, format!("padstop:{id}"), "全部停止").on_click(cx.listener(
+              move |this, _, _, cx| {
+                if let Some((ci, ri)) = this.pos(id)
+                  && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+                {
+                  s.send(crate::engine::media::MediaCmd::SoundpadStopAll);
+                  this.status = "音效板：全部停止".into();
+                }
+                cx.notify();
+              },
+            )),
+          );
+        }
+      }
+    }
+
     // 源头 / 出口：当前设备只在标题里显示一次，这里是唯一的**选择**入口。
     if crate::plan::input_ports(&n.ptype, n.channels) == 0 {
       match n.ptype.as_str() {
@@ -1775,6 +2399,53 @@ impl Workspace {
                   this.apply_structure(cx);
                 })),
             );
+          }
+        }
+        "app_capture" => {
+          list = list.child(section("应用音频"));
+          list = list.child(
+            quiet_button(cx, format!("applist:{id}"), "刷新应用列表").on_click(cx.listener(
+              |this, _, _window, cx| {
+                match crate::audio::app_capture::list_apps() {
+                  Ok(v) => {
+                    this.status = format!("发现 {} 个正在出声的应用", v.len());
+                    this.app_list = v;
+                  }
+                  Err(e) => this.status = e,
+                }
+                cx.notify();
+              },
+            )),
+          );
+          if self.app_list.is_empty() {
+            list = list.child(hint(
+              "只列出正在出声的应用（Windows 10 2004+）；点「刷新应用列表」。",
+            ));
+          }
+          for (pid, name) in self.app_list.clone() {
+            let dev = format!("app:{pid}");
+            let on = n.device.as_deref() == Some(dev.as_str());
+            list = list.child(
+              quiet_button(
+                cx,
+                format!("app:{id}:{pid}"),
+                format!("{name}  ·  PID {pid}"),
+              )
+              .when(on, |b| b.selected(true))
+              .on_click(cx.listener(move |this, _, _window, cx| {
+                this.snapshot();
+                if let Some(n) = this.plan.node_mut(id) {
+                  n.device = Some(dev.clone());
+                  n.device_name = Some(name.clone());
+                }
+                this.apply_structure(cx);
+              })),
+            );
+          }
+          if let Some(dev) = &n.device
+            && dev.starts_with("app:")
+          {
+            list = list.child(field("当前应用", n.device_name.clone().unwrap_or_default()));
           }
         }
         "loopback" => {
@@ -2233,6 +2904,15 @@ impl Workspace {
           "引擎已停止"
         }
       ))
+  }
+}
+
+/// 速率类 `Probe<f64>` → 人类可读（采样中 / 不可用原因也照实显示，不编 0）。
+fn probe_rate(p: &crate::debug::Probe<f64>) -> String {
+  match p {
+    crate::debug::Probe::Ok { value } => format!("{value:.1} 包/s"),
+    crate::debug::Probe::Pending => "采样中…".into(),
+    crate::debug::Probe::Unavailable { reason } => reason.clone(),
   }
 }
 

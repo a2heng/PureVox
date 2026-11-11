@@ -41,6 +41,14 @@ pub mod loopback;
 #[cfg(not(any(windows, target_os = "linux")))]
 #[path = "loopback_other.rs"]
 pub mod loopback;
+
+/// 单应用音频（Windows WASAPI process loopback；其它平台明确不支持）
+#[cfg(windows)]
+#[path = "app_capture_windows.rs"]
+pub mod app_capture;
+#[cfg(not(windows))]
+#[path = "app_capture_other.rs"]
+pub mod app_capture;
 /// 输出设备的混音：多列 → 一个设备（逐源对齐后相加）
 pub mod mixer;
 /// 输出后端选择层：Windows = WASAPI（`IAudioClient3` 低延迟共享），其它 = cpal。
@@ -666,9 +674,14 @@ impl AudioManager {
       return result;
     }
 
-    // 取值约束来自注册表（界面有 min/max，后端不能信界面）
-    let (lo, hi, _) = crate::engine::registry::number_spec(&ptype, key)
-      .ok_or_else(|| format!("{ptype} 的 {key} 不是数值参数"))?;
+    // 取值约束来自注册表（界面有 min/max，后端不能信界面）。
+    // `input_gain_db` 是**计划字段**（每个节点都有），不在 NodeSpec.params 里，单独给范围。
+    let (lo, hi, _) = if key == "input_gain_db" {
+      (-24.0, 24.0, 0.0)
+    } else {
+      crate::engine::registry::number_spec(&ptype, key)
+        .ok_or_else(|| format!("{ptype} 的 {key} 不是数值参数"))?
+    };
     let db: f64 = value
       .trim()
       .parse()
@@ -685,7 +698,12 @@ impl AudioManager {
       .get_mut(col)
       .and_then(|c| c.rows.get_mut(row))
     {
-      r.params.insert(key.to_string(), value.trim().to_string());
+      if key == "input_gain_db" {
+        // 盘前增益是列计划里的独立字段（不是 params），写错地方界面会读旧值。
+        r.input_gain_db = value.trim().to_string();
+      } else {
+        r.params.insert(key.to_string(), value.trim().to_string());
+      }
     }
     let plan = g.plan.clone();
     let running = g.session.is_some();
@@ -856,6 +874,25 @@ mod tests {
       "运行中的 gain 行必须登记了热参数单元格"
     );
     m.stop();
+  }
+
+  /// 「盘前调整」（每个节点的输入微调）必须是**热参数**：
+  /// 它只是乘一个倍数，不该重建会话，更不能被 `is_hot` 门挡住后**静默不生效**。
+  #[test]
+  fn input_trim_is_hot_and_lands_on_plan_field() {
+    let m = mgr();
+    m.apply_plan(Plan::default()).expect("写计划");
+    // 第 0 列第 0 行是默认计划里的输入节点。
+    m.set_row_param(0, 0, "input_gain_db", "-6.0")
+      .expect("输入微调必须被当作热参数接受");
+    let plan = m.plan();
+    assert_eq!(plan.columns[0].rows[0].input_gain_db, "-6.0");
+    assert!(
+      !plan.columns[0].rows[0].params.contains_key("input_gain_db"),
+      "input_gain_db 是计划字段，不该混进 params"
+    );
+    // 越界值仍然要被后端拒绝（界面滑杆范围 -24..24）。
+    assert!(m.set_row_param(0, 0, "input_gain_db", "60").is_err());
   }
 
   /// 校准**不必先手动启动**：没有 AEC 行时报的是「没有 AEC 行」而不是「会话未运行」，

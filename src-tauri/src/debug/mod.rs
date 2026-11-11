@@ -489,6 +489,15 @@ impl DebugHub {
     self.state.write().unwrap().calib_report = v;
   }
 
+  /// 右侧 AEC 校准卡片用：只取这一份结论，不拉整份调试快照（快照还要扫流/列/模型）。
+  pub fn calib_report(&self) -> Probe<crate::engine::calib::CalibReport> {
+    self
+      .state
+      .read()
+      .map(|s| s.calib_report.clone())
+      .unwrap_or(Probe::Pending)
+  }
+
   /// 逐列延迟预算（延迟分析线程每 500 ms 发布一次；`/debug/latency` 与快照同源）。
   pub fn set_latency_report(&self, v: Probe<crate::engine::latency::LatencyReport>) {
     self.state.write().unwrap().latency = v;

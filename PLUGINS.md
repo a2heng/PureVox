@@ -6,7 +6,7 @@
 
 | 类别 | ptype（示例） | 说明 |
 | --- | --- | --- |
-| 输入 | `audio_input` / `loopback` / `remote_mic` / `echo_cancel` | 源；同列多个混合 |
+| 输入 | `audio_input` / `loopback` / `app_capture` / `remote_mic` / `tone` | 源；同列多个混合 |
 | 处理 | `denoise_*` / `gain` / `noise_gate` / `compressor` / `limiter` / `expander` / `upward_compressor` / `eq31` / `agc` / `invert` / `soundpad` / `player` | Stage；就地处理 |
 | 输出 | `audio_output` / `remote_speaker` | 汇；位置 tap，送往设备或网络 |
 | 可视化 | `viz` | **处理行**；只读 tap，原样放行（VU / 频谱，见 §3.6） |
@@ -27,15 +27,18 @@
   两者都是处理行，曲线/参数走热参数，不重建会话。
   不包含 Noise Suppression（由 AI 降噪替代）、VST 2.x（需要 VST 宿主，未引入）、以及 Audio
   Monitor / Pan / Sync Offset（它们是 OBS 的源属性/路由；PureVox 的输出行承担监听）。
-- **AEC 行**：一个输入行 =「一路 mic + 一路 far」，mic 在行内先过 AEC 再进列；
-  far 参考只给模型用，**不进信号路径**；历史不足则直通 mic。
+- **AEC（`echo_cancel`，处理节点）**：两个输入端口（近端 / 远端）+ 一个输出；近端/远端都
+  来自连线，节点自己**不打开设备**。far 参考只给模型用，**不进信号路径**；历史不足则直通近端。
 - **桌面声音（`loopback` 输入行）**：捕获某只输出设备正在播放的系统混音作为源
-  （复用 AEC 的远端回环实现：Windows = WASAPI loopback，Linux = PipeWire monitor）。
-  `device` = `loopback`（系统默认输出）或 `loopback:<端点ID｜sink 名>`；带行内增益
-  `volume_db`（-30~6 dB，默认 -6 dB，系统混音偏响）。
-- **媒体行（`soundpad` / `player`）是处理行，不是输入行**：无采集设备，在自身链位置
-  把媒体样本与信号相加——挂链尾（默认）= 后级直通，媒体不经上游处理；拖到降噪之前
-  则参与处理（与 legacy 链注入语义一致，也符合 §3.2 的位置 tap 语义）。
+  （Windows = WASAPI loopback，Linux = PipeWire monitor）。
+  `device` = `loopback`（系统默认输出）或 `loopback:<端点ID｜sink 名>`；电平用节点输入微调
+  `input_gain_db`。
+- **单应用音频（`app_capture` 输入行，Windows 10 2004+）**：WASAPI **process loopback**，
+  `device` = `app:<pid>`；只采集目标进程树（浏览器的多个渲染进程也能覆盖）。
+  应用列表由界面枚举「当前有活动音频会话」的进程（`audio/app_capture_windows.rs`），
+  选中后写进 `device`；其它平台明确报不支持，不静默退化成系统回环。
+- **媒体源（`soundpad` / `player`）是输入节点（0 个输入端口）**：声音由 Stage 自己生成，
+  不需要入线；引擎仍按 Process 行执行（带 `media_slot`），但不与上游相加。
   - `soundpad`（音效板）：音效整段入内存（都是短音效，起播零延迟），起播/结束/
     手动停止/重播一律 hop 内线性淡变（杜绝咔哒，**首样本恒为 0**）；重播同一音效 = 旧声部
     淡出、新声部从**开头**起播；音量**每个音效一个**（±10 dB），拖动实时生效。

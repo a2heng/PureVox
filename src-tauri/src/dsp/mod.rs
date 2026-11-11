@@ -15,10 +15,11 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! L1 DSP：重采样、hop 切片、电平/波形/频谱测量。不碰设备（ARCHITECTURE.md §1）。
+//! L1 DSP：重采样、逐通道拆分、hop 切片、电平/波形/频谱测量。不碰设备（ARCHITECTURE.md §1）。
 
 /// 对数频谱分段（可视化 / 调试频谱共用的唯一映射）
 pub mod bands;
 pub mod meter;
 pub mod resampler;
 pub mod servo;
+pub mod split;

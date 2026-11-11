@@ -17,9 +17,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """构建版本解析（**版本号 = 年.月.日**；跨平台唯一实现）。
 
+**两条发布通道**（`RELEASE-CHANNELS.md`）：
+  桌面 tag `v2026.10.08.1430`；安卓 tag `android-v2026.10.08.1430`。
+同一份脚本两边都认：`PLATFORM` 告诉 CI 该发到哪个通道，`TAG` 输出完整 tag。
+
 产出（全部写到 stdout，CI 重定向进 $GITHUB_ENV / 本机 eval）：
 
-  TAG     = v2026.10.08.1430   完整时间戳，唯一且按时间全序（**比较更新的依据**）
+  PLATFORM = desktop | android
+  TAG     = v2026.10.08.1430 / android-v2026.10.08.1430   完整时间戳（**比较更新的依据**）
   VERSION = 26.10.8            应用/包版本 = 年.月.日（semver 三段，Tauri 硬要求）
   STAMP   = 2026-10-08-1430    完整时间戳的文件名形式（产物重命名用，含时分故唯一）
   ACODE   = 261008143          Android versionCode = yyMMddHHmm ÷ 10（单调递增，Int32 内）
@@ -66,35 +71,43 @@ ROOT = Path(__file__).resolve().parents[2]
 _VERSION_CODE_MAX = 2_100_000_000
 
 
-def derive(ref: str) -> tuple[str, int, int, int, int]:
-    """从 tag（或「现在」）推出 (年, 月, 日, 时分HHmm, …)。
+def derive(ref: str, default_platform: str = "desktop") -> tuple[str, str, int, int, int, int]:
+    """从 tag（或「现在」）推出 (platform, 年, 月, 日, 时分)。
 
-    返回的月/日/时分都是**整数**（已去前导零）：bash 的 `$((10#$x))` 和 PowerShell 的
-    `[int]$x` 都做同一件事——bash 不加 `10#` 会把 `09` 当八进制，`09` 直接语法错误。
+    `android-v...` = 安卓通道；`v...` = 桌面通道。手动触发没有 tag 时用
+    `PV_PLATFORM`（默认 desktop）决定通道。
     """
-    if ref.startswith("v"):
-        parts = ref[1:].split(".")
+    platform = default_platform
+    rest = ref
+    if ref.startswith("android-v"):
+        platform = "android"
+        rest = ref[len("android-"):]  # 留下 "v2026...."，交给下面统一解析
+    if rest.startswith("v"):
+        parts = rest[1:].split(".")
         if len(parts) != 4:
-            raise SystemExit(f"tag 格式应为 v<yyyy.MM.dd.HHmm>，收到：{ref}")
+            raise SystemExit(
+                f"tag 格式应为 v<yyyy.MM.dd.HHmm> 或 android-v<yyyy.MM.dd.HHmm>，收到：{ref}"
+            )
         y, mo, d, hm = parts
         mo, d, hm = int(mo), int(d), int(hm)
         # 范围校验与应用侧 `UpdateChecker.stampToCode` 一致：脏 tag（如 `2399`）不许算出
         # 一个「看着合法」的 versionCode —— 两侧各判各的就会漂移。
         if not 1 <= mo <= 12 or not 1 <= d <= 31 or not 0 <= hm <= 2359 or hm % 100 > 59:
             raise SystemExit(f"tag 的月/日/时分越界：{ref}")
-        return y, mo, d, hm
+        return platform, y, mo, d, hm
     now = datetime.now(timezone.utc)
-    return now.strftime("%Y"), now.month, now.day, now.hour * 100 + now.minute
+    return platform, now.strftime("%Y"), now.month, now.day, now.hour * 100 + now.minute
 
 
 def main() -> int:
     ref = os.environ.get("GITHUB_REF_NAME", "")
-    y, mo, d, hm = derive(ref)
+    platform, y, mo, d, hm = derive(ref, os.environ.get("PV_PLATFORM", "desktop"))
     yy = int(y) % 100
 
     # tag 里的月/日/时分可能是 `08`、`09`，拼回去时补零（文件名与 versionCode 都要定长）
     mo2, d2, hm4 = f"{mo:02d}", f"{d:02d}", f"{hm:04d}"
-    tag = f"v{y}.{mo2}.{d2}.{hm4}"
+    prefix = "android-v" if platform == "android" else "v"
+    tag = f"{prefix}{y}.{mo2}.{d2}.{hm4}"
     ver = f"{yy}.{mo}.{d}"                      # 显示版本：整数，不补零（26.9.9）
     stamp = f"{y}-{mo2}-{d2}-{hm4}"             # 文件名形式
     acode = (
@@ -115,6 +128,7 @@ def main() -> int:
     cfg.write_text(json.dumps({"version": ver}) + "\n", encoding="utf-8", newline="\n")
 
     for line in (
+        f"PLATFORM={platform}",
         f"TAG={tag}",
         f"VERSION={ver}",
         f"STAMP={stamp}",

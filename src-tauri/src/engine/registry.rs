@@ -98,6 +98,10 @@ pub fn is_hot(ptype: &str, key: &str) -> bool {
       | ("agc", "speed")
       | ("agc", "floor_db")
       | ("eq31", "settings")
+      // 每个节点都有的「输入微调」（`input_gain_db` 是计划字段，不在 params 里）：
+      // 它只乘一次倍数，改完下一 hop 就该生效。**没有它，界面滑杆会静默不生效**
+      // （2026-11-12 用户实测：盘前增益「没有实时生效，或者根本没生效」）。
+      | (_, "input_gain_db")
   )
 }
 
@@ -195,17 +199,25 @@ static SPECS: &[NodeSpec] = &[
   NodeSpec {
     ptype: "loopback",
     label: "扬声器",
-    kind: NodeKind::Input,
-    // 无采集设备意义上的「输入」：捕获输出设备正在播放的系统混音（WASAPI loopback /
+    kind: NodeKind::Input, // 无采集设备意义上的「输入」：捕获输出设备正在播放的系统混音（WASAPI loopback /
     // PipeWire monitor）。`device` = `loopback`（系统默认输出）或 `loopback:<端点ID｜sink>`
     //（按平台，同 AEC 远端取值规则）；电平统一用节点输入微调（`input_gain_db`），
     // 不再有第二个「音量」参数。
     params: &[],
   },
   NodeSpec {
+    ptype: "app_capture",
+    label: "应用音频（Windows）",
+    kind: NodeKind::Input,
+    // 单应用音频：`device` = `app:<pid>`（Windows 10 2004+ 的 WASAPI process loopback）。
+    // 不列进程参数：应用列表由界面实时枚举「正在出声的会话」，选中后写进 `device`。
+    params: &[],
+  },
+  NodeSpec {
     ptype: "echo_cancel",
     label: "AEC（回声消除）",
-    kind: NodeKind::Input,
+    // **处理节点**（两输入 Stage）：近端/远端都来自连线，不再自己开设备（SESSION-V2 §3.3）
+    kind: NodeKind::Process,
     params: &[
       ParamSpec {
         key: "model",

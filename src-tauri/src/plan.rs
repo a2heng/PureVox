@@ -159,7 +159,10 @@ impl Default for Plan {
 pub fn input_ports(ptype: &str, channels: u32) -> usize {
   match ptype {
     "echo_cancel" => 2,
-    "audio_input" | "remote_mic" | "loopback" | "tone" => 0,
+    "audio_input" | "remote_mic" | "loopback" | "tone" | "app_capture" => 0,
+    // 媒体源（音效板 / 播放器）：声音由 Stage 自己生成，不需要入线。
+    // 引擎仍按 Process 行执行（带着 media_slot 跑），但画板上它们是源节点。
+    "soundpad" | "player" => 0,
     "audio_output" | "remote_speaker" => channels.max(1) as usize,
     _ => channels.max(1) as usize,
   }
@@ -177,7 +180,7 @@ pub fn output_ports(ptype: &str, channels: u32) -> usize {
 pub fn max_channels(ptype: &str) -> u32 {
   match ptype {
     "echo_cancel" | "tse" | "remote_mic" | "tone" | "remote_speaker" | "soundpad" | "player"
-    | "viz" => 1,
+    | "viz" | "app_capture" => 1,
     "denoise" => 2,
     "audio_input" | "loopback" | "audio_output" => 16,
     _ => 8,

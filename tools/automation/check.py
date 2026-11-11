@@ -62,12 +62,14 @@ GATES = ("fmt", "clippy", "build", "test", "ui", "version", "bundle")
 # Int32 上限，会被 Gradle 侧静默丢成 1（见 version.py / UpdateChecker.stampToCode）。
 # 这几行同时钉住「÷10 与补零」两件事。
 VERSION_CASES = (
-    # tag,                    VERSION, STAMP,            ACODE,     PUREVOX_BUILD_STAMP
-    ("v2026.10.14.1530", "26.10.14", "2026-10-14-1530", "261014153", "2026.10.14.1530"),
-    ("v2026.09.09.0901", "26.9.9",   "2026-09-09-0901", "260909090", "2026.09.09.0901"),
-    ("v2026.01.02.0000", "26.1.2",   "2026-01-02-0000", "260102000", "2026.01.02.0000"),
+    # tag,                    VERSION, STAMP,            ACODE,     PUREVOX_BUILD_STAMP,   PLATFORM
+    ("v2026.10.14.1530", "26.10.14", "2026-10-14-1530", "261014153", "2026.10.14.1530", "desktop"),
+    ("v2026.09.09.0901", "26.9.9",   "2026-09-09-0901", "260909090", "2026.09.09.0901", "desktop"),
+    ("v2026.01.02.0000", "26.1.2",   "2026-01-02-0000", "260102000", "2026.01.02.0000", "desktop"),
     # 同一天第二次发版：显示版本相同，靠 tag 的时分区分（AGENTS §2.6 / version.rs）
-    ("v2026.10.14.2309", "26.10.14", "2026-10-14-2309", "261014230", "2026.10.14.2309"),
+    ("v2026.10.14.2309", "26.10.14", "2026-10-14-2309", "261014230", "2026.10.14.2309", "desktop"),
+    # 安卓独立通道：tag 带 `android-` 前缀，输出 TAG 必须原样保留前缀（更新检查按它筛）
+    ("android-v2026.11.12.1015", "26.11.12", "2026-11-12-1015", "261112101", "2026.11.12.1015", "android"),
 )
 
 
@@ -143,6 +145,11 @@ def gate_test() -> None:
 
 
 def gate_ui() -> None:
+    # 旧 WebView 前端已随 GPUI 重建删除，只剩调试面板的 JS（debug.js / i18n.js …）。
+    # 没有 `jsconfig.json` 就没有可类型检查的工程 —— **明确跳过并说明**，不要静默通过。
+    if not (UI / "jsconfig.json").is_file():
+        print("  跳过：src-tauri/ui/jsconfig.json 不存在（GPUI 界面是 Rust；调试面板 JS 无类型配置）")
+        return
     # Windows 上 tsc 常常只以 .cmd/.ps1 形式存在（npm 全局包装脚本），shutil.which 只认
     # 可执行扩展名。这里显式把三种形态都试一遍，找不到再报「工具缺失」而不是
     # FileNotFoundError 的裸栈。
@@ -167,7 +174,7 @@ def gate_version() -> None:
     script = ROOT / "tools" / "automation" / "version.py"
     cfg = TAURI / ".build-version.json"
     try:
-        for tag, version, stamp, acode, bstamp in VERSION_CASES:
+        for tag, version, stamp, acode, bstamp, platform in VERSION_CASES:
             env = _env()
             env["GITHUB_REF_NAME"] = tag
             out = run([sys.executable, script], ROOT, env=env)
@@ -175,6 +182,7 @@ def gate_version() -> None:
                 line.split("=", 1) for line in out.splitlines() if "=" in line.strip()
             )
             want = {
+                "PLATFORM": platform,
                 "TAG": tag,
                 "VERSION": version,
                 "STAMP": stamp,
@@ -199,60 +207,30 @@ def gate_version() -> None:
 
 
 def gate_bundle() -> None:
-    """打包配置自检：**deb 的依赖清单不能空，且 rpm 必须交给 rpmbuild 自动生成**。
+    """打包 / 发版自检。
 
-    两种包格式的机制不同，门禁也就不同 —— 把它们当同一件事正是这次 `soup3` 那个错的由来：
-
-    * **deb**：dpkg **没有**自动依赖机制，`Depends:` 完全来自 `tauri.conf.json` 的
-      `bundle.linux.deb.depends`，**没有内置默认值**（`Option<Vec<String>>`
-      → `unwrap_or_default()` → 空）。所以忘配的后果不是「构建报错」，而是
-      **发出去一个 `apt install` 得上、但一启动就 `error while loading shared libraries`
-      的包** —— 用户侧才发现，CI 全绿。
-    * **rpm**：`rpmbuild` 从 ELF 的 `DT_NEEDED` **自动生成** `Requires`，生成的名字经
-      filelist 反查必然正确。手写反而是错的来源（曾把 Fedora 的 `libsoup3` 写成 `soup3`，
-      安装直接 `nothing provides soup3`；而它在第一个错名就停下，后面的错还没暴露）。
-      所以这里反过来断言 **depends 必须为空**，防止有人手滑再加回去。
-
-    这道门禁只挡「忘配」；依赖清单**对不对**由 `test_packages.py` 在干净的
-    ubuntu:24.04 / ubuntu:26.04 / fedora 容器里用 `ld.so --list` 实测
-    （它会报缺库与缺符号版本 —— 别用 `ldd`，它只看库文件在不在）。
+    **安装包流水线（tauri bundler）已随 GPUI 重建下线**，当前唯一在用的桌面产物是
+    便携 zip（`package_portable.py`）。这道门禁只做两件不会误报的事：
+    1. 便携包脚本存在、能解析，且真的把 `opus.dll` / `models/` / zip 写进去；
+    2. 发版那一步的真实实现（`release_stage.sh`）用假产物树 + 假 `gh` 跑通。
     """
-    cfg = json.loads((TAURI / "tauri.conf.json").read_text(encoding="utf-8"))
-    linux = cfg.get("bundle", {}).get("linux", {})
+    import ast
 
-    need = {
-        "libwebkit2gtk-4.1-0": "WebKitGTK 4.1（wry 运行时，缺了整个应用起不来）",
-        "libgtk-3-0": "GTK3",
-        "libasound2": "ALSA（cpal 采集/播放）",
-    }
-    declared = (linux.get("deb") or {}).get("depends") or []
-    if not declared:
-        raise GateError(
-            f"bundle.linux.deb.depends 是空的 —— 生成的包里不会有依赖声明，"
-            f"用户装得上却起不来。至少要写：{'、'.join(need)}"
-        )
-    missing = [f"{p}（{why}）" for p, why in need.items() if p not in declared]
-    if missing:
-        raise GateError(
-            f"bundle.linux.deb.depends 缺：{'；'.join(missing)}"
-            f"（当前 {len(declared)} 条：{'、'.join(declared)}）"
-        )
-    print(f"  deb: {len(declared)} 条依赖，核心项齐")
+    portable = ROOT / "tools" / "automation" / "package_portable.py"
+    if not portable.is_file():
+        raise GateError(f"缺少便携包脚本：{portable}")
+    text = portable.read_text(encoding="utf-8")
+    ast.parse(text)  # 语法错误当场暴露（这类脚本平时只在发版时跑）
+    for token, why in (
+        ("opus.dll", "网络音频运行时依赖，缺了网络功能全废"),
+        ("models", "AI 模型目录，缺了降噪/TSE/AEC 全部不可用"),
+        ("zipfile", "产物必须是可下载的 zip"),
+    ):
+        if token not in text:
+            raise GateError(f"package_portable.py 没有处理 {token}（{why}）")
+    print("  portable: exe + opus.dll + models/ + zip")
 
-    rpm_deps = (linux.get("rpm") or {}).get("depends") or []
-    if rpm_deps:
-        raise GateError(
-            f"bundle.linux.rpm.depends 不该手写（现有 {'、'.join(rpm_deps)}）—— "
-            f"rpmbuild 会从 DT_NEEDED 自动生成 Requires，手写的名字只在某一个 Fedora 上"
-            f"成立（曾把 libsoup3 写成 soup3）。真要加不可自动发现的依赖，进 "
-            f"bundle.linux.rpm.recommends 或 requires（那是给 dlopen 的东西用的）。"
-        )
-    print("  rpm: 交给 rpmbuild 自动生成（depends 为空 = 正确）")
-
-    # 发版那一步的真实实现也归这道门禁管：它此前**从没成功执行过**，第一次真打 tag
-    # 才暴露出「收集完文件名后 `cd ..` 回上一层 → 相对路径全失效 → gh 报
-    # no matches found」。用假产物树 + 假 gh 在本地跑通三个场景（齐全 / 缺产物 /
-    # 缺 notes），保证「测的」与「发布的」是同一份 `release_stage.sh`。
+    # 发版那一步是独立文件：用假产物树 + 假 gh 在本地跑通（桌面 / 安卓 / 缺产物 / 缺 notes）。
     harness = ROOT / "tools" / "automation" / "run_release_stage.py"
     proc = subprocess.run(
         [sys.executable, str(harness)], cwd=str(ROOT),
@@ -267,14 +245,6 @@ def gate_bundle() -> None:
     for line in (proc.stdout or "").splitlines():
         if "个场景通过" in line:
             print(f"  发版脚本: {line.strip()}")
-
-    # opus 是运行时 dlopen（不是 DT_NEEDED），自动依赖看不见，漏在 Recommends 里
-    # 只会静默降级网络音频（其余功能正常，所以只提示不拦）
-    for kind, key in (("deb", "libopus0"), ("rpm", "opus")):
-        rec = (linux.get(kind) or {}).get("recommends") or []
-        if key not in rec:
-            print(f"  提示：{kind} 的 recommends 里没有 {key} —— 缺它时网络音频降级，"
-                  f"其余功能正常（不是致命项）")
 
 
 GATE_FUNCS = {

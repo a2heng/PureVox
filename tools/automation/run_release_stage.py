@@ -80,6 +80,7 @@ LAYOUT = {
     f"PureVox-Linux-x64-{VERSION}-rpm": [f"purevox-{VERSION}-1.x86_64.rpm"],
     f"PureVox-Linux-x64-{VERSION}-appimage": [f"purevox_{VERSION}_amd64.AppImage"],
     f"PureVox-Android-arm64-2026-10-15-0439-apk": ["PureVox-Android-arm64-2026-10-15-0439.apk"],
+    f"PureVox-portable-2026-10-15-0439": [f"PureVox-{VERSION}-windows-x64-portable.zip"],
 }
 
 # 假 gh：把参数打出来，并逐个检查附件是否真的存在 —— 真 gh 找不到文件时报的
@@ -139,7 +140,7 @@ def build(drop: str | None = None, notes: bool = True) -> None:
         (WORK / "notes.md").write_text("# PureVox\n\n假 notes\n", encoding="utf-8")
 
 
-def run_case(label: str, expect_rc: int, expect_gh: bool = False, **kw) -> bool:
+def run_case(label: str, expect_rc: int, expect_gh: bool = False, platform: str = "desktop", **kw) -> bool:
     build(**kw)
     bindir = WORK / "bin"
     env = dict(os.environ)
@@ -150,6 +151,7 @@ def run_case(label: str, expect_rc: int, expect_gh: bool = False, **kw) -> bool:
     env["REPO"] = "a2heng/PureVox"
     env["TAG"] = TAG
     env["VERSION"] = VERSION
+    env["PLATFORM"] = platform
     env["NOTES"] = ".relstage_test/notes.md"
     proc = subprocess.run([find_bash(), STAGE_SH], cwd=ROOT, env=env,
                           capture_output=True, text=True, encoding="utf-8",
@@ -202,8 +204,10 @@ def main() -> int:
     print(f"  assert_bundle.py 常量：{'OK' if ok_const else '缺'}")
     results = [
         ok_const,
-        run_case("五种产物齐全（必须走到 gh，且用的是假 gh）", 0, expect_gh=True),
-        run_case("缺 deb", 1, drop=f"PureVox-Linux-x64-{VERSION}-deb"),
+        run_case("桌面通道：四种产物齐全（必须走到 gh，且用的是假 gh）", 0, expect_gh=True),
+        run_case("桌面通道：缺 deb", 1, drop=f"PureVox-Linux-x64-{VERSION}-deb"),
+        run_case("安卓通道：只发 APK", 0, expect_gh=True, platform="android"),
+        run_case("桌面便携通道：只发 zip", 0, expect_gh=True, platform="portable"),
         run_case("没有 notes 文件", 1, notes=False),
     ]
     shutil.rmtree(WORK, ignore_errors=True)

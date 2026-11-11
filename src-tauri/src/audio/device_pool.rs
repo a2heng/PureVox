@@ -198,6 +198,16 @@ impl Pool {
     device_id: &str,
   ) -> Result<InputLease, String> {
     let tag = tag_for(device_id);
+    // `app:<pid>` = Windows 单应用音频回环（不是真实设备 ID；由 app_capture 开流）。
+    if let Some(pid) = device_id
+      .strip_prefix("app:")
+      .and_then(|s| s.parse::<u32>().ok())
+    {
+      let tag2 = tag.clone();
+      return self.acquire_input_with(device_id, |_| {
+        super::app_capture::spawn(hub.clone(), pid, tag2)
+      });
+    }
     self.acquire_input_with(device_id, |id| {
       super::capture::spawn(hub.clone(), id.to_string(), tag)
     })

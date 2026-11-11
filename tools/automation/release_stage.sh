@@ -43,6 +43,7 @@ ARTIFACTS="${ARTIFACTS:-artifacts}"
 REPO="${REPO:-a2heng/PureVox}"
 TAG="${TAG:?TAG 必须由调用方设置（github.ref_name）}"
 VERSION="${VERSION:?VERSION 必须由调用方设置（version.py 推导）}"
+PLATFORM="${PLATFORM:-desktop}"
 NOTES="${NOTES:-notes.md}"
 
 # 下面要 cd 两层进 out/，先把「仓库根」记成绝对路径 —— notes 文件在那里，
@@ -73,11 +74,24 @@ stage() { # <稳定名> <匹配通配…>；缺产物时记下来并返回 1
   missing="$missing $out"
   return 1
 }
-stage "out/PureVox-${VERSION}-windows-x64-setup.exe" */*-setup.exe || true
-stage "out/PureVox-${VERSION}-linux-x64.AppImage"    */*.AppImage  || true
-stage "out/PureVox-${VERSION}-linux-x64.deb"         */*.deb       || true
-stage "out/PureVox-${VERSION}-linux-x64.rpm"         */*.rpm       || true
-stage "out/PureVox-${VERSION}-android-arm64.apk"     */*.apk       || true
+if [ "$PLATFORM" = "android" ]; then
+  # 安卓通道**只**发 APK（`RELEASE-CHANNELS.md`：与桌面 release 完全分开）
+  stage "out/PureVox-${VERSION}-android-arm64.apk" */*.apk || true
+  want=1
+  title="PureVox Android $VERSION"
+elif [ "$PLATFORM" = "portable" ]; then
+  # 桌面**便携测试通道**（安装包流水线恢复前的唯一桌面产物）
+  stage "out/PureVox-${VERSION}-windows-x64-portable.zip" */*portable.zip || true
+  want=1
+  title="PureVox $VERSION（便携测试版）"
+else
+  stage "out/PureVox-${VERSION}-windows-x64-setup.exe" */*-setup.exe || true
+  stage "out/PureVox-${VERSION}-linux-x64.AppImage"    */*.AppImage  || true
+  stage "out/PureVox-${VERSION}-linux-x64.deb"         */*.deb       || true
+  stage "out/PureVox-${VERSION}-linux-x64.rpm"         */*.rpm       || true
+  want=4
+  title="PureVox $VERSION"
+fi
 
 # **缺任何一项都让 job 失败**（原来只 echo 一行警告就继续）。tag 已经推出去了，这时候发一个
 # 缺安装包的 release 比不发更糟：用户点进去才发现，事后又得删 tag 重来一遍
@@ -106,8 +120,8 @@ for f in $files; do
   fi
   n=$((n + 1))
 done
-if [ "$n" -ne 5 ]; then
-  echo "::error::附件数应为 5，实际 $n（files=$files）"
+if [ "$n" -ne "$want" ]; then
+  echo "::error::附件数应为 $want，实际 $n（files=$files）"
   exit 1
 fi
 
@@ -118,6 +132,6 @@ fi
 
 gh release create "$TAG" \
   --repo "$REPO" \
-  --title "PureVox $VERSION" \
+  --title "$title" \
   --notes-file "$notes" \
   $files

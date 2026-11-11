@@ -1,6 +1,10 @@
 # RELEASE — 版本、CI、发版与更新
 
 > 从 `AGENTS.md` §2.6/§2.7 与 `ARCHITECTURE.md` §4.2 拆出。改流水线/版本号/产物先读这里。
+>
+> **桌面 / 安卓是两条独立发布通道**（见 `RELEASE-CHANNELS.md`）：桌面 tag `v*`，安卓 tag
+> `android-v*`；工作流、GitHub Release、更新检查、更新日志都各自独立。本文下面写 `v*` 的
+> 规则只适用于**桌面通道**；安卓通道除 tag 前缀与产物外规则相同。
 
 6. **发版 tag**：主线 `v<yyyy.MM.dd.HHmm>`。CI 失败、从未生成 release 的 tag 必须删除
    （`git tag -d <tag> && git push origin :refs/tags/<tag>`），否则会截断下一个 release 的提交记录。
@@ -32,13 +36,15 @@
    - 工作流（`.github/workflows/`）：
      - `tests.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-24.04`
        （fmt/clippy/build/test）、`ui` 门禁（`ubuntu-24.04`：setup-node → `-Gate ui`）。**不打包**。
-     - `release.yml`：tag `v*` 或手动 → 三平台并行：
-       **Windows**（门禁 + `cargo tauri build` + `assert_bundle.py --smoke` → NSIS exe）；
-       **Linux**（`ubuntu-24.04`：装 WebKitGTK/ALSA/rpm 依赖 + 门禁 + `cargo tauri build` +
-       `assert_bundle.py --smoke` + `test_packages.py`（deb→ubuntu / rpm→fedora 容器安装验证）→
-       deb/rpm/AppImage）；
-       **Android**（JDK17 + `install_android_sdk.py` + 从 `gh secret` 还原 keystore →
-       `./gradlew assembleRelease` → **已签名的 release APK**）。**凭据一律走环境变量、keystore 一律放
+     - `release.yml`：**桌面通道**，tag `v*` 或手动 → **Windows 便携测试版**：
+       门禁（fmt/clippy/test）+ `python tools/automation/package_portable.py`
+       （`cargo build --release` + exe/opus.dll/models → zip）→ `PLATFORM=portable`
+       发 release；更新日志排除 `android/`。**安装包流水线（NSIS / AppImage / deb）尚未恢复**，
+       恢复后改回 `PLATFORM=desktop` 的四件产物。
+     - `android-release.yml`：**安卓通道**，tag `android-v*` 或手动 → 只跑 Android：
+       JDK17 + `install_android_sdk.py` + 从 `gh secret` 还原 keystore →
+       `./gradlew assembleRelease` → **已签名的 release APK**；release 只附 APK、
+       更新日志只列 `android/`。**凭据一律走环境变量、keystore 一律放
        仓库外面**（`PV_KEYSTORE` / `PV_KEY_ALIAS` / `PV_KEY_PASS`，见 `android/README.md`）——
        仓库里一个凭据文件都没有，所以不存在「忘了 gitignore 把私钥提交上去」。CI 另设
        `PV_REQUIRE_SIGNING=1`：缺 secret **当场失败**，绝不产出未签名的包（Android 不允许安装未签名

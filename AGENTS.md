@@ -21,6 +21,7 @@
 | `UX.md` | 交互行为（热参数、行/列开关、扫码/重连、预设、失败不静默） |
 | `DEBUG.md` | 调试优先：面板、HTTP 接口、Probe、实现约束、AI 可复现 |
 | `RELEASE.md` | 版本号、CI 门禁、打包/产物、更新检查 |
+| `RELEASE-CHANNELS.md` | **桌面 / 安卓独立发布通道**：tag、工作流、更新日志范围、提交 scope 纪律（发版与提交前必读） |
 | `DEV.md` | 本机开发环境（Windows/Git Bash/WSL 的实测结论） |
 | `CONTRIBUTING.md` | 命名、平台文件拆分、i18n、README 双语 |
 | `BUILD.md` | GPUI 构建/运行/测试；打包流水线待恢复 |
@@ -48,6 +49,9 @@
      `assets/icons/{audio_icon.ico, tray_running.ico, tray_stopped.ico, lite_tray.ico, lite_tray.png}`、
      `assets/fonts/ark-pixel-12px-monospaced-zh_cn.ttf`、`html/wasm/libopus-encoder.wasm.min.wasm`。
      现役图标是 `src-tauri/icons/`、界面用系统字体（不捆绑字体文件）。
+6. **跨平台提交与发版**按 `RELEASE-CHANNELS.md`：桌面 `v*`、安卓 `android-v*` 两条独立
+   通道（各自 release / 更新日志 / 更新检查），**不为某个平台开长期分支**；提交 scope 必须
+   写明 `android` / `desktop` / `core`，更新日志按**路径**筛。发版前先读那份文档。
 
 ## 共同不变量
 

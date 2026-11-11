@@ -55,6 +55,9 @@ pub const HDR_LEN: usize = 8;
 /// （20 ms 要 13 min 才漂满一格）。改这个值必须同步改 `audio/Rt.kt` 与网页 worklet，
 /// 以及 `ARCHITECTURE.md` §4.1.4。
 pub const RING_MS: f64 = 20.0;
+// 注：`RING_MS` 是协议层的初始值；**用户可见的默认深度是 50 ms**
+// （`config::d_net_ring_ms`，启动时 `net::load_settings()` 用它覆盖 hub 的环深度）。
+// 滑杆只改 `net_ring_ms`，不改这个常量。
 
 /// 溢出阈值 = 深度 + 一格：超过就裁掉最旧一格（保延迟有界）。
 #[cfg(test)]

@@ -193,7 +193,7 @@ pub fn load_settings() {
   if s.net_port != 0 {
     hub().set_port(s.net_port);
   }
-  // 环深度也要读回：用户调过 60 ms，重启后回到 20 会让人以为设置丢了
+  // 环深度也要读回：用户调过 60 ms，重启后回到默认值会让人以为设置丢了
   hub().set_ring_ms(s.net_ring_ms);
 }
 

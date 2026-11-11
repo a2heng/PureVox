@@ -49,6 +49,8 @@ USERPROFILE="$PV_HOME" HOME="$PV_HOME" \
 ## 4. 测试
 
 - Rust 单测 / 集成：`cargo test --bin purevox`（含协议、时钟、混音、延迟分析）。
+- 采样热路径基准（重采样 + 交织拆分，真实实现原样引入）：
+  `cargo run --release --example resampler_bench`（输出 ns/块 与单核占用）。
 - 端点能力（需要真实声卡）：`wasapi_caps` / `wasapi_lowlat` 两个 `#[ignore]` 测试。
 - 界面自动化：见 `.opencode/skills/purevox-testing/SKILL.md`（隔离 profile + HTTP 读数 +
   PrintWindow 截图；GPUI 窗口同样适用）。
@@ -56,9 +58,16 @@ USERPROFILE="$PV_HOME" HOME="$PV_HOME" \
 
 ## 5. 打包
 
-**当前未恢复安装包流水线**：去掉 Tauri bundler 后，`.github/workflows/release.yml`
-仍引用旧的 tauri-cli 步骤，发版前必须替换为「cargo build + NSIS / AppImage / deb」。
-在那之前只发布开发构建 / 手动压缩目录（`models/` 与 `opus.dll` 必须与 exe 同级）。
+**安装包流水线（NSIS / AppImage / deb）还没随 GPUI 重建恢复**。当前用便携测试包：
+
+```bash
+python tools/automation/package_portable.py          # cargo build --release + 目录 + zip
+python tools/automation/package_portable.py --no-build
+```
+
+产物：`dist/PureVox-<版本>-windows-x64-portable.zip`（exe + `opus.dll` + `models/`，解压双击即用，
+不写注册表、删目录即卸载）。适合内部测试版；正式安装包仍待恢复。
+
 `RELEASE.md` 里的版本号与产物命名规则仍然有效，打包命令部分待重写。
 
 ## 6. 常见坑

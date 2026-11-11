@@ -523,18 +523,7 @@ pub(super) fn worker<K>(
       }
       if any {
         let (a, b) = chunk.as_slices();
-        let mut phase = 0usize;
-        for part in [a, b] {
-          for &v in part {
-            if active[phase] {
-              scratch[phase].push(v);
-            }
-            phase += 1;
-            if phase == channels {
-              phase = 0;
-            }
-          }
-        }
+        crate::dsp::split::split_active([a, b], channels, &active, &mut scratch);
         let first = active.iter().position(|a| *a).unwrap_or(0);
         for i in 0..channels {
           if !active[i] {
