@@ -41,22 +41,16 @@ pub fn asset_suffixes() -> &'static [&'static str] {
 /// 安装方式短名（进 `/debug` 的 `update.install_kind`）。Windows 只发 NSIS，
 /// 正常就是 `nsis`；开发构建（没打标）如实报 `unknown`。
 pub fn kind_name() -> &'static str {
-  use tauri::utils::config::BundleType;
-  use tauri::utils::platform::bundle_type;
-  // 测试钩子：`PUREVOX_UPDATE_KIND=nsis` 让**没打标的开发构建**也走发布版的分支
-  // （否则 `target/debug/purevox.exe` 永远是 unknown，更新流程在开发机上验不了）。
-  // 只影响名字/日志，不影响安装本身（Windows 只有 NSIS 一条路）。
+  // 测试钩子：`PUREVOX_UPDATE_KIND=nsis|msi` 让开发构建也能走发布版分支。
+  // 只影响名字/日志，不影响安装本身。
   if let Some(v) = std::env::var_os("PUREVOX_UPDATE_KIND") {
     let v = v.to_string_lossy().to_ascii_lowercase();
     if v == "nsis" || v == "msi" {
       return if v == "nsis" { "nsis" } else { "msi" };
     }
   }
-  match bundle_type() {
-    Some(BundleType::Nsis) => "nsis",
-    Some(BundleType::Msi) => "msi",
-    _ => "unknown",
-  }
+  // 新打包链只出 NSIS（RELEASE.md）。不再读 Tauri bundler 打进去的标记。
+  "nsis"
 }
 
 /// 拉起安装器并返回一句给界面看的话；调用方随后应退出进程。

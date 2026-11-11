@@ -31,7 +31,6 @@ use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 
 use rtrb::Consumer;
-use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
   AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioClient, IAudioClient3,
@@ -41,6 +40,7 @@ use windows::Win32::System::Com::{
   CLSCTX_ALL, COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree,
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::core::Interface;
 
 use super::capture::{CallbackStats, OPEN_TIMEOUT};
 use super::out::{Format, Sample};
@@ -68,8 +68,8 @@ pub fn probe(device_id: &str) -> Result<Format, String> {
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
   }
   let device = super::loopback::resolve_device(Some(device_id))?;
-  let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
-    .map_err(|e| format!("激活输出端点失败：{e}"))?;
+  let client: IAudioClient =
+    unsafe { device.Activate(CLSCTX_ALL, None) }.map_err(|e| format!("激活输出端点失败：{e}"))?;
   let mix = unsafe { client.GetMixFormat() }.map_err(|e| format!("读取混音格式失败：{e}"))?;
   let (rate, channels, bits, sample) = unsafe { classify(mix) }?;
 
@@ -189,7 +189,12 @@ fn run(
   let _ = unsafe { CloseHandle(event) };
 }
 
-type Opened = (IAudioClient, IAudioRenderClient, windows::Win32::Foundation::HANDLE, u32);
+type Opened = (
+  IAudioClient,
+  IAudioRenderClient,
+  windows::Win32::Foundation::HANDLE,
+  u32,
+);
 
 fn open(device_id: &str, format: &Format) -> Result<Opened, String> {
   super::with_device_retry(|| open_once(device_id, format))
@@ -197,8 +202,8 @@ fn open(device_id: &str, format: &Format) -> Result<Opened, String> {
 
 fn open_once(device_id: &str, format: &Format) -> Result<Opened, String> {
   let device = super::loopback::resolve_device(Some(device_id))?;
-  let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
-    .map_err(|e| format!("激活输出端点失败：{e}"))?;
+  let client: IAudioClient =
+    unsafe { device.Activate(CLSCTX_ALL, None) }.map_err(|e| format!("激活输出端点失败：{e}"))?;
   let mix = unsafe { client.GetMixFormat() }.map_err(|e| format!("读取混音格式失败：{e}"))?;
 
   let event = match unsafe { CreateEventW(None, false, false, None) } {
@@ -273,21 +278,21 @@ fn open_once(device_id: &str, format: &Format) -> Result<Opened, String> {
   Ok((client, render, event, buffer_frames))
 }
 
-/// 按帧填设备缓冲（每帧取一个单声道样本，复制到所有声道）。返回补了几帧静音。
-fn fill(
-  ptr: *mut u8,
-  frames: u32,
-  ch: usize,
-  sample: Sample,
-  cons: &mut Consumer<f32>,
-) -> u64 {
+/// 按帧填设备缓冲（环里是**交织帧**：每帧 `ch` 个样本，逐通道落位）。
+/// 返回补了几帧静音。
+fn fill(ptr: *mut u8, frames: u32, ch: usize, sample: Sample, cons: &mut Consumer<f32>) -> u64 {
   let mut missing = 0u64;
+  let have = |cons: &mut Consumer<f32>| cons.slots() >= ch;
   match sample {
     Sample::F32 => {
       let p = ptr as *mut f32;
       for f in 0..frames as usize {
-        let v = pop_or_silence(cons, &mut missing);
+        let ok = have(cons);
+        if !ok {
+          missing += 1;
+        }
         for c in 0..ch {
+          let v = if ok { cons.pop().unwrap_or(0.0) } else { 0.0 };
           unsafe { *p.add(f * ch + c) = v };
         }
       }
@@ -295,8 +300,13 @@ fn fill(
     Sample::I16 => {
       let p = ptr as *mut i16;
       for f in 0..frames as usize {
-        let v = (pop_or_silence(cons, &mut missing).clamp(-1.0, 1.0) * 32767.0) as i16;
+        let ok = have(cons);
+        if !ok {
+          missing += 1;
+        }
         for c in 0..ch {
+          let v = if ok { cons.pop().unwrap_or(0.0) } else { 0.0 };
+          let v = (v.clamp(-1.0, 1.0) * 32767.0) as i16;
           unsafe { *p.add(f * ch + c) = v };
         }
       }
@@ -304,9 +314,13 @@ fn fill(
     Sample::I32 => {
       let p = ptr as *mut i32;
       for f in 0..frames as usize {
-        let v =
-          (pop_or_silence(cons, &mut missing).clamp(-1.0, 1.0) * 2_147_483_647.0) as i32;
+        let ok = have(cons);
+        if !ok {
+          missing += 1;
+        }
         for c in 0..ch {
+          let v = if ok { cons.pop().unwrap_or(0.0) } else { 0.0 };
+          let v = (v.clamp(-1.0, 1.0) * 2_147_483_647.0) as i32;
           unsafe { *p.add(f * ch + c) = v };
         }
       }
@@ -314,26 +328,19 @@ fn fill(
     Sample::U16 => {
       let p = ptr as *mut u16;
       for f in 0..frames as usize {
-        let v = ((pop_or_silence(cons, &mut missing).clamp(-1.0, 1.0) * 32767.0) as i32
-          + 32768) as u16;
+        let ok = have(cons);
+        if !ok {
+          missing += 1;
+        }
         for c in 0..ch {
+          let v = if ok { cons.pop().unwrap_or(0.0) } else { 0.0 };
+          let v = ((v.clamp(-1.0, 1.0) * 32767.0) as i32 + 32768) as u16;
           unsafe { *p.add(f * ch + c) = v };
         }
       }
     }
   }
   missing
-}
-
-#[inline]
-fn pop_or_silence(cons: &mut Consumer<f32>, missing: &mut u64) -> f32 {
-  match cons.pop() {
-    Ok(v) => v,
-    Err(_) => {
-      *missing += 1;
-      0.0
-    }
-  }
 }
 
 /// 读混音格式：采样率 / 声道 / 位深 / 样本类型。共享混音格式基本只有 f32 和 i16。

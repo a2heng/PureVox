@@ -50,4 +50,9 @@ impl Stage for DenoiseStage {
   fn reset(&mut self) {
     self.engine.reset();
   }
+
+  /// 频谱合成固定滞后 1 hop（见 `infer/spec.rs`）。
+  fn latency_samples(&self) -> usize {
+    crate::audio::HOP
+  }
 }

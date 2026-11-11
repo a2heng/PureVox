@@ -15,10 +15,6 @@
         android:icon="@drawable/ic_tab_connect"
         android:title="@string/tab_connect" />
     <item
-        android:id="@+id/tab_input"
-        android:icon="@drawable/ic_tab_input"
-        android:title="@string/tab_input" />
-    <item
         android:id="@+id/tab_diag"
         android:icon="@drawable/ic_tab_diag"
         android:title="@string/tab_diag" />

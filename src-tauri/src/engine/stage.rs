@@ -64,6 +64,15 @@ pub trait Stage: Send {
     None
   }
 
+  /// 本 Stage 的**算法延迟**（样本，48 kHz）。延迟补偿（PDC）用它把并行路径对齐：
+  /// 一条路径上的延迟之和就是该节点输出的时间偏移。默认 0（零延迟处理）。
+  ///
+  /// 用频谱模型的链路（降噪 / TSE / AEC）固定滞后 **1 hop（480 样本）**：帧 t 以
+  /// `t·480` 为中心、需要 `t` 与 `t+1` 两个 hop 才能合成（见 `infer/spec.rs`）。
+  fn latency_samples(&self) -> usize {
+    0
+  }
+
   /// 释放重资源（ONNX 会话引用等）；调用后本组件不再可用。
   fn release(&mut self) {}
 }

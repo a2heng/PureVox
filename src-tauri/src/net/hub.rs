@@ -239,10 +239,6 @@ pub struct NetStats {
   pub rx_trims_per_s: crate::debug::Probe<f64>,
 
   // ---- 远程输入 / 其它 ----
-  pub keys_injected: u64,
-  pub keys_unmapped: u64,
-  pub chars_typed: u64,
-  pub remote_input: bool,
   pub last_error: Option<String>,
   pub codec: crate::debug::Probe<String>,
   pub client_caps: Option<String>,
@@ -295,10 +291,6 @@ impl Default for NetStats {
       tx_packets_per_s: crate::debug::Probe::Pending,
       rx_packets_per_s: crate::debug::Probe::Pending,
       rx_trims_per_s: crate::debug::Probe::Pending,
-      keys_injected: 0,
-      keys_unmapped: 0,
-      chars_typed: 0,
-      remote_input: false,
       last_error: None,
       codec: crate::debug::Probe::Pending,
       client_caps: None,
@@ -336,7 +328,6 @@ struct NetRates {
 pub struct NetHub {
   inbound: Mutex<Playout>,
   outbound: Outbound,
-  remote_input: AtomicBool,
   stats: Mutex<NetStats>,
   client: Mutex<Option<ClientReport>>,
   offset_us: AtomicI64,
@@ -410,7 +401,6 @@ impl NetHub {
         subs: Mutex::new(Vec::new()),
         next_id: AtomicU64::new(1),
       },
-      remote_input: AtomicBool::new(false),
       stats: Mutex::new(NetStats::default()),
       client: Mutex::new(None),
       offset_us: AtomicI64::new(0),
@@ -512,15 +502,6 @@ impl NetHub {
   }
 
   // ---- 远程输入 ----
-
-  pub fn set_remote_input(&self, on: bool) {
-    self.remote_input.store(on, Relaxed);
-    lock(&self.stats).remote_input = on;
-  }
-
-  pub fn remote_input(&self) -> bool {
-    self.remote_input.load(Relaxed)
-  }
 
   // ---- 时钟偏移（`sync`/`syncreply` 估出来，只用于把单向延迟算给人看）----
 
@@ -686,19 +667,6 @@ impl NetHub {
     lock(&self.stats).rtt_ms = Some(ms);
   }
 
-  pub fn count_key(&self, injected: bool) {
-    let mut s = lock(&self.stats);
-    if injected {
-      s.keys_injected += 1;
-    } else {
-      s.keys_unmapped += 1;
-    }
-  }
-
-  pub fn count_chars(&self, n: usize) {
-    lock(&self.stats).chars_typed += n as u64;
-  }
-
   /// 出站结论（推来即发，所以只看「有没有积压 / 丢没丢」）。
   fn tx_verdict(&self, subs: &[TxSubStat], hops: u64) -> crate::debug::Health {
     if subs.is_empty() {
@@ -766,7 +734,6 @@ impl NetHub {
     s.port = self.port();
     s.running = self.is_running();
     s.subs = self.sub_count();
-    s.remote_input = self.remote_input();
 
     let in_st = self
       .inbound
@@ -865,15 +832,6 @@ mod tests {
       let _ = sub.recv().await;
     }
     assert_eq!(hub.stats().tx_subs[0].pending_hops, 0);
-  }
-
-  #[test]
-  fn remote_input_defaults_off() {
-    let hub = NetHub::new();
-    assert!(!hub.remote_input());
-    hub.set_remote_input(true);
-    assert!(hub.remote_input());
-    assert!(hub.stats().remote_input);
   }
 
   #[test]

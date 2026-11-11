@@ -30,13 +30,13 @@ use std::time::{Duration, Instant};
 
 use rtrb::Consumer;
 
-use super::aec::{AecRow, FAR_HIST_SAMPLES, FarHistory, FarWin, spawn_far_pump};
+use super::aec::{AecRow, AecStage, FAR_HIST_SAMPLES, FarHistory, FarWin, spawn_far_pump};
 use super::calib::CalibHub;
 use super::latency::{LatencyAnalyzer, LatencyTap, RowTapInfo};
 use super::media::{self, MediaCmd, MediaSlot};
 use super::registry::{self, ParamValue, Params};
 use super::stage::{FrameContext, Stage, StageError};
-use crate::audio::fanout::Fanout;
+use crate::audio::fanout::{Fanout, MultiFanout};
 use crate::audio::health;
 use crate::audio::{HOP, WorkerHandle, capture, loopback};
 use crate::debug::{ColumnInfo, Probe, RowInfo, SharedHub, events, metrics, threads};
@@ -66,7 +66,69 @@ const TICK_LATE_WARN: Duration = Duration::from_millis(2);
 /// 才会一格都拿不到；这样不会把「用户不说话」误判成设备掉线。
 const INPUT_STALL_REOPEN: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Copy)]
+struct InputRef {
+  src: usize,
+  from_port: u8,
+  to_port: u8,
+}
+
+impl Row {
+  /// 本节点自身的算法延迟（样本）；多通道取通道间最大值（各通道 Stage 相同）。
+  fn stage_latency(&self) -> usize {
+    // 停用的行是直通（不跑 Stage），实际延迟 0；声明值必须跟着变，否则 PDC 会
+    // 白白给并行支路补延迟，反而对不齐。
+    if !self.enabled {
+      return 0;
+    }
+    if let Some(a) = self.aec_stage.as_ref() {
+      return a.latency_samples();
+    }
+    self
+      .stage
+      .iter()
+      .map(|s| s.latency_samples())
+      .max()
+      .unwrap_or(0)
+  }
+}
+
+/// 一条入线的整数样本延迟（PDC 用）。
+///
+/// 环长 = delay + 1：写当前样本、读 `delay` 个样本之前的那一个。`delay = 0` 时不建环。
+struct DelayLine {
+  buf: Vec<f32>,
+  pos: usize,
+  delay: usize,
+}
+
+impl DelayLine {
+  fn new(delay: usize) -> Self {
+    DelayLine {
+      buf: vec![0.0; delay + 1],
+      pos: 0,
+      delay,
+    }
+  }
+
+  fn process(&mut self, input: &[f32; HOP]) -> [f32; HOP] {
+    let mut out = [0.0f32; HOP];
+    let n = self.buf.len();
+    for i in 0..HOP {
+      self.buf[self.pos] = input[i];
+      let read = (self.pos + n - self.delay) % n;
+      out[i] = self.buf[read];
+      self.pos = (self.pos + 1) % n;
+    }
+    out
+  }
+}
+
 struct Row {
+  /// 稳定节点 ID（连线引用它；调试 / 热参数仍按 (组, 行) 寻址）。
+  id: u32,
+  /// 入线所指的前驱（构建时已解析成行下标 + 目标端口）。
+  inputs: Vec<InputRef>,
   kind: RowKind,
   /// 注册表类型（`audio_input` / `denoise` / …）：调试接口按它识别行
   ptype: String,
@@ -87,8 +149,10 @@ struct Row {
   /// 推理耗时超过一跳预算的次数（累计 + 速率）
   inf_over: u64,
   inf_over_rate: RateMeter,
-  /// 输入行：本行源的 48k hop 读端
-  input: Option<Consumer<f32>>,
+  /// 本节点的音频通道数（端口 = 通道）
+  channels: u32,
+  /// 输入行：本行源的 48k hop 读端（**逐设备通道**；行再按节点通道数映射）
+  input: Vec<Consumer<f32>>,
   /// 输入行：行输入环累计丢弃的样本数（水位超 `ROW_CAP` 丢最旧）。
   ///
   /// 这个计数以前没有 ——源「一大块到达」时环被瞬间灌满、按策略丢最旧，**丢多少完全看不见**，
@@ -132,14 +196,26 @@ struct Row {
   aec: Option<AecRow>,
   /// `remote_mic` 输入行：网络入站队列（NETWORK.md §4.1）
   net_input: Option<Arc<crate::net::NetHub>>,
-  /// 处理行
-  stage: Option<Box<dyn Stage>>,
+  /// 节点输入微调（Element 的 node input gain；热参数）
+  input_gain: Option<Arc<crate::engine::hot::HotGain>>,
+  /// 处理行：逐通道一个 Stage（各通道 DSP/模型状态独立）
+  stage: Vec<Box<dyn Stage>>,
+  /// Session V2：AEC 是两输入处理节点（近端/远端都来自连线）
+  aec_stage: Option<AecStage>,
   /// 媒体行（soundpad / player）：运行时命令通道（界面经 MediaHub 寻址）
   media_slot: Option<Arc<MediaSlot>>,
-  /// 输出行：本行扇出（该行的播放线程从这里订阅）
-  output: Option<Arc<Fanout>>,
+  /// 输出行：逐通道扇出（设备混音从这里订阅）
+  output: Option<Arc<MultiFanout>>,
   /// `remote_speaker` 输出行：推给网络中枢（无扇出、无播放线程）
   net_output: bool,
+  /// 本节点当前输出峰值（线性；快起慢落，界面电平条用）
+  peak: f32,
+  /// 本节点输出在整条路径上的累计算法延迟（样本）；PDC 用
+  latency: usize,
+  /// 每条入线要补的延迟（样本）；与 `inputs` 一一对应
+  edge_delays: Vec<usize>,
+  /// 每条入线的延迟缓冲（`edge_delays[i] == 0` 时是 `None`，不分配）
+  delay_lines: Vec<Option<DelayLine>>,
 }
 
 struct ColumnRuntime {
@@ -473,7 +549,7 @@ fn build_net_aec_row(
   };
   let hist = Arc::new(Mutex::new(FarHistory::new(FAR_HIST_SAMPLES)));
   captures.push(crate::engine::aec::spawn_far_pump(
-    &cap,
+    cap.channel(0).expect("远端回环至少 1 通道"),
     hist.clone(),
     &tag,
     epoch,
@@ -550,7 +626,7 @@ fn apply_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize) {
   };
   if !r.enabled {
     r.in_lease = None;
-    r.input = None;
+    r.input.clear();
     return;
   }
   if r.in_lease.is_some() {
@@ -558,7 +634,8 @@ fn apply_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize) {
   }
   match crate::audio::device_pool::hub().acquire_input(hub.clone(), &dev) {
     Ok(lease) => {
-      r.input = Some(lease.subscribe(&format!("col{idx}row{ri}")));
+      let n = lease.channels();
+      r.input = lease.subscribe_channels(&format!("col{idx}row{ri}"), n);
       r.in_lease = Some(lease);
       r.error = None;
       r.in_failures = 0;
@@ -588,7 +665,7 @@ fn poll_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: In
   if !r.enabled {
     if r.in_lease.is_some() {
       r.in_lease = None;
-      r.input = None;
+      r.input.clear();
       events::log(
         "info",
         "engine",
@@ -607,7 +684,8 @@ fn poll_input_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: In
   if let Some(rx) = r.in_pending.as_ref() {
     match rx.try_recv() {
       Ok(Ok(lease)) => {
-        r.input = Some(lease.subscribe(&format!("col{idx}row{ri}")));
+        let n = lease.channels();
+        r.input = lease.subscribe_channels(&format!("col{idx}row{ri}"), n);
         r.in_lease = Some(lease);
         r.in_pending = None;
         r.in_retry_at = None;
@@ -684,7 +762,7 @@ fn apply_output_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize) {
   if r.out_lease.is_some() {
     return;
   }
-  match crate::audio::device_pool::hub().acquire_output(hub.clone(), &dev) {
+  match crate::audio::device_pool::hub().acquire_output(hub.clone(), &dev, r.channels as usize) {
     Ok(lease) => {
       r.output = Some(lease.out.clone());
       r.out_lease = Some(lease);
@@ -775,9 +853,10 @@ fn poll_output_lease(r: &mut Row, hub: &SharedHub, idx: usize, ri: usize, now: I
   let (tx, rx) = std::sync::mpsc::channel();
   let h = hub.clone();
   let d = dev.clone();
+  let ch = r.channels as usize;
   let name = format!("open-out-{idx}-{ri}");
   let spawned = std::thread::Builder::new().name(name).spawn(move || {
-    let r = crate::audio::device_pool::hub().acquire_output(h, &d);
+    let r = crate::audio::device_pool::hub().acquire_output(h, &d, ch);
     let _ = tx.send(r);
   });
   match spawned {
@@ -844,6 +923,9 @@ fn build_column(
     // 热参数登记口：本行建出来的单元格（增益 / 音量）收进会话，供运行中改值
     let mut sink = crate::engine::hot::HotSink::new();
     let mut row = Row {
+      id: r.id,
+      inputs: Vec::new(),
+      channels: r.channels.max(1),
       kind: r.kind,
       ptype: r.ptype.clone(),
       label: r.ptype.clone(),
@@ -856,7 +938,7 @@ fn build_column(
       inf_max_ms: 0.0,
       inf_over: 0,
       inf_over_rate: RateMeter::new(),
-      input: None,
+      input: Vec::new(),
       gain: None,
       device: None,
       pooled_input: false,
@@ -872,15 +954,23 @@ fn build_column(
       out_retry_at: None,
       out_failures: 0,
       aec: None,
+      aec_stage: None,
+      input_gain: None,
       net_input: None,
       ring_dropped: 0,
       ring_drop_rate: RateMeter::new(),
-      stage: None,
+      stage: Vec::new(),
       media_slot: None,
       output: None,
       net_output: false,
+      peak: 0.0,
+      latency: 0,
+      edge_delays: Vec::new(),
+      delay_lines: Vec::new(),
     };
     let device = r.device.as_deref().filter(|d| !d.is_empty());
+    let trim: f64 = r.input_gain_db.trim().parse().unwrap_or(0.0);
+    row.input_gain = Some(sink.gain("input_gain_db", trim));
     match r.kind {
       RowKind::Input if r.ptype == "echo_cancel" => {
         // AEC 输入行：本行 device = mic，params.far_device = 远端参考（回环或另一路输入）。
@@ -956,7 +1046,7 @@ fn build_column(
                       Ok(far_cap) => {
                         let hist = Arc::new(Mutex::new(FarHistory::new(FAR_HIST_SAMPLES)));
                         let pump = spawn_far_pump(
-                          &far_cap.fanout,
+                          far_cap.fanout.channel(0).expect("远端至少 1 通道"),
                           hist.clone(),
                           &format!("c{idx}r{ri}"),
                           calib.epoch(),
@@ -970,7 +1060,11 @@ fn build_column(
                               // 延时取整到 10 ms（= 1 hop 的整数倍），far 窗口与 hop 网格对齐
                               delay_samples: (delay_ms / 10.0).round() as i64 * HOP as i64,
                               mic_hops: 0,
-                              mic: mic_cap.fanout.subscribe(&format!("c{idx}r{ri}-mic")),
+                              mic: mic_cap
+                                .fanout
+                                .channel(0)
+                                .expect("麦克风至少 1 通道")
+                                .subscribe(&format!("c{idx}r{ri}-mic")),
                               mic_gain,
                               far_gain,
                               bypass,
@@ -1004,7 +1098,7 @@ fn build_column(
         // 测试音源（全局共享线程），无需设备
         row.label = "测试音（1kHz 测试用）".into();
         row.source = true;
-        row.input = Some(crate::audio::tone::shared().subscribe(&format!("col{idx}row{ri}")));
+        row.input = vec![crate::audio::tone::shared().subscribe(&format!("col{idx}row{ri}"))];
       }
       RowKind::Input if r.ptype == "remote_mic" => {
         // 网络麦克风：不需要虚拟声卡驱动，网络流直接进引擎（NETWORK.md §4.1）
@@ -1058,7 +1152,7 @@ fn build_column(
         row.source = true;
         match loopback::spawn(hub.clone(), target, format!("c{idx}r{ri}")) {
           Ok(cap) => {
-            row.input = Some(cap.fanout.subscribe(&format!("col{idx}row{ri}")));
+            row.input = cap.fanout.subscribe(&format!("col{idx}row{ri}"));
             captures.push(cap.handle);
           }
           Err(e) => row.error = Some(e),
@@ -1080,6 +1174,13 @@ fn build_column(
           crate::engine::session::apply_input_lease(&mut row, hub, idx, ri);
         }
       },
+      RowKind::Process if r.ptype == "echo_cancel" => {
+        row.label = "AEC（近端 + 远端）".into();
+        match AecStage::new(&r.params) {
+          Ok(st) => row.aec_stage = Some(st),
+          Err(e) => row.error = Some(e),
+        }
+      }
       RowKind::Process => {
         // 媒体行（音效板 / 播放器）：注册 (列,行) 槽位，供界面投递运行时命令
         let slot = match r.ptype.as_str() {
@@ -1088,20 +1189,48 @@ fn build_column(
           _ => None,
         };
         row.media_slot = slot.clone();
-        match registry::create_stage(
-          &r.ptype,
-          &to_params(&r.params),
-          slot,
-          &mut sink,
-          (idx, ri, generation),
-        ) {
-          Ok(st) => {
+        // 逐通道一个 Stage：模型 / 滤波器状态必须按通道独立（一个立体声降噪不能
+        // 两个通道共用一份 LSTM 状态）。热参数单元格反而要**共享**，第 1 个通道
+        // 建完后把单元格交回 sink，其余通道复用（见 `HotSink::seed`）。
+        let params = to_params(&r.params);
+        let n = row.channels.max(1) as usize;
+        let mut stages: Vec<Box<dyn Stage>> = Vec::with_capacity(n);
+        let mut first_err = None;
+        for c in 0..n {
+          match registry::create_stage(
+            &r.ptype,
+            &params,
+            slot.clone(),
+            &mut sink,
+            (idx, ri, generation),
+          ) {
+            Ok(st) => {
+              stages.push(st);
+              if c == 0 {
+                let gains = sink.take();
+                let eq = sink.take_eq();
+                for (k, cell) in gains {
+                  sink.seed(k, cell);
+                }
+                if let Some(cell) = eq {
+                  sink.seed_eq(cell);
+                }
+              }
+            }
+            Err(e) => {
+              first_err = Some(e);
+              break;
+            }
+          }
+        }
+        match first_err {
+          Some(e) => row.error = Some(e),
+          None => {
             row.label = registry::get_spec(&r.ptype)
               .map(|s| s.label.to_string())
               .unwrap_or(r.ptype.clone());
-            row.stage = Some(st);
+            row.stage = stages;
           }
-          Err(e) => row.error = Some(e),
         }
       }
       RowKind::Output if r.ptype == "remote_speaker" => {
@@ -1109,19 +1238,21 @@ fn build_column(
         row.label = "网络扬声器".into();
         row.net_output = true;
       }
-      RowKind::Output => match device {
-        None => row.unconfigured = true,
-        Some(dev) => {
-          // 输出也由池持有：一个设备**一条**混音，本行只是往里登记一路源（ARCHITECTURE.md §6.5）
-          row.device = Some(dev.to_string());
-          row.pooled_output = true;
-          row.label = match crate::devices::display_name(dev, false) {
-            Ok(name) => name,
-            Err(_) => saved_device_name(r, dev),
-          };
-          crate::engine::session::apply_output_lease(&mut row, hub, idx, ri);
+      RowKind::Output => {
+        match device {
+          None => row.unconfigured = true,
+          Some(dev) => {
+            // 输出也由池持有：一个设备**一条**混音，本行只是往里登记一路源（ARCHITECTURE.md §6.5）
+            row.device = Some(dev.to_string());
+            row.pooled_output = true;
+            row.label = match crate::devices::display_name(dev, false) {
+              Ok(name) => name,
+              Err(_) => saved_device_name(r, dev),
+            };
+            crate::engine::session::apply_output_lease(&mut row, hub, idx, ri);
+          }
         }
-      },
+      }
     }
     if let Some(e) = &row.error {
       problems.push(format!("第 {} 列第 {} 行：{e}", idx + 1, ri + 1));
@@ -1161,6 +1292,40 @@ fn build_column(
     rows.push(row);
   }
 
+  // 连线：把节点 ID 解析成列内行下标（计划已按拓扑顺序排好）。
+  {
+    let index: std::collections::HashMap<u32, usize> =
+      rows.iter().enumerate().map(|(i, r)| (r.id, i)).collect();
+    let edges_by_row: Vec<Vec<(u32, u8, u8)>> = spec
+      .rows
+      .iter()
+      .map(|r| {
+        r.inputs
+          .iter()
+          .map(|e| (e.from, e.from_port, e.to_port))
+          .collect()
+      })
+      .collect();
+    for (row, edges) in rows.iter_mut().zip(edges_by_row) {
+      row.inputs = edges
+        .into_iter()
+        .filter_map(|(id, from_port, to_port)| {
+          index.get(&id).copied().map(|src| InputRef {
+            src,
+            from_port,
+            to_port,
+          })
+        })
+        .collect();
+    }
+  }
+
+  // 延迟补偿：每条入线要补多少样本（Element GraphBuilder 同一条规则）
+  compute_pdc(&mut rows);
+  // 活跃区间缓冲复用（Element GraphBuilder 同一条规则）：槽在最后一个读者之后回收。
+  let (slot_of, _slot_count) = assign_slots(&rows);
+  let slot_of = Arc::new(slot_of);
+
   let rows = Arc::new(Mutex::new(rows));
   let stop = Arc::new(AtomicBool::new(false));
   let alive = Arc::new(AtomicBool::new(true));
@@ -1192,7 +1357,7 @@ fn build_column(
       let token = threads::ThreadToken::new(format!("column-{}@cpu{}", idx + 1, core));
       let r = catch_unwind(AssertUnwindSafe(|| {
         run_column(
-          idx, column_on, rows2, stop2, rec2, calib2, hub3, token, latency3,
+          idx, column_on, rows2, slot_of, stop2, rec2, calib2, hub3, token, latency3,
         );
       }));
       if r.is_err() {
@@ -1224,6 +1389,94 @@ fn build_column(
   }
 }
 
+/// 活跃区间缓冲分配：返回每行的槽号，以及槽总数。
+fn assign_slots(rows: &[Row]) -> (Vec<Vec<usize>>, usize) {
+  // 一个「单元」= (行, 通道)。端口 = 通道，所以缓冲复用也必须按通道算：
+  // 某个通道的最后一个读者过去之后，那条缓冲马上可以给后来的单元用。
+  let mut base = Vec::with_capacity(rows.len());
+  let mut units = 0usize;
+  for r in rows {
+    base.push(units);
+    units += r.channels.max(1) as usize;
+  }
+  let mut last_use = vec![0usize; units];
+  for (i, r) in rows.iter().enumerate() {
+    for e in &r.inputs {
+      let Some(&b) = base.get(e.src) else {
+        continue;
+      };
+      let sc = rows[e.src].channels.max(1) as usize;
+      let ch = (e.from_port as usize).min(sc.saturating_sub(1));
+      last_use[b + ch] = i;
+    }
+  }
+  let mut slot_of: Vec<Vec<usize>> = Vec::with_capacity(rows.len());
+  let mut slot_last: Vec<usize> = Vec::new();
+  for (i, r) in rows.iter().enumerate() {
+    let n = r.channels.max(1) as usize;
+    let mut row_slots = Vec::with_capacity(n);
+    for c in 0..n {
+      let u = base[i] + c;
+      // 严格 `< i`：同一行的不同通道不能共用同一条缓冲（它们在同一拍同时写）。
+      let slot = (0..slot_last.len()).find(|&s| slot_last[s] < i);
+      let s = slot.unwrap_or_else(|| {
+        slot_last.push(0);
+        slot_last.len() - 1
+      });
+      slot_last[s] = last_use[u].max(i);
+      row_slots.push(s);
+    }
+    slot_of.push(row_slots);
+  }
+  (slot_of, slot_last.len().max(1))
+}
+
+/// 延迟补偿（PDC），与 Element `GraphBuilder` 同一条规则：
+/// 一个节点的输入延迟 = max(各入线来源的累计算延迟)；较快的入线补
+/// `max - 该来源延迟` 个样本；本节点输出延迟 = max + 本 Stage 的算法延迟。
+///
+/// 例：降噪（1 hop）与直通两路汇合 → 直通那一路补 480 样本，两路才同相。
+/// 单路链不受影响（max = 该路延迟，补 0）。
+fn compute_pdc(rows: &mut [Row]) {
+  let mut lat = vec![0usize; rows.len()];
+  for i in 0..rows.len() {
+    let max_in = rows[i]
+      .inputs
+      .iter()
+      .map(|e| lat.get(e.src).copied().unwrap_or(0))
+      .max()
+      .unwrap_or(0);
+    let delays: Vec<usize> = rows[i]
+      .inputs
+      .iter()
+      .map(|e| max_in.saturating_sub(lat.get(e.src).copied().unwrap_or(0)))
+      .collect();
+    let own = rows[i].stage_latency();
+    rows[i].edge_delays = delays;
+    rows[i].latency = max_in + own;
+    lat[i] = rows[i].latency;
+  }
+  for r in rows.iter_mut() {
+    r.delay_lines = r
+      .edge_delays
+      .iter()
+      .map(|&d| if d > 0 { Some(DelayLine::new(d)) } else { None })
+      .collect();
+  }
+}
+
+/// 节点输入微调（dB → 线性；热参数每 hop 读一次）。
+fn apply_trim(r: &Row, buf: &mut [f32; HOP]) {
+  if let Some(g) = r.input_gain.as_ref() {
+    let g = g.linear();
+    if g != 1.0 {
+      for x in buf.iter_mut() {
+        *x *= g;
+      }
+    }
+  }
+}
+
 struct AliveGuard(Arc<AtomicBool>);
 impl Drop for AliveGuard {
   fn drop(&mut self) {
@@ -1232,10 +1485,12 @@ impl Drop for AliveGuard {
 }
 
 #[allow(clippy::too_many_arguments)] // 线程入口：参数就是这一列的完整上下文
+#[allow(clippy::needless_range_loop)]
 fn run_column(
   idx: usize,
   column_on: bool,
   rows: Arc<Mutex<Vec<Row>>>,
+  slot_of: Arc<Vec<Vec<usize>>>,
   stop: Arc<AtomicBool>,
   rec: Arc<RecorderHub>,
   calib: Arc<CalibHub>,
@@ -1258,6 +1513,17 @@ fn run_column(
   let mut tick = crate::audio::tick::Tick::new(TICK);
   let mut ticks: u64 = 0;
   let mut last_ticks: u64 = 0;
+  // Session V2：每个节点一条输出缓冲；入线在**本拍**按拓扑顺序已经写好。
+  let mut outbufs: Vec<[f32; HOP]> =
+    vec![[0.0f32; HOP]; slot_of.iter().flatten().max().copied().unwrap_or(0) + 1];
+  // 逐行逐通道的当前拍累加缓冲（预分配；通道数固定，运行期不增长）
+  let mut accs: Vec<Vec<[f32; HOP]>> = {
+    let g = rows.lock().unwrap();
+    g.iter()
+      .map(|r| vec![[0.0f32; HOP]; r.channels.max(1) as usize])
+      .collect()
+  };
+  let mut src_hops: Vec<[f32; HOP]> = Vec::new();
   // 节拍质量：迟到（上一拍处理超时/被挂起）与单拍处理耗时。这两项是「为什么卡」的第一现场。
   let mut tick_overruns: u64 = 0;
   let mut tick_overrun_rate = RateMeter::new();
@@ -1281,7 +1547,10 @@ fn run_column(
       max_late_ms = max_late_ms.max(last_late_ms);
     }
     token.beat();
-    let mut acc = [0.0f32; HOP];
+    let mut column_peak = 0.0f32;
+    for b in &mut outbufs {
+      b.fill(0.0);
+    }
     // 延迟探针：本 tick 的第一路有数据的输入 hop / 第一路输出行取到的 hop（原样拷贝）
     let mut probe_in = [0.0f32; HOP];
     let mut probe_in_ok = false;
@@ -1292,17 +1561,41 @@ fn run_column(
     let mut lat_out: Option<RowTapInfo> = None;
     {
       let mut g = rows.lock().unwrap();
-      // 混合系数按**配置的输入源**计数（`source`），不是按当前拿到租约的数量：
-      // 一个设备打不开时，其余输入不该突然被抬高 6 dB（ARCHITECTURE.md §3.2）。
-      let n_inputs = g
-        .iter()
-        .filter(|r| r.kind == RowKind::Input && r.enabled && r.source)
-        .count();
-      let k = 1.0 / n_inputs.max(1) as f32;
       let recording = rec.active();
       let calibrating = calib.active();
 
       for (ri, r) in g.iter_mut().enumerate() {
+        let nch = r.channels.max(1) as usize;
+        let row_slots = slot_of[ri].clone();
+        for c in 0..nch {
+          accs[ri][c].fill(0.0);
+        }
+        // 入线求和（输入行没有入线；AEC 自己按近端/远端收，见下面分支）。
+        // 端口 = 通道：from_port 选来源通道，to_port 落到目标通道；每条线按 PDC 补延迟。
+        if r.kind != RowKind::Input && !(r.kind == RowKind::Process && r.ptype == "echo_cancel") {
+          for ei in 0..r.inputs.len() {
+            let e = r.inputs[ei];
+            let Some(ssrc) = slot_of.get(e.src) else {
+              continue;
+            };
+            if ssrc.is_empty() {
+              continue;
+            }
+            let fp = (e.from_port as usize).min(ssrc.len() - 1);
+            let Some(src) = outbufs.get(ssrc[fp]) else {
+              continue;
+            };
+            let delayed = match r.delay_lines.get_mut(ei) {
+              Some(Some(line)) => Some(line.process(src)),
+              _ => None,
+            };
+            let s = delayed.as_ref().unwrap_or(src);
+            let dst = &mut accs[ri][(e.to_port as usize).min(nch - 1)];
+            for i in 0..HOP {
+              dst[i] += s[i];
+            }
+          }
+        }
         let mut inf_sample: Option<f32> = None;
         // 行启用开关翻转 → 转发给媒体行（音效板淡出在播声部；播放器硬旁路）
         if r.enabled != r.enabled_prev {
@@ -1313,12 +1606,7 @@ fn run_column(
         }
         match r.kind {
           RowKind::Input => {
-            // 启用/停用：挂摘设备租约。运行期**只在后台打开**（poll），绝不阻塞这一拍。
             poll_input_lease(r, &hub, idx, ri, tick_start);
-            // 自愈（ARCHITECTURE.md §6.6）：租约还在、却**长时间一格 hop 都没有** = 流已经停了
-            // （设备拔出、系统休眠回来驱动没恢复、驱动重置）。放掉租约让 `poll_input_lease`
-            // 重新打开：引用归零时池会真关设备，之后按 1→30 s 退避重试。
-            // 只看「有没有 hop」而不是回调计数：设备活着时静音也在出数据，不会误判成掉线。
             if r.enabled
               && r.in_lease.is_some()
               && tick_start.saturating_duration_since(r.last_hop_at) >= INPUT_STALL_REOPEN
@@ -1330,7 +1618,7 @@ fn run_column(
                 "warn",
                 "engine",
                 format!(
-                  "第 {} 列第 {} 行：输入流已 {} s 没有数据，重新打开设备{}",
+                  "第 {} 组第 {} 节点：输入流已 {} s 没有数据，重新打开设备{}",
                   idx + 1,
                   ri + 1,
                   secs,
@@ -1341,15 +1629,15 @@ fn run_column(
                 ),
               );
               r.in_lease = None;
-              r.input = None;
+              r.input.clear();
               r.in_retry_at = Some(tick_start);
               r.last_hop_at = tick_start;
             }
             if !r.enabled {
-              // 停用的输入行不产出：AEC / 回环 / 网络 / 测试音都必须尊重行/列开关
-              // （以前只有池化的普通输入看开关，其余几种停用后仍在混音）。
+              // 停用 = 不产出（静音）
             } else if let Some(aec) = r.aec.as_mut() {
-              // AEC 行：mic hop 与 far 窗口对齐后过模型；far 历史不足则直通 mic
+              // 旧版 AEC 输入行（迁移前的兼容路径；V2 起 AEC 是两输入 Process 节点）
+              let mut near = [0.0f32; HOP];
               let (got, dropped) = take_hop(&mut aec.mic, &mut tmp);
               r.ring_dropped += dropped as u64;
               if got {
@@ -1357,8 +1645,6 @@ fn run_column(
                   probe_in.copy_from_slice(&tmp);
                   probe_in_ok = true;
                 }
-                // 会话起步：让 far 泵的时钟与 mic 序号同起点（否则两者相差设备打开时间，
-                // 校准会测出负延时且每次会话不同）；校准开始时代号变化 → 序号同样归零。
                 if aec_boot {
                   aec_boot = false;
                   calib_epoch.fetch_add(1, Relaxed);
@@ -1367,58 +1653,46 @@ fn run_column(
                 if e != epoch_seen {
                   epoch_seen = e;
                   aec.mic_hops = 0;
-                  // 时间基归零 ⇒ 模型的流式缓存与两路拼帧/OLA 状态一起归零
-                  // （否则会话重启后前几帧会把上一次会话的尾巴叠进来）
                   aec.engine.reset();
                 }
                 let hop_idx = aec.mic_hops;
                 aec.mic_hops += 1;
                 if aec.bypass {
-                  // 直通：跳过 AEC，直接过 mic（仍应用近端增益）
                   if aec.mic_gain != 1.0 {
                     for x in tmp.iter_mut() {
                       *x *= aec.mic_gain;
                     }
                   }
-                  for i in 0..HOP {
-                    acc[i] += tmp[i] * k;
-                  }
+                  near.copy_from_slice(&tmp);
                 } else {
-                  // 校准时用固定参考延时取 far 窗口（与存储值无关，见 calib::CALIB_REF_MS）
                   let delay_samples = if calibrating {
                     crate::engine::calib::CALIB_REF_SAMPLES
                   } else {
                     aec.delay_samples
                   };
                   let start = hop_idx as i64 * HOP as i64 - delay_samples;
-                  let mut far = [0.0f32; HOP];
+                  let mut win_buf = [0.0f32; HOP];
                   let win = {
                     let h = aec.hist.lock().unwrap();
-                    h.window_or_latest(start, &mut far)
+                    h.window_or_latest(start, &mut win_buf)
                   };
-                  // 校准：喂「原始近端 + 当前延时下的远端窗口」（与运行同一坐标、且在增益前）。
-                  // 只让精确窗口参与测量：回退段没有按延时偏移，量到的是绝对偏移，会把延时
-                  // 越加越大（far 网格已按实时推进，精确窗口正常可用；一直不可用由 calib 超时兜底）。
                   if calibrating {
-                    calib.feed(idx, ri, &tmp, &far, win == FarWin::Exact);
+                    calib.feed(idx, ri, &tmp, &win_buf, win == FarWin::Exact);
                   }
-                  // 端侧增益（进模型前）
                   if aec.mic_gain != 1.0 {
                     for x in tmp.iter_mut() {
                       *x *= aec.mic_gain;
                     }
                   }
                   if aec.far_gain != 1.0 {
-                    for x in far.iter_mut() {
+                    for x in win_buf.iter_mut() {
                       *x *= aec.far_gain;
                     }
                   }
                   match win {
                     FarWin::None => {
                       aec.pass += 1;
-                      for i in 0..HOP {
-                        acc[i] += tmp[i] * k;
-                      }
+                      near.copy_from_slice(&tmp);
                     }
                     w => {
                       if w == FarWin::Latest {
@@ -1427,14 +1701,12 @@ fn run_column(
                         aec.exact += 1;
                       }
                       let t = Instant::now();
-                      match aec.engine.process(&tmp, &far) {
+                      match aec.engine.process(&tmp, &win_buf) {
                         Ok(out) => {
                           let elapsed = t.elapsed().as_secs_f32() * 1000.0;
                           inf_sample = Some(elapsed);
-                          aec.echo.push(&tmp, &far, out);
-                          for i in 0..HOP {
-                            acc[i] += out[i] * k;
-                          }
+                          aec.echo.push(&tmp, &win_buf, out);
+                          near.copy_from_slice(out);
                         }
                         Err(e) => r.error = Some(e),
                       }
@@ -1442,36 +1714,68 @@ fn run_column(
                   }
                 }
               }
+              accs[ri][0] = near;
             } else if let Some(net) = r.net_input.as_ref() {
-              // 网络麦克风：按引擎 10 ms 节拍从**入站环**取一格（欠载补 PLC / 淡出，见 net/rt.rs）
               net.take_rx_hop(&mut tmp);
               if !probe_in_ok {
                 probe_in.copy_from_slice(&tmp);
                 probe_in_ok = true;
               }
-              for i in 0..HOP {
-                acc[i] += tmp[i] * k;
-              }
-            } else if let Some(cons) = r.input.as_mut() {
-              let (got, dropped) = take_hop(cons, &mut tmp);
-              r.ring_dropped += dropped as u64;
-              if got {
-                r.last_hop_at = tick_start;
-                if !probe_in_ok {
-                  probe_in.copy_from_slice(&tmp);
-                  probe_in_ok = true;
+              accs[ri][0] = tmp;
+            } else if !r.input.is_empty() {
+              // 设备通道 → 节点通道（端口 = 通道）
+              let sc = r.input.len();
+              src_hops.resize(sc, [0.0f32; HOP]);
+              let mut got_any = false;
+              for (i, cons) in r.input.iter_mut().enumerate() {
+                let (got, dropped) = take_hop(cons, &mut src_hops[i]);
+                r.ring_dropped += dropped as u64;
+                if got {
+                  got_any = true;
+                } else {
+                  src_hops[i].fill(0.0);
                 }
-                // 行内增益（loopback 源：系统混音偏响）
-                if let Some(g) = r.gain.as_ref() {
-                  let g = g.linear();
-                  for x in tmp.iter_mut() {
+              }
+              if got_any {
+                r.last_hop_at = tick_start;
+              }
+              if !probe_in_ok {
+                probe_in.copy_from_slice(&src_hops[0]);
+                probe_in_ok = true;
+              }
+              if let Some(g) = r.gain.as_ref() {
+                let g = g.linear();
+                for h in src_hops.iter_mut() {
+                  for x in h.iter_mut() {
                     *x *= g;
                   }
                 }
-                for i in 0..HOP {
-                  acc[i] += tmp[i] * k;
+              }
+              if nch == 1 {
+                if sc == 1 {
+                  accs[ri][0] = src_hops[0];
+                } else {
+                  for i in 0..HOP {
+                    let mut sum = 0.0f32;
+                    for h in &src_hops {
+                      sum += h[i];
+                    }
+                    accs[ri][0][i] = sum / sc as f32;
+                  }
+                }
+              } else if sc == 1 {
+                // 单声道设备喂多通道节点：铺到所有通道
+                for c in 0..nch {
+                  accs[ri][c] = src_hops[0];
+                }
+              } else {
+                for c in 0..nch {
+                  accs[ri][c] = if c < sc { src_hops[c] } else { [0.0f32; HOP] };
                 }
               }
+            }
+            for c in 0..nch {
+              apply_trim(r, &mut accs[ri][c]);
             }
             if let Some(ms) = inf_sample {
               r.inf_ms = if r.inf_ms == 0.0 {
@@ -1480,24 +1784,51 @@ fn run_column(
                 r.inf_ms * 0.9 + ms * 0.1
               };
               r.inf_max_ms = r.inf_max_ms.max(ms);
-              if ms > TICK.as_secs_f32() * 1000.0 * 0.8 {
-                r.inf_over += 1;
-              }
             }
           }
-          RowKind::Process => {
+          RowKind::Process if r.ptype == "echo_cancel" => {
+            // AEC：近端 = 端口 0，远端 = 端口 1（每条入线各自补 PDC 延迟）
+            let mut near = [0.0f32; HOP];
+            let mut far = [0.0f32; HOP];
+            for ei in 0..r.inputs.len() {
+              let e = r.inputs[ei];
+              let Some(ssrc) = slot_of.get(e.src) else {
+                continue;
+              };
+              if ssrc.is_empty() {
+                continue;
+              }
+              let fp = (e.from_port as usize).min(ssrc.len() - 1);
+              let Some(src) = outbufs.get(ssrc[fp]) else {
+                continue;
+              };
+              let delayed = match r.delay_lines.get_mut(ei) {
+                Some(Some(line)) => Some(line.process(src)),
+                _ => None,
+              };
+              let s = delayed.as_ref().unwrap_or(src);
+              let dst = if e.to_port == 1 { &mut far } else { &mut near };
+              for i in 0..HOP {
+                dst[i] += s[i];
+              }
+            }
+            apply_trim(r, &mut near);
+            apply_trim(r, &mut far);
             if r.enabled
-              && let Some(st) = r.stage.as_mut()
+              && let Some(st) = r.aec_stage.as_mut()
             {
-              // 录音采样点：处理前 = 上游输出（TSE 行的输入即降噪后）
               if recording {
-                rec.tap(idx, ri, Phase::Pre, &acc);
+                rec.tap(idx, ri, Phase::Pre, &near);
               }
               let t = Instant::now();
-              match st.process(&mut acc, &ctx) {
+              match st.process(
+                &mut near,
+                &far,
+                calibrating,
+                Some((calib.as_ref(), idx, ri)),
+              ) {
                 Ok(()) => r.error = None,
-                Err(StageError::Unavailable(_)) => {}
-                Err(StageError::Fatal(m)) => r.error = Some(m),
+                Err(e) => r.error = Some(e),
               }
               let ms = t.elapsed().as_secs_f32() * 1000.0;
               r.inf_ms = if r.inf_ms == 0.0 {
@@ -1512,30 +1843,92 @@ fn run_column(
                 r.inf_over += 1;
               }
               if recording {
-                rec.tap(idx, ri, Phase::Post, &acc);
+                rec.tap(idx, ri, Phase::Post, &near);
               }
+            }
+            accs[ri][0] = near;
+          }
+          RowKind::Process => {
+            for c in 0..nch {
+              apply_trim(r, &mut accs[ri][c]);
+            }
+            if r.enabled && !r.stage.is_empty() {
+              if recording {
+                rec.tap(idx, ri, Phase::Pre, &accs[ri][0]);
+              }
+              let t = Instant::now();
+              for c in 0..nch {
+                if let Some(st) = r.stage.get_mut(c) {
+                  match st.process(&mut accs[ri][c], &ctx) {
+                    Ok(()) => {}
+                    Err(StageError::Unavailable(_)) => {}
+                    Err(StageError::Fatal(m)) => {
+                      r.error = Some(m);
+                      break;
+                    }
+                  }
+                }
+              }
+              let ms = t.elapsed().as_secs_f32() * 1000.0;
+              r.inf_ms = if r.inf_ms == 0.0 {
+                ms
+              } else {
+                r.inf_ms * 0.9 + ms * 0.1
+              };
+              if ms > r.inf_max_ms {
+                r.inf_max_ms = ms;
+              }
+              if ms > TICK.as_secs_f32() * 1000.0 * 0.8 {
+                r.inf_over += 1;
+              }
+              if recording {
+                rec.tap(idx, ri, Phase::Post, &accs[ri][0]);
+              }
+            }
+            if let Some(ms) = inf_sample {
+              r.inf_ms = if r.inf_ms == 0.0 {
+                ms
+              } else {
+                r.inf_ms * 0.9 + ms * 0.1
+              };
+              r.inf_max_ms = r.inf_max_ms.max(ms);
             }
           }
           RowKind::Output => {
-            // 启用/停用：挂摘设备租约（运行期在后台打开，绝不阻塞这一拍）
             poll_output_lease(r, &hub, idx, ri, tick_start);
+            for c in 0..nch {
+              apply_trim(r, &mut accs[ri][c]);
+            }
             if r.enabled {
               if !probe_out_ok {
-                probe_out.copy_from_slice(&acc);
+                probe_out.copy_from_slice(&accs[ri][0]);
                 probe_out_ok = true;
               }
               if let Some(f) = r.output.as_ref() {
-                f.push_hop(&acc);
+                for c in 0..nch {
+                  f.push_channel(c, &accs[ri][c]);
+                }
               }
               if r.net_output {
-                // 网络扬声器：位置 tap（放到哪一行就取到哪里的信号）
-                crate::net::hub().push_tx_hop(&acc);
+                crate::net::hub().push_tx_hop(&accs[ri][0]);
               }
             }
           }
         }
+        let mut row_peak = 0.0f32;
+        for c in 0..nch {
+          let p = accs[ri][c].iter().fold(0.0f32, |a, b| a.max(b.abs()));
+          row_peak = row_peak.max(p);
+          outbufs[row_slots[c]] = accs[ri][c];
+        }
+        // 快起慢落：10 ms 一格，峰值条不会闪一下就消失
+        r.peak = row_peak.max(r.peak * 0.85);
+        if r.kind == RowKind::Output && r.enabled {
+          column_peak = column_peak.max(row_peak);
+        }
       }
 
+      let peak = column_peak;
       let now = Instant::now();
       if now.duration_since(last_publish) >= PUBLISH {
         // 速率要按**实测**间隔算：拿固定 PUBLISH 去除，publish 偶尔晚一拍就会报出 105 hop/s
@@ -1546,7 +1939,7 @@ fn run_column(
           .iter()
           .filter(|r| {
             r.kind == RowKind::Input
-              && (r.input.is_some() || r.aec.is_some() || r.net_input.is_some())
+              && (!r.input.is_empty() || r.aec.is_some() || r.net_input.is_some())
           })
           .count();
         let n_out = g
@@ -1593,13 +1986,13 @@ fn run_column(
             Some(aec.mic.slots() as f32 * 1000.0 / crate::audio::SAMPLE_RATE as f32)
           } else if let Some(net) = r.net_input.as_ref() {
             Some(net.stats().rx_level as f32 * 1000.0 / crate::audio::SAMPLE_RATE as f32)
-          } else if let Some(cons) = r.input.as_ref() {
+          } else if let Some(cons) = r.input.first() {
             Some(cons.slots() as f32 * 1000.0 / crate::audio::SAMPLE_RATE as f32)
           } else {
             r.output.as_ref().map(|f| f.max_level_ms())
           };
           // 延迟预算：第一路启用的输入 / 输出行（流 id 精确到这一行，见 `RowTapInfo`）
-          let has_source = r.input.is_some() || r.aec.is_some() || r.net_input.is_some();
+          let has_source = !r.input.is_empty() || r.aec.is_some() || r.net_input.is_some();
           let has_sink = r.output.is_some() || r.net_output;
           if r.enabled && (has_source || has_sink) {
             match r.kind {
@@ -1661,7 +2054,7 @@ fn run_column(
           } else if r.kind == RowKind::Process {
             let st = r
               .stage
-              .as_ref()
+              .first()
               .and_then(|s| s.status())
               .unwrap_or_else(|| "运行中".to_string());
             format!("{st}，{:.1} ms（最大 {:.1}）", r.inf_ms, r.inf_max_ms)
@@ -1718,6 +2111,14 @@ fn run_column(
             kind: kind.to_string(),
             ptype: r.ptype.clone(),
             label: r.label.clone(),
+            channels: r.channels,
+            peak: r.peak,
+            declared_latency_ms: r.latency as f32 * 1000.0 / crate::audio::SAMPLE_RATE as f32,
+            input_delays_ms: r
+              .edge_delays
+              .iter()
+              .map(|d| *d as f32 * 1000.0 / crate::audio::SAMPLE_RATE as f32)
+              .collect(),
             enabled: r.enabled,
             state,
             device: r.device.clone(),
@@ -1739,6 +2140,7 @@ fn run_column(
         }
         hub.set_column_info(ColumnInfo {
           index: idx,
+          peak,
           enabled: column_on,
           state: if stop.load(Relaxed) {
             "stopped".to_string()
@@ -1804,6 +2206,29 @@ mod tests {
     );
   }
 
+  /// PDC 的延迟线：延迟 N 个样本就是**精确** N 个样本，不是近似。
+  #[test]
+  fn delay_line_delays_exactly_n_samples() {
+    let mut line = DelayLine::new(3);
+    let mut first = [0.0f32; HOP];
+    for (i, x) in first.iter_mut().enumerate() {
+      *x = i as f32;
+    }
+    let out = line.process(&first);
+    assert_eq!(out[0], 0.0);
+    assert_eq!(out[1], 0.0);
+    assert_eq!(out[2], 0.0);
+    assert_eq!(out[3], 0.0, "前 3 个样本必须是静音");
+    assert_eq!(out[4], 1.0, "第 4 个样本输出第 1 个输入");
+    let mut second = [0.0f32; HOP];
+    second[0] = 100.0;
+    let out = line.process(&second);
+    assert_eq!(out[0], first[HOP - 3], "跨 hop 的延迟必须连续");
+    assert_eq!(out[1], first[HOP - 2]);
+    assert_eq!(out[2], first[HOP - 1]);
+    assert_eq!(out[3], 100.0);
+  }
+
   /// 设备名兜底：枚举里查不到时用**上次记住的名字**，连名字都没有才退 ID。
   #[test]
   fn saved_device_name_prefers_remembered_name() {
@@ -1814,6 +2239,7 @@ mod tests {
       device_name: Some("  麦克风 (2- MMX 150)  ".into()),
       enabled: true,
       params: Default::default(),
+      ..Default::default()
     };
     assert_eq!(saved_device_name(&row, "wasapi:x"), "麦克风 (2- MMX 150)");
     row.device_name = Some("   ".into());

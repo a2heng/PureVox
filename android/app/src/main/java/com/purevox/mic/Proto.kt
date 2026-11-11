@@ -90,12 +90,6 @@ object Proto {
     fun unsub(): String = JSONObject().put("t", "unsub").toString()
 
     /** `{"t":"text","s":"..."}` —— 手机输入法**已组合**好的文本。 */
-    fun text(s: String): String = JSONObject().put("t", "text").put("s", s).toString()
-
-    /** `{"t":"key","code":29,"down":true}` —— `code` 就是 Android `KeyEvent.KEYCODE_*`。 */
-    fun key(code: Int, down: Boolean): String =
-        JSONObject().put("t", "key").put("code", code).put("down", down).toString()
-
     /** `{"t":"ping","id":42}` —— 电脑原样回 `{"t":"pong","id":42}`。 */
     fun ping(id: Long): String = JSONObject().put("t", "ping").put("id", id).toString()
 

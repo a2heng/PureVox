@@ -23,6 +23,8 @@ pub mod capture;
 /// 实测时钟（设备 vs 系统）：只在测试里编译，见模块注释。
 #[cfg(test)]
 mod clock_probe;
+#[cfg(not(windows))]
+mod cpal_out;
 /// 设备池（ARCHITECTURE.md §6.5）：每个 `(设备, 角色)` 只打开一次 + 引用计数
 pub mod device_pool;
 pub mod fanout;
@@ -41,6 +43,8 @@ pub mod loopback;
 pub mod loopback;
 /// 输出设备的混音：多列 → 一个设备（逐源对齐后相加）
 pub mod mixer;
+/// 输出后端选择层：Windows = WASAPI（`IAudioClient3` 低延迟共享），其它 = cpal。
+pub mod out;
 pub mod playback;
 pub mod probe;
 pub mod rt_guard;
@@ -48,10 +52,6 @@ pub mod tick;
 pub mod tone;
 /// Linux 虚拟麦克风（PipeWire）的创建 / 移除（「驱动」页面）。
 pub mod virtual_mic;
-/// 输出后端选择层：Windows = WASAPI（`IAudioClient3` 低延迟共享），其它 = cpal。
-pub mod out;
-#[cfg(not(windows))]
-mod cpal_out;
 /// Windows 输出：WASAPI（`IAudioClient3` 低延迟共享 → 普通共享回退）。
 #[cfg(windows)]
 pub mod wasapi_out;
@@ -170,7 +170,8 @@ static KEEPALIVE: std::sync::Mutex<Option<crate::audio::rt_guard::ExecutionReque
 
 impl AudioManager {
   pub fn new(hub: SharedHub) -> Self {
-    let plan = config::load_plan();
+    let mut plan = config::load_plan();
+    plan.normalize();
     let rec = Arc::new(RecorderHub::new(hub.clone()));
     let calib = Arc::new(CalibHub::new(hub.clone()));
     hub.set_plan(plan.clone());
@@ -521,8 +522,10 @@ impl AudioManager {
   /// **事务性**：运行中先构建新会话；只要有**关键失败**（启用的行拿不到设备/模型），
   /// 就停掉新会话、保留旧会话与旧计划，返回错误——绝不让一次坏改动把正在工作的链路停掉。
   /// 成功才提交媒体槽位、停旧会话、落盘。返回构建过程中的问题（非致命，逐行展示）。
-  pub fn apply_plan(&self, plan: Plan) -> Result<Vec<String>, String> {
+  pub fn apply_plan(&self, mut plan: Plan) -> Result<Vec<String>, String> {
     let _rebuild = self.rebuild.lock().unwrap();
+    // Session V2：补 ID / 位置、按连线重新分组、丢掉坏入线。
+    plan.normalize();
     let running = self.state.lock().unwrap().running;
     if !running {
       self.state.lock().unwrap().plan = plan.clone();
@@ -790,8 +793,10 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect(),
+      ..Default::default()
     };
     Plan {
+      v: 0,
       columns: vec![ColumnSpec {
         enabled: true,
         rows: vec![

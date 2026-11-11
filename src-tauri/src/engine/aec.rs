@@ -172,6 +172,123 @@ pub struct AecRow {
   pub pass: u64,
 }
 
+/// Session V2：AEC 作为**两输入处理节点**（近端 / 远端都来自连线）。
+pub struct AecStage {
+  engine: Aec,
+  hist: FarHistory,
+  delay_samples: i64,
+  hops: u64,
+  mic_gain: f32,
+  far_gain: f32,
+  bypass: bool,
+  pub exact: u64,
+  pub latest: u64,
+  pub pass: u64,
+  pub echo: EchoMetrics,
+}
+
+impl AecStage {
+  pub fn new(params: &std::collections::BTreeMap<String, String>) -> Result<Self, String> {
+    let model = crate::infer::known_model(
+      crate::infer::aec::aec_models(),
+      params
+        .get("model")
+        .map(String::as_str)
+        .unwrap_or(crate::infer::aec::MODEL_AEC),
+    )
+    .to_string();
+    let db = |k: &str| {
+      params
+        .get(k)
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .unwrap_or(0.0)
+    };
+    let delay_ms = db("far_delay_ms");
+    Ok(AecStage {
+      engine: Aec::load(&model)?,
+      hist: FarHistory::new(FAR_HIST_SAMPLES),
+      delay_samples: (delay_ms / 10.0).round() as i64 * HOP as i64,
+      hops: 0,
+      mic_gain: 10f32.powf((db("mic_gain_db") / 20.0) as f32),
+      far_gain: 10f32.powf((db("far_gain_db") / 20.0) as f32),
+      bypass: params
+        .get("bypass")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false),
+      exact: 0,
+      latest: 0,
+      pass: 0,
+      echo: EchoMetrics::default(),
+    })
+  }
+
+  /// 频谱合成固定滞后 1 hop（见 `infer/spec.rs`）；PDC 用它对齐并行路径。
+  pub fn latency_samples(&self) -> usize {
+    if self.bypass { 0 } else { HOP }
+  }
+
+  /// 两输入 AEC：far 每 hop 写入历史网格，按 far_delay 取窗口；返回本 hop 输出写到 `near`。
+  pub fn process(
+    &mut self,
+    near: &mut [f32; HOP],
+    far_in: &[f32; HOP],
+    calibrating: bool,
+    calib: Option<(&crate::engine::calib::CalibHub, usize, usize)>,
+  ) -> Result<(), String> {
+    self.hist.push(far_in);
+    let hop_idx = self.hops;
+    self.hops += 1;
+    if self.bypass {
+      if self.mic_gain != 1.0 {
+        for x in near.iter_mut() {
+          *x *= self.mic_gain;
+        }
+      }
+      return Ok(());
+    }
+    let delay_samples = if calibrating {
+      crate::engine::calib::CALIB_REF_SAMPLES
+    } else {
+      self.delay_samples
+    };
+    let start = hop_idx as i64 * HOP as i64 - delay_samples;
+    let mut far = [0.0f32; HOP];
+    let win = self.hist.window_or_latest(start, &mut far);
+    if calibrating && let Some((c, ci, ri)) = calib {
+      c.feed(ci, ri, near, &far, win == FarWin::Exact);
+    }
+    let gain_near = self.mic_gain;
+    let gain_far = self.far_gain;
+    if gain_near != 1.0 {
+      for x in near.iter_mut() {
+        *x *= gain_near;
+      }
+    }
+    if gain_far != 1.0 {
+      for x in far.iter_mut() {
+        *x *= gain_far;
+      }
+    }
+    match win {
+      FarWin::None => {
+        self.pass += 1;
+        Ok(())
+      }
+      w => {
+        if w == FarWin::Latest {
+          self.latest += 1;
+        } else {
+          self.exact += 1;
+        }
+        let out = self.engine.process(near, &far)?;
+        self.echo.push(near, &far, out);
+        near.copy_from_slice(out);
+        Ok(())
+      }
+    }
+  }
+}
+
 /// 网络 AEC 的「远端 = 网络出站」这个取值（`far_device` 里的哨兵）。
 pub const NET_FAR: &str = "network";
 

@@ -95,6 +95,7 @@ pub fn is_hot(ptype: &str, key: &str) -> bool {
     (ptype, key),
     ("gain", "gain_db")
       | ("loopback", "volume_db")
+      | ("audio_output", "volume_db")
       | ("agc", "target_db")
       | ("agc", "speed")
       | ("agc", "floor_db")
@@ -725,7 +726,16 @@ static SPECS: &[NodeSpec] = &[
     ptype: "audio_output",
     label: "扬声器",
     kind: NodeKind::Output,
-    params: &[],
+    params: &[ParamSpec {
+      key: "volume_db",
+      label: "发送增益",
+      kind: ParamKind::Number {
+        lo: -60.0,
+        hi: 12.0,
+        default: 0.0,
+        step: 0.5,
+      },
+    }],
   },
   NodeSpec {
     ptype: "remote_speaker",

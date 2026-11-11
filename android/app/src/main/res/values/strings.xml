@@ -34,7 +34,6 @@
     <string name="wordmark_tail" translatable="false">ureVox</string>
     <!-- 底部选项卡 -->
     <string name="tab_connect">连接</string>
-    <string name="tab_input">输入</string>
     <string name="tab_diag">诊断</string>
     <string name="tab_more">更多</string>
     <!-- 连接做成开关：位置本身就是状态 -->
@@ -53,7 +52,6 @@
     <!-- 卡片标题 -->
     <string name="section_connect">连接</string>
     <string name="section_function">功能</string>
-    <string name="section_input">远程输入</string>
     <string name="section_keepalive">后台保活</string>
     <string name="section_update">更新</string>
 
@@ -109,17 +107,8 @@
     <string name="mic_src_fm_tuner">FM_TUNER（FM，隐藏 API）</string>
     <string name="mic_src_voice_signalling">VOICE_COMMUNICATION_SIGNALLING（隐藏 API）</string>
     <string name="mic_source_fallback">所选麦克风 API 不可用，已回退到 MIC：%1$s</string>
-    <string name="sw_remote">远程输入开关（电脑端默认关闭）</string>
-    <string name="sw_remote_text">打字同步（输入法文本 → 电脑）</string>
-    <string name="sw_remote_keys">实体键盘（手机按键 → 电脑）</string>
 
     <!-- 输入框 / 长文本 -->
-    <string name="hint_text_local">在此输入（仅本机；打开「打字同步」后内容会转发给电脑）</string>
-    <string name="hint_text_synced">在此输入，内容会转发给电脑后清空</string>
-    <string name="btn_send">发送</string>
-    <string name="btn_clear">清空</string>
-    <string name="msg_sent">已发送 %1$d 个字符</string>
-    <string name="msg_send_blocked">未连接，或「远程输入 / 打字同步」未开启</string>
     <string name="msg_not_connected">未连接</string>
 
     <!-- 后台保活 -->

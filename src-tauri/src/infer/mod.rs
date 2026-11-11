@@ -575,6 +575,7 @@ mod tests {
       device_name: None,
       enabled,
       params: BTreeMap::new(),
+      ..Default::default()
     }
   }
 
@@ -658,6 +659,7 @@ mod tests {
   #[test]
   fn models_in_plan_keeps_paused_rows() {
     let off = Plan {
+      v: 0,
       columns: vec![ColumnSpec {
         enabled: true,
         rows: vec![
@@ -674,6 +676,7 @@ mod tests {
     );
 
     let on = Plan {
+      v: 0,
       columns: vec![ColumnSpec {
         enabled: true,
         rows: vec![
@@ -693,6 +696,7 @@ mod tests {
 
     // 整列暂停：行还在 → 模型照样留着
     let col_off = Plan {
+      v: 0,
       columns: vec![ColumnSpec {
         enabled: false,
         rows: on.columns[0].rows.clone(),
@@ -702,6 +706,7 @@ mod tests {
 
     // 只有增益这类纯 DSP 行：一根 ONNX 都不涉及（增益不占模型内存，也不进白名单）
     let dsp_only = Plan {
+      v: 0,
       columns: vec![ColumnSpec {
         enabled: true,
         rows: vec![
@@ -719,6 +724,7 @@ mod tests {
 
     // 真删掉（计划里没有这些行）= 回收
     let deleted = Plan {
+      v: 0,
       columns: vec![ColumnSpec {
         enabled: true,
         rows: vec![

@@ -122,12 +122,12 @@
   （落盘 + 端点）与可复现命令。
 - **验证方式**：智能体与脚本验证运行状态一律请求 HTTP 接口（`curl http://127.0.0.1:<端口>/debug`），
   不靠模拟键鼠点界面（Windows 会拦截后台抢焦点，按键会打进别的窗口）。界面交互验证用
-  Windows UI Automation（`TAURI3.md` 3.6 节）；**Linux 用 `tools/automation/ui.py`（AT-SPI）**——
+  Windows UI Automation（`BUILD.md` 3.6 节）；**Linux 用 `tools/automation/ui.py`（AT-SPI）**——
   `list` 列控件、`click <可访问名>` 点按钮/勾选框（要 `DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000
   DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`），不要求人点。同一条链还有会话子命令：
   `start`（起应用并等 `/debug`；会话总线真缺 SNI watcher 时自动顶替身）/ `take '<jq 表达式>'`（读快照）/
   `verify-update <deb|rpm|appimage|none>`（点「更新 → 检查更新」，断言安装方式与**产物后缀对得上**，
-  失败返回非 0）/ `stop`（收掉自己起的进程）。前置与跨总线限制见 `TAURI3.md` 3.6 节。
+  失败返回非 0）/ `stop`（收掉自己起的进程）。前置与跨总线限制见 `BUILD.md` 3.6 节。
   **网络上下行 / 网页版播放不要靠耳朵听**：`python tools/automation/net_loopback.py`（`--mode speaker`
   测测试音→网络扬声器，`--mode roundtrip` 测网络麦克风→网络扬声器，含上下行 hub 与 10 ms 节拍；
   `--json` 出结构化结果、`--out` 落可听的 WAV）与 `python tools/automation/net_web_probe.py`
@@ -163,7 +163,7 @@
   **设置**（`~/.purevox/settings.json`：语言 / 热键 / 提示音；顶栏「设置」面板，键位可录制）；
   中英文（`ui/i18n.js`，中文即 msgid，顶栏「EN/中」）。应用图标 `src-tauri/icons/` 与 Android 的
   `res/mipmap-*` 由 `tools/automation/gen_icons.py` 生成（**不参与 CI**，一次性生成、产物入库；
-  跨平台同一条命令、产物逐字节相同；P 的矢量定义与改法见 TAURI3.md §3.5.1）。
+  跨平台同一条命令、产物逐字节相同；P 的矢量定义与改法见 BUILD.md §3.5.1）。
   **Android 图标 = 规范自适应图标**（与桌面版同一套 P + 渐变，不另画）：脚本一并写出
   `mipmap-anydpi-v26/{ic_launcher,ic_launcher_round}.xml`（含 `<monochrome>`，供 Android 13+
   主题图标着色），并生成五档密度的 `ic_launcher_foreground.png`（108dp 画布、P 落在 72dp 安全区）、

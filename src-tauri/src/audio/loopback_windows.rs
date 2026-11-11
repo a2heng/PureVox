@@ -44,17 +44,18 @@ use windows::Win32::System::Com::{
 };
 
 use super::capture::{self, CallbackStats, Capture, OPEN_TIMEOUT, SourceInfo};
-use super::fanout::Fanout;
+use super::fanout::MultiFanout;
 use crate::debug::SharedHub;
 
 /// 回环缓冲区时长（100 ns 单位）：10 ms，与旧实现一致。
+type OpenOut = (u32, u16, u16, String, rtrb::Consumer<f32>);
 const BUFFER_DURATION: i64 = 100_000;
 
 /// 打开输出设备的回环并启动采集线程。
 /// `output_id`：渲染端点 ID（cpal 形如 `wasapi:{...}`）；`None` 用系统默认渲染端点。
 pub fn spawn(hub: SharedHub, output_id: Option<String>, tag: String) -> Result<Capture, String> {
   let stop = Arc::new(AtomicBool::new(false));
-  let (tx, rx) = mpsc::channel::<Result<Arc<Fanout>, String>>();
+  let (tx, rx) = mpsc::channel::<Result<Arc<MultiFanout>, String>>();
   let stop2 = stop.clone();
   let name = tag.clone();
   let join = std::thread::Builder::new()
@@ -82,20 +83,21 @@ fn run(
   output_id: Option<String>,
   tag: String,
   stop: Arc<AtomicBool>,
-  tx: mpsc::Sender<Result<Arc<Fanout>, String>>,
+  tx: mpsc::Sender<Result<Arc<MultiFanout>, String>>,
 ) {
   let stats = Arc::new(CallbackStats::new());
-  let (prod, cons) = RingBuffer::<f32>::new(48_000); // 1 s 单声道
-  let (fmt_tx, fmt_rx) = mpsc::channel::<Result<(u32, u16, u16, String), String>>();
+  // 环由 poll 线程在**知道真实混音格式之后**创建（通道数 = 混音格式通道数，
+  // 容量 500 ms 交织样本）；这里只等它把读端送回来。
+  let (fmt_tx, fmt_rx) = mpsc::channel::<Result<OpenOut, String>>();
 
   let stop2 = stop.clone();
   let stats2 = stats.clone();
   let poll = std::thread::Builder::new()
     .name("loopback-poll".into())
-    .spawn(move || open_and_poll(output_id, prod, fmt_tx, stop2, stats2))
+    .spawn(move || open_and_poll(output_id, fmt_tx, stop2, stats2))
     .expect("spawn loopback poll");
 
-  let (rate, channels, bits, name) = match fmt_rx.recv_timeout(OPEN_TIMEOUT) {
+  let (rate, channels, bits, name, cons) = match fmt_rx.recv_timeout(OPEN_TIMEOUT) {
     Ok(Ok(v)) => v,
     Ok(Err(e)) => {
       let _ = tx.send(Err(e));
@@ -135,8 +137,7 @@ fn run(
 /// 打开回环并把数据写进无锁环（本线程持有全部 COM 对象）。格式经 `fmt_tx` 回传。
 fn open_and_poll(
   output_id: Option<String>,
-  mut prod: rtrb::Producer<f32>,
-  fmt_tx: mpsc::Sender<Result<(u32, u16, u16, String), String>>,
+  fmt_tx: mpsc::Sender<Result<OpenOut, String>>,
   stop: Arc<AtomicBool>,
   stats: Arc<CallbackStats>,
 ) {
@@ -191,9 +192,12 @@ fn open_and_poll(
       return;
     }
   };
-  let _ = fmt_tx.send(Ok((rate, ch, bits, name)));
-
   let chn = ch.max(1) as usize;
+  // 500 ms 交织样本：远高于 60 ms 的封顶线，设备预填/调度停顿都吃得下；
+  // 容量按真实采样率与通道数算，10 通道 192 kHz 的设备也不会被一个小环卡住。
+  let (mut prod, cons) = RingBuffer::<f32>::new((rate as usize * chn / 2).max(48_000));
+  let _ = fmt_tx.send(Ok((rate, ch, bits, name, cons)));
+
   while !stop.load(Relaxed) {
     let mut drained = false;
     loop {
@@ -217,27 +221,20 @@ fn open_and_poll(
         stats.on_block(n);
         let silent = flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
         let total = n as usize * chn;
+        // **不下混**：原样写交织样本（端口 = 通道；单声道下混在行里做）。
         if silent || pdata.is_null() {
-          for _ in 0..n {
+          for _ in 0..total {
             let _ = prod.push(0.0);
           }
         } else if bits == 32 {
           let s = unsafe { std::slice::from_raw_parts(pdata as *const f32, total) };
-          for f in 0..n as usize {
-            let mut acc = 0.0f32;
-            for c in 0..chn {
-              acc += s[f * chn + c];
-            }
-            let _ = prod.push(acc / chn as f32);
+          for &v in s {
+            let _ = prod.push(v);
           }
         } else {
           let s = unsafe { std::slice::from_raw_parts(pdata as *const i16, total) };
-          for f in 0..n as usize {
-            let mut acc = 0.0f32;
-            for c in 0..chn {
-              acc += s[f * chn + c] as f32 / 32768.0;
-            }
-            let _ = prod.push(acc / chn as f32);
+          for &v in s {
+            let _ = prod.push(v as f32 / 32768.0);
           }
         }
         let _ = unsafe { capture.ReleaseBuffer(n) };

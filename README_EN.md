@@ -3,9 +3,9 @@
 [中文](README.md)
 
 A desktop app for real-time AI microphone noise suppression, target speaker extraction and echo
-cancellation. Wire microphones, system audio, phones and any other source into editable columns,
-process them, and send the result to speakers, a virtual cable or a phone — one chain instead of a
-shelf of tools.
+cancellation, and a **multi-device mixer / router**: each input strip is source → fader → AI
+processing chain → output buses. Buses are named by purpose (monitor / virtual mic / network), not
+A1/A2. It is not a VoiceMeeter clone; AI processing and low latency come first.
 
 ## Features
 
@@ -16,8 +16,8 @@ shelf of tools.
   speakerphone), with delay calibration and level matching.
 - **OBS audio filters**: noise gate, compressor, limiter, expander, upward compressor, 3-band EQ and
   polarity invert — ranges, defaults and steps match OBS.
-- **Multi-column pipelines**: each column is input → processing rows → output; add/remove columns,
-  reorder rows, suspend any row or column independently.
+- **Multi-device mixer (native GPUI UI)**: input strips are source → fader → processing chain →
+  several output buses; buses are named by purpose. Strips and buses can be added/removed.
 - **Device pool**: one device used by several columns is opened once; multiple sources are summed by
   the software mixer, so nothing reports "device busy".
 - **Source and sink types**: microphone, system-audio loopback, phone (network mic / speaker), test
@@ -40,20 +40,21 @@ client), virtual drivers, media rows, in-app updates and packaging are all in pl
 
 - Downloads: [Releases](https://github.com/a2heng/PureVox/releases) (version = year.month.day).
 - The previous implementation (Python + Tkinter) is gone; use `git log` if you need it.
-- Docs: [AGENTS.md](AGENTS.md) (Chinese), [TAURI3.md](TAURI3.md) (Tauri 3 notes), [AGENTS.md](AGENTS.md).
+- Docs: [AGENTS.md](AGENTS.md) (Chinese), [MIXER.md](MIXER.md) (mixer design), [BUILD.md](BUILD.md).
 
 ## Quick start
 
 ```bash
-# Run in development (Windows / Linux)
-cd src-tauri && cargo tauri dev
+# Development build + run
+cargo build --manifest-path src-tauri/Cargo.toml
+./src-tauri/target/debug/purevox.exe
 
-# Build installers: Windows = NSIS exe; Linux = deb / rpm / AppImage
-cd src-tauri && cargo tauri build
+# Tests / gate
+cargo test  --manifest-path src-tauri/Cargo.toml --bin purevox
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-The first build needs network access: Rust crates, `onnxruntime` (via `ort`'s `download-binaries`)
-and the Tauri bundling tools. Linux also needs the system packages listed below.
+Installer packaging is not restored yet (the Tauri bundler is gone); see `BUILD.md`.
 
 ## Dependencies
 
@@ -61,10 +62,10 @@ and the Tauri bundling tools. Linux also needs the system packages listed below.
 
 | Platform | Needs | Notes |
 | --- | --- | --- |
-| Windows | WebView2 runtime | Usually present on Win10/11; the system offers to install it |
+| Windows | GPU (DX11/12) | GPUI renders the UI on the GPU; integrated graphics is fine |
 | Windows | VB-CABLE (optional) | Install it to expose PureVox as a virtual microphone |
 | Windows | `opus.dll` | Shipped with the app; only network audio needs it |
-| Linux | WebKitGTK 4.1, GTK3, ALSA | UI and audio I/O |
+| Linux | ALSA | Audio I/O (GPUI needs X11/Wayland + GPU) |
 | Linux | PipeWire or PulseAudio | Device enumeration and capture (`pactl` / `parec` / `pw-dump`) |
 | Linux | `libopus0` (optional) | Network audio; without it that feature reports why, everything else works |
 | Linux | `pulseaudio-utils` (`paplay`) | Start/stop cue sounds; without it you only lose the sound |
@@ -75,12 +76,10 @@ and the Tauri bundling tools. Linux also needs the system packages listed below.
 
 **Build time**
 
-- Rust (`rust-version = "1.95"`) + `tauri-cli` 3.0 alpha (`cargo install tauri-cli --version 3.0.0-alpha.5` — the version pinned here); on Linux also
-  `libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev libgtk-3-dev libasound2-dev pkg-config
-  file rpm`.
+- Rust (`rust-version = "1.95"`); on Linux also `libasound2-dev pkg-config` and GPUI's X11/Wayland deps.
 - Node.js 24 (`tsc` + i18n gate) and Python 3 (build/release scripts in `tools/automation/`).
 - `onnxruntime` is downloaded by `ort` at build time; on Linux you can also link a system or local
-  `libonnxruntime.so` (see the `ORT_*` variables in `TAURI3.md`).
+  `libonnxruntime.so` (see the `ORT_*` variables in `BUILD.md`).
 
 ## Models and licensing
 

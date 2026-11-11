@@ -103,17 +103,15 @@ where
       move |data: &mut [T], _info| {
         stats.on_block((data.len() / ch) as u32);
         let mut silent = 0u64;
+        // 环里是**交织帧**：每帧 ch 个样本，逐通道落位（多通道输出真正分开）。
         for f in data.chunks_exact_mut(ch) {
-          let s = match cons.pop() {
-            Ok(v) => v,
-            Err(_) => {
-              silent += 1;
-              0.0
-            }
-          };
-          let v = <T as FromSample<f32>>::from_sample_(s);
+          let ok = cons.slots() >= ch;
+          if !ok {
+            silent += 1;
+          }
           for x in f.iter_mut() {
-            *x = v;
+            let s = if ok { cons.pop().unwrap_or(0.0) } else { 0.0 };
+            *x = <T as FromSample<f32>>::from_sample_(s);
           }
         }
         if silent > 0 && primed.load(Relaxed) {

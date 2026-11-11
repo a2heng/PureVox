@@ -58,6 +58,7 @@ mod imp;
 #[path = "virtual_mic_other.rs"]
 mod imp;
 
+#[allow(unused_imports)]
 pub use imp::{create, remove, status};
 
 /// 采集当前状态；不可用时返回原因（供 `Probe::unavailable`）。

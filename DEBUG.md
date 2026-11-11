@@ -57,7 +57,7 @@ release 构建同样保留（不允许用编译开关剔除）。
   进出包与样本计数、**每方向的水位/深度/抖动（EMA + 最坏）/最大到达间隔**、
   **实测单向延迟**（NTP 偏移 + 帧头时间戳）、欠载 / PLC / 裁剪 / 空环到达 / 丢包计数、
   出站每路的待发 hop 与丢弃数、**客户端自报**（环水位、欠载、掩盖、时钟偏差 ppm）、
-  时钟偏移估计、RTT、已注入按键与字符数、`remote_input` 开关、最近错误原因，以及
+  时钟偏移估计、RTT、最近错误原因，以及
   `codec`（Opus 版本 + 实际加载到的 `opus.dll` 路径）。判定在 Rust 一侧算
   （`hub.rs` 的 `rx_verdict`/`tx_verdict`），面板只渲染。
 - 另有 `update`（更新检查，RELEASE.md §4.2）：阶段（`idle` / `checking` / `up_to_date` /
@@ -71,13 +71,13 @@ release 构建同样保留（不允许用编译开关剔除）。
   把 15 s 总超时套到下载上就是「下载中断：error decoding response body」的根因（2026-10-18
   实测收到 735703/76346174 字节即断；安装包 50~140 MB，慢链路上必超）。**别再合回一个**。
   **注意**：`net` 是用户可见功能，**绑所有网卡的 59123**（手机要能连），
-  与本节「只绑 127.0.0.1」的调试接口是两回事；远程输入另有独立开关且**默认关闭**。
+  与本节「只绑 127.0.0.1」的调试接口是两回事。
 
 ### 1.3 实现约束
 
 - **单一数据源**：Rust 侧 `DebugHub`（`src-tauri/src/debug/mod.rs`）维护唯一快照，UI 面板
-  （Tauri 命令 `debug_snapshot`，2 Hz 轮询）与 HTTP 接口序列化的是**同一个 `DebugSnapshot`**；
-  前端（`src-tauri/ui/debug.js`）只渲染，禁止自己另算一套。
+  （GPUI 界面直接读 `DebugHub`，50 ms 轮询）与 HTTP 接口序列化的是**同一个 `DebugSnapshot`**；
+  调试面板（`src-tauri/ui/debug.js`）只渲染，禁止自己另算一套。
 - **采集来源**（`debug/{system,gpu_*,mem_*}.rs`，按平台分文件）：
   - CPU / 内存总量与工作集：两平台都用 `sysinfo`，同一套口径。
   - **私有字节**：Windows `GetProcessMemoryInfo`（`PrivateUsage`，含已换出）；
@@ -91,8 +91,8 @@ release 构建同样保留（不允许用编译开关剔除）。
   （`audio/wasapi_out.rs`，`IAudioClient3` 128 帧低延迟共享），其它平台走 `audio/cpal_out.rs`，
   由 `audio/out.rs` 分平台选择。设备刷新单一入口
   `devices::spawn_refresh`（启动时 + 面板「刷新」按钮），后台线程执行。
-- 「本进程」指标不含 WebView2 子进程（界面渲染在 `msedgewebview2.exe`）。
-- **采集链路**（`src-tauri/src/audio/`）：设备按原生默认格式打开 → 回调线程只做下混单声道 +
+- GPUI 界面在进程内绘制；「本进程」指标包含界面开销（不再有独立的 WebView2 子进程）。
+- **采集链路**（`src-tauri/src/audio/`）：设备按原生默认格式打开 → 回调线程只做交织样本写入 +
   写 `rtrb` 无锁环 + 原子计数 → 每路一个工作线程（独占一条设备流）用 rubato `Async` sinc 重采样到
   48 kHz（`resampler::ToHops`，引擎唯一重采样实现；原生 48k 直通）并在 48k 输出侧切 480 样本 hop。
   **放行的节拍只看这一路自己的时钟**（`capture.rs` 的 `release_realtime` / `clamp_excess`）：
@@ -185,12 +185,12 @@ release 构建同样保留（不允许用编译开关剔除）。
 - **网络（手机 ⇄ 电脑）**（`src-tauri/src/net/`，协议 / 卡片 / TLS 见 NETWORK.md §4.1、§4.1.11、
   §4.1.12）：一个 axum 服务绑 `0.0.0.0`，默认端口 **59123**（界面可改，持久化到
   `~/.purevox/settings.json`），路径 `/ws`（另有 `/health` 自检、`/ca-cert` 下载 CA、
-  `/libopus-wasm.js` 给网页版、`/` 是网页版客户端）。三条能力共用一条连接：
+  `/libopus-wasm.js` 给网页版、`/` 是网页版客户端）。两条音频能力共用一条连接：
   `remote_mic` 输入行（手机麦克风→电脑，**不需要虚拟声卡驱动**，直接进引擎可降噪）、
-  `remote_speaker` 输出行（电脑→手机扬声器，按位置 tap）、远程输入（`text` 打字 + `key`
-  全尺寸键盘，**两件事分开**，用 `net_set_remote_input` 开关且**默认关闭**）。
+  `remote_speaker` 输出行（电脑→手机扬声器，按位置 tap）。**只传音频**：
+  手机端只有麦克风上行 / 扬声器下行，远程打字与按键注入已整体删除。
   命令 `net_start` / `net_stop` / `net_restart` / `net_status` / `net_card` / `net_running` /
-  `net_set_remote_input` / `net_set_port` / `net_ifaces` / `net_select_ip` / `net_local_addr` /
+  `net_set_port` / `net_ifaces` / `net_select_ip` / `net_local_addr` /
   `net_ca_pem`；状态进快照 `net` 段（`net_card` 是卡片用的结构化短字段，与它同源）。
   - **重连继承环深度**：`ready.target_ms` 必须是 `hub.ring_ms()`（电脑设置值），不能写死常量
     20，否则手机重连后用户调好的 60/90 ms 被拉回 20。**断开时入站计数归零**：
@@ -248,15 +248,8 @@ release 构建同样保留（不允许用编译开关剔除）。
     `sync`/`syncreply`/`offset` 做 NTP 四时戳估时钟偏移，客户端 2 Hz 上报 `st`
     （环水位/欠载/掩盖/晚到/单向延迟/**自己实测的音频时钟 ppm**）。结论进 `/debug` 的
     `net` 段与手机「诊断 → 音频」，判定只在 Rust 一侧算（`hub.rs` 的 `rx_verdict`/`tx_verdict`）。
-  - **按键注入**（`net/keys.rs`）：`SendInput` + **Set 1 扫描码**（不是虚拟键码，能走真实
-    键盘布局并区分左右修饰键）；文本用 `KEYEVENTF_UNICODE` 逐 UTF-16 码元注入（中文、emoji
-    都能打，且不经过电脑端输入法）。映射表在 `net/keymap.rs`（105 键，Android 键码常量
-    **从 AOSP `KeyEvent.java` 逐个提取，勿手抄**）。注入后端按平台分：Windows 已实现，
-    其余平台返回明确的不可用原因（Linux 需 uinput/XTEST），不静默失败。
-  - **安全取舍（明确记录）**：局域网同网段可直连、**无鉴权**，因此远程输入默认关闭、
-    界面常驻显示状态、有一键关闭；不要在没有开关保护的前提下默认开启按键注入。
-- **Android 客户端（`android/`，APK）**：与上面三件能力对同一个 WebSocket 的另一端，
-  单 Activity + Material3 **卡片式**布局（连接 / 功能 / 远程输入 / 后台保活 / 更新），
+- **Android 客户端（`android/`，APK）**：与上面两件音频能力对同一个 WebSocket 的另一端，
+  单 Activity + Material3 **卡片式**布局（连接 / 功能 / 后台保活 / 更新），
   底部「诊断」分**网络**（RTT 窗口/抖动/真实速率/质量结论）与**音频**（上/下行电平条、
   缓冲水位、欠载/丢包/解码掩盖）两块 + 日志，**默认收起**、标题行点击展开（状态面板不消失，
   只是不再一上来占满屏），「复制诊断」一键把整块塞剪贴板（报问题不必截图）；
@@ -313,10 +306,8 @@ release 构建同样保留（不允许用编译开关剔除）。
     三处必须同算法，`check.py -Gate version` 与 `build` 各有断言）；
     产物按 `.apk` 后缀匹配；下载落应用私有外部目录，经 `FileProvider`（`res/xml/file_paths.xml`）
     交系统安装器，需 `REQUEST_INSTALL_PACKAGES`。
-  - **长文本 / 退格**：输入框是 `PvEditText`（包一层 `InputConnectionWrapper`）——「打字同步」
-    照旧逐次转发并清空；**空框里按删除键**则把 Android `KEYCODE_DEL` 转发给电脑（映射成 PC
-    Backspace），框里有字时本地删。另有「发送 / 清空」按钮把攒好的一整段一次性发出（同一个
-    `text` 消息，只是时机不同）。
+  - **只传音频**：远程打字 / 长文本 / 实体键注入与电脑端接收端已整体删除；
+    协议里没有 `text` / `key`，手机端只有麦克风与扬声器。
   - 图标见上（自适应 + monochrome），文案在 `res/values/strings.xml`（Android 侧独立，
     **不是**桌面 `ui/i18n.js` 那份字典）。
 - **媒体行（音效板 / 音乐播放器）**：`soundpad` / `player` 是**处理行**（ARCHITECTURE.md §4），
@@ -366,21 +357,20 @@ release 构建同样保留（不允许用编译开关剔除）。
 - **桌面声音输入（`loopback` 输入行）**：`device` = `loopback`（系统默认输出）或
   `loopback:<渲染端点ID｜sink 名>`（按平台，同 AEC 远端取值规则），复用 AEC 的回环采集
   （`audio/loopback.rs`）；行内增益 `volume_db`（-30~6 dB，默认 -6 dB，系统混音偏响）。
-- **手机 / 客户端的入口 = 网络行卡片（`ui/netrow.js`，NETWORK.md §4.1.11）**：顶栏**没有**独立的
-  「手机」面板——网络麦克风 / 网络扬声器那两类行就是全部的手机操作入口（没建网络行就先加行）。
+- **手机 / 客户端的入口 = 混音台的输入源 / 输出目的地（`MIXER.md`）**：没有独立的「手机」面板——
+  网络麦克风 / 网络监听就是输入条的一行 / 一条总线。
   卡片分三层职责，**不要混**：① **服务本身**（状态灯 + **一句短状态**、`启动` / `停止` /
   `重启服务`；全文看 `/debug` 的 `net` 段，`net_card` 只给结构化短字段）；② **面向客户端的
   地址**（网卡下拉 + 可编辑端口，二维码 / 复制 / 网址都跟着选中的地址走；`net_ifaces` /
-  `net_select_ip` / `net_set_port`）；③ **会话级开关**（远程输入**默认关**、风险提示在
-  tooltip、AEC 只在 `remote_mic` 行存在）。**极致紧凑**（用户 2026-10-27）：不可改的说明
+  `net_select_ip` / `net_set_port`）；③ **会话级开关**（AEC 只在 `remote_mic` 行存在）。**极致紧凑**（用户 2026-10-27）：不可改的说明
   文字一律不上卡片（「近端永远是网络输入」这种写一次设计不够，别每张卡占一行），**二维码
-  右边只放能点的东西**（证书 / 远程输入 / AEC / 缓冲），不铺说明栏。
+  右边只放能点的东西**（证书 / AEC / 缓冲），不铺说明栏。
   **AEC 与独立 AEC 行是同一个 `AecRow`、同一个内置模型**（`infer::aec::MODEL_AEC`）：计划里
   没有 `model`、界面不给选；`校准` / `结果` 都可用，命令 `calibrate_aec_delay(col, row)`
   测卡片自己那一行，远端为 `network` 时探针注入网络出站。另有「下载证书（手机装一次）」
   （`net_ca_pem`）。调试面板只留 `net` 段的只读状态行。
-  本机地址取局域网 IP（`net_local_addr`，UDP connect 技巧，不发包）；远程输入注入见上文
-  `net/keys.rs`（Windows 已实现，其余平台明确不可用）。
+  本机地址取局域网 IP（`net_local_addr`，UDP connect 技巧，不发包）。
+  **不传按键 / 文本**：手机端只有音频上行与下行。
 - **更新（顶栏「更新」，`src/update/`）**：**唯一数据源 = 本仓库 GitHub Releases**
   （`repos/a2heng/PureVox/releases/latest`）。三步状态机 `检查 → 下载 → 安装`，
   界面按状态机卡按钮，不许跳步。
@@ -406,7 +396,7 @@ release 构建同样保留（不允许用编译开关剔除）。
       `CheckIfAppIsRunning` 会拦下正在运行的 exe，故用**没有窗口的 cmd**（`CREATE_NO_WINDOW`；
       **不能加 `DETACHED_PROCESS`**，否则 `ping` 会弹出一个可见终端窗口）先歇几秒再拉安装器，
       随后 `app.exit(0)`；命令行必须 `raw_arg` 原样传，`.args` 会把内部引号转义坏，
-      详见 TAURI3.md §0 踩坑 6）。
+      详见 BUILD.md §0 踩坑 6）。
     - **Linux = 三种包都能更新，分两条路**：AppImage 自身是可替换的文件 → 写同目录临时名
       再 `rename`（正在跑的进程用的是挂载副本，覆盖源文件不影响它；实测覆盖后挂载仍可读）；
       **deb / rpm 属于包管理器**（`/usr/bin/purevox` 是 root 所有，`cp` 覆盖运行中的二进制
@@ -482,12 +472,12 @@ release 构建同样保留（不允许用编译开关剔除）。
   （落盘 + 端点）与可复现命令。
 - **验证方式**：智能体与脚本验证运行状态一律请求 HTTP 接口（`curl http://127.0.0.1:<端口>/debug`），
   不靠模拟键鼠点界面（Windows 会拦截后台抢焦点，按键会打进别的窗口）。界面交互验证用
-  Windows UI Automation（`TAURI3.md` 3.6 节）；**Linux 用 `tools/automation/ui.py`（AT-SPI）**——
+  Windows UI Automation（`BUILD.md` 3.6 节）；**Linux 用 `tools/automation/ui.py`（AT-SPI）**——
   `list` 列控件、`click <可访问名>` 点按钮/勾选框（要 `DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/1000
   DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`），不要求人点。同一条链还有会话子命令：
   `start`（起应用并等 `/debug`；会话总线真缺 SNI watcher 时自动顶替身）/ `take '<jq 表达式>'`（读快照）/
   `verify-update <deb|rpm|appimage|none>`（点「更新 → 检查更新」，断言安装方式与**产物后缀对得上**，
-  失败返回非 0）/ `stop`（收掉自己起的进程）。前置与跨总线限制见 `TAURI3.md` 3.6 节。
+  失败返回非 0）/ `stop`（收掉自己起的进程）。前置与跨总线限制见 `BUILD.md` 3.6 节。
   **网络上下行 / 网页版播放不要靠耳朵听**：`python tools/automation/net_loopback.py`（`--mode speaker`
   测测试音→网络扬声器，`--mode roundtrip` 测网络麦克风→网络扬声器，含上下行 hub 与 10 ms 节拍；
   `--json` 出结构化结果、`--out` 落可听的 WAV）与 `python tools/automation/net_web_probe.py`
@@ -528,7 +518,7 @@ release 构建同样保留（不允许用编译开关剔除）。
   **设置**（`~/.purevox/settings.json`：语言 / 热键 / 提示音；顶栏「设置」面板，键位可录制）；
   中英文（`ui/i18n.js`，中文即 msgid，顶栏「EN/中」）。应用图标 `src-tauri/icons/` 与 Android 的
   `res/mipmap-*` 由 `tools/automation/gen_icons.py` 生成（**不参与 CI**，一次性生成、产物入库；
-  跨平台同一条命令、产物逐字节相同；P 的矢量定义与改法见 TAURI3.md §3.5.1）。
+  跨平台同一条命令、产物逐字节相同；P 的矢量定义与改法见 BUILD.md §3.5.1）。
   **Android 图标 = 规范自适应图标**（与桌面版同一套 P + 渐变，不另画）：脚本一并写出
   `mipmap-anydpi-v26/{ic_launcher,ic_launcher_round}.xml`（含 `<monochrome>`，供 Android 13+
   主题图标着色），并生成五档密度的 `ic_launcher_foreground.png`（108dp 画布、P 落在 72dp 安全区）、

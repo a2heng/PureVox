@@ -31,7 +31,7 @@ use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 use rtrb::{Producer, RingBuffer};
 use serde::Serialize;
 
-use super::fanout::Fanout;
+use super::fanout::MultiFanout;
 use super::{HOP, SAMPLE_RATE, WorkerHandle};
 use crate::audio::tick::Tick;
 use crate::debug::{Probe, SharedHub, StreamInfo, now_ms};
@@ -42,7 +42,8 @@ use crate::dsp::servo::Servo;
 /// 一路采集：工作线程句柄 + 本源的 48k hop 扇出。
 pub struct Capture {
   pub handle: WorkerHandle,
-  pub fanout: Arc<Fanout>,
+  /// 逐物理通道的 48 kHz hop 扇出（通道数 = 设备原生通道数）。
+  pub fanout: Arc<MultiFanout>,
 }
 
 pub(super) const PUBLISH_PERIOD: Duration = Duration::from_millis(200);
@@ -225,7 +226,6 @@ where
   f32: FromSample<T>,
 {
   let ch = cfg.channels.max(1) as usize;
-  let inv = 1.0 / ch as f32;
   let err_stats = stats.clone();
   dev
     .build_input_stream::<T, _, _>(
@@ -233,12 +233,10 @@ where
       move |data: &[T], _info| {
         stats.on_block((data.len() / ch) as u32);
         let mut dropped = 0u64;
-        for f in data.chunks_exact(ch) {
-          let mut s = 0.0f32;
-          for &x in f {
-            s += <f32 as FromSample<T>>::from_sample_(x);
-          }
-          if prod.push(s * inv).is_err() {
+        // **不下混**：原样写交织样本。通道拆分与单声道下混在行里做（端口 = 通道）。
+        for &x in data {
+          let v = <f32 as FromSample<T>>::from_sample_(x);
+          if prod.push(v).is_err() {
             dropped += 1;
           }
         }
@@ -262,7 +260,7 @@ pub fn spawn(hub: SharedHub, device_id: String, tag: String) -> Result<Capture, 
     return super::loopback::spawn_source(hub, source.to_string(), tag);
   }
   let stop = Arc::new(AtomicBool::new(false));
-  let (tx, rx) = mpsc::channel::<Result<Arc<Fanout>, String>>();
+  let (tx, rx) = mpsc::channel::<Result<Arc<MultiFanout>, String>>();
   let stop2 = stop.clone();
   let short: String = device_id
     .chars()
@@ -297,7 +295,7 @@ fn run(
   device_id: String,
   tag: String,
   stop: Arc<AtomicBool>,
-  tx: mpsc::Sender<Result<Arc<Fanout>, String>>,
+  tx: mpsc::Sender<Result<Arc<MultiFanout>, String>>,
 ) {
   let stats = Arc::new(CallbackStats::new());
 
@@ -310,8 +308,10 @@ fn run(
       .map_err(|e| format!("读取默认格式失败：{e}"))?;
     let cfg = supported.config();
     let fmt = supported.sample_format();
-    // 环形缓冲 500 ms（原生采样率单声道）
-    let (prod, cons) = RingBuffer::<f32>::new((cfg.sample_rate as usize / 2).max(HOP * 4));
+    // 环形缓冲 500 ms（原生采样率 × 原生通道数；回调里写**交织**样本，工作线程再拆）
+    let ch = cfg.channels.max(1) as usize;
+    let (prod, cons) =
+      RingBuffer::<f32>::new((cfg.sample_rate as usize / 2 * ch).max(HOP * 4 * ch));
     let stream = match fmt {
       SampleFormat::F32 => build_stream::<f32>(&dev, &cfg, prod, stats.clone()),
       SampleFormat::I16 => build_stream::<i16>(&dev, &cfg, prod, stats.clone()),
@@ -397,7 +397,7 @@ pub(super) fn worker<K>(
   tag: String,
   info: SourceInfo,
   src: WorkerSrc<K>,
-  tx: mpsc::Sender<Result<Arc<Fanout>, String>>,
+  tx: mpsc::Sender<Result<Arc<MultiFanout>, String>>,
 ) {
   // 实时优先级：10 ms 级的小环（P1/低延迟目标）必须让采集工作线程拿到 MMCSS，
   // 否则后台 CPU 一忙就被调度掉，设备环/行环直接欠载。
@@ -409,7 +409,11 @@ pub(super) fn worker<K>(
     stop,
   } = src;
   let _keep = keep;
-  let mut to_hops = match ToHops::new(info.native_rate) {
+  let channels = info.channels.max(1) as usize;
+  let mut to_hops: Vec<ToHops> = match (0..channels)
+    .map(|_| ToHops::new(info.native_rate))
+    .collect::<Result<Vec<_>, String>>()
+  {
     Ok(t) => t,
     Err(e) => {
       let _ = tx.send(Err(e));
@@ -422,7 +426,7 @@ pub(super) fn worker<K>(
   // 设备真实速率，同时把重采样比例压回 48 kHz —— 水位稳在 10 ms，**一点不丢**。
   let mut servo = Servo::new(SERVO_TARGET_MS);
   let mut last_ratio = Instant::now();
-  let fanout = Arc::new(Fanout::new(format!("输入：{}", info.name)));
+  let fanout = Arc::new(MultiFanout::new(&format!("输入：{}", info.name), channels));
   let _ = tx.send(Ok(fanout.clone()));
 
   let stream_id = format!("input:{tag}");
@@ -442,6 +446,10 @@ pub(super) fn worker<K>(
   let slot_frames = (native_rate as usize / 100).max(1);
   let mut budget: f64 = 0.0;
   let mut last_budget = Instant::now();
+  // 交织拆分的逐通道暂存（每拍复用；容量按最大回调块留足）
+  let mut scratch: Vec<Vec<f32>> = (0..channels)
+    .map(|_| Vec::with_capacity(slot_frames * 4))
+    .collect();
   // 延迟封顶丢掉的样本数：进 overruns（+ 速率），面板上看得见（丢了不报只剩一句「声音卡」）
   let mut clamped: u64 = 0;
   // 5 ms 轮询用**高精度等待**：Windows 默认 `sleep` 粒度 15.6 ms，会让采集环被迫攒到
@@ -455,16 +463,17 @@ pub(super) fn worker<K>(
     // 超硬顶的是**已经过时的音频**（流刚打开时设备预填的一大块、会话重建期间的积压、
     // 调度停顿），正确动作是丢掉、跳到现在；按 2× 放出去等于把一次突发变成
     // 「之后十几秒都在听旧声音」（v18 实测：单列麦克风监听长期停在 289 ms）。
-    let n = cons.slots();
-    let excess = clamp_excess(n, slot_frames);
+    // 环里是**交织样本**；所有水位 / 封顶 / 放行都按**帧**算，读的时候再乘通道数。
+    let frames = cons.slots() / channels;
+    let excess = clamp_excess(frames, slot_frames);
     if excess > 0
-      && let Ok(c) = cons.read_chunk(excess)
+      && let Ok(c) = cons.read_chunk(excess * channels)
     {
       c.commit_all();
-      clamped += excess as u64;
+      clamped += (excess * channels) as u64;
     }
-    let n = n - excess;
-    let ring_level_ms = n as f32 * 1000.0 / native_rate as f32;
+    let frames = frames - excess;
+    let ring_level_ms = frames as f32 * 1000.0 / native_rate as f32;
     // ---- 放行节拍：只看本路自己的时钟 ----
     // 源可能「一大块到达」：Linux `parec` 一次一整块（现为 30 ms，见
     // `loopback::PARE_LATENCY_MS`），部分 ALSA / WASAPI 设备一次十几毫秒。
@@ -480,21 +489,41 @@ pub(super) fn worker<K>(
     // 伺服输出 = 「放行速率修正」；比例同时反向修正，保证 48k 输出速率不变。
     let adj = servo.adj();
     let take = release_realtime(
-      n,
+      frames,
       &mut budget,
       dt,
       native_rate as f64 * (1.0 + adj),
       slot_frames,
     );
     if take > 0
-      && let Ok(chunk) = cons.read_chunk(take)
+      && let Ok(chunk) = cons.read_chunk(take * channels)
     {
+      // 交织 → 逐通道（一次块的样本量不大，复用 scratch，不分配）
+      for buf in scratch.iter_mut() {
+        buf.clear();
+      }
       let (a, b) = chunk.as_slices();
+      let mut phase = 0usize;
       for part in [a, b] {
-        let r = to_hops.push(part, |hop| {
-          meter.on_hop(hop);
-          fanout.push_hop(hop);
-          hops += 1;
+        for &v in part {
+          scratch[phase].push(v);
+          phase += 1;
+          if phase == channels {
+            phase = 0;
+          }
+        }
+      }
+      for (i, buf) in scratch.iter().enumerate() {
+        let meter_ref = &mut meter;
+        let fanout_ref = &fanout;
+        let hop_count = &mut hops;
+        let r = to_hops[i].push(buf, |hop| {
+          if i == 0 {
+            meter_ref.on_hop(hop);
+            // `hops` 按**帧**计数（多通道的每个 hop 是同一帧的 N 个通道）
+            *hop_count += 1;
+          }
+          fanout_ref.push_channel(i, hop);
         });
         if let Err(e) = r {
           resample_error = Some(e);
@@ -507,8 +536,10 @@ pub(super) fn worker<K>(
     servo.update(ring_level_ms as f64, dt);
     if now.duration_since(last_ratio) >= RATIO_PERIOD {
       last_ratio = now;
-      if let Err(e) = to_hops.set_relative_ratio(1.0 - servo.adj()) {
-        resample_error = Some(e);
+      for t in to_hops.iter_mut() {
+        if let Err(e) = t.set_relative_ratio(1.0 - servo.adj()) {
+          resample_error = Some(e);
+        }
       }
     }
 
@@ -550,15 +581,21 @@ pub(super) fn worker<K>(
         measured_input_rate: in_rate.push(now, frames_in),
         output_rate: SAMPLE_RATE,
         measured_output_rate: out_rate.push(now, frames_out),
-        resampler: to_hops.description().to_string(),
-        resampler_delay_ms: to_hops.delay_frames() as f64 * 1000.0 / SAMPLE_RATE as f64,
+        resampler: to_hops
+          .first()
+          .map(|t| t.description().to_string())
+          .unwrap_or_default(),
+        resampler_delay_ms: to_hops
+          .first()
+          .map(|t| t.delay_frames() as f64 * 1000.0 / SAMPLE_RATE as f64)
+          .unwrap_or(0.0),
         asrc_adjust_ppm: Probe::unavailable("输入流无时钟伺服（重采样比例固定）"),
         callbacks,
         callback_frames: stats.callback_frames(),
         frames_in,
         frames_processed: frames_out,
         hops,
-        pending_frames: to_hops.pending_frames() as u32,
+        pending_frames: to_hops.first().map(|t| t.pending_frames()).unwrap_or(0) as u32,
         peak_dbfs: m.peak_dbfs,
         rms_dbfs: m.rms_dbfs,
         underruns: Probe::unavailable("输入流无欠载概念"),

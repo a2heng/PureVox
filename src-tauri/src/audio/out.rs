@@ -59,7 +59,10 @@ impl Format {
       Sample::I32 => "i32",
       Sample::U16 => "u16",
     };
-    format!("{kind} {}-bit {} ch @ {} Hz", self.bits, self.channels, self.rate)
+    format!(
+      "{kind} {}-bit {} ch @ {} Hz",
+      self.bits, self.channels, self.rate
+    )
   }
 }
 
@@ -71,12 +74,16 @@ impl std::fmt::Display for Format {
       self.sample_text(),
       self.period_ms(),
       self.period_frames,
-      if self.low_latency { "，低延迟共享" } else { "" }
+      if self.low_latency {
+        "，低延迟共享"
+      } else {
+        ""
+      }
     )
   }
 }
 
-#[cfg(windows)]
-pub use super::wasapi_out::{Stream, probe, start};
 #[cfg(not(windows))]
 pub use super::cpal_out::{Stream, probe, start};
+#[cfg(windows)]
+pub use super::wasapi_out::{Stream, probe, start};

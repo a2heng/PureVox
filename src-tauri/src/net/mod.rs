@@ -22,16 +22,14 @@
 //! 2. `remote_speaker` 输出行 —— 网络扬声器：手机当电脑音箱
 //! 3. 远程输入 —— 手机输入法打字（`text`）+ 手机实体键当全尺寸键盘（`key`），默认关闭
 //!
-//! **平台**：传输与编解码跨平台（axum + tokio + 运行时加载的 libopus）；
-//! 只有关键词注入是平台相关（Windows `SendInput`，其余平台明确报不可用，见 `keys`）。
+//! **平台**：传输与编解码跨平台（axum + tokio + 运行时加载的 libopus）。
+//! 只传音频：手机是「麦克风 + 扬声器」两端，不再有远程输入 / 按键注入。
 
 pub mod addrs;
 /// 网络回环测试（只 `cfg(test)` 编译，不进产物）。
 #[cfg(test)]
 mod diag;
 pub mod hub;
-pub mod keymap;
-pub mod keys;
 #[cfg(test)]
 mod loopback;
 pub mod mdns;
@@ -62,7 +60,7 @@ const BIND_ADDR: [u8; 4] = [0, 0, 0, 0];
 /// 监听任务句柄。**必须留着**：以前 `stop()` 只清状态位，监听任务还在跑，于是
 /// 「停止服务」根本不生效，改端口后重启也必然 `address in use`——界面按钮看着能用，
 /// 其实什么也没做。重启服务要能真的换掉监听，就靠 abort 这个任务。
-static TASK: Mutex<Option<tauri::async_runtime::JoinHandle<()>>> = Mutex::new(None);
+static TASK: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
 
 /// 启动服务（幂等）。返回绑定结果说明；端口占用等失败原因进调试接口，不静默失败。
 pub fn start() -> Result<String, String> {
@@ -87,7 +85,7 @@ pub fn start() -> Result<String, String> {
   let port = h.port();
   let addr = std::net::SocketAddr::from((BIND_ADDR, port));
   let hh = h.clone();
-  let handle = tauri::async_runtime::spawn(async move {
+  let handle = crate::rt::spawn(async move {
     match tokio::net::TcpListener::bind(addr).await {
       Ok(listener) => {
         hh.set_running(true);
@@ -114,7 +112,7 @@ pub fn start() -> Result<String, String> {
           let acceptor = acceptor.clone();
           let app = app.clone();
           let hh = hh.clone();
-          tauri::async_runtime::spawn(async move {
+          crate::rt::spawn(async move {
             // 握手失败只影响这一个客户端（多半是有人拿 http:// 探了一下这个端口）
             if let Ok(stream) = acceptor.accept(tcp).await
               && let Err(e) = serve_conn(stream, app).await
@@ -158,7 +156,7 @@ async fn serve_conn(
   // 用 hyper-util 自带的适配器，别自己写：
   // - `TokioIo` 把 tokio 的 `AsyncRead/AsyncWrite` 翻译成 hyper 的 `rt::Read/Write`
   // - `TowerToHyperService` 把 axum 的 `tower::Service` 翻译成 hyper 的 `service::Service`
-  // - `TokioExecutor` spawn 到当前 tokio runtime，而当前 runtime 就是 Tauri 那个，
+  // - `TokioExecutor` spawn 到当前 tokio runtime，而当前 runtime 就是 `crate::rt` 那个，
   //   所以连接任务天然跟着应用生命周期走，不必自己再造执行器
   hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
     .serve_connection_with_upgrades(
@@ -171,7 +169,6 @@ async fn serve_conn(
 /// 停服务（幂等）：真的 abort 掉监听任务，不只是清状态位。
 pub fn stop() {
   let h = hub();
-  h.set_remote_input(false);
   h.set_running(false);
   // 广告必须跟着停：常驻广播会让「明明没跑服务却搜得到」，连过去必然失败，比搜不到更难排查
   mdns::unregister();
@@ -257,56 +254,6 @@ pub fn set_port(p: u16) -> Result<(), String> {
 /// 网络卡片用的紧凑状态（`net_card` 命令）。
 ///
 /// **为什么不复用 `status()` 那句话**：卡片只有几行宽，而 `status()` 把端口、客户端、
-/// 订阅、水位、已发包数、远程输入后端、编解码器路径全串成一大段（调试面板 / AI 要看，
-/// 界面上就是一片读不完的文字）。这里给结构化字段，界面自己排成「就绪 · 1 客户端 · 1 订阅」，
-/// 需要全文时看 `/debug` 的 `net` 段（DEBUG.md §1.3 单一数据源：判定与数字仍出自 Rust）。
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct NetCard {
-  pub running: bool,
-  pub port: u16,
-  pub clients: usize,
-  pub subs: usize,
-  /// 入站环水位 / 深度（ms）：没数据时是 `null`（不伪造 0）
-  pub rx_level_ms: Option<f32>,
-  pub rx_target_ms: f32,
-  pub remote_input: bool,
-  /// 远程输入后端（`SendInput` 等）；不可用时为 `null` + `keys_reason`
-  pub keys_backend: Option<String>,
-  pub keys_reason: Option<String>,
-  pub last_error: Option<String>,
-  pub codec_ok: bool,
-  pub codec_reason: Option<String>,
-}
-
-/// 读一份紧凑状态。与 `/debug` 的 `net` 段同源（`NetHub::stats`）。
-pub fn card() -> NetCard {
-  let s = hub().stats();
-  let (keys_backend, keys_reason) = match keys::backend() {
-    Ok(b) => (Some(b.to_string()), None),
-    Err(e) => (None, Some(e)),
-  };
-  let (codec_ok, codec_reason) = match &s.codec {
-    crate::debug::Probe::Ok { .. } => (true, None),
-    crate::debug::Probe::Unavailable { reason } => (false, Some(reason.clone())),
-    crate::debug::Probe::Pending => (false, Some("编解码器检测中".to_string())),
-  };
-  NetCard {
-    running: s.running,
-    port: s.port,
-    clients: s.clients,
-    subs: s.subs,
-    // 服务没跑 / 还没收到包时水位没有意义 —— 给 `null`，界面显示「—」
-    rx_level_ms: (s.rx_packets > 0).then_some(s.rx_level_ms),
-    rx_target_ms: s.rx_target_ms,
-    remote_input: s.remote_input,
-    keys_backend,
-    keys_reason,
-    last_error: s.last_error.clone(),
-    codec_ok,
-    codec_reason,
-  }
-}
-
 /// 服务状态文字（界面与调试接口共用）。
 pub fn status() -> String {
   let h = hub();
@@ -316,17 +263,9 @@ pub fn status() -> String {
     crate::debug::Probe::Unavailable { reason } => format!("编解码器不可用：{reason}"),
     crate::debug::Probe::Pending => "编解码器检测中".to_string(),
   };
-  let input = match keys::backend() {
-    Ok(b) => format!(
-      "远程输入 {b}（{} 键）：{}",
-      keymap::mapped_count(),
-      if s.remote_input { "已开" } else { "关" }
-    ),
-    Err(e) => format!("远程输入不可用（{e}）"),
-  };
   let ms = |v: usize| v as f64 / crate::audio::SAMPLE_RATE as f64 * 1000.0;
   format!(
-    "{}：端口 {}，客户端 {}，订阅音频 {}，入站水位 {:.0}/{:.0} ms，出站已发 {} 包（待发 {:.0} ms）；{input}；{codec}",
+    "{}：端口 {}，客户端 {}，订阅音频 {}，入站水位 {:.0}/{:.0} ms，出站已发 {} 包（待发 {:.0} ms）；{codec}",
     // 就绪与否看 `is_running()`，不能看 `port > 0` —— 端口是**下次要绑的**那个值，
     // 恒为正数，服务没开时也一样（端口改成可编辑之后这个判据就废了）
     if h.is_running() {
@@ -360,11 +299,6 @@ mod tests {
     let s = status();
     assert!(s.contains("端口"), "{s}");
     assert!(s.contains("opus") || s.contains("编解码器"), "{s}");
-  }
-
-  #[test]
-  fn remote_input_defaults_closed() {
-    assert!(!hub().remote_input());
   }
 
   /// 端口改成可编辑之后 `stats().port` **恒为正数**（它是「下次要绑的」那个值，

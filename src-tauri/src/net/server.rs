@@ -41,8 +41,6 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
 use super::hub::{ClientReport, NetHub, OutboundSub};
-use super::keymap;
-use super::keys;
 use super::opus_sys::{Decoder, Encoder, MAX_PACKET_BYTES};
 use super::proto::{ClientMsg, ServerMsg};
 use super::rt::{AudioHeader, HDR_LEN, us_diff};
@@ -223,7 +221,6 @@ async fn health(axum::extract::State(hub): axum::extract::State<Arc<NetHub>>) ->
       "tx_level": s.tx_level,
       "tx_subs": s.tx_subs,
       "client": s.client,
-      "remote_input": s.remote_input,
       "rtt_ms": s.rtt_ms,
       "last_error": s.last_error,
     })),
@@ -442,32 +439,6 @@ async fn handle(socket: WebSocket, hub: Arc<NetHub>) {
             }
             let _ = sub_tx.try_send(None);
             reply = Some(ready(&hub));
-          }
-          Ok(ClientMsg::Text { s }) => {
-            if !hub.remote_input() {
-              reply = Some(ServerMsg::err("远程输入未开启（界面开关）"));
-            } else {
-              match keys::inject_text(&s) {
-                Ok(n) => hub.count_chars(n),
-                Err(e) => reply = Some(ServerMsg::err(format!("文本注入失败：{e}"))),
-              }
-            }
-          }
-          Ok(ClientMsg::Key { code, down }) => {
-            if !hub.remote_input() {
-              reply = Some(ServerMsg::err("远程输入未开启（界面开关）"));
-            } else {
-              match keymap::scan(code) {
-                Some(sc) => match keys::inject_key(sc, down) {
-                  Ok(()) => hub.count_key(true),
-                  Err(e) => {
-                    hub.count_key(false);
-                    reply = Some(ServerMsg::err(format!("按键注入失败：{e}")));
-                  }
-                },
-                None => hub.count_key(false),
-              }
-            }
           }
           Ok(ClientMsg::Ping { id }) => reply = Some(ServerMsg::Pong { id }),
           Ok(ClientMsg::Rtt { ms }) => hub.set_rtt(ms),

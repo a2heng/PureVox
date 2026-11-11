@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use super::WorkerHandle;
 use super::capture::Capture;
-use super::fanout::Fanout;
+use super::fanout::MultiFanout;
 use super::mixer::{MixPort, Mixer, SourceStat};
 use super::playback;
 
@@ -95,14 +95,25 @@ pub fn hub() -> &'static Pool {
 /// 输入租约（行持有）：持有期间设备保证开着；**Drop 即放掉这一份引用**。
 pub struct InputLease {
   device: String,
-  fanout: Arc<Fanout>,
+  fanout: Arc<MultiFanout>,
   pool: Arc<Inner>,
 }
 
 impl InputLease {
-  /// 订阅这一路（同一设备的多个订阅者各拿一条订阅端）。
+  /// 设备的物理通道数。
+  pub fn channels(&self) -> usize {
+    self.fanout.len()
+  }
+
+  /// 订阅前 `n` 个物理通道（`n` 超过物理通道数时按物理通道数给）。
+  /// 同一设备可以被多行 / 多列同时订阅，各自独立。
+  pub fn subscribe_channels(&self, id: &str, n: usize) -> Vec<rtrb::Consumer<f32>> {
+    self.fanout.subscribe_n(id, n)
+  }
+
+  /// 单声道订阅（取第 0 通道；AEC 的近端 / 旧的单声道行用）。
   pub fn subscribe(&self, id: &str) -> rtrb::Consumer<f32> {
-    self.fanout.subscribe(id)
+    self.fanout.subscribe_n(id, 1).remove(0)
   }
 }
 
@@ -115,8 +126,8 @@ impl Drop for InputLease {
 /// 输出租约（行持有）：`push_hop` 这一列的 hop；**Drop 即注销这一路源 + 放掉引用**。
 pub struct OutputLease {
   device: String,
-  /// 行推 hop 用的扇出（与 [`MixPort`] 同一条）
-  pub out: Arc<Fanout>,
+  /// 行推 hop 用的逐通道扇出（与 [`MixPort`] 同一条）
+  pub out: Arc<MultiFanout>,
   /// 这一路源的句柄：**只为它的 Drop 而持有**（Drop 即从混音注销）
   _port: MixPort,
   pool: Arc<Inner>,
@@ -224,9 +235,13 @@ impl Pool {
     &self,
     hub: crate::debug::SharedHub,
     device_id: &str,
+    channels: usize,
   ) -> Result<OutputLease, String> {
     let tag = tag_for(device_id);
-    self.acquire_output_with(device_id, |id, mix_out| {
+    // 设备物理通道数：混音输出 / playback 都按它建环（节点自己的通道数与它无关，
+    // 混音器负责把单声道源铺到所有设备通道）。
+    let dev_ch = crate::audio::out::probe(device_id)?.channels.max(1) as usize;
+    self.acquire_output_with(device_id, channels, dev_ch, move |id, mix_out| {
       let mixer = Mixer::spawn(mix_out.clone(), tag.clone())?;
       let playback = playback::spawn(hub.clone(), id.to_string(), mix_out, tag.clone())?;
       Ok((playback, mixer))
@@ -234,13 +249,21 @@ impl Pool {
   }
 
   /// 同上，但打开动作可注入（单测用假 playback + 真混音线程）。
-  pub fn acquire_output_with<F>(&self, device_id: &str, open: F) -> Result<OutputLease, String>
+  pub fn acquire_output_with<F>(
+    &self,
+    device_id: &str,
+    channels: usize,
+    device_channels: usize,
+    open: F,
+  ) -> Result<OutputLease, String>
   where
-    F: FnOnce(&str, Arc<Fanout>) -> Result<(WorkerHandle, Mixer), String>,
+    F: FnOnce(&str, Arc<MultiFanout>) -> Result<(WorkerHandle, Mixer), String>,
   {
     if let Some(e) = self.inner.outputs.lock().unwrap().get_mut(device_id) {
       e.refs += 1;
-      let port = e.mixer.register(format!("{device_id}#{}", e.refs));
+      let port = e
+        .mixer
+        .register(format!("{device_id}#{}", e.refs), channels);
       return Ok(OutputLease {
         device: device_id.to_string(),
         out: port.fanout.clone(),
@@ -249,9 +272,12 @@ impl Pool {
       });
     }
     // 混音产出 → 混音扇出 → playback（playback 像订阅任何源一样订阅它）
-    let mix_out = Arc::new(Fanout::new(format!("混音：{device_id}")));
+    let mix_out = Arc::new(MultiFanout::new(
+      &format!("混音：{device_id}"),
+      device_channels.max(1),
+    ));
     let (playback, mixer) = open(device_id, mix_out)?;
-    let port = mixer.register(format!("{device_id}#1"));
+    let port = mixer.register(format!("{device_id}#1"), channels);
     let mut g = self.inner.outputs.lock().unwrap();
     match g.get_mut(device_id) {
       Some(e) => {
@@ -259,7 +285,9 @@ impl Pool {
         e.refs += 1;
         drop(mixer);
         playback.stop();
-        let port = e.mixer.register(format!("{device_id}#{}", e.refs));
+        let port = e
+          .mixer
+          .register(format!("{device_id}#{}", e.refs), channels);
         Ok(OutputLease {
           device: device_id.to_string(),
           out: port.fanout.clone(),
@@ -322,7 +350,7 @@ mod tests {
   fn fake_capture(opened: Arc<AtomicUsize>, closed: Arc<AtomicUsize>) -> Capture {
     opened.fetch_add(1, Ordering::Relaxed);
     let stop = Arc::new(AtomicBool::new(false));
-    let fanout = Arc::new(Fanout::new("假采集".to_string()));
+    let fanout = Arc::new(MultiFanout::new("假采集", 1));
     let s2 = closed.clone();
     let stop2 = stop.clone();
     let join = std::thread::Builder::new()
@@ -420,7 +448,9 @@ mod tests {
     let a = pool
       .acquire_output_with(
         "dev-O",
-        move |_id: &str, out: Arc<Fanout>| -> Result<(WorkerHandle, Mixer), String> {
+        1,
+        1,
+        move |_id: &str, out: Arc<MultiFanout>| -> Result<(WorkerHandle, Mixer), String> {
           s1.fetch_add(1, Ordering::Relaxed);
           let stop = Arc::new(AtomicBool::new(false));
           let c = c1.clone();
@@ -440,12 +470,14 @@ mod tests {
         },
       )
       .expect("第一路");
-    a.out.push_hop(&[0.1; super::super::HOP]);
+    a.out.push_channel(0, &[0.1; super::super::HOP]);
     let (s2, c2) = (streams.clone(), closer.clone());
     let b = pool
       .acquire_output_with(
         "dev-O",
-        move |_id: &str, out: Arc<Fanout>| -> Result<(WorkerHandle, Mixer), String> {
+        1,
+        1,
+        move |_id: &str, out: Arc<MultiFanout>| -> Result<(WorkerHandle, Mixer), String> {
           s2.fetch_add(1, Ordering::Relaxed);
           let stop = Arc::new(AtomicBool::new(false));
           let c = c2.clone();

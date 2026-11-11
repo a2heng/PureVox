@@ -108,6 +108,14 @@ pub struct RowInfo {
   pub kind: String,
   pub ptype: String,
   pub label: String,
+  /// 节点通道数（端口 = 通道）
+  pub channels: u32,
+  /// 本节点当前输出峰值（线性；界面电平条用）
+  pub peak: f32,
+  /// 本节点输出在整条路径上的累计算法延迟（ms，PDC 声明值）
+  pub declared_latency_ms: f32,
+  /// 每条入线补的延迟（ms）；与计划里的入线顺序一致
+  pub input_delays_ms: Vec<f32>,
   pub enabled: bool,
   /// `ok("running")` / `ok("disabled")` / `unavailable(原因)`
   pub state: Probe<String>,
@@ -133,6 +141,8 @@ pub struct ColumnInfo {
   pub enabled: bool,
   /// `running` / `degraded` / `stopped`
   pub state: String,
+  /// 本列最近一跳的峰值（线性 0~1，界面电平表用）
+  pub peak: f32,
   /// 实测 hop/s（正常 100）
   pub hop_rate: f64,
   pub ticks: u64,
@@ -451,6 +461,74 @@ impl DebugHub {
   /// 读不到 = 这路流还没发布（刚打开/刚重启），调用方必须写成「不可用 + 原因」。
   pub fn stream(&self, id: &str) -> Option<StreamInfo> {
     self.state.read().ok()?.streams.get(id).cloned()
+  }
+
+  /// 某一列当前峰值（线性）；没有这一列时返回 0。
+  /// 某一行的当前输出峰值（线性）。界面按节点显示电平，不再拿整列的峰值充数。
+  pub fn row_peak(&self, col: usize, row: usize) -> f32 {
+    self
+      .state
+      .read()
+      .ok()
+      .and_then(|s| {
+        s.columns
+          .get(&col)
+          .and_then(|c| c.rows.iter().find(|r| r.index == row).map(|r| r.peak))
+      })
+      .unwrap_or(0.0)
+  }
+
+  pub fn column_peak(&self, index: usize) -> f32 {
+    self
+      .state
+      .read()
+      .ok()
+      .and_then(|s| s.columns.get(&index).map(|c| c.peak))
+      .unwrap_or(0.0)
+  }
+
+  /// 当前逐列延迟报告（与 `GET /debug/latency` 同源）。
+  pub fn latency_report(&self) -> Probe<crate::engine::latency::LatencyReport> {
+    self
+      .state
+      .read()
+      .map(|s| s.latency.clone())
+      .unwrap_or(Probe::Pending)
+  }
+
+  /// 某路流的实测延迟（ms）。
+  pub fn stream_latency(&self, device_id: &str, direction: &str) -> Option<f32> {
+    let st = self.state.read().ok()?;
+    let s = st
+      .streams
+      .values()
+      .find(|s| s.device_id == device_id && s.direction == direction)?;
+    match &s.latency_ms {
+      Probe::Ok { value } => Some(*value),
+      _ => None,
+    }
+  }
+
+  /// 某列的节拍健康：(hop/s, 最大迟到 ms, 节拍超时次数)。
+  pub fn column_health(&self, index: usize) -> Option<(f64, f32, u64)> {
+    let st = self.state.read().ok()?;
+    let c = st.columns.get(&index)?;
+    Some((c.hop_rate, c.max_late_ms, c.tick_overruns))
+  }
+
+  /// 某设备当前峰值（线性，`direction` = `input` / `output`）。
+  pub fn stream_peak(&self, device_id: &str, direction: &str) -> f32 {
+    let Some(st) = self.state.read().ok() else {
+      return 0.0;
+    };
+    st.streams
+      .values()
+      .find(|s| s.device_id == device_id && s.direction == direction)
+      .and_then(|s| match &s.peak_dbfs {
+        Probe::Ok { value } => Some(10f32.powf(value / 20.0)),
+        _ => None,
+      })
+      .unwrap_or(0.0)
   }
 
   pub fn set_virtual_mic(&self, v: Probe<crate::audio::virtual_mic::Status>) {

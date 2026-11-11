@@ -17,7 +17,7 @@ description: PureVox 无人值守 / 不改用户环境的验证手法（**以 Wi
 
 1. **不模拟键鼠点界面**（Windows 会把按键送进别的窗口）。要驱动界面用：
    - 安卓：`adb shell input tap` + `uiautomator dump`；
-   - 桌面：Tauri 命令 / HTTP 调试接口 / Windows UIAutomation（见 `TAURI3.md` §3.6）。
+   - 桌面：GPUI 界面直接调用引擎 / HTTP 调试接口（见 `BUILD.md`）。
 2. **不碰 `~/.purevox`**：用临时 `USERPROFILE` / `HOME` 起隔离实例。
 3. **自己起的进程自己杀**；命令带超时；不许把运行中的 app 留给用户。
 4. **不改系统音量 / 静音**；测试音输出到 VB-CABLE 等虚拟设备，别外放。

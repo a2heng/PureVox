@@ -24,17 +24,13 @@ license = "GPL-3.0-or-later"
 edition = "2024"
 rust-version = "1.95"
 
-[build-dependencies]
-tauri-build = { version = "3.0.0-alpha.4", features = [] }
-
 [features]
 # 需要真实声卡的测量（时钟 ppm）：默认不编译，手动 `cargo test --features hw-tests`
 hw-tests = []
 
 [dependencies]
-tauri = { version = "3.0.0-alpha.5", features = ["tray-icon", "image-png"] }
-# devtools：WebView2 开发者工具（JS 交互式调试；迁移期 release 也保留，见 AGENTS.md §1）
-tauri-runtime-wry = { version = "3.0.0-alpha.5", features = ["devtools"] }
+# 界面：GPUI Kit（GPUI + 组件库，纯 Rust，无 WebView / IPC）
+gpui-kit = "0.9.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 调试接口：系统 CPU / 内存
@@ -49,11 +45,8 @@ rtrb = "0.4"
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
-# 更新检查：查 GitHub Releases + 下载安装包（reqwest 已随 tauri 进入依赖树，
-# 这里直接复用；TLS 后端与 ort 的 ureq 同一套 native-tls，不新增 C 编译链）
-# 开机自启：官方插件（Windows 写 Run + StartupApproved，任务管理器「启动」页才认；
-# 自带 HKLM→HKCU 回退，不弹 UAC）。版本跟 tauri 3.0.0-alpha.5 对齐。
-tauri-plugin-autostart = "3.0.0-alpha.3"
+# 更新检查：查 GitHub Releases + 下载安装包
+# 开机自启：Windows 写 HKCU Run + StartupApproved，Linux 写 ~/.config/autostart（`autostart.rs`）
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "stream",

@@ -143,7 +143,6 @@ mod inner {
     assert!(body.contains("PureVox"), "{body}");
     assert!(body.contains(r#""port":59123"#), "{body}");
     // 远程输入必须默认关
-    assert!(body.contains(r#""remote_input":false"#), "{body}");
   }
 
   /// 未知路径 404。
@@ -178,22 +177,6 @@ mod inner {
     let err = read_until_text(&mut s2).await;
     assert!(err.contains(r#""t":"err""#), "{err}");
     assert!(err.contains("协议版本不符"), "拒绝原因要明确：{err}");
-  }
-
-  /// 远程输入默认关：文本与按键都必须被拒，且原因可读（NETWORK.md §4.1）。
-  #[tokio::test]
-  async fn remote_input_refused_until_enabled() {
-    let (addr, _hub) = serve().await;
-    let mut s = ws_connect(addr).await;
-    for msg in [
-      r#"{"t":"text","s":"hi"}"#,
-      r#"{"t":"key","code":29,"down":true}"#,
-    ] {
-      send_text(&mut s, msg).await;
-      let err = next_text(&mut s).await;
-      assert!(err.contains(r#""t":"err""#), "{err}");
-      assert!(err.contains("远程输入未开启"), "拒绝原因要说明开关：{err}");
-    }
   }
 
   /// ping/pong 回程。
@@ -412,35 +395,5 @@ mod inner {
     send_text(&mut s, "{not json").await;
     let err = next_text(&mut s).await;
     assert!(err.contains(r#""t":"err""#), "{err}");
-    // 缺字段（key 没有 down）也必须被拒：半条按键不能当完整事件注入
-    send_text(&mut s, r#"{"t":"key","code":29}"#).await;
-    let err2 = next_text(&mut s).await;
-    assert!(err2.contains(r#""t":"err""#), "{err2}");
-  }
-
-  /// 开启远程输入后，`key` 不再被拒（这里不真注入：注入会打进当前前台窗口）。
-  /// 只验证「开关状态被正确读取」——发一个未映射的键码（音量键），它应被静默忽略而非报错。
-  #[tokio::test]
-  async fn enabled_remote_input_accepts_keys() {
-    let hub = Arc::new(NetHub::new());
-    hub.set_remote_input(true);
-    let app = router(hub.clone(), String::new());
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("绑定");
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-      let _ = axum::serve(listener, app).await;
-    });
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let mut s = ws_connect(addr).await;
-    // 未映射的音量键（KEYCODE_VOLUME_UP = 24）：静默忽略，不应回 err
-    send_text(&mut s, r#"{"t":"key","code":24,"down":true}"#).await;
-    send_text(&mut s, r#"{"t":"ping","id":11}"#).await;
-    // 第一条收到的应该是 pong（说明 key 没产生 err）
-    let msg = next_text(&mut s).await;
-    assert!(
-      msg.contains(r#""t":"pong""#),
-      "未映射键应静默忽略，却收到：{msg}"
-    );
   }
 }

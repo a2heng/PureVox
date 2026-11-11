@@ -361,7 +361,7 @@ function renderLatency(probe) {
   })
 }
 
-// ---------- 网络（只读状态；开关 / 二维码 / 远程输入都在网络行卡片里，见 netrow.js）----------
+// ---------- 网络（只读状态；开关 / 二维码在电脑端界面里，见 MIXER.md）----------
 // 速率没采够一个窗口时写「采集中…」，不编数字（与音频流同一套约定）。
 function rateNum(p) {
   const v = rateSuffix(p)
@@ -370,13 +370,12 @@ function rateNum(p) {
 
 function renderNet(net) {
   const svc = net.running ? T('已启动') : T('服务未启动')
-  const ri = net.remote_input ? T('已开启') : T('已关闭')
   const rtt = net.rtt_ms == null ? T('（未测）') : net.rtt_ms.toFixed(1) + ' ms'
   put(
     $('net-status'),
     `${T('服务')} ${svc} ｜ ${T('客户端 {n}，订阅 {m}', { n: net.clients, m: net.subs })} ｜ ` +
       `${T('出站 {n} 包/s', { n: rateNum(net.tx_packets_per_s) })} ｜ ${T('进站 {n} 包/s', { n: rateNum(net.rx_packets_per_s) })} ｜ ` +
-      `${T('往返时延 {n}', { n: rtt })} ｜ ${T('远程输入')} ${ri}`,
+      `${T('往返时延 {n}', { n: rtt })}`,
   )
   // 逐路订阅：出站**没有缓冲**（推来即发），所以这里看的是「有没有积压 / 丢没丢」；
   // 真正的水位在客户端那一侧，由客户端 2 Hz 上报（`net.client`）—— 一处缓冲，一处报数。

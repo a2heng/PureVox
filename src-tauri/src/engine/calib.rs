@@ -727,7 +727,7 @@ pub fn play_probe(hub: SharedHub, devices: Vec<String>, far_sink: Option<String>
       .ok();
   }
   for (i, dev) in devices.into_iter().enumerate() {
-    let fan = Arc::new(crate::audio::fanout::Fanout::new("校准探针".to_string()));
+    let fan = Arc::new(crate::audio::fanout::MultiFanout::new("校准探针", 1));
     let tag = format!("probe{i}");
     let Ok(handle) = crate::audio::playback::spawn(hub.clone(), dev.clone(), fan.clone(), tag)
     else {
@@ -743,7 +743,7 @@ pub fn play_probe(hub: SharedHub, devices: Vec<String>, far_sink: Option<String>
         for chunk in probe2.chunks(crate::audio::HOP) {
           let mut hop = [0.0f32; crate::audio::HOP];
           hop[..chunk.len()].copy_from_slice(chunk);
-          fan2.push_hop(&hop);
+          fan2.push_channel(0, &hop);
           std::thread::sleep(std::time::Duration::from_millis(10));
         }
         std::thread::sleep(std::time::Duration::from_millis(400));

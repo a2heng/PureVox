@@ -230,18 +230,42 @@ impl HotSink {
     HotSink::default()
   }
 
-  /// 登记一个增益单元格（同一次建会话里同名参数只会调一次）。
+  /// 登记一个增益单元格；同名参数复用**已登记的那一份**。
+  ///
+  /// 多通道节点每个通道一个 Stage，但用户看到的是**一个**参数：通道之间必须共享
+  /// 同一个原子单元格，改一次全部通道同时生效。靠的就是这里的同名复用（第二个通道
+  /// 建 Stage 时拿到的是第一个通道的那一份）。
   pub fn gain(&mut self, key: &str, db: f64) -> std::sync::Arc<HotGain> {
+    if let Some((_, cell)) = self.out.iter().find(|(k, _)| k == key) {
+      return cell.clone();
+    }
     let cell = std::sync::Arc::new(HotGain::new(db as f32));
     self.out.push((key.to_string(), cell.clone()));
     cell
   }
 
-  /// 登记 EQ 的设置单元格（`eq31` 行持有它，会话按 (列,行) 寻址）。
+  /// 预先放入一个单元格（多通道：第 1 个通道建完后，把它的单元格交给其余通道复用）。
+  pub fn seed(&mut self, key: String, cell: std::sync::Arc<HotGain>) {
+    if !self.out.iter().any(|(k, _)| *k == key) {
+      self.out.push((key, cell));
+    }
+  }
+
+  /// 登记 EQ 的设置单元格（`eq31` 行持有它，会话按 (列,行) 寻址）；已登记则复用。
   pub fn eq(&mut self, settings: &EqSettings) -> std::sync::Arc<HotEq> {
+    if let Some(cell) = &self.eq {
+      return cell.clone();
+    }
     let cell = std::sync::Arc::new(HotEq::new(settings));
     self.eq = Some(cell.clone());
     cell
+  }
+
+  /// 预先放入 EQ 单元格（多通道复用）。
+  pub fn seed_eq(&mut self, cell: std::sync::Arc<HotEq>) {
+    if self.eq.is_none() {
+      self.eq = Some(cell);
+    }
   }
 
   /// 取走本次登记的全部单元格（建完这一行后由会话收进热参数表）。

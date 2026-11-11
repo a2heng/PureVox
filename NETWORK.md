@@ -368,7 +368,6 @@ adb shell run-as com.purevox.mic.debug cat files/diag.json     # 只看最新一
 | `sync` / `syncreply` | S→C / C→S | `id,t0[ ,t1,t2]` | NTP 四时戳，用于估时钟偏移 |
 | `offset` | S→C | `us` | 电脑算出的偏移（手机 − 电脑），手机用它算下行单向延迟 |
 | `st` | C→S | `level_ms,target_ms,underruns,concealed,late,one_way_ms,clock_ppm` | 手机侧状态，2 Hz |
-| `text` / `key` | C→S | 见 §4.1.11 远程输入 | 与音频无关 |
 | `err` | S→C | `msg` | 拒绝/故障原文，**必须显示给用户** |
 
 #### 4.1.4 环的规则（全链路唯一的算法，整数 hop，无重采样、无自适应）
@@ -432,7 +431,6 @@ adb shell run-as com.purevox.mic.debug cat files/diag.json     # 只看最新一
 | 会话重建（换列/开设备）期间没人取 | 环涨到上限裁最旧 | `rx_resyncs` / `trim` |
 | 手机时钟偏差大（>200 ppm） | 每几十秒一次 10 ms 调整（丢/补），深度与延迟都不变 | `trim` 与 `late` |
 | 连接断开 / 重连 | 环清空、重新起播；`offset` 重新测 | `net.last_error`、`client==null` |
-| 远程输入越权 | 默认关；未开时回 `err` | `keys_injected` / `last_error` |
 
 #### 4.1.9 验收（可复现，阈值写死）
 
@@ -470,12 +468,12 @@ python tools/automation/net_loopback.py --mode roundtrip --seconds 10 --json rt.
    生命周期给 `启动` / `停止` / `重启` 三个按钮。
 2. **广告「用哪个地址面对客户端」** —— 子网下拉（见下），客户端地址 =
    `https://<选中 ip>:<port>/`，二维码 / 复制 / 显示全部跟着选择走。
-3. **会话级开关** —— 远程输入（默认关）、AEC（`remote_mic` 行勾上才出现；**近端就是
+3. **会话级开关** —— AEC（`remote_mic` 行勾上才出现；**近端就是
    这一行的网络输入，界面上没有「近端选择器」**，远端可选「系统默认输出」或「网络出站」）。
 
 **极致紧凑是硬要求（用户 2026-10-27）**：卡片只放**能点的东西**和会变的数字，
 不可改的说明文字（「这行是干什么的」「近端不可更改」）一律不占版面；**二维码右边
-只放按钮 / 开关**（证书、远程输入、AEC、缓冲），不再放一栏说明。任何新增项先问
+只放按钮 / 开关**（证书、AEC、缓冲），不再放一栏说明。任何新增项先问
 「它是可调的吗」——不可调就不进卡片。
 
 **AEC 与独立 AEC 行同构，模型内置且同一个**：`remote_mic` 的 AEC 开关（`params.aec`）

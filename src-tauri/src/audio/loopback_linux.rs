@@ -37,7 +37,7 @@ use std::sync::{Arc, mpsc};
 use rtrb::RingBuffer;
 
 use super::capture::{self, CallbackStats, Capture, OPEN_TIMEOUT, SourceInfo};
-use super::fanout::Fanout;
+use super::fanout::MultiFanout;
 use crate::debug::SharedHub;
 
 /// far 网格是否用**系统时钟**推进（不足补零）。
@@ -84,7 +84,7 @@ pub fn spawn_source(hub: SharedHub, source: String, tag: String) -> Result<Captu
 
 fn spawn_target(hub: SharedHub, target: Target, tag: String) -> Result<Capture, String> {
   let stop = Arc::new(AtomicBool::new(false));
-  let (tx, rx) = mpsc::channel::<Result<Arc<Fanout>, String>>();
+  let (tx, rx) = mpsc::channel::<Result<Arc<MultiFanout>, String>>();
   let stop2 = stop.clone();
   let name = tag.clone();
   let join = std::thread::Builder::new()
@@ -112,7 +112,7 @@ fn run(
   target: Target,
   tag: String,
   stop: Arc<AtomicBool>,
-  tx: mpsc::Sender<Result<Arc<Fanout>, String>>,
+  tx: mpsc::Sender<Result<Arc<MultiFanout>, String>>,
 ) {
   let stats = Arc::new(CallbackStats::new());
   let (prod, cons) = RingBuffer::<f32>::new(RATE as usize); // 1 s 单声道

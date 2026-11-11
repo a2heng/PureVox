@@ -2,9 +2,10 @@
 
 [English](README_EN.md)
 
-实时 AI 麦克风降噪 / 目标说话人提取 / 回声消除桌面应用。把麦克风、系统声音、手机、任意输入源
-按列串起来处理，再送到扬声器、虚拟声卡或手机——用一条可编辑的音频链路替代「几个软件 + 一堆
-驱动」的拼装。
+实时 AI 麦克风降噪 / 目标说话人提取 / 回声消除桌面应用，同时是一台**多设备混音 / 路由台**：
+把麦克风、系统声音、手机、任意输入源接成输入条，经过各自的 AI 处理链，再按用途送往
+扬声器（监听）、虚拟声卡（会议 / 直播）或手机（网络监听）——不是 VoiceMeeter 的复刻，
+而是把 AI 处理与低延迟放在第一位的路由器。
 
 ## 功能
 
@@ -14,38 +15,44 @@
   与两端电平配平。
 - **OBS 音频滤镜**：噪声门、压缩器、限制器、扩展器、向上压缩器、3 段均衡器、极性反转，
   参数范围 / 默认值 / 步进与 OBS 一致。
-- **多列并行链路**：每列「输入 → 若干处理行 → 输出」，列可增删、行可拖动、行/列都能单独挂起。
+- **多设备混音台（GPUI 原生节点图）**：顶部一排输入、中间每个输入的处理节点、底部一排输出；
+  拖动节点到输出即接通（连线就是路由），处理节点可拖动换序。总线按用途叫
+  「监听 / 虚拟麦克风 / 手机」，不用 A1/A2。输入与总线都能增删。
 - **设备池**：同一只设备被多列共用只打开一次；多个输入源由软件混音相加，不再报 busy。
 - **输入 / 输出种类**：麦克风、系统声音回环、手机（网络麦克风 / 扬声器）、测试音、
   音频文件（音效板 / 音乐播放器）、任意输出设备。
 - **虚拟麦克风**：Windows 走 VB-CABLE，Linux 自建 `purevox_mic`，OBS / 浏览器 / 会议软件直接选它。
-- **手机当麦克风 / 扬声器**：局域网 HTTPS + Opus（网页版或 Android APK），另有可选的远程输入
-  （打字 / 键盘，**默认关闭**）。
-- **常驻托盘**：启动/停止、显隐窗口、退出；最小化与关闭都收到托盘；全局热键；中英文界面。
+- **手机当麦克风 / 扬声器**：局域网 HTTPS + Opus（网页版或 Android APK）。
+  只传音频：手机端只有麦克风上行 / 扬声器下行，不做远程打字或按键注入。
+- **全局热键 / 提示音**：引擎启停热键与音效热键仍由引擎注册（界面入口待补）。
+- **界面语言**：GPUI 界面当前为中文；中英文切换待补。
 - **调试优先**：独立调试窗口与只读 HTTP 接口 `http://127.0.0.1:47821/debug` 同源同字段
   （系统指标、每路流的速率/缓冲/欠载/丢弃、模型推理耗时、频谱波形）。
 
 ## 状态
 
-功能已完整：输入采集与重采样、输出与时钟伺服、降噪 / TSE / AEC、
-OBS 滤镜、设备池与混音、网络（含 Android 客户端）、虚拟驱动、媒体行、更新与打包都已落地。
+音频引擎完整：输入采集与重采样、输出与时钟伺服、降噪 / TSE / AEC、OBS 滤镜、设备池与混音、
+网络（含 Android 客户端）、虚拟驱动、媒体行。界面已从 Tauri/WebView 迁移到 GPUI 混音台；
+托盘、窗口几何记忆、打包流水线、AEC/TSE/媒体行的界面卡片仍在阶段 B（见 `MIXER.md`）。
 
 - 下载：见 [Releases](https://github.com/a2heng/PureVox/releases)（版本号 = 年.月.日）。
 - 旧实现（Python + Tkinter）已删除；需要时用 `git log` 查历史。
-- 设计： [AGENTS.md](AGENTS.md)；平台与工具链现状：[TAURI3.md](TAURI3.md)；协作约定：[AGENTS.md](AGENTS.md)。
+- 设计： [AGENTS.md](AGENTS.md)；平台与工具链现状：[BUILD.md](BUILD.md)；协作约定：[AGENTS.md](AGENTS.md)。
 
 ## 快速开始
 
 ```bash
-# 开发运行（Windows / Linux 均可）
-cd src-tauri && cargo tauri dev
+# 开发构建 + 运行
+cargo build --manifest-path src-tauri/Cargo.toml
+./src-tauri/target/debug/purevox.exe
 
-# 出安装包：Windows = NSIS exe；Linux = deb / rpm / AppImage
-cd src-tauri && cargo tauri build
+# 测试 / 门禁
+cargo test  --manifest-path src-tauri/Cargo.toml --bin purevox
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-首次构建需要联网：Rust 依赖、`onnxruntime`（`ort` 的 `download-binaries`）、以及 Tauri 的打包工具。
-Linux 还需要系统依赖（见下）。
+安装包流水线尚未恢复（去掉 Tauri bundler 后需改成 cargo + NSIS/AppImage/deb），
+详见 `BUILD.md`。
 
 ## 依赖
 
@@ -53,10 +60,10 @@ Linux 还需要系统依赖（见下）。
 
 | 平台 | 需要 | 说明 |
 | --- | --- | --- |
-| Windows | WebView2 运行时 | Win10/11 一般自带；缺失时系统会提示安装 |
+| Windows | GPU（DX11/12） | GPUI 用 GPU 绘制界面；核显即可 |
 | Windows | VB-CABLE（可选） | 想把它当虚拟麦克风给 OBS / 会议软件用时安装 |
 | Windows | `opus.dll` | 随包分发，网络音频用；不装也能跑其它功能 |
-| Linux | WebKitGTK 4.1、GTK3、ALSA | 界面与音频 I/O |
+| Linux | ALSA | 音频 I/O（GPUI 需要 X11/Wayland 与 GPU） |
 | Linux | PipeWire 或 PulseAudio | 设备枚举与采集（`pactl` / `parec` / `pw-dump`） |
 | Linux | `libopus0`（可选） | 网络音频；缺失时该功能给出明确原因，其余正常 |
 | Linux | `pulseaudio-utils`（`paplay`） | 启动 / 停止提示音；缺失时只少这一声，其余正常 |
@@ -67,11 +74,10 @@ Linux 还需要系统依赖（见下）。
 
 **构建期**
 
-- Rust（`rust-version = "1.95"`）+ `tauri-cli` 3.0 alpha（`cargo install tauri-cli --version 3.0.0-alpha.5`，本仓库钉这个版本）；Linux 需 `libwebkit2gtk-4.1-dev libssl-dev
-  libxdo-dev librsvg2-dev libgtk-3-dev libasound2-dev pkg-config file rpm`。
+- Rust（`rust-version = "1.95"`）；Linux 需 `libasound2-dev pkg-config` 与 GPUI 的 X11/Wayland 依赖。
 - Node.js 24（`tsc` + i18n 门禁）与 Python 3（`tools/automation/` 的构建/发版脚本）。
 - `onnxruntime` 由 `ort` 在构建时下载；Linux 也可链接系统/自备的 `libonnxruntime.so`
-  （见 `TAURI3.md` 的 `ORT_*` 环境变量说明）。
+  （见 `BUILD.md` 的 `ORT_*` 环境变量说明）。
 
 ## 模型与授权
 

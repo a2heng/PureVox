@@ -37,10 +37,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
-import android.text.Editable
-import android.text.TextWatcher
 import android.util.Log
-import android.view.KeyEvent
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -122,27 +119,6 @@ class MainActivity : AppCompatActivity() {
         /** 下行缓冲水位条的满量程：200 ms（稳态水位约 40 ms，上下浮动都正常）。 */
         private const val BUFFER_FULL_MS = 200
 
-        /**
-         * 不转发给电脑的系统键：这些键在本机有系统级语义，转走会让手机用不了（返回/主屏/音量…）。
-         * 电脑端按 `keymap.rs` 映射的只是普通键区 + 功能键。
-         */
-        private val SYSTEM_KEYS = setOf(
-            KeyEvent.KEYCODE_HOME,
-            KeyEvent.KEYCODE_BACK,
-            KeyEvent.KEYCODE_CALL,
-            KeyEvent.KEYCODE_ENDCALL,
-            KeyEvent.KEYCODE_APP_SWITCH,
-            KeyEvent.KEYCODE_POWER,
-            KeyEvent.KEYCODE_CAMERA,
-            KeyEvent.KEYCODE_FOCUS,
-            KeyEvent.KEYCODE_VOLUME_UP,
-            KeyEvent.KEYCODE_VOLUME_DOWN,
-            KeyEvent.KEYCODE_VOLUME_MUTE,
-            KeyEvent.KEYCODE_HEADSETHOOK,
-            KeyEvent.KEYCODE_NOTIFICATION,
-            KeyEvent.KEYCODE_MENU,
-            KeyEvent.KEYCODE_SEARCH,
-        )
     }
 
     private val ui = Handler(Looper.getMainLooper())
@@ -181,12 +157,6 @@ class MainActivity : AppCompatActivity() {
     private var speakerOn = false
 
     @Volatile
-    private var remoteTextOn = false
-
-    @Volatile
-    private var remoteKeysOn = false
-
-    private var suppressTextSync = false
     private var applyingState = false
 
     /** 前台会话服务当前是否在跑 / 是否含麦克风类型（避免每次对账都重发通知）。 */
@@ -254,12 +224,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvRing: TextView
     /** 程序改滑块时抑制监听器，避免「setValue → 回调 → 再发 settarget」自激。 */
     private var suppressRing = false
-    private lateinit var swRemote: SwitchCompat
-    private lateinit var swRemoteText: SwitchCompat
-    private lateinit var swRemoteKeys: SwitchCompat
-    private lateinit var etText: PvEditText
-    private lateinit var btnSend: Button
-    private lateinit var btnClear: Button
     private lateinit var tvBattery: TextView
     private lateinit var tvKeepalive: TextView
     private lateinit var tvNotifPerm: TextView
@@ -374,7 +338,6 @@ class MainActivity : AppCompatActivity() {
         // 第一页 = 连接 + 音频（一次会话的两半，分开要来回切）
         pages = listOf(
             R.id.tab_connect to findViewById(R.id.pageConnect),
-            R.id.tab_input to findViewById(R.id.pageInput),
             R.id.tab_diag to findViewById(R.id.pageDiag),
             R.id.tab_more to findViewById(R.id.pageMore),
         )
@@ -430,19 +393,6 @@ class MainActivity : AppCompatActivity() {
             applyState()
             updateStatus()
         }
-        swRemote.setOnCheckedChangeListener { _, _ ->
-            refreshRemoteSwitches()
-            applyState()
-            updateStatus()
-        }
-        swRemoteText.setOnCheckedChangeListener { _, _ ->
-            applyState()
-            updateStatus()
-        }
-        swRemoteKeys.setOnCheckedChangeListener { _, _ ->
-            applyState()
-            updateStatus()
-        }
 
         spMicSource.setOnItemClickListener { _, _, position, _ ->
             val id = MicSources.ALL.getOrNull(position)?.id ?: return@setOnItemClickListener
@@ -457,32 +407,6 @@ class MainActivity : AppCompatActivity() {
                 applyState()
             }
         }
-
-        etText.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-
-            override fun afterTextChanged(s: Editable?) {
-                if (suppressTextSync) return
-                val typed = s?.toString().orEmpty()
-                if (typed.isNotEmpty() && remoteTextOn && ready) {
-                    // 同步给电脑后清空：既让电脑拿到「已组合好」的文本，又不与本地输入打架
-                    suppressTextSync = true
-                    try {
-                        sendText(typed)
-                    } finally {
-                        etText.setText("")
-                        suppressTextSync = false
-                    }
-                }
-                updateButtons()
-            }
-        })
-
-        // 长文本发送 / 清空；空框里按退格 → 把删除键转发给电脑（见 PvEditText）
-        etText.onDeleteWhenEmpty = { forwardBackspace() }
-        btnSend.setOnClickListener { sendComposed() }
-        btnClear.setOnClickListener { clearComposed() }
 
         // 诊断区默认收起，标题行点击展开/收起
         // 「复制诊断」：把整块诊断（含日志）塞进剪贴板 —— 出错时不必让人截图
@@ -511,7 +435,6 @@ class MainActivity : AppCompatActivity() {
         )
 
         requestPermissions()
-        refreshRemoteSwitches()
         refreshBattery()
         renderUpdate()
         updateButtons()
@@ -1004,8 +927,6 @@ class MainActivity : AppCompatActivity() {
             log("电脑音频播放已停止（已退订）")
         }
 
-        remoteTextOn = swRemote.isChecked && swRemoteText.isChecked && ready
-        remoteKeysOn = swRemote.isChecked && swRemoteKeys.isChecked && ready
         syncSessionService()
         updateButtons()
     }
@@ -1178,70 +1099,6 @@ class MainActivity : AppCompatActivity() {
     // ---------------------------------------------------------------- 远程输入
 
     /**
-     * 实体键转发：只转发**硬件**事件（`deviceId >= 0`；输入法合成的键 `deviceId == -1`，
-     * 那条路走 `text`，避免同一次按键既发 key 又发 text）。系统键（返回/主屏/音量…）不转发，
-     * 否则手机自己就用不了了。转发成功即**吞掉**事件，交给电脑去处理。
-     */
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (remoteKeysOn && ready) {
-            val code = event.keyCode
-            if (code != 0 && code !in SYSTEM_KEYS && event.deviceId >= 0) {
-                sendKey(code, event.action == KeyEvent.ACTION_DOWN)
-                return true
-            }
-        }
-        return super.dispatchKeyEvent(event)
-    }
-
-    private fun sendKey(code: Int, down: Boolean) {
-        ws?.sendText(Proto.key(code, down))
-    }
-
-    private fun sendText(s: String) {
-        if (!remoteTextOn || !ready) return
-        ws?.sendText(Proto.text(s))
-    }
-
-    /**
-     * 长文本「发送」：把输入框里已组合的整段文本一次性交给电脑，然后清空本框。
-     * 与「打字同步」的逐次转发共用同一个 `text` 消息（一条实现路径），只是时机不同：
-     * 打字同步是每敲一下就发，这里是攒够了一整段再发。
-     */
-    private fun sendComposed() {
-        val s = etText.text?.toString().orEmpty()
-        if (s.isEmpty() || !remoteTextOn || !ready || ws == null) {
-            showErr(getString(R.string.msg_send_blocked))
-            return
-        }
-        ws?.sendText(Proto.text(s))
-        log(getString(R.string.msg_sent, s.length))
-        clearComposed()
-    }
-
-    /** 只清本机输入框（不动电脑）。走 [suppressTextSync] 避免触发自动同步。 */
-    private fun clearComposed() {
-        suppressTextSync = true
-        try {
-            etText.setText("")
-        } finally {
-            suppressTextSync = false
-        }
-        updateButtons()
-    }
-
-    /**
-     * 输入框为空时按删除键 → 把 Android 删除键（`KEYCODE_DEL`）发给电脑
-     * （电脑端 `keymap.rs` 映射成 PC Backspace）。返回「是否已转发」；没开远程输入时
-     * 返回 `false`，交回默认行为（什么也不发生）。down+up 成对发，等同一次真实按键。
-     */
-    private fun forwardBackspace(): Boolean {
-        if (!remoteTextOn || !ready || ws == null) return false
-        sendKey(KeyEvent.KEYCODE_DEL, true)
-        sendKey(KeyEvent.KEYCODE_DEL, false)
-        return true
-    }
-
-    /**
      * 切页：只显示一个 ScrollView。
      *
      * **不重建任何视图**：所有页都在同一棵树上，切页只是 visibility 变化 ——
@@ -1253,11 +1110,6 @@ class MainActivity : AppCompatActivity() {
             page.visibility = if (tab == itemId) android.view.View.VISIBLE else android.view.View.GONE
         }
         if (itemId == R.id.tab_diag) updateStatus()
-    }
-
-    private fun refreshRemoteSwitches() {
-        swRemoteText.isEnabled = swRemote.isChecked
-        swRemoteKeys.isEnabled = swRemote.isChecked
     }
 
     // ---------------------------------------------------------------- 权限
@@ -1307,17 +1159,6 @@ class MainActivity : AppCompatActivity() {
         swConnect.isEnabled = !connecting
         swMic.isEnabled = online
         swSpeaker.isEnabled = online
-        swRemote.isEnabled = online
-        swRemoteText.isEnabled = online && swRemote.isChecked
-        swRemoteKeys.isEnabled = online && swRemote.isChecked
-        etText.hint = if (remoteTextOn) {
-            getString(R.string.hint_text_synced)
-        } else {
-            getString(R.string.hint_text_local)
-        }
-        val hasText = !etText.text.isNullOrEmpty()
-        btnSend.isEnabled = hasText && remoteTextOn
-        btnClear.isEnabled = hasText
         btnCheckUpdate.isEnabled = !updateBusy
         btnDownload.isEnabled = !updateBusy && updateRelease != null && updateApk == null
         btnInstall.isEnabled = !updateBusy && updateApk != null
@@ -1811,12 +1652,6 @@ class MainActivity : AppCompatActivity() {
         swSpeaker = findViewById(R.id.swSpeaker)
         slRing = findViewById(R.id.slRing)
         tvRing = findViewById(R.id.tvRing)
-        swRemote = findViewById(R.id.swRemote)
-        swRemoteText = findViewById(R.id.swRemoteText)
-        swRemoteKeys = findViewById(R.id.swRemoteKeys)
-        etText = findViewById(R.id.etText)
-        btnSend = findViewById(R.id.btnSend)
-        btnClear = findViewById(R.id.btnClear)
         tvBattery = findViewById(R.id.tvBattery)
         tvKeepalive = findViewById(R.id.tvKeepalive)
         tvNotifPerm = findViewById(R.id.tvNotifPerm)
@@ -1839,9 +1674,6 @@ class MainActivity : AppCompatActivity() {
         etPort.setText(port.toString())
         swMic.isChecked = p.getBoolean("mic", false)
         swSpeaker.isChecked = p.getBoolean("speaker", false)
-        swRemote.isChecked = p.getBoolean("remote", false)
-        swRemoteText.isChecked = p.getBoolean("remoteText", true)
-        swRemoteKeys.isChecked = p.getBoolean("remoteKeys", true)
         micSourceId = p.getInt("micSource", MicSources.ALL[0].id)
         fillMicSources()
     }
@@ -1863,9 +1695,6 @@ class MainActivity : AppCompatActivity() {
             .putInt("port", port)
             .putBoolean("mic", swMic.isChecked)
             .putBoolean("speaker", swSpeaker.isChecked)
-            .putBoolean("remote", swRemote.isChecked)
-            .putBoolean("remoteText", swRemoteText.isChecked)
-            .putBoolean("remoteKeys", swRemoteKeys.isChecked)
             .putInt("micSource", micSourceId)
             .apply()
     }

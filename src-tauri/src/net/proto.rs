@@ -59,12 +59,6 @@ pub enum ClientMsg {
   /// 退订电脑音频（网页版关掉「扬声器」）。
   #[serde(rename = "unsub")]
   Unsub,
-  /// 手机输入法提交的文本（已组合好的字符串）。
-  #[serde(rename = "text")]
-  Text { s: String },
-  /// 手机实体键：`code` = Android `KeyEvent.KEYCODE_*`，`down` = true 按下 / false 松开。
-  #[serde(rename = "key")]
-  Key { code: i32, down: bool },
   /// 客户端发起的往返时延测量；服务端原样回 `pong`。
   #[serde(rename = "ping")]
   Ping { id: u64 },
@@ -166,19 +160,6 @@ mod tests {
       serde_json::from_str::<ClientMsg>(r#"{"t":"unsub"}"#).unwrap(),
       ClientMsg::Unsub
     ));
-    let text: ClientMsg = serde_json::from_str(r#"{"t":"text","s":"你好 world"}"#).unwrap();
-    match text {
-      ClientMsg::Text { s } => assert_eq!(s, "你好 world"),
-      _ => panic!("解析成了别的消息"),
-    }
-    let key: ClientMsg = serde_json::from_str(r#"{"t":"key","code":29,"down":true}"#).unwrap();
-    match key {
-      ClientMsg::Key { code, down } => {
-        assert_eq!(code, 29);
-        assert!(down);
-      }
-      _ => panic!("解析成了别的消息"),
-    }
     assert!(matches!(
       serde_json::from_str::<ClientMsg>(r#"{"t":"ping","id":7}"#).unwrap(),
       ClientMsg::Ping { id: 7 }

@@ -23,8 +23,8 @@
 //! - **每订阅者可见**：水位 / 丢弃都进 `FanoutStat`，进 `/debug`（谁没在取数据一眼可查）。
 //! - 读端被丢弃（输出流已停）的订阅者顺手清掉，避免 `Producer` 堆积。
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use rtrb::{Consumer, Producer, RingBuffer};
 
@@ -58,6 +58,109 @@ struct Subscriber {
   id: String,
   prod: Producer<f32>,
   stats: std::sync::Arc<SubStats>,
+}
+
+/// 多通道扇出：每个物理通道一条独立的单声道 `Fanout`（环、丢弃、统计都按通道隔离）。
+///
+/// **通道映射不在这一层**：设备采集到什么就发什么（N 条）；节点要几路、单声道怎么下混
+/// 由引擎的行决定（见 `engine::session` 的输入行）。这样「同一只立体声设备同时给一个
+/// 单声道节点和一个双声道节点用」不会互相迁就。
+pub struct MultiFanout {
+  name: String,
+  channels: Vec<Arc<Fanout>>,
+}
+
+impl MultiFanout {
+  pub fn new(name: &str, channels: usize) -> Self {
+    let n = channels.max(1);
+    MultiFanout {
+      name: name.to_string(),
+      channels: (0..n)
+        .map(|i| Arc::new(Fanout::new(format!("{name}[{i}]"))))
+        .collect(),
+    }
+  }
+
+  pub fn len(&self) -> usize {
+    self.channels.len()
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.channels.is_empty()
+  }
+
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  pub fn channel(&self, i: usize) -> Option<&Arc<Fanout>> {
+    self.channels.get(i)
+  }
+
+  pub fn channels(&self) -> &[Arc<Fanout>] {
+    &self.channels
+  }
+
+  /// 订阅前 `n` 个物理通道（`n` 超过物理通道数时按物理通道数给）。
+  pub fn subscribe_n(&self, id: &str, n: usize) -> Vec<Consumer<f32>> {
+    self
+      .channels
+      .iter()
+      .take(n.max(1))
+      .enumerate()
+      .map(|(i, f)| f.subscribe(&format!("{id}:{i}")))
+      .collect()
+  }
+
+  /// 订阅全部物理通道。
+  pub fn subscribe(&self, id: &str) -> Vec<Consumer<f32>> {
+    self.subscribe_n(id, self.channels.len())
+  }
+
+  pub fn push_channel(&self, i: usize, hop: &[f32]) {
+    if let Some(f) = self.channels.get(i) {
+      f.push_hop(hop);
+    }
+  }
+
+  /// 所有通道的源都已停止。
+  pub fn is_closed(&self) -> bool {
+    self.channels.iter().all(|f| f.is_closed())
+  }
+
+  /// 取消订阅（`id` 与 [`subscribe`] / [`subscribe_n`] 用的是同一个基名）。
+  pub fn unsubscribe(&self, id: &str) {
+    for (i, f) in self.channels.iter().enumerate() {
+      f.unsubscribe(&format!("{id}:{i}"));
+    }
+  }
+
+  /// 当前最大积压（ms）——行概要里展示用。
+  pub fn max_level_ms(&self) -> f32 {
+    self
+      .channels
+      .iter()
+      .map(|f| f.max_level_ms())
+      .fold(0.0, f32::max)
+  }
+
+  /// 逐订阅者统计（调试用；通道前缀进 id）。
+  pub fn stats(&self) -> Vec<FanoutStat> {
+    let mut out = Vec::new();
+    for (i, f) in self.channels.iter().enumerate() {
+      for mut st in f.stats() {
+        st.id = format!("{i}/{}", st.id);
+        out.push(st);
+      }
+    }
+    out
+  }
+
+  pub fn close(&self) {
+    for f in &self.channels {
+      f.close();
+    }
+  }
 }
 
 pub struct Fanout {

@@ -336,6 +336,7 @@ mod tests {
       device_name: None,
       enabled,
       params: Default::default(),
+      ..Default::default()
     }
   }
 
@@ -343,6 +344,7 @@ mod tests {
   #[test]
   fn resolve_target_skips_disabled_rows() {
     let plan = Plan {
+      v: 0,
       columns: vec![ColumnSpec {
         enabled: true,
         rows: vec![
@@ -361,6 +363,7 @@ mod tests {
     let hub = crate::debug::DebugHub::new();
     let rec = RecorderHub::new(hub);
     let plan = Plan {
+      v: 0,
       columns: vec![ColumnSpec {
         enabled: true,
         rows: vec![row(RowKind::Process, "denoise", true)],

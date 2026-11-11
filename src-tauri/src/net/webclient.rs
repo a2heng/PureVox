@@ -19,7 +19,7 @@
 //!
 //! **为什么要有**：二维码扫的是**网页地址**（`http://<ip>:59123/`），不是 `ws://`
 //! ——扫 `ws://` 手机只会把它当一串文本，什么也不会发生。网页版的功能与 APK 对等：
-//! 麦克风上行、扬声器下行、打字、全尺寸键盘，所以「手机客户端」不该是个独立概念，
+//! 麦克风上行、扬声器下行，所以「手机客户端」不该是个独立概念，
 //! 浏览器只是其中一种客户端。
 //!
 //! **为什么不引编解码库**：Opus 用 `libopus-wasm`（MIT，预编译 wasm，随包分发），
@@ -65,17 +65,6 @@ button:disabled{opacity:.45}
 .note{color:var(--mut);font-size:12px;margin:10px 2px 4px}
 .warnbox{border:1px solid #5a4a20;background:#241f12;color:#f0d9a8;border-radius:10px;
   padding:10px 11px;font-size:12px;margin-bottom:10px}
-input[type=text]{font:inherit;width:100%;color:var(--fg);background:#18202a;border:1px solid var(--line);
-  border-radius:9px;padding:11px 12px}
-.keys{display:none;position:fixed;inset:0;background:#0c1014;z-index:9;overflow:auto;
-  padding:max(10px,env(safe-area-inset-top)) 10px calc(10px + env(safe-area-inset-bottom))}
-.keys.on{display:block}
-.keys .kb{margin:0 auto;max-width:520px}
-.krow{display:flex;gap:5px;margin-bottom:5px}
-.krow .k{flex:1;min-width:0;padding:12px 2px;text-align:center;font-size:12px;border-radius:7px;
-  background:#1b242e;border:1px solid var(--line);user-select:none;touch-action:none}
-.krow .k.w2{flex:2} .krow .k.w3{flex:3}
-.krow .k.act{background:#1d5c3a}
 </style>
 
 <h1>PureVox</h1>
@@ -84,28 +73,15 @@ input[type=text]{font:inherit;width:100%;color:var(--fg);background:#18202a;bord
 <div class="bar"><span class="dot" id="dot"></span><span id="st">未连接</span><span class="rtt" id="rtt"></span></div>
 
 <div class="warnbox" id="warn">
-  同网段直连且<strong>无鉴权</strong>：开启远程输入后，同一 Wi-Fi 下的任何设备都能向这台电脑打字和发按键。
+  同网段直连且<strong>无鉴权</strong>：只用于音频；手机是麦克风 + 扬声器两端。
 </div>
 
 <div class="row">
   <button id="bMic" aria-pressed="false">麦克风</button>
   <button id="bSpk" aria-pressed="false">扬声器</button>
 </div>
-<div class="row">
-  <button id="bKb" style="flex:1">键盘 / 打字</button>
-</div>
 <div class="note" id="hint"></div>
 <div class="note" id="caps"></div>
-
-<input type="text" id="text" placeholder="在此打字，发到电脑…" autocomplete="off" enterkeyhint="send">
-<div class="note">用系统的「全键盘」发送按键可能比这排虚拟键好用；两者可以并用。</div>
-
-<div class="keys" id="kb"><div class="kb">
-  <div class="krow" id="r0"></div><div class="krow" id="r1"></div>
-  <div class="krow" id="r2"></div><div class="krow" id="r3"></div>
-  <div class="krow" id="r4"></div>
-  <button id="bClose" style="width:100%;margin-top:8px">收起</button>
-</div></div>
 
 <script>
 "use strict";
@@ -191,7 +167,7 @@ function connect() {
         ready = true; frameMs = m.frame_ms || 10;
         say('已连接 · ' + m.rate + ' Hz · ' + m.frame_ms + ' ms/帧', 'on');
         // **连上就自动申请麦克风**（用户扫码进来的意图就是要用麦克风，不该再点一次按钮）。
-        // 浏览器会弹权限框；被拒也不影响打字 / 键盘 / 扬声器，那些照常可用。
+        // 浏览器会弹权限框；被拒时麦克风不可用，扬声器照常。
         if (!micOn && !micAsked) {
           micAsked = true;
           autoMic().catch(() => {});
@@ -486,57 +462,6 @@ bind('bSpk', async (b) => {
   if (spkOn) { await startSpk(); say('扬声器已开（自适应缓冲）', 'on'); }
   else { stopSpkNode(true); say('扬声器已关'); }
 });
-// 远程输入**没有客户端消息**：它是电脑端的总开关（proto.rs 里没有 remote_input），
-// 客户端发过去服务端解析不出来、连接会被断开。只能提示用户在电脑上勾。
-bind('bKb', () => {
-  document.getElementById('kb').classList.toggle('on');
-  hint.textContent = '打字与按键要电脑端也勾上「远程输入」才生效（默认关闭，同网段无鉴权）。';
-});
-bind('bClose', () => document.getElementById('kb').classList.remove('on'));
-
-const text = document.getElementById('text');
-function pushText() {
-  const s = text.value;
-  if (s) { send({ t: 'text', s }); text.value = ''; }
-}
-text.addEventListener('change', pushText);
-text.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); pushText(); } });
-
-// ---- 虚拟键盘：Android 键码常量（与 net/keymap.rs 对齐的子集） ----
-const K = {
-  '1':{w:'w2',c:'1',a:7},'2':{w:'w2',c:'2',a:8},'3':{w:'w2',c:'3',a:9},'4':{w:'w2',c:'4',a:10},
-  '5':{w:'w2',c:'5',a:11},'6':{w:'w2',c:'6',a:12},'7':{w:'w2',c:'7',a:13},'8':{w:'w2',c:'8',a:14},
-  '9':{w:'w2',c:'9',a:15},'0':{w:'w2',c:'0',a:7},
-};
-// 布局：[标签, Android keycode, 宽度倍数]
-const LAYOUT = [
-  [['Esc',111],['1',8],['2',9],['3',10],['4',11],['5',12],['6',13],['7',14],['8',15],['9',16],['0',7],['⌫',67]],
-  [['Tab',61],['Q',24],['W',25],['E',26],['R',27],['T',28],['Y',29],['U',30],['I',31],['O',32],['P',33],['[',71],[']',72]],
-  [['Caps',113],['A',29],['S',30],['D',31],['F',32],['G',33],['H',34],['J',35],['K',36],['L',37],[';',74],["'",75],['↵',66]],
-  [['Shift',59],['Z',54],['X',55],['C',56],['V',57],['B',58],['N',59],['M',60],[',',55],['.',56],['/',57],['Shift',59]],
-  [['Ctrl',113],['Alt',57],['',0],['空格',62],['←',21],['↑',19],['↓',20],['→',22]],
-];
-const WD = { 'Tab':'w2','Caps':'w2','↵':'w2','Shift':'w2','空格':'w3','Ctrl':'w3','Alt':'w3' };
-LAYOUT.forEach((row, ri) => {
-  const host = document.getElementById('r' + ri);
-  row.forEach(([label, code]) => {
-    const d = document.createElement('div');
-    d.className = 'k ' + (WD[label] || '');
-    d.textContent = label;
-    if (code) {
-      d.addEventListener('pointerdown', (e) => {
-        e.preventDefault(); d.classList.add('act');
-        send({ t: 'key', code, down: true });
-      });
-      const up = () => { d.classList.remove('act'); send({ t: 'key', code, down: false }); };
-      d.addEventListener('pointerup', up);
-      d.addEventListener('pointerleave', up);
-      d.addEventListener('pointercancel', up);
-    } else { d.style.visibility = 'hidden'; }
-    host.appendChild(d);
-  });
-});
-
 // ---- 能力实测：真的把 Opus 编解码器**加载起来**跑一帧，而不是只看 API 在不在 ----
 // 之前只看 `typeof AudioEncoder`，那既会误判（API 存在 ≠ 支持 opus 配置），也漏掉了真正
 // 的限制：WebCodecs 只有 Chrome 94+ / Safari 16.4+ 才有，实测有浏览器根本没有，于是麦克风
@@ -587,7 +512,7 @@ probeCaps().then((c) => {
 
   if (!c.opus) {
     say('这个浏览器用不了 Opus 编解码器：' + c.why +
-        '。打字与键盘照常可用。', 'err');
+        '。', 'err');
     document.getElementById('bMic').disabled = true;
     document.getElementById('bSpk').disabled = true;
     return;   // 编解码不可用就别连了，连上也传不了音频

@@ -17,10 +17,9 @@
 
 //! Linux 安装：**按安装方式分流**（AppImage 自替换 / deb、rpm 交给系统包管理器）。
 //!
-//! **本机是哪种安装由 Tauri 3 自己回答**：打包时 bundler 把
-//! `__TAURI_BUNDLE_TYPE_VAR_{APP,DEB,RPM}` 打进二进制，`tauri::utils::platform::bundle_type()`
-//! 读它即可（实测本仓库产物：deb 里是 `VAR_DEB`、AppImage 里是 `VAR_APP`）。
-//! 所以不用去问 dpkg/rpm、不用猜 `/usr/bin` 还是 `~/.local`，也不受包数据库被改坏影响。
+//! **本机是哪种安装由运行时事实回答**（[`detect`]）：AppImage 运行时设置
+//! `APPIMAGE`；deb / rpm 看系统里实际存在的包管理器（`dpkg` / `rpm`）。
+//! 不再依赖 Tauri bundler 打进二进制的编译期标记（Tauri 已移除）。
 //!
 //! - **AppImage**：自身就是一个可替换的文件 → 写同目录临时名再 `rename`（正在跑的进程
 //!   用的是挂载副本，覆盖源文件不影响它，重启即新版）。
@@ -36,7 +35,7 @@ use std::sync::OnceLock;
 
 use super::{Phase, Status};
 
-/// 安装方式（由二进制里的 bundle type 标记决定，见 [`kind`]）。
+/// 安装方式（运行时判定，见 [`detect`]）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
   AppImage,
@@ -75,9 +74,7 @@ pub fn kind() -> Kind {
 }
 
 fn detect() -> Kind {
-  use tauri::utils::config::BundleType;
-  use tauri::utils::platform::bundle_type;
-  // 测试钩子：`PUREVOX_UPDATE_KIND=deb|rpm|appimage` 让**没打标的开发构建**
+  // 测试钩子：`PUREVOX_UPDATE_KIND=deb|rpm|appimage` 让开发构建
   // （直接跑 `target/debug/purevox`）也能走发布版的下载/安装分支 —— 否则 Linux 上
   // 只能等打完包才发现「更新点了没动静」。
   if let Some(v) = std::env::var_os("PUREVOX_UPDATE_KIND") {
@@ -88,15 +85,19 @@ fn detect() -> Kind {
       _ => {}
     }
   }
-  match bundle_type() {
-    Some(BundleType::Deb) => Kind::Deb,
-    Some(BundleType::Rpm) => Kind::Rpm,
-    Some(BundleType::AppImage) => Kind::AppImage,
-    // 没打标的二进制仍可能是 AppImage（`APPIMAGE` 由 AppImage 运行时设置，是运行时事实）。
-    // 正常发布的包走不到这里（上面已经按标记认出来了）。
-    _ if std::env::var_os("APPIMAGE").is_some_and(|v| !v.is_empty()) => Kind::AppImage,
-    _ => Kind::Unknown,
+  // AppImage 运行时自己会设置 `APPIMAGE`，这是运行时事实，不依赖打包标记。
+  if std::env::var_os("APPIMAGE").is_some_and(|v| !v.is_empty()) {
+    return Kind::AppImage;
   }
+  // 去掉 Tauri bundler 之后不再有编译期标记：按系统里实际存在的包管理器判断。
+  // 两者都在的发行版（少见）优先 deb —— 与本仓库的 deb 产物后缀一致。
+  if std::path::Path::new("/usr/bin/dpkg").exists() {
+    return Kind::Deb;
+  }
+  if std::path::Path::new("/usr/bin/rpm").exists() {
+    return Kind::Rpm;
+  }
+  Kind::Unknown
 }
 
 /// 安装方式短名（进 `/debug` 的 `update.install_kind`）。

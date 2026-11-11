@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 
 use rtrb::Consumer;
 
-use super::fanout::Fanout;
+use super::fanout::MultiFanout;
 use super::{HOP, SAMPLE_RATE};
 use crate::dsp::resampler::Converter;
 use crate::dsp::servo::Servo;
@@ -91,8 +91,8 @@ impl SourceStats {
 
 /// 一路源接进混音的句柄（行持有它推 hop）；**Drop 即注销**。
 pub struct MixPort {
-  /// 行把这一列的 hop 推进它（`playback` 那套 `push_hop` 接口不变）
-  pub fanout: Arc<Fanout>,
+  /// 行把这一列的逐通道 hop 推进它
+  pub fanout: Arc<MultiFanout>,
   /// 注销用的**唯一令牌**（不是 `id`！见 [`Mixer::register`] 的注释）
   token: u64,
   mixer: Arc<MixerInner>,
@@ -120,6 +120,8 @@ pub struct SourceStat {
 /// 混音内部状态（`MixPort` 与混音线程共享）。
 struct MixerInner {
   sources: Mutex<Vec<Source>>,
+  /// 设备物理通道数（混音输出的通道数）
+  channels: usize,
   stop: AtomicBool,
   /// 每次 [`Mixer::register`] 递增的一次性令牌：**注销按令牌、不按 id**。
   ///
@@ -142,6 +144,9 @@ impl MixerInner {
 struct Source {
   token: u64,
   id: String,
+  /// 本路源铺到设备的哪个通道；`spread = true` 时铺到所有通道（单声道源）
+  channel: usize,
+  spread: bool,
   ring: Consumer<f32>,
   conv: Converter,
   acc: VecDeque<f32>,
@@ -154,8 +159,8 @@ struct Source {
 }
 
 impl Source {
-  /// 一拍：源环 → 转换器 → 累计器 → 相加进 `mixed`。
-  fn pull(&mut self, mixed: &mut [f32; HOP], dt_s: f64) {
+  /// 一拍：源环 → 转换器 → 累计器 → 相加进 `mixed`（逐设备通道）。
+  fn pull(&mut self, mixed: &mut [[f32; HOP]], dt_s: f64) {
     // ① 源环硬顶：超过就丢最旧到目标（过时样本不慢慢放出去 —— ARCHITECTURE.md §8.3）
     let cap = ms_to_samples(SRC_CAP_MS);
     let target = ms_to_samples(SRC_TARGET_MS);
@@ -215,18 +220,26 @@ impl Source {
       self.acc.drain(..n);
       self.stats.dropped.fetch_add(n as u64, Relaxed);
     }
-    // 相加：缺的补零 = 这一路静音，不拖慢别的源
+    // 相加：缺的补零 = 这一路静音，不拖慢别的源。
+    // 单声道源（`spread`）铺到所有设备通道；多声道源按自己的通道号落位。
     let mut peak = 0.0f32;
     let mut starved = 0u64;
-    for slot in mixed.iter_mut() {
-      if let Some(v) = self.acc.pop_front() {
-        *slot += v;
-        let a = v.abs();
-        if a > peak {
-          peak = a;
+    for i in 0..HOP {
+      match self.acc.pop_front() {
+        Some(v) => {
+          if self.spread {
+            for m in mixed.iter_mut() {
+              m[i] += v;
+            }
+          } else if let Some(m) = mixed.get_mut(self.channel) {
+            m[i] += v;
+          }
+          let a = v.abs();
+          if a > peak {
+            peak = a;
+          }
         }
-      } else {
-        starved += 1;
+        None => starved += 1,
       }
     }
     if starved > 0 {
@@ -256,9 +269,10 @@ pub struct Mixer {
 
 impl Mixer {
   /// 起一个混音线程：每 10 ms 把「多源相加」的一个 hop 推进 `out`（`playback` 订阅它）。
-  pub fn spawn(out: Arc<Fanout>, tag: String) -> Result<Mixer, String> {
+  pub fn spawn(out: Arc<MultiFanout>, tag: String) -> Result<Mixer, String> {
     let inner = Arc::new(MixerInner {
       sources: Mutex::new(Vec::new()),
+      channels: out.len(),
       stop: AtomicBool::new(false),
       next_token: AtomicU64::new(1),
     });
@@ -268,7 +282,8 @@ impl Mixer {
       .spawn(move || {
         let _rt = crate::audio::rt_guard::enter_audio_thread();
         let token = crate::debug::threads::ThreadToken::new(format!("mix:{tag}"));
-        let mut mixed = [0.0f32; HOP];
+        let chans = i2.channels.max(1);
+        let mut mixed = vec![[0.0f32; HOP]; chans];
         let mut next = Instant::now();
         let mut last = Instant::now();
         while !i2.stop.load(Relaxed) {
@@ -283,13 +298,17 @@ impl Mixer {
           }
           let dt = now.duration_since(last).as_secs_f64().max(1e-4);
           last = now;
-          mixed.fill(0.0);
+          for m in mixed.iter_mut() {
+            m.fill(0.0);
+          }
           if let Ok(mut g) = i2.sources.lock() {
             for s in g.iter_mut() {
               s.pull(&mut mixed, dt);
             }
           }
-          out2.push_hop(&mixed);
+          for (i, m) in mixed.iter().enumerate() {
+            out2.push_channel(i, m);
+          }
         }
       })
       .map_err(|e| format!("起混音线程失败：{e}"))?;
@@ -299,30 +318,56 @@ impl Mixer {
     })
   }
 
-  /// 登记一路源：返回给行推 hop 的扇出（行照旧 `push_hop`）。
-  pub fn register(&self, id: String) -> MixPort {
+  /// 登记一路源：返回给行推 hop 的逐通道扇出。
+  ///
+  /// `channels` = 节点通道数。单声道源在设备上**铺到所有通道**（监听一只耳朵也要听到）；
+  /// 多声道源按通道号 1:1 落位（超过设备通道数的部分丢弃并由设备混音日志报出）。
+  pub fn register(&self, id: String, channels: usize) -> MixPort {
     let token = self.inner.next_token.fetch_add(1, Relaxed);
-    let fanout = Arc::new(Fanout::new(format!("混音源：{id}")));
-    let ring = fanout.subscribe(&id);
-    let conv = Converter::new(SAMPLE_RATE, SAMPLE_RATE, HOP, true)
-      .expect("48k→48k 转换器（内部参数固定，不该失败）");
+    let n = channels.max(1);
+    let fanout = Arc::new(MultiFanout::new(&format!("混音源：{id}"), n));
+    let dev = self.inner.channels.max(1);
+    let mut sources = Vec::with_capacity(n);
+    if n == 1 {
+      let ring = fanout.channel(0).expect("单声道源").subscribe(&id);
+      sources.push(self.make_source(token, id.clone(), 0, true, ring));
+    } else {
+      for c in 0..n.min(dev) {
+        let ring = fanout.channel(c).expect("通道存在").subscribe(&id);
+        sources.push(self.make_source(token, format!("{id}:{c}"), c, false, ring));
+      }
+    }
     if let Ok(mut g) = self.inner.sources.lock() {
-      g.push(Source {
-        token,
-        id: id.clone(),
-        ring,
-        conv,
-        acc: VecDeque::with_capacity(4096),
-        servo: Servo::new(ACC_TARGET_MS),
-        pull_budget: 1.0,
-        stats: Arc::new(SourceStats::default()),
-        last_ratio: Instant::now(),
-      });
+      g.extend(sources);
     }
     MixPort {
       fanout,
       token,
       mixer: self.inner.clone(),
+    }
+  }
+
+  fn make_source(
+    &self,
+    token: u64,
+    id: String,
+    channel: usize,
+    spread: bool,
+    ring: Consumer<f32>,
+  ) -> Source {
+    Source {
+      token,
+      id,
+      channel,
+      spread,
+      ring,
+      conv: Converter::new(SAMPLE_RATE, SAMPLE_RATE, HOP, true)
+        .expect("48k→48k 转换器（内部参数固定，不该失败）"),
+      acc: VecDeque::with_capacity(4096),
+      servo: Servo::new(ACC_TARGET_MS),
+      pull_budget: 1.0,
+      stats: Arc::new(SourceStats::default()),
+      last_ratio: Instant::now(),
     }
   }
 
@@ -358,18 +403,20 @@ mod tests {
 
   /// 一路「像真行那样每拍推一格」的源：环 + 混音源句柄。
   struct Fixture {
-    fan: Arc<Fanout>,
+    fan: Arc<MultiFanout>,
     src: Source,
   }
 
   fn fixture(id: &str) -> Fixture {
-    let fan = Arc::new(Fanout::new(format!("测试源 {id}")));
-    let ring = fan.subscribe(id);
+    let fan = Arc::new(MultiFanout::new(&format!("测试源 {id}"), 1));
+    let ring = fan.channel(0).unwrap().subscribe(id);
     Fixture {
       fan,
       src: Source {
         token: 0,
         id: id.into(),
+        channel: 0,
+        spread: false,
         ring,
         conv: Converter::new(SAMPLE_RATE, SAMPLE_RATE, HOP, true).unwrap(),
         acc: VecDeque::new(),
@@ -387,15 +434,15 @@ mod tests {
   fn two_sources_sum() {
     let mut a = fixture("a");
     let mut b = fixture("b");
-    let mut out = [0.0f32; HOP];
+    let mut out = [[0.0f32; HOP]; 1];
     let mut settled = 0.0f32;
     for _ in 0..40 {
-      a.fan.push_hop(&[0.25; HOP]);
-      b.fan.push_hop(&[0.25; HOP]);
-      out.fill(0.0);
+      a.fan.push_channel(0, &[0.25; HOP]);
+      b.fan.push_channel(0, &[0.25; HOP]);
+      out[0].fill(0.0);
       a.src.pull(&mut out, 0.01);
       b.src.pull(&mut out, 0.01);
-      settled = out[HOP / 2];
+      settled = out[0][HOP / 2];
     }
     assert!(
       (settled - 0.5).abs() < 0.02,
@@ -408,17 +455,17 @@ mod tests {
   fn stalled_source_does_not_block_others() {
     let mut live = fixture("live");
     let mut dead = fixture("dead"); // 一直不推：模拟这一路停摆
-    let mut out = [0.0f32; HOP];
+    let mut out = [[0.0f32; HOP]; 1];
     for _ in 0..40 {
-      live.fan.push_hop(&[0.5; HOP]);
-      out.fill(0.0);
+      live.fan.push_channel(0, &[0.5; HOP]);
+      out[0].fill(0.0);
       live.src.pull(&mut out, 0.01);
       dead.src.pull(&mut out, 0.01);
     }
     assert!(
-      (out[HOP / 2] - 0.5).abs() < 0.02,
+      (out[0][HOP / 2] - 0.5).abs() < 0.02,
       "活着的那一路照常出声，实测 {}",
-      out[HOP / 2]
+      out[0][HOP / 2]
     );
     assert!(
       dead.src.stats.starved.load(Relaxed) > 0,
@@ -430,10 +477,10 @@ mod tests {
   #[test]
   fn ring_does_not_accumulate_when_paced() {
     let mut a = fixture("a");
-    let mut out = [0.0f32; HOP];
+    let mut out = [[0.0f32; HOP]; 1];
     for _ in 0..200 {
-      a.fan.push_hop(&[0.1; HOP]);
-      out.fill(0.0);
+      a.fan.push_channel(0, &[0.1; HOP]);
+      out[0].fill(0.0);
       a.src.pull(&mut out, 0.01);
     }
     let lv_ms = a.src.ring.slots() as f32 * 1000.0 / SAMPLE_RATE as f32;
@@ -447,10 +494,10 @@ mod tests {
   /// 删掉 —— 混音器 0 源、输出恒为 -160 dBFS（2026-10-26 实测的哑巴故障）。
   #[test]
   fn rebuild_keeps_new_source() {
-    let out = Arc::new(Fanout::new("测试混音输出"));
+    let out = Arc::new(MultiFanout::new("测试混音输出", 1));
     let mixer = Mixer::spawn(out, "test".into()).unwrap();
-    let old = mixer.register("c0r4".into());
-    let new = mixer.register("c0r4".into());
+    let old = mixer.register("c0r4".into(), 1);
+    let new = mixer.register("c0r4".into(), 1);
     assert_eq!(mixer.stats().len(), 2, "重建重叠期两路都在（旧的还没停）");
     drop(old);
     let stats = mixer.stats();

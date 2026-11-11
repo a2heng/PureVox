@@ -137,6 +137,11 @@ fn cached_enumerate() -> DeviceList {
   DeviceList::default()
 }
 
+/// 当前缓存的一份设备列表（界面定时读取；没有缓存时返回空表，绝不现场枚举）。
+pub fn cached() -> DeviceList {
+  cached_enumerate()
+}
+
 /// 列出可回环的输出（不含「系统默认输出」那条，默认项由界面加并翻译）。
 ///   - Linux：PipeWire/Pulse 的 sinks（`pactl list sinks` 的 Name/Description）；
 ///   - Windows：cpal 的输出设备（`loopback:<wasapi 端点 ID>`）；
