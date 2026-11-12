@@ -219,6 +219,20 @@ def gate_bundle() -> None:
             raise GateError(f"package_windows.py 没有处理 {token}（{why}）")
     print("  installer: exe + opus.dll + models/ → NSIS setup.exe")
 
+    # Linux 打包脚本只做语法/关键路径自检（Windows 上不跑 cargo/tar）。
+    linux = ROOT / "tools" / "automation" / "package_linux.py"
+    if linux.is_file():
+        text = linux.read_text(encoding="utf-8")
+        ast.parse(text)
+        for token, why in (
+            ("tar.gz", "便携包必须产出 tar.gz"),
+            ("dpkg-deb", "有 dpkg-deb 时要能出 deb"),
+            ("models", "AI 模型目录必须随包"),
+        ):
+            if token not in text:
+                raise GateError(f"package_linux.py 没有处理 {token}（{why}）")
+        print("  linux: release + models/ → tar.gz / deb")
+
     # 发版那一步是独立文件：用假产物树 + 假 gh 在本地跑通（桌面 / 安卓 / 缺产物 / 缺 notes）。
     harness = ROOT / "tools" / "automation" / "run_release_stage.py"
     proc = subprocess.run(

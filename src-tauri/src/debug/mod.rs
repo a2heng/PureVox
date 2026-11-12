@@ -357,6 +357,8 @@ pub enum UiCommand {
   ToggleEngine,
   /// 右侧信息栏切到全局设置（调试验收用；与顶栏「设置」同一条路径）
   OpenSettings,
+  /// 托盘「退出」（Linux 走这条；Windows 走 WM_CLOSE + quitting 标记）
+  Quit,
   Move {
     id: u32,
     x: f32,

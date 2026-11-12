@@ -431,7 +431,7 @@ impl Workspace {
                   crate::cues::play(&id2, kind);
                   format!("提示音：{}", i18n::tr(label))
                 }
-                Err(e) => format!("保存提示音设置失败：{e}"),
+                Err(e) => format!("{}{e}", i18n::tr("保存提示音设置失败：")),
               };
               cx.notify();
             })),
@@ -450,10 +450,10 @@ impl Workspace {
               this.status = if code == "en" {
                 "Language: English".into()
               } else {
-                "界面语言：中文".into()
+                i18n::tr("界面语言：中文").into()
               };
             }
-            Err(e) => this.status = format!("保存语言失败：{e}"),
+            Err(e) => this.status = format!("{}{e}", i18n::tr("保存语言失败：")),
           }
           cx.notify();
         }))
@@ -513,9 +513,9 @@ impl Workspace {
             Ok(()) => {
               this.restart_hotkeys();
               if hot {
-                "全局热键已关闭".into()
+                i18n::tr("全局热键已关闭").into()
               } else {
-                "全局热键已开启".into()
+                i18n::tr("全局热键已开启").into()
               }
             }
             Err(e) => format!("保存热键设置失败：{e}"),
@@ -534,7 +534,7 @@ impl Workspace {
       .child(
         quiet_button(cx, "hotkey-record", "录制").on_click(cx.listener(|this, _, _, cx| {
           this.recording = Some(RecordTarget::EngineHotkey);
-          this.status = "按下新的全局热键…（Esc 取消）".into();
+          this.status = i18n::tr("按下新的全局热键…（Esc 取消）").into();
           cx.notify();
         })),
       )
@@ -554,12 +554,12 @@ impl Workspace {
           this.status = match crate::config::save_settings(&this.settings) {
             Ok(()) => {
               if cue {
-                "提示音已关闭".into()
+                i18n::tr("提示音已关闭").into()
               } else {
-                "提示音已开启".into()
+                i18n::tr("提示音已开启").into()
               }
             }
-            Err(e) => format!("保存提示音设置失败：{e}"),
+            Err(e) => format!("{}{e}", i18n::tr("保存提示音设置失败：")),
           };
           cx.notify();
         })),

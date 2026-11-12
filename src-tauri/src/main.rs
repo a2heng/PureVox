@@ -72,11 +72,22 @@ use audio::AudioManager;
 use debug::{DebugHub, SharedHub};
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::prelude::*;
-use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 
 /// 主窗口默认几何（第一次启动 / 还没记住几何时）。
 const DEFAULT_W: f32 = 1280.0;
 const DEFAULT_H: f32 = 800.0;
+
+#[cfg(windows)]
+fn native_scale() -> f32 {
+  // 旧配置存的是物理像素，按系统 DPI 换算一次；新配置带 logical=true 直接是逻辑像素。
+  unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() as f32 / 96.0 }
+}
+
+#[cfg(not(windows))]
+fn native_scale() -> f32 {
+  1.0
+}
 
 fn main() {
   // panic 也进事件日志：release 没有控制台，后台线程 panic 不能「只消失不报」。
@@ -157,12 +168,34 @@ fn main() {
       })
       .detach();
 
-      let bounds = Bounds::centered(None, size(px(DEFAULT_W), px(DEFAULT_H)), cx);
+      let settings = crate::config::load_settings();
+      let scale = native_scale();
+      let (bounds, maximized) = match settings.window {
+        Some(g) => {
+          let s = if g.logical { 1.0 } else { scale.max(0.5) };
+          let b = Bounds::new(
+            point(px(g.x as f32 / s), px(g.y as f32 / s)),
+            size(
+              px((g.w as f32 / s).max(900.0)),
+              px((g.h as f32 / s).max(560.0)),
+            ),
+          );
+          (b, g.maximized)
+        }
+        None => (
+          Bounds::centered(None, size(px(DEFAULT_W), px(DEFAULT_H)), cx),
+          false,
+        ),
+      };
       let hub = hub_for_ui.clone();
       let audio = audio_for_ui.clone();
       if let Err(e) = gpui_kit::open_window(
         WindowOptions {
-          window_bounds: Some(WindowBounds::Windowed(bounds)),
+          window_bounds: Some(if maximized {
+            WindowBounds::Maximized(bounds)
+          } else {
+            WindowBounds::Windowed(bounds)
+          }),
           window_min_size: Some(size(px(900.), px(560.))),
           titlebar: Some(TitlebarOptions {
             title: Some(format!("PureVox {}", version::VERSION).into()),
@@ -188,7 +221,8 @@ fn main() {
           #[cfg(not(windows))]
           tray::spawn(0, hub.clone());
           // 关闭（x）默认收进托盘；只有托盘菜单「退出」才真正关窗口。
-          window.on_window_should_close(cx, |_window, _cx| {
+          window.on_window_should_close(cx, |window, _cx| {
+            let _ = crate::config::save_window_geom(crate::config::geom_from_window(window));
             if tray::quitting() {
               true
             } else {

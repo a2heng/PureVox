@@ -11,16 +11,82 @@
 
 use std::sync::Arc;
 
-use gpui_kit::{Context, KeyDownEvent, Window};
+use gpui_kit::{Context, KeyDownEvent, MouseMoveEvent, Window};
 
 use super::theme as t;
 use super::{
   DeleteNode, PendingMedia, RecordTarget, Redo, RefreshDevices, TERM_H, TERM_PAD, TERM_SLOT,
   ToggleEngine, Undo, Workspace, i18n, term_rows,
 };
+use crate::engine::hot::EqSettings;
 use crate::plan::{Plan, PortInput, RowKind, RowSpec, input_ports, max_channels, node_size};
 
 impl Workspace {
+  /// EQ 拖动：鼠标在根上移动时，如果正在拖某一段，就按当前 y 算 dB。
+  pub(super) fn on_mouse_move(
+    &mut self,
+    e: &MouseMoveEvent,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+  ) {
+    let Some(drag) = self.eq_drag else {
+      return;
+    };
+    let g = self.eq_geom.get();
+    if g.w <= 0.0 || g.h <= 0.0 {
+      return;
+    }
+    let half = (g.h / 2.0).max(1.0);
+    let db = (((g.y + half - e.position.y.as_f32()) / half) * 24.0).clamp(-24.0, 24.0);
+    // 0.5 dB 一格，避免手指抖动写出无意义的小数。
+    let db = (db * 2.0).round() / 2.0;
+    self.eq_set_band(drag.node, drag.band, db, false, cx);
+  }
+
+  /// 写一段 EQ 增益；`persist = false` 用于拖动中的高频更新，松开时再落盘。
+  pub(super) fn eq_set_band(
+    &mut self,
+    id: u32,
+    band: usize,
+    db: f32,
+    persist: bool,
+    cx: &mut Context<Self>,
+  ) {
+    let mut eq = self
+      .plan
+      .node(id)
+      .and_then(|n| n.params.get("settings"))
+      .and_then(|s| EqSettings::from_json(s).ok())
+      .unwrap_or_default();
+    if let Some(slot) = eq.bands.get_mut(band) {
+      *slot = db;
+    }
+    self.eq_apply(id, &eq, persist, cx);
+  }
+
+  /// 整份 EQ 设置一次写入：热参数 + 计划参数；拖动中不落盘，预设/松开时落盘。
+  pub(super) fn eq_apply(
+    &mut self,
+    id: u32,
+    eq: &EqSettings,
+    persist: bool,
+    cx: &mut Context<Self>,
+  ) {
+    let json = eq.to_json();
+    if let Some(n) = self.plan.node_mut(id) {
+      n.params.insert("settings".into(), json.clone());
+    }
+    if self.audio.is_running()
+      && let Some((ci, ri)) = self.pos(id)
+    {
+      let _ = self.audio.set_row_param(ci, ri, "settings", &json);
+    }
+    if persist {
+      let _ = self.audio.persist_plan(self.plan.clone());
+    }
+    cx.notify();
+  }
+
   /// 录制热键：录制中时拦截根节点收到的下一个按键，写成规范串。
   ///
   /// 只修工具链里已有的两条路径：设置页的启停热键、音效板每个音效的触发键。
@@ -45,7 +111,7 @@ impl Workspace {
     if matches!(key.as_str(), "escape" | "esc") {
       self.recording = None;
       self.restart_hotkeys();
-      self.status = "已取消录制热键".into();
+      self.status = i18n::tr("已取消录制热键").into();
       cx.notify();
       return;
     }
@@ -77,9 +143,9 @@ impl Workspace {
         self.status = match crate::config::save_settings(&self.settings) {
           Ok(()) => {
             self.restart_hotkeys();
-            format!("全局热键：{norm}")
+            format!("{}{norm}", i18n::tr("全局热键："))
           }
-          Err(e) => format!("保存热键失败：{e}"),
+          Err(e) => format!("{}{e}", i18n::tr("保存热键失败：")),
         };
       }
       RecordTarget::Pad { node, index } => {
@@ -103,10 +169,10 @@ impl Workspace {
         }
         if changed {
           self.snapshot();
-          self.status = format!("音效热键：{norm}");
+          self.status = format!("{}{norm}", i18n::tr("音效热键："));
           self.apply_structure(cx);
         } else {
-          self.status = "没能写入这个音效的热键".into();
+          self.status = i18n::tr("没能写入这个音效的热键").into();
         }
       }
     }

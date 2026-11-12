@@ -169,12 +169,29 @@ pub struct WindowGeom {
   /// 记录时是否最大化；最大化时 `x/y/w/h` 仍是**还原尺寸**（见 `winstate`）
   #[serde(default)]
   pub maximized: bool,
+  /// `x/y/w/h` 是否已是 GPUI 的逻辑像素。旧实现（Tauri）存的是物理像素，
+  /// 读到时按系统缩放比换算一次，避免 200% 屏上窗口直接翻倍。
+  #[serde(default)]
+  pub logical: bool,
 }
 
 /// 设置文件的读-改-写互斥：窗口几何的定时保存与界面里的设置保存不能互相覆盖。
 static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 只更新窗口几何（不动其它设置）。
+/// 从 GPUI 窗口取当前几何（逻辑像素），供关闭/拖动结束时落盘。
+pub fn geom_from_window(window: &gpui_kit::Window) -> WindowGeom {
+  let b = window.bounds();
+  WindowGeom {
+    x: b.origin.x.as_f32().round() as i32,
+    y: b.origin.y.as_f32().round() as i32,
+    w: b.size.width.as_f32().round().max(1.0) as u32,
+    h: b.size.height.as_f32().round().max(1.0) as u32,
+    maximized: matches!(window.window_bounds(), gpui_kit::WindowBounds::Maximized(_)),
+    logical: true,
+  }
+}
+
 pub fn save_window_geom(g: WindowGeom) -> Result<(), String> {
   let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
   let mut s = load_settings();

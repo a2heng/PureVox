@@ -76,7 +76,18 @@ python tools/automation/package_windows.py --no-build
 ```
 
 产物：`dist/PureVox_<版本>_x64-setup.exe`（需要 `makensis`：`choco install nsis`）。
-Linux 的 AppImage / deb / rpm 流水线待恢复。
+
+Linux 便携包 / deb（在 Linux 上跑）：
+
+```bash
+python3 tools/automation/package_linux.py            # cargo build --release + tar.gz + deb（有 dpkg-deb 时）
+python3 tools/automation/package_linux.py --no-build
+```
+
+产物：`dist/PureVox_<版本>_x64.tar.gz`、`dist/purevox_<版本>_amd64.deb`。
+deb 用 `/usr/bin/purevox` 包装脚本把 `PUREVOX_MODEL_DIR` 指到 `/usr/lib/purevox/models`。
+Linux 托盘只做「启停引擎 / 退出」（ksni，无 GTK）；关闭窗口按桌面正常退出（没有统一的
+「隐藏到托盘」协议）。
 
 `RELEASE.md` 里的版本号与产物命名规则仍然有效，打包命令部分待重写。
 

@@ -21,6 +21,8 @@ mod widgets;
 
 use widgets::*;
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -143,6 +145,22 @@ enum RecordTarget {
   Pad { node: u32, index: usize },
 }
 
+/// EQ 画布在窗口里的逻辑像素矩形（prepaint 时写入，鼠标事件读）。
+#[derive(Clone, Copy, Default)]
+struct EqGeom {
+  x: f32,
+  y: f32,
+  w: f32,
+  h: f32,
+}
+
+/// 正在拖动的 EQ 段：节点 + 段号（横向拖动不换段）。
+#[derive(Clone, Copy)]
+struct EqDrag {
+  node: u32,
+  band: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NodeModule {
   None,
@@ -211,6 +229,12 @@ pub struct Workspace {
   recording: Option<RecordTarget>,
   /// 上一拍引擎运行状态：托盘/全局热键启停发生在界面之外，靠它触发重绘
   was_running: bool,
+  /// 上次把窗口几何写进 settings 的时刻（拖动时节流，关闭时无条件写）
+  last_geom_save: Instant,
+  /// EQ 画布几何（每个检查器复用；prepaint 写入）
+  eq_geom: Rc<Cell<EqGeom>>,
+  /// 正在拖的 EQ 段
+  eq_drag: Option<EqDrag>,
 }
 
 impl Workspace {
@@ -279,8 +303,19 @@ impl Workspace {
       pending_cue: None,
       recording: None,
       was_running,
+      last_geom_save: Instant::now(),
+      eq_geom: Rc::new(Cell::new(EqGeom::default())),
+      eq_drag: None,
     };
     this.restart_hotkeys();
+    // 拖动窗口时不要每个像素都写盘；400 ms 节流，关闭时由 main 再无条件写一次。
+    let geom_sub = cx.observe_window_bounds(window, |this, window, _cx| {
+      if this.last_geom_save.elapsed() >= Duration::from_millis(400) {
+        this.last_geom_save = Instant::now();
+        let _ = crate::config::save_window_geom(crate::config::geom_from_window(window));
+      }
+    });
+    this.subs.push(geom_sub);
     cx.spawn(async move |weak, cx| {
       loop {
         cx.background_executor()
@@ -425,6 +460,10 @@ impl Workspace {
   /// 松开鼠标：节点拖动作收尾（落盘），拉线则连接/取消。
   fn end_drag(&mut self, cx: &mut Context<Self>) {
     self.pending = None;
+    if self.eq_drag.take().is_some() {
+      let _ = self.audio.persist_plan(self.plan.clone());
+      cx.notify();
+    }
     let Some(d) = self.drag.take() else {
       return;
     };
@@ -508,6 +547,7 @@ impl Workspace {
         self.dock_page = DockPage::Settings;
         self.selected = None;
       }
+      UiCommand::Quit => cx.quit(),
       UiCommand::Move { id, x, y } => {
         if let Some(n) = self.plan.node_mut(id) {
           n.x = x;
@@ -568,6 +608,7 @@ impl Render for Workspace {
       .on_action(cx.listener(Self::on_redo))
       .on_action(cx.listener(Self::on_delete))
       .on_key_down(cx.listener(Self::on_record_key))
+      .on_mouse_move(cx.listener(Self::on_mouse_move))
       // 拖节点由 GPUI 的 drag 会话接管；位移处理挂在**根**上：
       // 指针离开卡片、经过线/端口/别的卡时仍然收得到事件。
       .on_drag_move::<DragPayload>(cx.listener(

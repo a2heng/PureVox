@@ -39,8 +39,9 @@
      - `release.yml`：**桌面通道**，tag `v*` 或手动 → **Windows NSIS 安装包**：
        门禁（fmt/clippy/test）+ `choco install nsis` + `python tools/automation/package_windows.py`
        （`cargo build --release` + exe/opus.dll/models → `PureVox_<版本>_x64-setup.exe`）→
-       `PLATFORM=windows` 发 release；更新日志排除 `android/`。Linux 的 AppImage/deb/rpm 待恢复，
-       恢复后加回 Linux job 并切到 `PLATFORM=desktop`。
+       `PLATFORM=windows` 发 release；更新日志排除 `android/`。Linux 已有
+       `tools/automation/package_linux.py`（tar.gz + deb），但 release workflow 还未接；
+       接上后加回 Linux job 并切到 `PLATFORM=desktop`。
      - `android-release.yml`：**安卓通道**，tag `android-v*` 或手动 → 只跑 Android：
        JDK17 + `install_android_sdk.py` + 从 `gh secret` 还原 keystore →
        `./gradlew assembleRelease` → **已签名的 release APK**；release 只附 APK、
@@ -100,7 +101,7 @@
     **下限 24.04 不是挑的**：ort 预编译包要求 glibc ≥ 2.39。唯一来源 = `versions.env` 的
     `LINUX_RUNNER`（已无缓存键，因此也不再需要单独的发行版标记）。
   - **依赖声明：deb 要手写，rpm 不要手写**（两种格式的机制不同，别当同一件事）：
-    - **deb 必须显式列** `bundle.linux.deb.depends`：dpkg **没有**自动依赖机制，Tauri 直接把它
+    - **deb 必须显式列** `tools/automation/package_linux.py` 里的 `Depends`：dpkg **没有**自动依赖机制，打包脚本直接把它
       写进 `Depends:`，**没有内置默认值**（`Option<Vec<String>>` → `unwrap_or_default()` → 空）。
       忘配的后果不是构建报错，而是**发出去一个「装得上、一启动就
       `error while loading shared libraries`」的包**，CI 全绿。门禁 `bundle` 挡「忘配」。

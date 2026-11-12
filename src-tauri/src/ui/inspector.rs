@@ -8,11 +8,14 @@
 
 use gpui_kit::component::Selectable as _;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
-use gpui_kit::{AnyElement, Context, Div, Window, div, prelude::*, px, rgb};
+use gpui_kit::{
+  AnyElement, Context, Div, PathBuilder, Window, canvas, div, point, prelude::*, px, rgb,
+};
 
 use super::theme as t;
 use super::widgets::*;
-use super::{NodeModule, PendingMedia, RecordTarget, Workspace, i18n, node_module};
+use super::{EqDrag, EqGeom, NodeModule, PendingMedia, RecordTarget, Workspace, i18n, node_module};
+use crate::engine::hot::EqSettings;
 use crate::plan::{RowKind, RowSpec};
 
 impl Workspace {
@@ -260,10 +263,10 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, _, cx| {
                       if recording {
                         this.recording = None;
-                        this.status = "已取消录制热键".into();
+                        this.status = i18n::tr("已取消录制热键").into();
                       } else {
                         this.recording = Some(RecordTarget::Pad { node: id, index: i });
-                        this.status = "按下这个音效的热键…（Esc 取消）".into();
+                        this.status = i18n::tr("按下这个音效的热键…（Esc 取消）").into();
                       }
                       cx.notify();
                     })),
@@ -485,6 +488,13 @@ impl Workspace {
         .child(section("AEC"))
         .child(self.params_editor(id, cx))
         .child(self.aec_card(id, cx));
+    } else if n.ptype == "eq31" {
+      list = list.child(section("均衡")).child(self.eq_editor(id, cx));
+    } else if n.ptype == "viz" {
+      list = list
+        .child(section("可视化"))
+        .child(self.params_editor(id, cx))
+        .child(self.viz_editor(id, cx));
     } else if n.kind != RowKind::Output
       && crate::engine::registry::get_spec(&n.ptype)
         .map(|s| !s.params.is_empty())
@@ -563,6 +573,259 @@ impl Workspace {
       .child(field("电平", format!("{peak:.3}")))
       .child(field("延迟", latency))
       .when(has_inputs, |el| el.child(conns))
+      .into_any_element()
+  }
+
+  /// 可视化节点：读 VizHub 的最新一帧，画电平 / 64 段频谱（10 Hz 由 tick 重绘）。
+  pub(super) fn viz_editor(&mut self, id: u32, _cx: &mut Context<Self>) -> AnyElement {
+    let Some((ci, ri)) = self.pos(id) else {
+      return hint("这个节点不在计划里。").into_any_element();
+    };
+    let mode = self
+      .plan
+      .node(id)
+      .and_then(|n| n.params.get("mode").cloned())
+      .unwrap_or_else(|| "both".into());
+    let snap = crate::engine::viz::snapshot();
+    let Some(frame) = snap.frames.iter().find(|f| f.col == ci && f.row == ri) else {
+      return hint("引擎未运行，或这一行还没有可视化数据。").into_any_element();
+    };
+
+    let mut list = div().flex().flex_col().gap_2();
+    if mode != "spectrum" {
+      let peak = frame.peak_dbfs.unwrap_or(-160.0);
+      let rms = frame.rms_dbfs.unwrap_or(-160.0);
+      let frac = ((peak + 60.0) / 60.0).clamp(0.0, 1.0);
+      let color = if peak > -3.0 {
+        t::DANGER
+      } else if peak > -12.0 {
+        t::AEC
+      } else {
+        t::OK
+      };
+      list = list
+        .child(field("峰值", format!("{peak:.1} dBFS")))
+        .child(field("RMS", format!("{rms:.1} dBFS")))
+        .child(
+          div()
+            .h(px(10.0))
+            .w_full()
+            .rounded_sm()
+            .bg(rgb(t::BG))
+            .child(
+              div()
+                .h_full()
+                .w(gpui_kit::relative(frac))
+                .rounded_sm()
+                .bg(rgb(color)),
+            ),
+        );
+    }
+    if mode != "vu" {
+      let bands = frame.bands_db.clone();
+      let lo = snap.band_hz[0];
+      let hi = snap.band_hz[1];
+      list = list
+        .child(
+          div()
+            .h(px(110.0))
+            .w_full()
+            .rounded_md()
+            .bg(rgb(t::BG))
+            .border_1()
+            .border_color(rgb(t::BORDER))
+            .child(
+              canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                  let w = bounds.size.width.as_f32();
+                  let h = bounds.size.height.as_f32();
+                  let n = bands.len().max(1) as f32;
+                  for (i, &db) in bands.iter().enumerate() {
+                    let v = ((db + 80.0) / 80.0).clamp(0.0, 1.0);
+                    let x = (i as f32 + 0.5) / n * w;
+                    let y0 = h;
+                    let y1 = h - v * h;
+                    let mut pb = PathBuilder::stroke(px(2.0));
+                    pb.move_to(bounds.origin + point(px(x), px(y0)));
+                    pb.line_to(bounds.origin + point(px(x), px(y1)));
+                    if let Ok(p) = pb.build() {
+                      window.paint_path(p, rgb(t::ACCENT));
+                    }
+                  }
+                },
+              )
+              .w_full()
+              .h_full(),
+            ),
+        )
+        .child(
+          div()
+            .flex()
+            .justify_between()
+            .text_size(px(t::TEXT_XS))
+            .text_color(rgb(t::MUTED))
+            .child(format!("{lo:.0} Hz"))
+            .child("1 kHz")
+            .child(format!("{hi:.0} Hz")),
+        )
+        .child(hint("64 段对数频谱；每 10 ms 一帧，界面 10 Hz 刷新。"));
+    }
+    list.into_any_element()
+  }
+
+  /// 31 段 EQ 编辑器：拖柱子改增益（热参数），预设 / 低切高切一键写整份设置。
+  pub(super) fn eq_editor(&mut self, id: u32, cx: &mut Context<Self>) -> AnyElement {
+    let eq = self
+      .plan
+      .node(id)
+      .and_then(|n| n.params.get("settings"))
+      .and_then(|s| EqSettings::from_json(s).ok())
+      .unwrap_or_default();
+    let bands = eq.bands.clone();
+    let geom = self.eq_geom.clone();
+    let low_on = eq.low_cut_on;
+    let high_on = eq.high_cut_on;
+
+    let canvas_el = canvas(
+      {
+        let geom = geom.clone();
+        move |bounds, _, _| {
+          geom.set(EqGeom {
+            x: bounds.origin.x.as_f32(),
+            y: bounds.origin.y.as_f32(),
+            w: bounds.size.width.as_f32(),
+            h: bounds.size.height.as_f32(),
+          });
+        }
+      },
+      move |bounds, _, window, _| {
+        let w = bounds.size.width.as_f32();
+        let h = bounds.size.height.as_f32();
+        let mid = h / 2.0;
+        // 0 dB 基线
+        let mut pb = PathBuilder::stroke(px(1.0));
+        pb.move_to(bounds.origin + point(px(0.0), px(mid)));
+        pb.line_to(bounds.origin + point(px(w), px(mid)));
+        if let Ok(p) = pb.build() {
+          window.paint_path(p, rgb(t::WIRE));
+        }
+        for (i, &db) in bands.iter().enumerate().take(31) {
+          let x = (i as f32 + 0.5) / 31.0 * w;
+          let y = mid - (db / 24.0).clamp(-1.0, 1.0) * mid;
+          let mut pb = PathBuilder::stroke(px(2.0));
+          pb.move_to(bounds.origin + point(px(x), px(mid)));
+          pb.line_to(bounds.origin + point(px(x), px(y)));
+          if let Ok(p) = pb.build() {
+            window.paint_path(p, rgb(if db >= 0.0 { t::ACCENT } else { t::DANGER }));
+          }
+        }
+      },
+    )
+    .w_full()
+    .h_full();
+
+    let hover = div()
+      .absolute()
+      .top_0()
+      .left_0()
+      .w_full()
+      .h_full()
+      .cursor_ns_resize()
+      .on_mouse_down(
+        gpui_kit::MouseButton::Left,
+        cx.listener(move |this, e: &gpui_kit::MouseDownEvent, _, cx| {
+          let g = this.eq_geom.get();
+          if g.w <= 0.0 || g.h <= 0.0 {
+            return;
+          }
+          let x = e.position.x.as_f32();
+          let band = (((x - g.x) / g.w) * 31.0).floor().clamp(0.0, 30.0) as usize;
+          let half = (g.h / 2.0).max(1.0);
+          let db = (((g.y + half - e.position.y.as_f32()) / half) * 24.0).clamp(-24.0, 24.0);
+          let db = (db * 2.0).round() / 2.0;
+          this.eq_drag = Some(EqDrag { node: id, band });
+          this.eq_set_band(id, band, db, false, cx);
+        }),
+      );
+
+    let mut presets = div().flex().flex_wrap().gap_1();
+    for (key, label) in [
+      ("flat", "平坦"),
+      ("vocal", "人声"),
+      ("podcast", "播客"),
+      ("bass", "低音"),
+      ("treble", "高音"),
+      ("loud", "响度"),
+    ] {
+      let preset = eq_preset(key);
+      presets = presets.child(
+        quiet_button(cx, format!("eqp:{id}:{key}"), label)
+          .on_click(cx.listener(move |this, _, _, cx| this.eq_apply(id, &preset, true, cx))),
+      );
+    }
+
+    let toggle_cut = |key: &'static str, on: bool| {
+      let eq = eq.clone();
+      let low = low_on;
+      let high = high_on;
+      quiet_button(
+        cx,
+        format!("eqcut:{id}:{key}"),
+        if key == "low" {
+          "低切 80 Hz"
+        } else {
+          "高切 16 kHz"
+        },
+      )
+      .when(on, |b| b.selected(true))
+      .on_click(cx.listener(move |this, _, _, cx| {
+        let mut eq = eq.clone();
+        if key == "low" {
+          eq.low_cut_on = !low;
+        } else {
+          eq.high_cut_on = !high;
+        }
+        this.eq_apply(id, &eq, true, cx);
+      }))
+    };
+
+    div()
+      .flex()
+      .flex_col()
+      .gap_2()
+      .child(
+        div()
+          .relative()
+          .w_full()
+          .h(px(128.0))
+          .rounded_md()
+          .bg(rgb(t::BG))
+          .border_1()
+          .border_color(rgb(t::BORDER))
+          .child(canvas_el)
+          .child(hover),
+      )
+      .child(
+        div()
+          .flex()
+          .justify_between()
+          .text_size(px(t::TEXT_XS))
+          .text_color(rgb(t::MUTED))
+          .child("20 Hz")
+          .child("200")
+          .child("2k")
+          .child("20k"),
+      )
+      .child(hint("拖动柱子调 ±24 dB；拖动实时生效，松手落盘。"))
+      .child(presets)
+      .child(
+        div()
+          .flex()
+          .gap_1()
+          .child(toggle_cut("low", low_on))
+          .child(toggle_cut("high", high_on)),
+      )
       .into_any_element()
   }
 
@@ -797,5 +1060,62 @@ impl Workspace {
       crate::debug::Probe::Pending => "采集中".into(),
       crate::debug::Probe::Unavailable { reason } => reason.clone(),
     }
+  }
+}
+
+/// 内置 EQ 预设。31 段是 ISO 1/3 倍频程 20 Hz~20 kHz；按频率找最近的段。
+fn eq_preset(name: &str) -> EqSettings {
+  let mut s = EqSettings::default();
+  let idx = |f: f32| (((f / 20.0).log2() * 3.0).round() as usize).min(30);
+  match name {
+    "vocal" => {
+      s.bands[idx(250.0)] -= 2.0;
+      s.bands[idx(400.0)] -= 1.0;
+      for f in [1_000.0, 2_000.0, 4_000.0] {
+        s.bands[idx(f)] += 3.0;
+      }
+    }
+    "podcast" => {
+      s.low_cut_on = true;
+      s.bands[idx(200.0)] -= 1.0;
+      for f in [2_000.0, 3_000.0, 5_000.0] {
+        s.bands[idx(f)] += 2.0;
+      }
+    }
+    "bass" => {
+      for f in [40.0, 60.0, 80.0, 120.0] {
+        s.bands[idx(f)] += 4.0;
+      }
+      s.bands[idx(300.0)] -= 1.0;
+    }
+    "treble" => {
+      for f in [6_000.0, 8_000.0, 12_000.0] {
+        s.bands[idx(f)] += 3.0;
+      }
+    }
+    "loud" => {
+      s.bands[idx(60.0)] += 3.0;
+      s.bands[idx(3_000.0)] += 2.0;
+      s.bands[idx(10_000.0)] += 2.0;
+      s.bands[idx(500.0)] -= 2.0;
+    }
+    _ => {}
+  }
+  s
+}
+
+#[cfg(test)]
+mod tests {
+  use super::eq_preset;
+
+  #[test]
+  fn eq_presets_are_well_formed() {
+    for key in ["flat", "vocal", "podcast", "bass", "treble", "loud"] {
+      let s = eq_preset(key);
+      assert_eq!(s.bands.len(), 31, "{key}");
+      assert!(s.bands.iter().all(|b| (-24.0..=24.0).contains(b)), "{key}");
+    }
+    assert!(eq_preset("flat").bands.iter().all(|b| *b == 0.0));
+    assert!(eq_preset("podcast").low_cut_on);
   }
 }

@@ -16,7 +16,11 @@
 #[path = "tray_windows.rs"]
 mod imp;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "tray_linux.rs"]
+mod imp;
+
+#[cfg(not(any(windows, target_os = "linux")))]
 #[path = "tray_other.rs"]
 mod imp;
 

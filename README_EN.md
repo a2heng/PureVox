@@ -16,6 +16,7 @@ A1/A2. It is not a VoiceMeeter clone; AI processing and low latency come first.
   speakerphone), with delay calibration and level matching.
 - **OBS audio filters**: noise gate, compressor, limiter, expander, upward compressor, 3-band EQ and
   polarity invert — ranges, defaults and steps match OBS.
+- **31-band EQ / visualizer**: drag 31 bands (±24 dB, presets, low/high cut) and read VU + 64-band spectrum in the inspector.
 - **Multi-device mixer (native GPUI node canvas)**: sources, processing nodes and outputs are nodes;
   drag a wire between ports to route. Nodes can fan out / fan in; buses are named by purpose.
 - **Device pool**: one device used by several columns is opened once; multiple sources are summed by
@@ -38,8 +39,7 @@ A1/A2. It is not a VoiceMeeter clone; AI processing and low latency come first.
 Audio engine complete: capture + resampling, playback with clock servoing, denoise / TSE / AEC,
 OBS filters, device pool and mixing, networking (incl. the Android client), virtual drivers and
 media rows. The UI is now a GPUI node canvas with per-node inspectors; AEC calibration, TSE
-reference recording, media nodes, tray, hotkey recording and cue presets are wired. Staged:
-window geometry memory and the Linux packaging pipeline.
+reference recording, media nodes, tray, hotkey recording and cue presets are wired. Window geometry memory and Linux tar.gz/deb packaging are wired; the Windows tray is complete, the Linux tray covers engine/quit only.
 
 - Downloads: [Releases](https://github.com/a2heng/PureVox/releases) (version = year.month.day).
 - The previous implementation (Python + Tkinter) is gone; use `git log` if you need it.
