@@ -207,8 +207,9 @@ cd android
 不再单独 apply `org.jetbrains.kotlin.android`）。`gradle/wrapper/gradle-wrapper.jar` 已入库，
 不要替换；`gradle-wrapper.properties` 钉的是 Gradle 9.9.1。
 
-本机工具链统一放在 `D:_Android\`（`jdk-25` / `gradle-9.9.1` / `sdk`）；`local.properties`
-指向 `D:/006_Android/sdk`。`D:\Android\Sdk` 是指向它的 junction，老脚本不受影响。
+本机工具链统一放在 `D:_Android\`（`jdk-25` / `gradle-9.9.1` / `sdk`，另保留 `jdk-17`
+给还在用旧 Gradle 的项目）；`local.properties` 指向 `D:/006_Android/sdk`。
+旧的 `D:\Android\`、`D:\jdk-17` 已删除，本机其它安卓项目的 `local.properties` 也已切到新路径。
 
 ### debug 包与 CI 的 release 包共存
 
