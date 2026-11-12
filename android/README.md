@@ -202,9 +202,13 @@ cd android
 `-debug` 段来自 `versionNameSuffix`**，不是文件名里另拼的。别把这条当成可有可无的整洁癖：
 `app-debug.apk` / `app-release.apk` 只差一个词，手机上两只应用并存时基本靠猜。
 
-需要 JDK 17 与 Android SDK（`compileSdk 34`）——**不需要 NDK / CMake**（Opus 是预编译入库的
-`.so`，见上）。`gradle/wrapper/gradle-wrapper.jar` 已入库，不要替换；
-`gradle-wrapper.properties` 钉的是 Gradle 8.9（AGP 8.7.3 的最低要求）。
+需要 JDK 25 与 Android SDK（`compileSdk 37` / build-tools 37.0.0）——**不需要 NDK / CMake**
+（Opus 是预编译入库的 `.so`，见上）。Gradle 9.9.1 + AGP 9.5.1（AGP 9 自带 Kotlin 支持，
+不再单独 apply `org.jetbrains.kotlin.android`）。`gradle/wrapper/gradle-wrapper.jar` 已入库，
+不要替换；`gradle-wrapper.properties` 钉的是 Gradle 9.9.1。
+
+本机工具链统一放在 `D:_Android\`（`jdk-25` / `gradle-9.9.1` / `sdk`）；`local.properties`
+指向 `D:/006_Android/sdk`。`D:\Android\Sdk` 是指向它的 junction，老脚本不受影响。
 
 ### debug 包与 CI 的 release 包共存
 

@@ -26,7 +26,6 @@
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 // ── release 签名 ──────────────────────────────────────────────────────────────
@@ -94,12 +93,12 @@ val pvVersionCode: Int = (findProperty("pvVersionCode") as String?)?.let { raw -
 
 android {
     namespace = "com.purevox.mic"
-    compileSdk = 34
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.purevox.mic"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 37
         // versionCode 必须**单调递增**才能让应用内更新检查判出新旧，故取 `yyMMddHHmm ÷ 10`
         // （如 261008143，10 分钟粒度、Int32 内）。由 CI 传入（`-PpvVersionCode=`，见
         // tools/automation/version.py 的 ACODE）；本机不带参数 → 1。解析在 android 块上方。
@@ -184,14 +183,17 @@ android {
     // 自然叫 `PureVox-1.0-debug-android-arm64.apk`，CI 的 `PureVox-<年.月.日>-android-arm64.apk`
     // 永远不会有这个后缀。
     //
-    // 用 v1 变体 API 的 `outputFileName`：AGP 8.7 的 `androidComponents` 新 API 里 **没有**
-    // 改 APK 文件名的入口（`VariantOutput` 只有 versionCode / versionName / enabled），
-    // 所以这里只能走已弃用但仍在的 `applicationVariants`。AGP 9 删掉它时同步迁移。
-    applicationVariants.all {
-        val pvApkName = "PureVox-${versionName}-android-arm64.apk"
-        outputs.forEach {
-            (it as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                .outputFileName = pvApkName
+    // AGP 9 删掉了旧的 `applicationVariants`，改用 `androidComponents` 的新 API：
+    // `VariantOutput.outputFileName` 现在是一等属性（AGP 8.7 时还没有，只能在旧 API 里强转）。
+    //
+    // `output.versionName` 已经带上 debug 的 `-debug` 后缀（来自 buildType 的
+    // `versionNameSuffix`），所以这里直接用，不要再拼一次。
+    androidComponents {
+        onVariants { variant ->
+            variant.outputs.forEach { output ->
+                val name = output.versionName.orNull ?: variant.name
+                output.outputFileName.set("PureVox-$name-android-arm64.apk")
+            }
         }
     }
 
@@ -200,8 +202,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
     }
 
     buildFeatures {
@@ -210,11 +214,11 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.appcompat:appcompat:1.8.0")
+    implementation("com.google.android.material:material:1.14.0")
     // 明文 ws:// —— 没有 TLS 依赖，也没有证书信任绕过（新版协议就是明文 + usesCleartextTraffic）
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.1")
     // 二维码扫描（「扫描」按钮）：自带相机预览与解码界面，纯 Java、不引 NDK。
     // 只用来把电脑端卡片的二维码内容（`https://<ip>:<端口>/`）读进地址栏。
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")

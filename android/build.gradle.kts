@@ -16,8 +16,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // 根构建脚本：只声明插件版本，模块里 apply。
-// AGP 8.7.x 配 Gradle 8.9（gradle/wrapper/gradle-wrapper.properties 里钉住）。
+// AGP 9.5.x 配 Gradle 9.9.1 + JDK 25（gradle/wrapper/gradle-wrapper.properties 里钉住）。
 plugins {
-    id("com.android.application") version "8.7.3" apply false
-    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+    id("com.android.application") version "9.5.1" apply false
 }
