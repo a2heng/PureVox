@@ -63,6 +63,28 @@ def build() -> None:
     )
 
 
+APPSTREAM = """<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.purevox.PureVox</id>
+  <name>PureVox</name>
+  <summary>Real-time AI microphone noise reduction</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>Real-time AI denoise, target speech extraction and echo cancellation,
+    with a node graph mixer and network audio.</p>
+  </description>
+  <launchable type="desktop-id">purevox.desktop</launchable>
+  <url type="homepage">https://github.com/a2heng/PureVox</url>
+  <provides>
+    <binary>purevox</binary>
+  </provides>
+  <categories>
+    <category>AudioVideo</category>
+  </categories>
+</component>
+"""
+
 DESKTOP_ENTRY = """[Desktop Entry]
 Type=Application
 Name=PureVox
@@ -139,6 +161,7 @@ def make_deb(ver: str, staged: Path) -> Path | None:
         (root / "usr" / "bin").mkdir(parents=True)
         (root / "usr" / "lib" / "purevox").mkdir(parents=True)
         (root / "usr" / "share" / "applications").mkdir(parents=True)
+        (root / "usr" / "share" / "metainfo").mkdir(parents=True)
         (root / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps").mkdir(parents=True)
         shutil.copy2(staged / "purevox", root / "usr" / "bin" / "purevox.bin")
         (root / "usr" / "bin" / "purevox.bin").chmod(0o755)
@@ -149,6 +172,9 @@ def make_deb(ver: str, staged: Path) -> Path | None:
                 root / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps" / "purevox.png",
             )
         shutil.copy2(staged / "purevox.desktop", root / "usr" / "share" / "applications" / "purevox.desktop")
+        (root / "usr" / "share" / "metainfo" / "purevox.appdata.xml").write_text(
+            APPSTREAM, encoding="utf-8"
+        )
         # 运行时按 exe 同级找 models/；deb 的二进制在 /usr/bin，模型在 /usr/lib/purevox，
         # 用一层 sh 包装把 PUREVOX_MODEL_DIR 对上（不把模型塞进 /usr/bin）。
         wrapper = root / "usr" / "bin" / "purevox"
@@ -194,6 +220,7 @@ def make_appimage(ver: str, staged: Path, tool: Path | None) -> Path | None:
     try:
         (appdir / "usr" / "bin").mkdir(parents=True)
         (appdir / "usr" / "share" / "applications").mkdir(parents=True)
+        (appdir / "usr" / "share" / "metainfo").mkdir(parents=True)
         (appdir / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps").mkdir(
             parents=True
         )
@@ -209,6 +236,9 @@ def make_appimage(ver: str, staged: Path, tool: Path | None) -> Path | None:
         shutil.copy2(
             staged / "purevox.desktop",
             appdir / "usr" / "share" / "applications" / "purevox.desktop",
+        )
+        (appdir / "usr" / "share" / "metainfo" / "purevox.appdata.xml").write_text(
+            APPSTREAM, encoding="utf-8"
         )
         apprun = appdir / "AppRun"
         apprun.write_text(
