@@ -324,7 +324,8 @@ impl AudioManager {
   /// **不需要先手动启动**：校准必须有列工作线程把「原始近端 hop + 远端窗口」喂进
   /// `calib::feed`（`engine/session.rs`），没有会话就没人喂。所以会话未运行时这里
   /// **临时启动**一个，第二个返回值是 `Some(运行代号)` 表示「本次是临时的，测完要收尾
-  /// 停掉」——交给 [`Self::finish_temp_session`]（看门狗线程在 `main.rs`）。
+  /// 停掉」——交给 [`Self::finish_temp_session`]（调用方起看门狗，等 `calib_in_flight`
+  /// 变 false 后再收尾；`ui/graph.rs` 的 `start_calibrate` 就是这么做的）。
   pub fn calibrate_aec_delay(
     &self,
     at: Option<(usize, usize)>,
@@ -368,6 +369,22 @@ impl AudioManager {
       .get("far_device")
       .cloned()
       .unwrap_or_default();
+    // Session V2：远端是**连线**（to_port = 1），不再有 `far_device` 参数。
+    // 必须从图里找到 far 源节点（通常是 loopback）的设备，校准探针要送到**那只设备**，
+    // 否则像「输出走 VB-CABLE、远端正回环扬声器」这种设置，探针只会进 CABLE，人耳听不到。
+    let input_src = |port: u8| {
+      target_row
+        .inputs
+        .iter()
+        .find(|e| e.to_port == port)
+        .and_then(|e| plan.node(e.from))
+    };
+    let near_src = input_src(0);
+    let far_src = input_src(1);
+    let far = far_src
+      .and_then(|n| n.device.clone())
+      .filter(|d| !d.is_empty())
+      .unwrap_or(far);
     // 探针送到会话里所有输出设备：保证 far 与 mic 都能收到同一段扫频
     let mut outs: Vec<String> = Vec::new();
     for c in &plan.columns {
@@ -426,8 +443,17 @@ impl AudioManager {
     };
     // 固定参考延时（见 calib::CALIB_REF_MS）：校准测的是绝对延时，不依赖当前存储值。
     // 设备标识只进报告（诊断 / AI 复现），不参与算法。
-    let mic_dev = target_row.device.clone().filter(|d| !d.is_empty());
-    let far_dev = Some(far.clone()).filter(|d| !d.is_empty());
+    let mic_dev = near_src
+      .and_then(|n| n.device.clone())
+      .filter(|d| !d.is_empty());
+    let far_dev = far_src
+      .map(|n| {
+        n.device
+          .clone()
+          .filter(|d| !d.is_empty())
+          .unwrap_or_else(|| n.ptype.clone())
+      })
+      .filter(|d| !d.is_empty());
     if let Err(e) = self.calib.start(crate::engine::calib::CalibStart {
       col: ci,
       row: ri,

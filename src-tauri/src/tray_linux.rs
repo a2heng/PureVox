@@ -66,3 +66,6 @@ pub fn hide_main() -> bool {
 pub fn quitting() -> bool {
   false
 }
+
+/// Linux 托盘由 ksni 管理，暂不换图标（托盘菜单里已有启停）：保持同一套调用点（Windows 按引擎状态换明暗图标）。
+pub fn set_running(_on: bool) {}

@@ -2,7 +2,8 @@
 #
 # 桌面安装包用 **NSIS**（与旧 Tauri 产物同一套形状：按用户安装、开始菜单/桌面快捷方式、
 # `PureVox_<版本>_x64-setup.exe`），不再依赖 Tauri/WebView —— 应用是 GPUI。
-# Linux 安装包（AppImage / deb / rpm）待恢复；恢复后加回 Linux job。
+# Linux 与 Windows 在**同一个 tag** 里一起打（deb + AppImage；见 `package_linux.py`），
+# 然后由 release job 一次挂上去（`release_stage.sh` 的 desktop 分支）。
 #
 # 安卓是**独立通道**：tag `android-v*`、工作流 `android-release.yml`、独立 release 与日志。
 name: 桌面端打包发版（tag v* / 手动）
@@ -78,11 +79,79 @@ jobs:
           path: dist/PureVox_*_x64-setup.exe
           if-no-files-found: error
 
+  linux:
+    name: 打包 · Linux（deb + AppImage）
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load versions (versions.env 是唯一来源)
+        shell: bash
+        run: |
+          while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+              ''|'#'*) continue ;;
+              *=*) printf '%s\n' "$line" >> "$GITHUB_ENV" ;;
+            esac
+          done < tools/automation/versions.env
+
+      - name: Set app version（tag / 日期）
+        shell: bash
+        run: python tools/automation/version.py >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain (rustfmt + clippy)
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+          rustup default "$RUST_TOOLCHAIN"
+
+      # GPUI 需要 X11 / Wayland / ALSA / OpenGL 的开发头文件；打包脚本还要 dpkg-deb。
+      - name: Install system deps
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             pkg-config libssl-dev libasound2-dev libfontconfig1-dev libfreetype-dev             libx11-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev             libwayland-dev libvulkan-dev libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev             dpkg-dev file
+
+      - name: "Gate · fmt"
+        shell: bash
+        run: python tools/automation/check.py -Gate fmt
+
+      - name: "Gate · clippy"
+        shell: bash
+        run: python tools/automation/check.py -Gate clippy
+
+      - name: "Gate · test"
+        shell: bash
+        run: python tools/automation/check.py -Gate test
+
+      # appimagetool 用 `--appimage-extract-and-run`，容器里不需要 FUSE。
+      - name: Fetch appimagetool
+        shell: bash
+        run: |
+          curl -fsSL -o /tmp/appimagetool             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+
+      - name: Build Linux packages
+        shell: bash
+        run: python tools/automation/package_linux.py --appimagetool /tmp/appimagetool
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: PureVox-Linux-x64-${{ env.VERSION }}
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+          if-no-files-found: error
+
   # ---------------------------------------------------------------- Release
   release:
-    name: 发版（v* tag → 只发安装包）
+    name: 发版（v* tag → 同时发 Windows + Linux）
     runs-on: ubuntu-24.04
-    needs: [windows]
+    needs: [windows, linux]
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
@@ -113,6 +182,6 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
           VERSION: ${{ env.VERSION }}
-          PLATFORM: windows
+          PLATFORM: desktop
           ARTIFACTS: artifacts
         run: bash tools/automation/release_stage.sh

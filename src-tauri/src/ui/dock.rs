@@ -9,9 +9,8 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::PathBuilder;
-use gpui_kit::component::Selectable as _;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
-use gpui_kit::{AnyElement, Context, Window, canvas, div, point, prelude::*, px, rgb};
+use gpui_kit::{AnyElement, Context, Window, canvas, div, point, prelude::*, px, rgb, rgba};
 
 use super::theme as t;
 use super::widgets::*;
@@ -31,7 +30,7 @@ impl Workspace {
   ) -> AnyElement {
     match self.selected.and_then(|id| self.plan.node(id).cloned()) {
       Some(n) => {
-        let mut body = div().flex().flex_col().gap_3();
+        let mut body = div().flex().flex_col().gap_2();
         if node_module(&n.ptype) == NodeModule::Network {
           body = body.child(self.net_card(cx));
         }
@@ -63,7 +62,7 @@ impl Workspace {
       DockPage::Settings => div()
         .flex()
         .flex_col()
-        .gap_3()
+        .gap_2()
         .child(
           div()
             .flex()
@@ -90,6 +89,15 @@ impl Workspace {
       .bg(rgb(t::PANEL))
       .border_l_1()
       .border_color(rgb(t::BORDER))
+      .on_mouse_up(
+        gpui_kit::MouseButton::Left,
+        cx.listener(|this, _, _, cx| {
+          if this.menu.is_some() {
+            this.menu = None;
+            cx.notify();
+          }
+        }),
+      )
       .child(
         div()
           .id("dock-scroll")
@@ -98,7 +106,7 @@ impl Workspace {
           .overflow_y_scroll()
           .flex()
           .flex_col()
-          .gap_3()
+          .gap_2()
           .p(px(t::DOCK_PAD))
           .child(body),
       )
@@ -418,9 +426,8 @@ impl Workspace {
         let on = current == *id;
         let id2 = id.to_string();
         row = row.child(
-          quiet_button(cx, format!("cue:{kind}:{id}"), *label)
-            .when(on, |b| b.selected(true))
-            .on_click(cx.listener(move |this, _, _, cx| {
+          choice_button(cx, format!("cue:{kind}:{id}"), *label, on).on_click(cx.listener(
+            move |this, _, _, cx| {
               if kind == "start" {
                 this.settings.cue_start = id2.clone();
               } else {
@@ -434,31 +441,31 @@ impl Workspace {
                 Err(e) => format!("{}{e}", i18n::tr("保存提示音设置失败：")),
               };
               cx.notify();
-            })),
+            },
+          )),
         );
       }
       row.into_any_element()
     };
     let lang_btn = |id: &'static str, code: &'static str, label: &'static str| {
       let on = lang == code;
-      quiet_button(cx, id, label)
-        .when(on, |b| b.selected(true))
-        .on_click(cx.listener(move |this, _, _, cx| {
-          match crate::config::save_lang(code) {
-            Ok(()) => {
-              i18n::set(code);
-              this.status = if code == "en" {
-                "Language: English".into()
-              } else {
-                i18n::tr("界面语言：中文").into()
-              };
-            }
-            Err(e) => this.status = format!("{}{e}", i18n::tr("保存语言失败：")),
+      choice_button(cx, id, label, on).on_click(cx.listener(move |this, _, _, cx| {
+        match crate::config::save_lang(code) {
+          Ok(()) => {
+            i18n::set(code);
+            this.status = if code == "en" {
+              "Language: English".into()
+            } else {
+              i18n::tr("界面语言：中文").into()
+            };
           }
-          cx.notify();
-        }))
+          Err(e) => this.status = format!("{}{e}", i18n::tr("保存语言失败：")),
+        }
+        cx.notify();
+      }))
     };
 
+    let entity = cx.entity();
     let mut list = div()
       .flex()
       .flex_col()
@@ -471,99 +478,115 @@ impl Workspace {
           .child(lang_btn("lang-zh", "zh", "中文"))
           .child(lang_btn("lang-en", "en", "English")),
       )
-      .child(section("开机自启"))
-      .child(
-        quiet_button(
-          cx,
-          "autostart",
-          if auto {
-            "已开启 · 点击关闭"
-          } else {
-            "已关闭 · 点击开启"
-          },
-        )
-        .on_click(cx.listener(move |this, _, _, cx| {
-          this.status = match crate::autostart::set(!auto) {
-            Ok(()) => {
-              if auto {
-                "开机自启已关闭".into()
-              } else {
-                "开机自启已开启".into()
-              }
-            }
-            Err(e) => format!("开机自启设置失败：{e}"),
-          };
-          cx.notify();
-        })),
-      )
-      .child(section("全局热键"))
-      .child(
-        quiet_button(
-          cx,
-          "hotkey-toggle",
-          if hot {
-            "已开启 · 点击关闭"
-          } else {
-            "已关闭 · 点击开启"
-          },
-        )
-        .on_click(cx.listener(move |this, _, _, cx| {
-          this.settings.hotkey_on = !hot;
-          this.status = match crate::config::save_settings(&this.settings) {
-            Ok(()) => {
-              this.restart_hotkeys();
-              if hot {
-                i18n::tr("全局热键已关闭").into()
-              } else {
-                i18n::tr("全局热键已开启").into()
-              }
-            }
-            Err(e) => format!("保存热键设置失败：{e}"),
-          };
-          cx.notify();
-        })),
-      )
-      .child(field(
-        "当前键位",
-        if hot_spec.is_empty() {
-          "—".to_string()
-        } else {
-          hot_spec
+      // 一个开关同时管两件事（与旧 Tauri 版的「开机自启 + 启动自运行并隐藏窗口」
+      // 两个勾选合成一个）：写注册表启动项，并让下次启动自动跑引擎、收进托盘。
+      .child(switch_row(
+        "autostart",
+        "开机自启（静默运行）",
+        auto,
+        {
+          let entity = entity.clone();
+          move |next, _, cx| {
+            let on = *next;
+            entity.update(cx, |this, cx| {
+              this.settings.start_hidden = on;
+              let auto = crate::autostart::set(on);
+              let saved = crate::config::save_settings(&this.settings);
+              this.status = match (auto, saved) {
+                (Ok(()), Ok(())) => {
+                  if on {
+                    "已开启：登录后自动运行引擎并隐藏到托盘".into()
+                  } else {
+                    "已关闭开机自启".into()
+                  }
+                }
+                (Err(e), _) => format!("开机自启设置失败：{e}"),
+                (_, Err(e)) => format!("保存静默启动设置失败：{e}"),
+              };
+              cx.notify();
+            });
+          }
         },
       ))
-      .child(
-        quiet_button(cx, "hotkey-record", "录制").on_click(cx.listener(|this, _, _, cx| {
-          this.recording = Some(RecordTarget::EngineHotkey);
-          this.status = i18n::tr("按下新的全局热键…（Esc 取消）").into();
-          cx.notify();
-        })),
-      )
-      .child(section("提示音"))
-      .child(
-        quiet_button(
-          cx,
-          "cue-toggle",
-          if cue {
-            "已开启 · 点击关闭"
-          } else {
-            "已关闭 · 点击开启"
-          },
-        )
-        .on_click(cx.listener(move |this, _, _, cx| {
-          this.settings.cue_on = !cue;
-          this.status = match crate::config::save_settings(&this.settings) {
-            Ok(()) => {
-              if cue {
-                i18n::tr("提示音已关闭").into()
-              } else {
-                i18n::tr("提示音已开启").into()
+      .child(hint("登录后自动运行引擎并隐藏到托盘；点托盘图标显示窗口。"))
+      .child(switch_row("hotkey-toggle", "全局热键", hot, {
+        let entity = entity.clone();
+        move |next, _, cx| {
+          let on = *next;
+          entity.update(cx, |this, cx| {
+            this.settings.hotkey_on = on;
+            this.status = match crate::config::save_settings(&this.settings) {
+              Ok(()) => {
+                this.restart_hotkeys();
+                if on {
+                  i18n::tr("全局热键已开启").into()
+                } else {
+                  i18n::tr("全局热键已关闭").into()
+                }
               }
-            }
-            Err(e) => format!("{}{e}", i18n::tr("保存提示音设置失败：")),
-          };
-          cx.notify();
-        })),
+              Err(e) => format!("保存热键设置失败：{e}"),
+            };
+            cx.notify();
+          });
+        }
+      }))
+      .child(
+        div()
+          .flex()
+          .items_center()
+          .justify_between()
+          .gap_2()
+          .child(
+            div()
+              .flex()
+              .items_center()
+              .gap_2()
+              .text_size(px(t::TEXT_SM))
+              .child(
+                div()
+                  .text_color(rgb(t::MUTED))
+                  .child(i18n::tr("当前键位").to_string()),
+              )
+              .child(
+                div()
+                  .text_color(rgb(t::TEXT))
+                  .child(if hot_spec.is_empty() {
+                    "—".to_string()
+                  } else {
+                    hot_spec
+                  }),
+              ),
+          )
+          .child(
+            quiet_button(cx, "hotkey-record", "录制").on_click(cx.listener(|this, _, _, cx| {
+              this.begin_record(
+                RecordTarget::EngineHotkey,
+                "按下新的全局热键…（Esc 取消）",
+                cx,
+              );
+            })),
+          ),
       )
+      .child(switch_row("cue-toggle", "提示音", cue, {
+        let entity = entity.clone();
+        move |next, _, cx| {
+          let on = *next;
+          entity.update(cx, |this, cx| {
+            this.settings.cue_on = on;
+            this.status = match crate::config::save_settings(&this.settings) {
+              Ok(()) => {
+                if on {
+                  i18n::tr("提示音已开启").into()
+                } else {
+                  i18n::tr("提示音已关闭").into()
+                }
+              }
+              Err(e) => format!("{}{e}", i18n::tr("保存提示音设置失败：")),
+            };
+            cx.notify();
+          });
+        }
+      }))
       .child(field("启动音", cue_start_label))
       .child(cue_row("start", self.settings.cue_start.clone()))
       .child(field("停止音", cue_stop_label))
@@ -623,7 +646,7 @@ impl Workspace {
     }
     if !st.url.is_empty() {
       row = row.child(
-        quiet_button(cx, "up-page", "打开发布页").on_click(cx.listener(|this, _, _, cx| {
+        ghost_button(cx, "up-page", "打开发布页").on_click(cx.listener(|this, _, _, cx| {
           this.status = match crate::openurl::open(&this.update_status.url) {
             Ok(()) => "已打开发布页".into(),
             Err(e) => format!("打开失败：{e}"),
@@ -675,7 +698,7 @@ impl Workspace {
             })),
           )
           .child(
-            quiet_button(cx, "vb-tutorial", "视频教程").on_click(cx.listener(|this, _, _, cx| {
+            ghost_button(cx, "vb-tutorial", "视频教程").on_click(cx.listener(|this, _, _, cx| {
               let url = "https://www.bilibili.com/video/BV1i2bazGEKe/";
               this.status = match crate::openurl::open(url) {
                 Ok(()) => "已打开视频教程".into(),
@@ -685,7 +708,7 @@ impl Workspace {
             })),
           )
           .child(
-            quiet_button(cx, "vb-panel", "VB 控制面板").on_click(cx.listener(|this, _, _, cx| {
+            ghost_button(cx, "vb-panel", "VB 控制面板").on_click(cx.listener(|this, _, _, cx| {
               this.status = match crate::vb_panel::open() {
                 Ok(()) => "已请求打开 VB-CABLE 控制面板".into(),
                 Err(e) => format!("打开失败：{e}"),
@@ -699,7 +722,7 @@ impl Workspace {
     list = list
       .child(section("系统声音"))
       .child(
-        quiet_button(cx, "open-sound", "打开系统声音设置").on_click(cx.listener(
+        ghost_button(cx, "open-sound", "打开系统声音设置").on_click(cx.listener(
           |this, _, _, cx| {
             this.status = match crate::sound_panel::open() {
               Ok(()) => "已打开系统声音设置".into(),
@@ -710,7 +733,7 @@ impl Workspace {
         )),
       )
       .child(hint(
-        "回环源在「＋ 输入 → 系统声音」里添加；这里只打开系统混音面板。",
+        "回环源在「添加节点 → 输入 → 系统声音」里添加；这里只打开系统混音面板。",
       ));
 
     list.into_any_element()
@@ -718,93 +741,348 @@ impl Workspace {
 
   /// AEC 校准：只属于**选中的那个 AEC 节点**（检查器的一部分，不常驻）。
   pub(super) fn aec_card(&self, id: u32, cx: &mut Context<Self>) -> AnyElement {
-    let mut list = div().flex().flex_col().gap_2().child(section("AEC 校准"));
-    let Some((ci, ri)) = self.pos(id) else {
+    let mut list = div().flex().flex_col().gap_1().child(section("AEC 校准"));
+    if self.pos(id).is_none() {
       return list
         .child(hint("这个节点不在计划里（可能刚被删除）。"))
         .into_any_element();
-    };
+    }
     list = list.child(
       div()
         .flex()
         .items_center()
         .gap_2()
         .child(
-          quiet_button(cx, "aec-calib", "开始校准").on_click(cx.listener(
-            move |this, _, _window, cx| {
-              let mgr = this.audio.clone();
-              this.spawn_job("AEC 校准", move || {
-                match mgr.calibrate_aec_delay(Some((ci, ri))) {
-                  Ok((msg, temp)) => {
-                    mgr.finish_temp_session(temp);
-                    Ok(msg)
-                  }
-                  Err(e) => Err(e),
-                }
-              });
-              cx.notify();
-            },
-          )),
+          quiet_button(cx, "aec-calib", "开始校准")
+            .on_click(cx.listener(move |this, _, _window, cx| this.start_calibrate(id, cx))),
         )
-        .child(hint("播放一段系统声音，让麦克风听到")),
+        .child(hint("从远端设备播放扫频探针")),
     );
-    match &self.calib_report {
-      crate::debug::Probe::Ok { value } => {
-        if let Some(ms) = value.delay_ms {
-          list = list.child(field("远端延时", format!("{ms:.0} ms")));
+    // 按钮下面**只有一张图**：延时 / 增益这些结论已经回填到上面的参数行，
+    // 这里再列一遍只会重复，而且会让校准区在校准前后高度跳动。
+    let (series, mic_peak_db, far_peak_db, mic_peak_ms, far_peak_ms) = match &self.calib_report {
+      crate::debug::Probe::Ok { value } => (
+        value.series.clone(),
+        value.mic_band_rms_db,
+        value.far_band_rms_db,
+        value.mic_peak_ms,
+        value.far_peak_ms,
+      ),
+      _ => (None, None, None, None, None),
+    };
+
+    // ---- 校准曲线 ----
+    // 数据来自 `CalibReport.series`（启动时从 calib_last.json 读回，不是截图）：
+    // 两条带内能量包络 + 峰值横线（标数值）+ 峰值时刻竖线 + 延时差箭头，
+    // 刻度全部画在框里（右侧 dB、底部时间）。
+    let plot_data = series
+      .as_ref()
+      .filter(|s| s.t_ms.len() >= 2)
+      .map(|s| (s.t_ms.clone(), s.mic_env_db.clone(), s.far_env_db.clone()));
+    let has_plot = plot_data.is_some();
+
+    // 纵轴：只看 60 dB 窗口（探针前的数字静音是 -120 dB，整段铺开会把曲线压成一条缝），
+    // 上下取整到 10 dB。
+    let (axis_lo, axis_hi) = plot_data
+      .as_ref()
+      .map(|(_, mic, far)| {
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for &v in mic.iter().chain(far.iter()) {
+          if v.is_finite() {
+            lo = lo.min(v);
+            hi = hi.max(v);
+          }
         }
-        if let Some(db) = value.echo_path_db {
-          list = list.child(field("回声路径", format!("{db:.1} dB")));
+        if !lo.is_finite() || !hi.is_finite() {
+          lo = -80.0;
+          hi = 0.0;
         }
-        list = list.child(hint(value.verdict_text.clone()));
-        if let Some(next) = &value.next_step {
-          list = list.child(hint(next.clone()));
-        }
-        if let Some(s) = &value.series
-          && s.t_ms.len() >= 2
-        {
-          // 旧 Tauri 的校准曲线：近端 / 远端带内能量包络，画在同一时间轴上。
-          let ts = s.t_ms.clone();
-          let mic = s.mic_env_db.clone();
-          let far = s.far_env_db.clone();
-          list = list.child(div().h(px(96.)).w_full().child(canvas(
-            |_, _, _| {},
-            move |bounds, _, window, _| {
-              let w = bounds.size.width.as_f32();
-              let h = bounds.size.height.as_f32();
-              let (t0, t1) = (ts[0], *ts.last().unwrap_or(&ts[0]));
-              let span = (t1 - t0).max(1e-3);
-              let (lo, hi) = (-80.0f64, 0.0f64);
-              let draw = |window: &mut Window, env: &[f64], color: u32| {
-                let mut pb = PathBuilder::stroke(px(1.3));
-                for (i, &db) in env.iter().enumerate().take(ts.len()) {
-                  let x = ((ts[i] - t0) / span) as f32 * w;
-                  let v = ((db - lo) / (hi - lo)).clamp(0.0, 1.0) as f32;
-                  let y = h - v * h;
-                  if i == 0 {
-                    pb.move_to(bounds.origin + point(px(x), px(y)));
-                  } else {
-                    pb.line_to(bounds.origin + point(px(x), px(y)));
-                  }
-                }
-                if let Ok(p) = pb.build() {
-                  window.paint_path(p, rgb(color));
-                }
+        let lo = (lo.max(hi - 60.0) / 10.0).floor() * 10.0;
+        let hi = ((hi / 10.0).ceil() * 10.0).max(lo + 20.0);
+        (lo, hi)
+      })
+      .unwrap_or((-80.0, 0.0));
+
+    const PLOT_H: f32 = 210.0;
+    const AXIS_W: f32 = 36.0;
+    const AXIS_H: f32 = 16.0;
+    let db_ticks: Vec<f64> = {
+      let mut v = Vec::new();
+      let mut db = axis_hi;
+      while db >= axis_lo - 0.5 {
+        v.push(db);
+        db -= 10.0;
+      }
+      v
+    };
+    let time_ticks: Vec<String> = match &plot_data {
+      Some((ts, _, _)) => {
+        let t_end = ts.last().copied().unwrap_or(0.0) / 1000.0;
+        (0..5)
+          .map(|i| {
+            let s = t_end * i as f64 / 4.0;
+            if t_end >= 1.0 {
+              format!("{s:.1}s")
+            } else {
+              format!("{s:.0}ms")
+            }
+          })
+          .collect()
+      }
+      None => vec![
+        "0.0s".into(),
+        "0.5s".into(),
+        "1.0s".into(),
+        "1.5s".into(),
+        "2.0s".into(),
+      ],
+    };
+
+    let plot = div()
+      .relative()
+      .h(px(PLOT_H))
+      .w_full()
+      .rounded_md()
+      .bg(rgb(t::BG))
+      .border_1()
+      .border_color(rgb(t::BORDER))
+      .overflow_hidden()
+      .child(
+        canvas(
+          |_, _, _| {},
+          move |bounds, _, window, cx| {
+            let all_w = bounds.size.width.as_f32();
+            let all_h = bounds.size.height.as_f32();
+            let w = (all_w - AXIS_W).max(8.0); // 曲线 + 网格区
+            let h = (all_h - AXIS_H).max(8.0);
+            let o = bounds.origin;
+            let y_of = |db: f64| h * ((axis_hi - db) / (axis_hi - axis_lo)).clamp(0.0, 1.0) as f32;
+            let grid = rgba((t::BORDER << 8) | 0x80);
+            // 横向 10 dB 网格
+            for &db in &db_ticks {
+              let y = o.y + px(y_of(db));
+              let mut pb = PathBuilder::stroke(px(1.));
+              pb.move_to(point(o.x, y));
+              pb.line_to(point(o.x + px(w), y));
+              if let Ok(p) = pb.build() {
+                window.paint_path(p, grid);
+              }
+            }
+            // 纵向时间网格（4 等分）
+            for i in 1..4 {
+              let x = o.x + px(w * i as f32 / 4.0);
+              let mut pb = PathBuilder::stroke(px(1.));
+              pb.move_to(point(x, o.y));
+              pb.line_to(point(x, o.y + px(h)));
+              if let Ok(p) = pb.build() {
+                window.paint_path(p, grid);
+              }
+            }
+            // 右侧 dB 刻度（框内）
+            for &db in &db_ticks {
+              let y = y_of(db) - 5.0;
+              if y > h - 10.0 {
+                continue;
+              }
+              let line = shape_text(window, &format!("{db:.0}"), 9.0, t::MUTED);
+              let x = all_w - 4.0 - line.width.as_f32();
+              let _ = line.paint(
+                point(o.x + px(x), o.y + px(y.max(0.0))),
+                px(10.),
+                gpui_kit::TextAlign::Left,
+                None,
+                window,
+                cx,
+              );
+            }
+            // 底部时间刻度（框内）
+            for (i, label) in time_ticks.iter().enumerate() {
+              let line = shape_text(window, label, 9.0, t::MUTED);
+              let x = match i {
+                0 => 2.0,
+                4 => w - line.width.as_f32() - 2.0,
+                _ => w * i as f32 / 4.0 - line.width.as_f32() / 2.0,
               };
-              draw(window, &far, t::NET);
-              draw(window, &mic, t::MIC);
-            },
-          )));
-          list = list.child(hint("蓝：远端参考 · 绿：麦克风"));
-        }
-      }
-      crate::debug::Probe::Pending => {
-        list = list.child(hint("还没校准（结果会写进 /debug/calib）"));
-      }
-      crate::debug::Probe::Unavailable { reason } => {
-        list = list.child(hint(reason.clone()));
-      }
-    }
+              let _ = line.paint(
+                point(o.x + px(x), o.y + px(h + 3.0)),
+                px(10.),
+                gpui_kit::TextAlign::Left,
+                None,
+                window,
+                cx,
+              );
+            }
+
+            let Some((ts, mic, far)) = plot_data.as_ref() else {
+              return;
+            };
+            if ts.len() < 2 {
+              return;
+            }
+            let t_end = ts.last().copied().unwrap_or(0.0).max(1e-3);
+            let x_of = |t: f64| (t / t_end).clamp(0.0, 1.0) as f32 * w;
+            // 虚线（峰值横线 / 峰值时刻竖线）：手画短段，省得引入 dash 支持。
+            let dashed_h = |window: &mut Window, y: f32, color: gpui_kit::Rgba| {
+              let mut pb = PathBuilder::stroke(px(1.));
+              let mut x = 0.0f32;
+              while x < w {
+                let x2 = (x + 5.0).min(w);
+                pb.move_to(point(o.x + px(x), o.y + px(y)));
+                pb.line_to(point(o.x + px(x2), o.y + px(y)));
+                x += 9.0;
+              }
+              if let Ok(p) = pb.build() {
+                window.paint_path(p, color);
+              }
+            };
+            let dashed_v = |window: &mut Window, x: f32, color: gpui_kit::Rgba| {
+              let mut pb = PathBuilder::stroke(px(1.));
+              let mut y = 0.0f32;
+              while y < h {
+                let y2 = (y + 5.0).min(h);
+                pb.move_to(point(o.x + px(x), o.y + px(y)));
+                pb.line_to(point(o.x + px(x), o.y + px(y2)));
+                y += 9.0;
+              }
+              if let Ok(p) = pb.build() {
+                window.paint_path(p, color);
+              }
+            };
+            // 峰值横线 + 数值（蓝 = 远端，黄 = 麦克风）
+            for (db, label, color, below) in [
+              (far_peak_db, i18n::tr("远端峰值"), t::NET, false),
+              (mic_peak_db, i18n::tr("麦克风峰值"), t::AEC, true),
+            ] {
+              let Some(db) = db else { continue };
+              let y = y_of(db);
+              dashed_h(window, y, rgba((color << 8) | 0xA0));
+              let line = shape_text(window, &format!("{label} {db:.1} dBFS"), 9.0, color);
+              let x = (w - 4.0 - line.width.as_f32()).max(2.0);
+              let ly = if below {
+                (y + 2.0).min(h - 10.0)
+              } else {
+                (y - 11.0).max(0.0)
+              };
+              let _ = line.paint(
+                point(o.x + px(x), o.y + px(ly)),
+                px(10.),
+                gpui_kit::TextAlign::Left,
+                None,
+                window,
+                cx,
+              );
+            }
+            // 峰值时刻竖线 + 时刻（两条线的水平距离就是延时差）
+            for (t, label, color, top) in [
+              (far_peak_ms, i18n::tr("远端"), t::NET, 2.0),
+              (mic_peak_ms, i18n::tr("麦克风"), t::AEC, 14.0),
+            ] {
+              let Some(t) = t else { continue };
+              let x = x_of(t);
+              dashed_v(window, x, rgba((color << 8) | 0x80));
+              let line = shape_text(window, &format!("{label} {:.2}s", t / 1000.0), 9.0, color);
+              let mut tx = x + 3.0;
+              if tx + line.width.as_f32() > w - 2.0 {
+                tx = (x - 3.0 - line.width.as_f32()).max(2.0);
+              }
+              let _ = line.paint(
+                point(o.x + px(tx), o.y + px(top)),
+                px(10.),
+                gpui_kit::TextAlign::Left,
+                None,
+                window,
+                cx,
+              );
+            }
+            // 延时差：两根峰值竖线之间的双向箭头 + Δ 数值
+            if let (Some(a), Some(b)) = (far_peak_ms, mic_peak_ms) {
+              let (x0, x1) = (x_of(a), x_of(b));
+              let y_arrow = h * 0.62;
+              let mut pb = PathBuilder::stroke(px(1.));
+              pb.move_to(point(o.x + px(x0), o.y + px(y_arrow)));
+              pb.line_to(point(o.x + px(x1), o.y + px(y_arrow)));
+              pb.move_to(point(o.x + px(x0), o.y + px(y_arrow)));
+              pb.line_to(point(o.x + px(x0 + 4.0), o.y + px(y_arrow - 3.0)));
+              pb.move_to(point(o.x + px(x0), o.y + px(y_arrow)));
+              pb.line_to(point(o.x + px(x0 + 4.0), o.y + px(y_arrow + 3.0)));
+              pb.move_to(point(o.x + px(x1), o.y + px(y_arrow)));
+              pb.line_to(point(o.x + px(x1 - 4.0), o.y + px(y_arrow - 3.0)));
+              pb.move_to(point(o.x + px(x1), o.y + px(y_arrow)));
+              pb.line_to(point(o.x + px(x1 - 4.0), o.y + px(y_arrow + 3.0)));
+              if let Ok(p) = pb.build() {
+                window.paint_path(p, rgba((t::TEXT << 8) | 0xB0));
+              }
+              let delta = (b - a).abs();
+              let label = format!("Δ {delta:.0} ms");
+              let line = shape_text(window, &label, 9.0, t::TEXT);
+              let gap = (x1 - x0).abs();
+              let mut lx = (x0 + x1) / 2.0 - line.width.as_f32() / 2.0;
+              if gap < line.width.as_f32() + 8.0 {
+                lx = (x0.max(x1) + 4.0).min(w - line.width.as_f32() - 2.0);
+              }
+              let ly = (y_arrow - 13.0).max(0.0);
+              let _ = line.paint(
+                point(o.x + px(lx.max(2.0)), o.y + px(ly)),
+                px(10.),
+                gpui_kit::TextAlign::Left,
+                None,
+                window,
+                cx,
+              );
+            }
+
+            let draw = |window: &mut Window, env: &[f64], color: u32| {
+              let mut pb = PathBuilder::stroke(px(1.6));
+              let mut pen = false;
+              for (i, &db) in env.iter().enumerate().take(ts.len()) {
+                if !db.is_finite() {
+                  pen = false;
+                  continue;
+                }
+                let p = o + point(px(x_of(ts[i])), px(y_of(db)));
+                if pen {
+                  pb.line_to(p);
+                } else {
+                  pb.move_to(p);
+                  pen = true;
+                }
+              }
+              if let Ok(p) = pb.build() {
+                window.paint_path(p, rgb(color));
+              }
+            };
+            draw(window, far, t::NET);
+            draw(window, mic, t::AEC);
+          },
+        )
+        .w_full()
+        .h_full(),
+      )
+      .when(!has_plot, |this| {
+        this.child(
+          div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(hint("校准后显示远端 / 麦克风包络")),
+        )
+      });
+
+    list = list.child(plot).child(
+      div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .text_size(px(t::TEXT_XS))
+        .text_color(rgb(t::MUTED))
+        .child(div().size(px(6.)).rounded_full().bg(rgb(t::NET)))
+        .child(i18n::tr("远端参考"))
+        .child(div().size(px(6.)).rounded_full().bg(rgb(t::AEC)))
+        .child(i18n::tr("麦克风")),
+    );
     list.into_any_element()
   }
 }

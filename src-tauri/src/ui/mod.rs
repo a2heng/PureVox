@@ -53,12 +53,13 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 
 type Job = Arc<std::sync::Mutex<Option<Result<String, String>>>>;
 
-const HEADER_H: f32 = 30.0;
-const TERM_H: f32 = 24.0;
+/// 多通道端子编号条的高度。
+const TERM_H: f32 = 16.0;
 
 /// 端子只占**一排**：号码 + 边缘上的接线凸起，通道再多也不加厚。
 fn term_rows(n: usize) -> usize {
-  if n == 0 { 0 } else { 1 }
+  // 单通道不画端子条（端子方块直接贴在卡片边缘）；多通道才占用一行放编号。
+  if n > 1 { 1 } else { 0 }
 }
 const PORT_SIZE: f32 = 12.0;
 /// 端子固定槽位：第 1 路永远在同一 x，第 2 路永远在 +22，和卡片类型/通道数无关。
@@ -118,11 +119,8 @@ enum Drag {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Menu {
-  Source,
-  Ai,
-  Process,
-  Content,
-  Output,
+  /// 唯一的「添加节点」菜单：一张面板里按组列出所有节点类型。
+  Add,
 }
 
 /// 右侧信息栏当前展示的内容。
@@ -213,6 +211,8 @@ pub struct Workspace {
   net_last: Instant,
   /// AEC 校准结论（只取这一份，不拉整份调试快照）
   calib_report: crate::debug::Probe<crate::engine::calib::CalibReport>,
+  /// 已回填过的校准报告 `created_ms`（避免每秒重复回填/重建）
+  last_calib: u64,
   /// 上一个重建还在跑时收到的最新计划：**只保留最后一份**（连点模型按钮不排长队）
   pending_apply: Option<Plan>,
   /// 文件对话框在后台线程跑，结果经这里交回界面线程（选中 → 导入媒体库 → 重建）
@@ -235,6 +235,14 @@ pub struct Workspace {
   eq_geom: Rc<Cell<EqGeom>>,
   /// 正在拖的 EQ 段
   eq_drag: Option<EqDrag>,
+  /// 可视化频谱的显示平滑（按 (列, 行)）；Rust 侧不改实测值
+  viz_smooth: std::collections::HashMap<(usize, usize), Vec<f32>>,
+}
+
+impl Drop for Workspace {
+  fn drop(&mut self) {
+    graph::set_recording_keys(false);
+  }
 }
 
 impl Workspace {
@@ -267,6 +275,10 @@ impl Workspace {
         .unwrap_or_default()
     };
     let calib_report = hub.calib_report();
+    let last_calib = match &calib_report {
+      crate::debug::Probe::Ok { value } => value.created_ms,
+      _ => 0,
+    };
     let was_running = audio.is_running();
     let mut this = Workspace {
       focus_handle,
@@ -277,7 +289,7 @@ impl Workspace {
       last_refresh: Instant::now(),
       selected,
       dock_page: DockPage::Node,
-      status: "从顶部添加输入 / AI / 处理 / 内容 / 输出；拖动端口连线，点节点改参数".into(),
+      status: "点「添加节点」加节点；拖动端口连线，点节点改参数".into(),
       job: None,
       latency,
       drag: None,
@@ -295,6 +307,7 @@ impl Workspace {
       net_qr_url: String::new(),
       net_last: Instant::now() - Duration::from_secs(2),
       calib_report,
+      last_calib,
       pending_apply: None,
       media_pick: Arc::new(std::sync::Mutex::new(None)),
       app_list: Vec::new(),
@@ -306,8 +319,16 @@ impl Workspace {
       last_geom_save: Instant::now(),
       eq_geom: Rc::new(Cell::new(EqGeom::default())),
       eq_drag: None,
+      viz_smooth: std::collections::HashMap::new(),
     };
     this.restart_hotkeys();
+    // 热键录制：在 GPUI 动作分发之前截走按键（普通 key_down 会被动作抢先，见 `graph.rs`）。
+    let capture = cx.intercept_keystrokes(|event, _window, cx| {
+      if graph::capture_recording_key(&event.keystroke) {
+        cx.stop_propagation();
+      }
+    });
+    this.subs.push(capture);
     // 拖动窗口时不要每个像素都写盘；400 ms 节流，关闭时由 main 再无条件写一次。
     let geom_sub = cx.observe_window_bounds(window, |this, window, _cx| {
       if this.last_geom_save.elapsed() >= Duration::from_millis(400) {
@@ -353,10 +374,19 @@ impl Workspace {
   /// 定时轮询：返回 true = 界面有变化，需要重绘。
   fn tick(&mut self, cx: &mut Context<Self>) -> bool {
     let mut dirty = false;
+    // 热键录制：按键由拦截器存下，这里在动作分发之外处理。
+    if self.recording.is_some()
+      && let Some(ks) = graph::take_recorded_key()
+    {
+      self.apply_recorded_key(&ks, cx);
+      dirty = true;
+    }
     // 引擎可能在界面之外被托盘 / 全局热键启停：状态变了就重绘。
     let running = self.audio.is_running();
     if running != self.was_running {
       self.was_running = running;
+      // 托盘图标：运行中 = 亮，已停止 = 暗（与 Tauri 版的 sync_tray 同一行为）。
+      crate::tray::set_running(running);
       dirty = true;
     }
     // 调试接口投递的界面命令（用 API 做交互，不模拟鼠标）。
@@ -376,6 +406,52 @@ impl Workspace {
       self.net_stats = Some(crate::net::hub().stats());
       self.net_ifaces = crate::net::addrs::list();
       self.calib_report = self.hub.calib_report();
+      // 校准成功：按 Tauri 版的行为回填到对应 AEC 节点（延时 + 两路增益），再重建会话。
+      let apply = match &self.calib_report {
+        crate::debug::Probe::Ok { value } if value.ok && value.created_ms != self.last_calib => {
+          Some((
+            value.col,
+            value.row,
+            value.created_ms,
+            value.delay_ms,
+            value.mic_gain_db,
+            value.far_gain_db,
+          ))
+        }
+        _ => None,
+      };
+      if let Some((col, row, created, delay, mic_gain, far_gain)) = apply {
+        let node = self
+          .plan
+          .columns
+          .get_mut(col)
+          .and_then(|c| c.rows.get_mut(row));
+        if let Some(node) = node
+          && node.ptype == "echo_cancel"
+        {
+          if let Some(ms) = delay {
+            node
+              .params
+              .insert("far_delay_ms".into(), format!("{ms:.0}"));
+          }
+          if let Some(g) = mic_gain {
+            node.params.insert("mic_gain_db".into(), format!("{g:.1}"));
+          }
+          if let Some(g) = far_gain {
+            node.params.insert("far_gain_db".into(), format!("{g:.1}"));
+          }
+          self.last_calib = created;
+          self.snapshot();
+          self.status = match delay {
+            Some(ms) => format!("校准已回填：延时 {ms:.0} ms"),
+            None => "校准已回填".into(),
+          };
+          self.apply_structure(cx);
+        } else {
+          // 目标节点不在了：记下这份报告，避免每秒重试。
+          self.last_calib = created;
+        }
+      }
       // 手机端也可能改环深度（双向同步）：界面缓存跟着 hub 走。
       self.settings.net_ring_ms = crate::net::hub().ring_ms();
       self.update_status = crate::update::status();
@@ -543,6 +619,11 @@ impl Workspace {
   fn apply_command(&mut self, cmd: UiCommand, cx: &mut Context<Self>) {
     match cmd {
       UiCommand::ToggleEngine => self.toggle_engine(cx),
+      UiCommand::SetEngine { on } => {
+        if on != self.audio.is_running() {
+          self.toggle_engine(cx);
+        }
+      }
       UiCommand::OpenSettings => {
         self.dock_page = DockPage::Settings;
         self.selected = None;
@@ -583,6 +664,11 @@ impl Workspace {
         self.dock_page = DockPage::Node;
       }
       UiCommand::Arrange => self.arrange(),
+      UiCommand::AddNode { ptype } => {
+        let kind = Self::kind_for(&ptype);
+        self.add_node(kind, &ptype, cx);
+      }
+      UiCommand::CalibrateAec { id } => self.start_calibrate(id, cx),
     }
     cx.notify();
   }
@@ -607,8 +693,14 @@ impl Render for Workspace {
       .on_action(cx.listener(Self::on_undo))
       .on_action(cx.listener(Self::on_redo))
       .on_action(cx.listener(Self::on_delete))
-      .on_key_down(cx.listener(Self::on_record_key))
       .on_mouse_move(cx.listener(Self::on_mouse_move))
+      .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, _, cx| {
+        if this.menu.is_some() && e.keystroke.key.eq_ignore_ascii_case("escape") {
+          this.menu = None;
+          cx.stop_propagation();
+          cx.notify();
+        }
+      }))
       // 拖节点由 GPUI 的 drag 会话接管；位移处理挂在**根**上：
       // 指针离开卡片、经过线/端口/别的卡时仍然收得到事件。
       .on_drag_move::<DragPayload>(cx.listener(
@@ -752,6 +844,15 @@ impl Render for Workspace {
               .min_w_0()
               .h_full()
               .overflow_scroll()
+              .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                  if this.menu.is_some() {
+                    this.menu = None;
+                    cx.notify();
+                  }
+                }),
+              )
               .child(self.canvas(window, cx)),
           )
           .child(dock),
@@ -818,59 +919,49 @@ impl Workspace {
           .when(!running, |b| b.success())
           .on_click(cx.listener(|this, _, _, cx| this.toggle_engine(cx))),
       )
-      .child(div().w(px(8.)))
+      .child(div().w(px(t::SPACE_1)))
       .child(
-        quiet_button(cx, "menu-source", "＋ 输入").on_click(cx.listener(|this, _, _, cx| {
-          this.menu = Some(Menu::Source);
-          cx.notify();
-        })),
+        add_button(cx, "menu-add", "添加节点", self.menu.is_some()).on_click(cx.listener(
+          |this, _, _, cx| {
+            this.menu = if this.menu.is_some() {
+              None
+            } else {
+              Some(Menu::Add)
+            };
+            cx.notify();
+          },
+        )),
+      )
+      .child(div().w(px(1.)).h(px(22.)).bg(rgb(t::BORDER)))
+      .child(
+        toolbar_icon(cx, "arrange", IconName::LayoutDashboard, "整理节点").on_click(cx.listener(
+          |this, _, _, cx| {
+            this.arrange();
+            cx.notify();
+          },
+        )),
       )
       .child(
-        quiet_button(cx, "menu-ai", "＋ AI").on_click(cx.listener(|this, _, _, cx| {
-          this.menu = Some(Menu::Ai);
-          cx.notify();
-        })),
+        toolbar_icon(cx, "undo", IconName::Undo2, "撤销").on_click(cx.listener(
+          |this, _, _window, cx| {
+            this.undo(cx);
+          },
+        )),
       )
       .child(
-        quiet_button(cx, "menu-process", "＋ 处理").on_click(cx.listener(|this, _, _, cx| {
-          this.menu = Some(Menu::Process);
-          cx.notify();
-        })),
+        toolbar_icon(cx, "redo", IconName::Redo2, "重做").on_click(cx.listener(
+          |this, _, _window, cx| {
+            this.redo(cx);
+          },
+        )),
       )
       .child(
-        quiet_button(cx, "menu-content", "＋ 内容").on_click(cx.listener(|this, _, _, cx| {
-          this.menu = Some(Menu::Content);
-          cx.notify();
-        })),
-      )
-      .child(
-        quiet_button(cx, "menu-output", "＋ 输出").on_click(cx.listener(|this, _, _, cx| {
-          this.menu = Some(Menu::Output);
-          cx.notify();
-        })),
-      )
-      .child(div().w(px(8.)))
-      .child(
-        quiet_button(cx, "arrange", "整理").on_click(cx.listener(|this, _, _, cx| {
-          this.arrange();
-          cx.notify();
-        })),
-      )
-      .child(
-        quiet_button(cx, "undo", "撤销").on_click(cx.listener(|this, _, _window, cx| {
-          this.undo(cx);
-        })),
-      )
-      .child(
-        quiet_button(cx, "redo", "重做").on_click(cx.listener(|this, _, _window, cx| {
-          this.redo(cx);
-        })),
-      )
-      .child(
-        quiet_button(cx, "refresh", "刷新设备").on_click(cx.listener(|this, _, _, cx| {
-          this.status = crate::devices::spawn_refresh(this.hub.clone());
-          cx.notify();
-        })),
+        toolbar_icon(cx, "refresh", IconName::RefreshCw, "刷新设备").on_click(cx.listener(
+          |this, _, _, cx| {
+            this.status = crate::devices::spawn_refresh(this.hub.clone());
+            cx.notify();
+          },
+        )),
       )
       .child(div().flex_1())
       .child(
@@ -884,91 +975,122 @@ impl Workspace {
           )),
       )
       .child(
-        quiet_button(cx, "settings", "设置").on_click(cx.listener(|this, _, _, cx| {
-          // 全局设置是独立目的地：清掉节点选中，右侧只显示设置页。
-          this.dock_page = DockPage::Settings;
-          this.selected = None;
-          cx.notify();
-        })),
+        toolbar_icon(cx, "settings", IconName::Settings2, "设置").on_click(cx.listener(
+          |this, _, _, cx| {
+            // 全局设置是独立目的地：清掉节点选中，右侧只显示设置页。
+            this.dock_page = DockPage::Settings;
+            this.selected = None;
+            cx.notify();
+          },
+        )),
       )
       .child(
-        Button::new("debug")
-          .small()
-          .label(i18n::tr("调试"))
-          .on_click(|_, _, _| {
-            let url = format!("http://127.0.0.1:{}/debug/ui", crate::debug::http_port());
-            let _ = crate::openurl::open(&url);
-          }),
+        toolbar_icon(cx, "debug", IconName::SquareTerminal, "调试面板").on_click(|_, _, _| {
+          let url = format!("http://127.0.0.1:{}/debug/ui", crate::debug::http_port());
+          let _ = crate::openurl::open(&url);
+        }),
       )
   }
 
-  fn menu_panel(&self, menu: Menu, cx: &mut Context<Self>) -> AnyElement {
-    let items: Vec<(&str, RowKind, &str)> = match menu {
-      Menu::Source => vec![
-        ("麦克风", RowKind::Input, "audio_input"),
-        ("系统声音（回环）", RowKind::Input, "loopback"),
-        ("应用音频（Windows）", RowKind::Input, "app_capture"),
-        ("手机麦克风", RowKind::Input, "remote_mic"),
-        ("测试音", RowKind::Input, "tone"),
-      ],
-      // AI 三巨头单独一栏：它们都是模型节点，但语义不是「普通处理」（AEC 还是两输入）。
-      Menu::Ai => vec![
-        ("AI 降噪", RowKind::Process, "denoise"),
-        ("目标说话人 TSE", RowKind::Process, "tse"),
-        ("回声消除 AEC（两输入）", RowKind::Process, "echo_cancel"),
-      ],
-      Menu::Process => vec![
-        ("增益", RowKind::Process, "gain"),
-        ("噪声门", RowKind::Process, "noise_gate"),
-        ("压缩器", RowKind::Process, "compressor"),
-        ("限制器", RowKind::Process, "limiter"),
-        ("扩展器", RowKind::Process, "expander"),
-        ("向上压缩器", RowKind::Process, "upward_compressor"),
-        ("31 段 EQ", RowKind::Process, "eq31"),
-        ("AGC", RowKind::Process, "agc"),
-        ("极性反转", RowKind::Process, "invert"),
-        ("可视化", RowKind::Process, "viz"),
-      ],
-      // 内容源：音效 / 音乐 / 文件。都是「自己产生声音」的源节点（0 个输入端口）。
-      Menu::Content => vec![
-        ("音效板", RowKind::Process, "soundpad"),
-        ("音乐播放器（音频文件）", RowKind::Process, "player"),
-      ],
-      Menu::Output => vec![
-        ("输出设备", RowKind::Output, "audio_output"),
-        ("手机 / 客户端", RowKind::Output, "remote_speaker"),
-      ],
-    };
-    let left = match menu {
-      Menu::Source => 361.0,
-      Menu::Ai => 441.0,
-      Menu::Process => 521.0,
-      Menu::Content => 601.0,
-      Menu::Output => 681.0,
-    };
-    let mut list = div()
+  /// 「添加节点」面板：按组横排，一次看全所有类型。
+  ///
+  /// 顶栏只有一个入口（`add_button`），不再排五个长得一样的分类按钮；
+  /// 组内条目是 ghost 行，只有文字和悬停底色，读起来像菜单而不是一排按钮。
+  fn menu_panel(&self, _menu: Menu, cx: &mut Context<Self>) -> AnyElement {
+    type Item = (&'static str, RowKind, &'static str);
+    let groups: [(&str, &[Item]); 5] = [
+      (
+        "输入",
+        &[
+          ("麦克风", RowKind::Input, "audio_input"),
+          ("系统声音（回环）", RowKind::Input, "loopback"),
+          ("应用音频（Windows）", RowKind::Input, "app_capture"),
+          ("手机麦克风", RowKind::Input, "remote_mic"),
+          ("测试音", RowKind::Input, "tone"),
+        ],
+      ),
+      (
+        "AI",
+        &[
+          ("AI 降噪", RowKind::Process, "denoise"),
+          ("目标说话人 TSE", RowKind::Process, "tse"),
+          ("回声消除 AEC", RowKind::Process, "echo_cancel"),
+        ],
+      ),
+      (
+        "处理",
+        &[
+          ("增益", RowKind::Process, "gain"),
+          ("噪声门", RowKind::Process, "noise_gate"),
+          ("压缩器", RowKind::Process, "compressor"),
+          ("限制器", RowKind::Process, "limiter"),
+          ("扩展器", RowKind::Process, "expander"),
+          ("向上压缩器", RowKind::Process, "upward_compressor"),
+          ("31 段 EQ", RowKind::Process, "eq31"),
+          ("AGC", RowKind::Process, "agc"),
+          ("极性反转", RowKind::Process, "invert"),
+          ("可视化", RowKind::Process, "viz"),
+        ],
+      ),
+      (
+        "内容",
+        &[
+          ("音效板", RowKind::Process, "soundpad"),
+          ("音乐播放器", RowKind::Process, "player"),
+        ],
+      ),
+      (
+        "输出",
+        &[
+          ("输出设备", RowKind::Output, "audio_output"),
+          ("手机 / 客户端", RowKind::Output, "remote_speaker"),
+        ],
+      ),
+    ];
+    let mut panel = div()
       .absolute()
-      .top(px(t::TOP_H))
-      .left(px(left))
+      .top(px(t::TOP_H + t::SPACE_1))
+      .left(px(t::SPACE_3))
       .flex()
-      .flex_col()
-      .gap_1()
-      .p(px(t::SPACE_2))
+      .flex_wrap()
+      .items_start()
+      .gap_5()
+      .w(px(832.))
+      .p(px(t::SPACE_4))
       .rounded_lg()
       .bg(rgb(t::PANEL_HI))
       .border_1()
-      .border_color(rgb(t::BORDER));
-    for (label, kind, ptype) in items {
-      let p = ptype;
-      list = list.child(
-        quiet_button(cx, format!("menu-item:{ptype}"), label).on_click(cx.listener(
-          move |this, _, _window, cx| {
-            this.add_node(kind, p, cx);
-          },
-        )),
+      .border_color(rgb(t::BORDER))
+      // 菜单是浮层：整块挡住下面的画板/检查器，否则点击会穿到背景上。
+      .occlude();
+    for (title, items) in groups {
+      let mut col = div().flex().flex_col().gap_1().min_w(px(140.));
+      col = col.child(
+        div()
+          .pb(px(t::SPACE_1))
+          .text_size(px(t::TEXT_XS))
+          .text_color(rgb(t::MUTED))
+          .child(i18n::tr(title).to_string()),
       );
+      for (label, kind, ptype) in items {
+        let p = ptype;
+        let label = i18n::tr(label).to_string();
+        col = col.child(
+          Button::new(format!("menu-item:{ptype}"))
+            .xsmall()
+            .ghost()
+            .w_full()
+            .accessibility_label(label.clone())
+            .child(div().flex_1().min_w_0().text_left().child(label))
+            .on_click(cx.listener(move |this, _, _window, cx| {
+              this.menu = None;
+              this.add_node(*kind, p, cx);
+            })),
+        );
+      }
+      panel = panel.child(col);
     }
-    list.into_any_element()
+    panel.into_any_element()
   }
 }
 

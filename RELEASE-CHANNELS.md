@@ -9,11 +9,12 @@
 
 | 通道 | tag | 工作流 | 更新检查 | 更新日志范围 | 产物 |
 | --- | --- | --- | --- | --- | --- |
-| 桌面（当前：Windows NSIS） | `v<yyyy.MM.dd.HHmm>` | `.github/workflows/release.yml` | `src-tauri/src/update/`（`-setup.exe`） | 除 `android/` 外的提交 | `PureVox_<版本>_x64-setup.exe` |
-| 桌面（Linux 恢复后） | `v*` | 同上 | 同上 | 同上 | + AppImage / deb / rpm |
+| 桌面（Windows + Linux） | `v<yyyy.MM.dd.HHmm>` | `.github/workflows/release.yml` | `src-tauri/src/update/`（`.deb` / `.AppImage` / `-setup.exe`） | 除 `android/` 外的提交 | Windows `...-setup.exe` + Linux `...-linux-x64.deb` / `.AppImage` |
 | 安卓 | `android-v<yyyy.MM.dd.HHmm>` | `.github/workflows/android-release.yml` | `UpdateChecker`（只认 `android-v*`） | 只列 `android/` 下的提交 | 签名 APK |
 
-两条通道各自建 GitHub Release、各自写更新日志、各自检查更新。桌面发版**不会**让手机弹出
+桌面通道**一个 tag 同时打 Windows 和 Linux**（`release.yml` 的 `windows` + `linux` 两个 job，
+release job `needs` 两者；`PLATFORM=desktop`）。两条通道各自建 GitHub Release、各自写更新
+日志、各自检查更新。桌面发版**不会**让手机弹出
 「有新版本」，安卓发版也**不会**污染桌面的 release 列表。
 
 ## 1. 为什么不开长期分支

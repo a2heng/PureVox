@@ -15,9 +15,10 @@ use gpui_kit::{
 };
 
 use super::theme as t;
+use super::widgets::{mini_switch, seg_meter};
 use super::{
-  CANVAS_H, CANVAS_W, DockPage, Drag, DragPayload, HEADER_H, PORT_SIZE, Pending, TERM_H, TERM_PAD,
-  TERM_SLOT, Workspace, i18n,
+  CANVAS_H, CANVAS_W, DockPage, Drag, DragPayload, PORT_SIZE, Pending, TERM_H, TERM_PAD, TERM_SLOT,
+  Workspace, i18n,
 };
 use crate::plan::{RowKind, RowSpec, input_ports};
 
@@ -235,14 +236,16 @@ impl Workspace {
     let term = |p: usize| -> String {
       if n.ptype == "echo_cancel" {
         if p == 0 {
-          "近端".into()
+          i18n::tr("近端").to_string()
         } else {
-          "远端".into()
+          i18n::tr("远端").to_string()
         }
       } else {
         format!("{}", p + 1)
       }
     };
+    // AEC 的两个端子用校准图里的颜色：近端（麦克风）= 橙、远端（参考）= 蓝。
+    let aec_term = n.ptype == "echo_cancel";
     let selected = self.selected == Some(n.id);
     let id = n.id;
     let label = i18n::tr(Self::node_kind_label(n.kind, &n.ptype)).to_string();
@@ -270,12 +273,40 @@ impl Workspace {
     } else {
       self.node_title(&n)
     };
+    // 没有具体副标题（默认模型 / 纯处理）时不要写「处理」凑数。
+    let title = if title == "处理" || title == "降噪" {
+      String::new()
+    } else {
+      title
+    };
     let on = n.enabled;
     let (ci, ri) = self.pos(id).unwrap_or((0, 0));
     let peak = self.hub.row_peak(ci, ri);
     let gain = n.input_gain_db.parse::<f32>().unwrap_or(0.0);
     // 扇入是 1:1 求和，多路叠加会超过 0 dBFS —— 电平条变红就是削波提示。
     let clipping = peak >= 1.0;
+    // 一行读完：类型 · 主标题。标题和类型重复时只写一次。
+    let primary = if title.is_empty() || title == label || label.contains(&title) {
+      label
+    } else {
+      format!("{label} · {title}")
+    };
+    // 0.0 dB / 1ch 是默认值，画出来只是噪音；但**位置要保留**，否则各卡片的
+    // 电平条和数字会左右跳。右侧三条固定车道：电平 34 / 数值 32 / 通道 16。
+    let show_db = gain.abs() >= 0.05;
+    let show_ch = n.channels > 1;
+    let db_text = if clipping {
+      "CLIP".to_string()
+    } else if show_db {
+      format!("{gain:+.1}")
+    } else {
+      String::new()
+    };
+    let ch_text = if show_ch {
+      format!("{}ch", n.channels.max(1))
+    } else {
+      String::new()
+    };
     div()
       .id(format!("node:{id}"))
       .absolute()
@@ -309,133 +340,106 @@ impl Workspace {
         DragPayload::Move { id },
         |payload: &DragPayload, position, _, cx| cx.new(|_| DragGhost::new(payload, position)),
       )
-      .when(ins > 0, |card| {
+      .when(ins > 1, |card| {
         let mut strip = div().flex().h(px(TERM_H)).pl(px(TERM_PAD)).items_end();
         for p in 0..ins {
+          // AEC 的「近端 / 远端」是两个字，标签要比通道号宽一点、并换成校准图同色，
+          // 否则文字会溢出小方框，看起来像底下多了一个圈。
+          let ink = if aec_term {
+            if p == 0 { t::AEC } else { t::NET }
+          } else {
+            t::TEXT
+          };
+          let edge = if aec_term { ink } else { t::MUTED };
           strip = strip.child(
             div()
               .w(px(TERM_SLOT))
               .flex()
               .justify_center()
-              .pb(px(3.))
+              .when(aec_term, |el| el.pb(px(0.)))
+              .when(!aec_term, |el| el.pb(px(3.)))
               .child(
                 div()
-                  .w(px(14.))
-                  .h(px(12.))
+                  .when(aec_term, |el| el.w(px(21.)).h(px(11.)).px(px(1.)))
+                  .when(!aec_term, |el| el.w(px(13.)).h(px(10.)))
                   .flex()
                   .items_center()
                   .justify_center()
                   .rounded_sm()
                   .border_1()
-                  .border_color(rgb(t::MUTED))
+                  .border_color(rgb(edge))
                   .bg(rgb(t::BG))
-                  .text_size(px(if ins > 9 { 8. } else { 9. }))
-                  .text_color(rgb(t::TEXT))
+                  .text_size(px(if aec_term {
+                    8.
+                  } else if ins > 9 {
+                    7.
+                  } else {
+                    8.
+                  }))
+                  .text_color(rgb(ink))
                   .child(term(p)),
               ),
           );
         }
         card.child(strip)
       })
+      // 一行读完一张卡：跳过开关、节点类型、主标题、电平、增益、通道。
+      // 没有用的信息（0.0 dB / 1ch）不占位置；端子编号只在多通道时出现。
       .child(
         div()
           .flex()
+          .flex_1()
+          .min_h_0()
           .items_center()
-          .gap_2()
-          .h(px(HEADER_H))
-          .px(px(t::SPACE_2))
-          .border_b_1()
-          .border_color(rgb(t::BORDER))
-          .child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(color)))
-          .child(
-            div()
-              .text_size(px(t::TEXT_XS))
-              .text_color(rgb(color))
-              .child(label),
-          )
-          .child(div().flex_1())
-          .child(
-            div()
-              .text_size(px(9.))
-              .text_color(rgb(if on { t::MUTED } else { t::DANGER }))
-              .child(if on {
-                i18n::tr("启用")
-              } else {
-                i18n::tr("静音")
-              }),
-          ),
-      )
-      .when(n.ptype == "echo_cancel", |card| {
-        card.child(div().h(px(26.)).w_full().px(px(6.)).child(canvas(
-          |_, _, _| {},
-          move |bounds, _, window, _| {
-            let w = bounds.size.width.as_f32();
-            let h = bounds.size.height.as_f32();
-            let mut pb = PathBuilder::stroke(px(1.5));
-            pb.move_to(bounds.origin + point(px(w * 0.30), px(2.)));
-            pb.line_to(bounds.origin + point(px(w * 0.50), px(h * 0.55)));
-            pb.line_to(bounds.origin + point(px(w * 0.50), px(h - 1.)));
-            if let Ok(p) = pb.build() {
-              window.paint_path(p, rgb(t::AEC));
-            }
-            let mut pb = PathBuilder::stroke(px(1.5));
-            pb.move_to(bounds.origin + point(px(w * 0.70), px(2.)));
-            pb.line_to(bounds.origin + point(px(w * 0.50), px(h * 0.55)));
-            if let Ok(p) = pb.build() {
-              window.paint_path(p, rgb(t::AEC));
-            }
-          },
-        )))
-      })
-      .child(
-        div()
-          .flex()
-          .flex_col()
           .gap_1()
-          .px(px(t::SPACE_2))
-          .py(px(t::SPACE_1))
+          .px(px(6.))
+          .child(mini_switch(
+            format!("skip:{id}"),
+            on,
+            cx.listener(move |this, _, _, cx| {
+              this.snapshot();
+              if let Some(n) = this.plan.node_mut(id) {
+                n.enabled = !n.enabled;
+              }
+              this.apply_structure(cx);
+            }),
+          ))
+          .child(div().w(px(5.)).h(px(5.)).rounded_full().bg(rgb(color)))
           .child(
             div()
-              .text_size(px(t::TEXT_BASE))
-              .text_color(rgb(t::TEXT))
+              .flex_1()
+              .min_w_0()
               .truncate()
-              .child(title),
+              .text_size(px(t::TEXT_SM))
+              .text_color(rgb(t::TEXT))
+              .child(primary),
           )
           .child(
             div()
               .flex()
               .items_center()
-              .gap_2()
+              .gap_1()
+              .flex_shrink_0()
+              .child(seg_meter(peak, 12, 2., 7.))
               .child(
                 div()
-                  .w(px(58.))
-                  .h(px(4.))
-                  .rounded_sm()
-                  .bg(rgb(t::BG))
-                  .child(
-                    div()
-                      .w(px((peak.clamp(0.0, 1.2) * 58.0).min(58.0)))
-                      .h(px(4.))
-                      .rounded_sm()
-                      .bg(rgb(if clipping { t::DANGER } else { color })),
-                  ),
-              )
-              .child(
-                div()
+                  .w(px(32.))
+                  .text_right()
                   .text_size(px(9.))
                   .text_color(rgb(if clipping { t::DANGER } else { t::MUTED }))
-                  .child(format!("{gain:+.1} dB")),
+                  .child(db_text),
               )
-              .child(div().flex_1())
               .child(
                 div()
+                  .w(px(16.))
+                  .text_right()
                   .text_size(px(9.))
                   .text_color(rgb(t::MUTED))
-                  .child(format!("{}ch", n.channels.max(1))),
+                  .child(ch_text),
               ),
           ),
       )
-      .when(outs > 0, |card| {
+      .when(outs > 1, |card| {
         let mut strip = div().flex().h(px(TERM_H)).pl(px(TERM_PAD)).items_start();
         for p in 0..outs {
           strip = strip.child(
@@ -446,8 +450,8 @@ impl Workspace {
               .pt(px(3.))
               .child(
                 div()
-                  .w(px(14.))
-                  .h(px(12.))
+                  .w(px(13.))
+                  .h(px(10.))
                   .flex()
                   .items_center()
                   .justify_center()
@@ -455,7 +459,7 @@ impl Workspace {
                   .border_1()
                   .border_color(rgb(t::MUTED))
                   .bg(rgb(t::BG))
-                  .text_size(px(if outs > 9 { 8. } else { 9. }))
+                  .text_size(px(if outs > 9 { 7. } else { 8. }))
                   .text_color(rgb(t::TEXT))
                   .child(term(p)),
               ),

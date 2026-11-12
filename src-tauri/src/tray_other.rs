@@ -20,3 +20,6 @@ pub fn hide_main() -> bool {
 pub fn quitting() -> bool {
   false
 }
+
+/// 没有托盘实现：保持同一套调用点（Windows 按引擎状态换明暗图标）。
+pub fn set_running(_on: bool) {}

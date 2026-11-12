@@ -45,6 +45,7 @@ mod openurl;
 mod plan;
 mod recorder;
 mod rt;
+mod single_instance;
 #[cfg(windows)]
 #[path = "sound_panel_windows.rs"]
 mod sound_panel;
@@ -90,9 +91,18 @@ fn native_scale() -> f32 {
 }
 
 fn main() {
+  // 单实例：第二个进程只请求已有窗口显示，然后退出（不启动第二套引擎 / 端口）。
+  if !single_instance::claim() {
+    eprintln!("PureVox 已在运行，本进程退出");
+    return;
+  }
   // panic 也进事件日志：release 没有控制台，后台线程 panic 不能「只消失不报」。
   debug::events::install_panic_hook();
   let hub = DebugHub::new();
+  // 上次校准报告是**数据**：启动就发布，曲线/数值不空白（不自动回填，避免覆盖手工改过的参数）。
+  if let Some(report) = engine::calib::load_last_report() {
+    hub.set_calib_report(debug::Probe::ok(report));
+  }
   debug::system::spawn_sampler(hub.clone());
   debug::http::spawn(hub.clone());
   devices::spawn_refresh(hub.clone());
@@ -239,6 +249,22 @@ fn main() {
         return;
       }
       cx.activate(true);
+
+      // 「开机自启（静默运行）」：登录后自动跑引擎并收进托盘——与 Tauri 版的
+      // `start_hidden` 同一行为，设置页只有**一个**开关同时控制自启与静默。
+      if settings.start_hidden {
+        let audio = audio_for_ui.clone();
+        let hub = hub_for_ui.clone();
+        match audio.start() {
+          Ok(_) => crate::tray::set_running(true),
+          Err(e) => hub.push_ui("warn", format!("静默启动引擎失败：{e}")),
+        }
+        if crate::tray::hide_main() {
+          hub.push_ui("info", "已静默启动：引擎在跑，窗口收进托盘".into());
+        }
+      } else {
+        crate::tray::set_running(audio_for_ui.is_running());
+      }
 
       // 无人值守验证：`PUREVOX_MIX_AUTOSTART=1` 在窗口起来 1.2 s 后自动启动引擎。
       if std::env::var("PUREVOX_MIX_AUTOSTART").is_ok() {

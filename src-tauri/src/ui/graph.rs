@@ -10,8 +10,10 @@
 //! 只改 `Plan` 并交给引擎；绘制在 `canvas.rs`，检查器在 `inspector.rs`。
 
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use gpui_kit::{Context, KeyDownEvent, MouseMoveEvent, Window};
+use gpui_kit::{Context, Keystroke, MouseMoveEvent, Window};
 
 use super::theme as t;
 use super::{
@@ -86,22 +88,69 @@ impl Workspace {
     }
     cx.notify();
   }
+}
 
-  /// 录制热键：录制中时拦截根节点收到的下一个按键，写成规范串。
+/// 录制热键期间的按键捕获。
+///
+/// GPUI 的 key binding 在元素的 key_down 之前分发：录制时若只挂普通监听，按到
+/// 已绑定的键会**先执行动作**（Space 启停引擎、Delete 删节点等），根本轮不到录制。
+/// 所以在 `Workspace::new` 里注册 `intercept_keystrokes`（动作分发之前）：
+/// 录制态一律截走，存进 [`CAPTURED_KEY`]，下一拍由 `tick` 取走处理。
+static RECORDING_KEYS: AtomicBool = AtomicBool::new(false);
+static CAPTURED_KEY: Mutex<Option<Keystroke>> = Mutex::new(None);
+
+/// 截获一次按键；返回 true = 这次按键归录制所有（调用方要 `stop_propagation`）。
+pub(super) fn capture_recording_key(ks: &Keystroke) -> bool {
+  if !RECORDING_KEYS.load(Ordering::Relaxed) {
+    return false;
+  }
+  *CAPTURED_KEY.lock().unwrap_or_else(|e| e.into_inner()) = Some(ks.clone());
+  true
+}
+
+/// 取走本次录到的按键（每拍最多一个）。
+pub(super) fn take_recorded_key() -> Option<Keystroke> {
+  CAPTURED_KEY
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+    .take()
+}
+
+/// 开关「按键归录制」状态；关闭时清掉残留。
+pub(super) fn set_recording_keys(on: bool) {
+  RECORDING_KEYS.store(on, Ordering::Relaxed);
+  if !on {
+    let _ = take_recorded_key();
+  }
+}
+
+impl Workspace {
+  /// 进入热键录制：注销全局热键，并把按键交给录制逻辑。
   ///
-  /// 只修工具链里已有的两条路径：设置页的启停热键、音效板每个音效的触发键。
-  /// 纯修饰键不算；Esc 取消；非法组合（字母不带修饰键等）留在录制态让用户重按。
-  pub(super) fn on_record_key(
-    &mut self,
-    e: &KeyDownEvent,
-    _window: &mut Window,
-    cx: &mut Context<Self>,
-  ) {
+  /// **必须先注销**：`RegisterHotKey` 是系统级的，旧键位被按下时只会送到热键线程，
+  /// 窗口根本收不到按键（表现就是「按 A 还在控制开关」）。
+  pub(super) fn begin_record(&mut self, target: RecordTarget, note: &str, cx: &mut Context<Self>) {
+    self.recording = Some(target);
+    set_recording_keys(true);
+    self.hotkeys = None;
+    self.status = i18n::tr(note).into();
+    cx.notify();
+  }
+
+  /// 结束录制（成功 / 取消 / 窗口关闭）：恢复热键注册。
+  pub(super) fn end_record(&mut self) {
+    self.recording = None;
+    set_recording_keys(false);
+    self.restart_hotkeys();
+  }
+
+  /// 处理一次录到的按键（在 `tick` 里、动作分发之外调用）。
+  pub(super) fn apply_recorded_key(&mut self, ks: &Keystroke, cx: &mut Context<Self>) {
     let Some(target) = self.recording else {
       return;
     };
-    cx.stop_propagation();
-    let key = e.keystroke.key.to_lowercase();
+    let key = ks.key.to_lowercase();
+    // 纯修饰键不算（平台层一般只发 ModifiersChanged，这里再兜一层）。
     if matches!(
       key.as_str(),
       "control" | "ctrl" | "alt" | "shift" | "super" | "meta" | "cmd" | "win" | "windows"
@@ -109,13 +158,12 @@ impl Workspace {
       return;
     }
     if matches!(key.as_str(), "escape" | "esc") {
-      self.recording = None;
-      self.restart_hotkeys();
+      self.end_record();
       self.status = i18n::tr("已取消录制热键").into();
       cx.notify();
       return;
     }
-    let m = &e.keystroke.modifiers;
+    let m = &ks.modifiers;
     let mut parts: Vec<&str> = Vec::new();
     if m.control {
       parts.push("Ctrl");
@@ -141,10 +189,7 @@ impl Workspace {
       RecordTarget::EngineHotkey => {
         self.settings.hotkey = norm.clone();
         self.status = match crate::config::save_settings(&self.settings) {
-          Ok(()) => {
-            self.restart_hotkeys();
-            format!("{}{norm}", i18n::tr("全局热键："))
-          }
+          Ok(()) => format!("{}{norm}", i18n::tr("全局热键：")),
           Err(e) => format!("{}{e}", i18n::tr("保存热键失败：")),
         };
       }
@@ -176,7 +221,7 @@ impl Workspace {
         }
       }
     }
-    self.recording = None;
+    self.end_record();
     cx.notify();
   }
 
@@ -361,7 +406,9 @@ impl Workspace {
       (RowKind::Process, "compressor") => "压缩器",
       (RowKind::Process, "tse") => "目标说话人 TSE",
       (RowKind::Process, "echo_cancel") => "回声消除 AEC",
-      (RowKind::Process, _) => "处理",
+      (RowKind::Process, _) => crate::engine::registry::get_spec(ptype)
+        .map(|s| s.label)
+        .unwrap_or("处理"),
       (RowKind::Input, "remote_mic") => "手机麦克风",
       (RowKind::Input, "loopback") => "系统声音",
       (RowKind::Input, "app_capture") => "应用音频",
@@ -402,8 +449,7 @@ impl Workspace {
     let need = TERM_PAD * 2.0 + ins.max(outs) as f32 * TERM_SLOT;
     let w = base_w.max(need);
     let add = (term_rows(ins) + term_rows(outs)) as f32 * TERM_H;
-    let y = if ptype == "echo_cancel" { 26.0 } else { 0.0 };
-    (w, base + add + y)
+    (w, base + add)
   }
 
   pub(super) fn card_size(n: &RowSpec) -> (f32, f32) {
@@ -432,18 +478,55 @@ impl Workspace {
     for _ in 0..400 {
       let hit = self.plan.nodes().any(|n| {
         let (nw, nh) = Self::card_size(n);
-        x < n.x + nw + 24.0 && x + w + 24.0 > n.x && y < n.y + nh + 24.0 && y + h + 24.0 > n.y
+        x < n.x + nw + 16.0 && x + w + 16.0 > n.x && y < n.y + nh + 16.0 && y + h + 16.0 > n.y
       });
       if !hit {
         return (x, y);
       }
-      x += 288.0;
+      x += 264.0;
       if x > 2600.0 {
         x = 64.0;
-        y += 132.0;
+        y += 104.0;
       }
     }
     (64.0, 72.0)
+  }
+
+  /// 节点类型 → 行类型（调试 API / 菜单共用；未知类型按处理节点）。
+  pub(super) fn kind_for(ptype: &str) -> RowKind {
+    use crate::engine::registry::NodeKind;
+    match crate::engine::registry::get_spec(ptype).map(|s| s.kind) {
+      Some(NodeKind::Input) => RowKind::Input,
+      Some(NodeKind::Output) => RowKind::Output,
+      _ => RowKind::Process,
+    }
+  }
+
+  /// 触发 AEC 校准（按钮 / 调试 API 共用）。`id == 0` = 第一个 AEC 节点。
+  pub(super) fn start_calibrate(&mut self, id: u32, cx: &mut Context<Self>) {
+    let target = if id == 0 { None } else { self.pos(id) };
+    let mgr = self.audio.clone();
+    self.spawn_job("AEC 校准", move || {
+      match mgr.calibrate_aec_delay(target) {
+        Ok((msg, temp)) => {
+          // 临时启动的会话不能立刻停：校准还在采 1.6 s 的探针。
+          // 等 `calib_in_flight()` 变 false（或硬超时）再收尾，否则报告永远停在 pending。
+          if let Some(epoch) = temp {
+            let mgr = mgr.clone();
+            std::thread::spawn(move || {
+              let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+              while mgr.calib_in_flight() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+              }
+              mgr.finish_temp_session(Some(epoch));
+            });
+          }
+          Ok(msg)
+        }
+        Err(e) => Err(e),
+      }
+    });
+    cx.notify();
   }
 
   pub(super) fn add_node(&mut self, kind: RowKind, ptype: &str, cx: &mut Context<Self>) {

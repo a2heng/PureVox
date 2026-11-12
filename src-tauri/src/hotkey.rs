@@ -168,7 +168,13 @@ pub fn normalize_spec(spec: &str) -> String {
   let disp = match token_of(&token) {
     Some((_, d)) if !d.is_empty() => d.to_string(),
     _ => {
-      if token.len() == 1 && token.as_bytes()[0].is_ascii_alphabetic() {
+      if let Some(n) = token.strip_prefix('f')
+        && n.parse::<u32>().is_ok()
+      {
+        format!("F{n}")
+      } else if let Some(n) = token.strip_prefix("num") {
+        format!("Num{n}")
+      } else if token.len() == 1 && token.as_bytes()[0].is_ascii_alphabetic() {
         token.to_ascii_uppercase()
       } else {
         token.clone()

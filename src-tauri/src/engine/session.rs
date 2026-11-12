@@ -1660,7 +1660,9 @@ fn run_column(
               }
             }
             for c in 0..nch {
-              apply_trim(r, &mut accs[ri][c]);
+              if r.enabled {
+                apply_trim(r, &mut accs[ri][c]);
+              }
             }
             if let Some(ms) = inf_sample {
               r.inf_ms = if r.inf_ms == 0.0 {
@@ -1697,8 +1699,11 @@ fn run_column(
                 dst[i] += s[i];
               }
             }
-            apply_trim(r, &mut near);
-            apply_trim(r, &mut far);
+            if r.enabled {
+              // 跳过（enabled=false）= 不处理、也不做输入微调：信号原样直通。
+              apply_trim(r, &mut near);
+              apply_trim(r, &mut far);
+            }
             if r.enabled
               && !r.inputs.is_empty()
               && let Some(st) = r.aec_stage.as_mut()
@@ -1735,8 +1740,14 @@ fn run_column(
             accs[ri][0] = near;
           }
           RowKind::Process => {
-            for c in 0..nch {
-              apply_trim(r, &mut accs[ri][c]);
+            // 有入线的节点：输入微调属于「本节点处理」的一部分，跳过时连它也不做。
+            // 纯媒体源（音效板 / 播放器）没有入线：微调作用在它自己生成的信号上，
+            // 所以放到 Stage 之后再乘（否则只会乘到一段空缓冲）。
+            let media_only = r.media_slot.is_some() && r.inputs.is_empty();
+            if r.enabled && !media_only {
+              for c in 0..nch {
+                apply_trim(r, &mut accs[ri][c]);
+              }
             }
             // 没有任何入线的处理节点（也不是媒体源）= 输出静音：不要白跑模型。
             let runs = !r.inputs.is_empty() || r.media_slot.is_some();
@@ -1755,6 +1766,11 @@ fn run_column(
                       break;
                     }
                   }
+                }
+              }
+              if media_only {
+                for c in 0..nch {
+                  apply_trim(r, &mut accs[ri][c]);
                 }
               }
               let ms = t.elapsed().as_secs_f32() * 1000.0;
@@ -1784,10 +1800,10 @@ fn run_column(
           }
           RowKind::Output => {
             poll_output_lease(r, &hub, idx, ri, tick_start);
-            for c in 0..nch {
-              apply_trim(r, &mut accs[ri][c]);
-            }
             if r.enabled {
+              for c in 0..nch {
+                apply_trim(r, &mut accs[ri][c]);
+              }
               if !probe_out_ok {
                 probe_out.copy_from_slice(&accs[ri][0]);
                 probe_out_ok = true;

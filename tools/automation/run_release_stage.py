@@ -43,9 +43,9 @@ r"""用假产物树 + 假 `gh` 在本地跑一遍 `release_stage.sh`，两个场
 
 | mode      | 输入                     | 期望                        |
 | --------- | ------------------------ | --------------------------- |
-| `ok`      | 五种产物齐全             | 退出 0，`gh` 收到五个路径   |
+| `ok`      | 三种产物齐全             | 退出 0，`gh` 收到三个路径   |
 | `missing` | 少一个 deb               | 退出 1，报「缺少产物」      |
-| `notes`   | 五种齐全但没有 notes 文件 | 退出 1，指名道姓            |
+| `notes`   | 三种齐全但没有 notes 文件 | 退出 1，指名道姓            |
 
 用法：`python tools/automation/run_release_stage.py`（不带参数跑全部）
 """
@@ -77,7 +77,6 @@ TAG = "v2026.10.15.0439"
 LAYOUT = {
     f"PureVox-Windows-x64-{VERSION}-nsis": [f"PureVox_{VERSION}_x64-setup.exe"],
     f"PureVox-Linux-x64-{VERSION}-deb": [f"purevox_{VERSION}_amd64.deb"],
-    f"PureVox-Linux-x64-{VERSION}-rpm": [f"purevox-{VERSION}-1.x86_64.rpm"],
     f"PureVox-Linux-x64-{VERSION}-appimage": [f"purevox_{VERSION}_amd64.AppImage"],
     f"PureVox-Android-arm64-2026-10-15-0439-apk": ["PureVox-Android-arm64-2026-10-15-0439.apk"],
 }
@@ -203,7 +202,7 @@ def main() -> int:
     print(f"  assert_bundle.py 常量：{'OK' if ok_const else '缺'}")
     results = [
         ok_const,
-        run_case("桌面通道：四种产物齐全（必须走到 gh，且用的是假 gh）", 0, expect_gh=True),
+        run_case("桌面通道：三种产物齐全（必须走到 gh，且用的是假 gh）", 0, expect_gh=True),
         run_case("桌面通道：缺 deb", 1, drop=f"PureVox-Linux-x64-{VERSION}-deb"),
         run_case("安卓通道：只发 APK", 0, expect_gh=True, platform="android"),
         run_case("桌面 Windows 安装包：只发 setup.exe", 0, expect_gh=True, platform="windows"),

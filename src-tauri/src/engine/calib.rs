@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::audio::SAMPLE_RATE;
 use crate::debug::{Probe, SharedHub, now_ms};
@@ -124,8 +124,8 @@ impl CalibHub {
     };
     // 通知 far 泵与列线程重置序号（与本次采集从同一原点开始）
     self.epoch.fetch_add(1, Ordering::Relaxed);
-    // 上一轮的报告立刻失效：界面不该在新一轮进行中继续展示旧结论
-    self.hub.set_calib_report(Probe::Pending);
+    // 不在开始时清空上一份**报告**：界面曲线/数值保持原样，避免校准区高度跳动；
+    // 新一轮的结论由下面的 `calib` 进度串和最终 `publish_report` 替换。
     self
       .hub
       .set_calib(Probe::ok(format!("采集中 0.0/{:.0} s", cfg.seconds)));
@@ -352,12 +352,16 @@ pub const CALIB_REF_MS: f64 = 20.0;
 /// 固定参考延时的采样数（列工作线程取 far 窗口用）。
 pub const CALIB_REF_SAMPLES: i64 = (CALIB_REF_MS * SAMPLE_RATE as f64 / 1000.0) as i64;
 
-/// 校准探针频带（对数扫频起止）。
-const PROBE_F0: f64 = 1500.0;
-const PROBE_F1: f64 = 2500.0;
+/// 校准探针频带（对数扫频起止）：窄带、落在人耳最敏感又远离低频的区间。
+const PROBE_F0: f64 = 1600.0;
+const PROBE_F1: f64 = 2400.0;
 
-/// 探针扫频时长（ms）：进报告，离线工具按它对齐图上的时间轴。
-const PROBE_DUR_MS: f64 = 120.0;
+/// 探针扫频时长（ms）：**短促**（50 ms）——时间上是一个尖峰，扬声器不用长时间扛能量。
+const PROBE_DUR_MS: f64 = 50.0;
+
+/// 探针峰值幅度：-8 dBFS。以前是 0.9（-0.9 dBFS），小音箱/笔记本喇叭会削波破音；
+/// 校准只需要「明显高于底噪」，不需要满刻度。
+const PROBE_AMP: f32 = 0.4;
 
 /// 峰值匹配用的**唯一频窗**：高通 1.5 kHz 避开低频能量汇聚（扫频峰 + 房间低频 + 工频），
 /// 低通 2.5 kHz 正好卡住探针带宽（再往上是麦克风 3.3 kHz 滚降前的过渡区，信噪比在掉）。
@@ -371,16 +375,17 @@ const PEAK_BAND: (f32, f32) = (1500.0, 2500.0);
 const ENV_WIN: usize = 1024;
 const ENV_HOP: usize = 128;
 
-/// 包络平滑：13 帧 ≈ 35 ms。用户要求「超级平滑」——单帧最大值会被底噪毛刺顶上去，
-/// 峰值位置就不稳；平滑之后两条曲线的峰值时刻才可复现。
-const ENV_SMOOTH_FRAMES: usize = 13;
+/// 麦克风包络平滑：19 帧 ≈ 51 ms。单帧最大值会被底噪毛刺顶上去，峰值位置不稳；
+/// 平滑之后曲线好看、峰值时刻也可复现。**远端参考不平滑**：它是系统侧的理想信号，
+/// 本身就是一根尖线，平滑只会把它抹宽、丢掉时间精度。
+const ENV_SMOOTH_FRAMES: usize = 19;
 
 /// 报告里曲线最多保留多少点（约 4 s @2.7 ms；1.6 s 采集 ≈ 570 点 → 采样到 ≤480）。
 const SERIES_MAX: usize = 480;
 
 /// 校准结果（**唯一数据源**）：快照 `calib_report`、端点 `/debug/calib`、
 /// `~/.purevox/calib_last.json` 都是它。字段只增不改名；没测到的值是 `null`，不是 0。
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CalibReport {
   pub schema_version: u32,
   pub ok: bool,
@@ -426,7 +431,7 @@ pub struct CalibReport {
   pub dumps: CalibDumps,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CalibSeries {
   /// 包络点间隔（ms）
   pub hop_ms: f64,
@@ -435,7 +440,7 @@ pub struct CalibSeries {
   pub far_env_db: Vec<f64>,
 }
 
-#[derive(Clone, Debug, Serialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct CalibDumps {
   pub mic: Option<String>,
   pub far: Option<String>,
@@ -496,6 +501,14 @@ fn publish_report(hub: &SharedHub, mut report: CalibReport, status: Probe<String
   hub.set_calib(status);
 }
 
+/// 启动时读回最近一次校准报告（**数据**，不是截图）：界面即使还没校准，
+/// 也能画出上一次的双路包络与数值。
+pub fn load_last_report() -> Option<CalibReport> {
+  let path = crate::config::config_dir().ok()?.join("calib_last.json");
+  let text = std::fs::read_to_string(path).ok()?;
+  serde_json::from_str(&text).ok()
+}
+
 /// 把最近一次校准的原始缓冲落到 `~/.purevox/calib_last_{mic,far}.f32`：
 /// 离线排查（`tools/automation/aec_probe.py --from-dump`）与「到底谁没出声」全靠它。
 fn dump_calib(mic: &[f32], far: &[f32]) -> (Option<String>, Option<String>) {
@@ -531,7 +544,7 @@ struct BandCurve {
 /// 不再对整段做砖墙 FFT 带通：整段滤波是循环卷积，探针能量会绕到缓冲开头，
 /// 图上出现「探针还没到就先涨起来」的假前奏（2026-10-26 用户实测指出「前面起落不对劲」）。
 /// 逐帧只看这一帧里真实存在的带内能量，没有环绕伪影；帧内加窗后按窗功率归一，dBFS 仍可比。
-fn band_curve(x: &[f32], lo: f32, hi: f32) -> Option<BandCurve> {
+fn band_curve(x: &[f32], lo: f32, hi: f32, smooth_frames: usize) -> Option<BandCurve> {
   let n = x.len();
   if n < ENV_WIN {
     return None;
@@ -566,14 +579,18 @@ fn band_curve(x: &[f32], lo: f32, hi: f32) -> Option<BandCurve> {
   if energies.is_empty() {
     return None;
   }
-  let half = ENV_SMOOTH_FRAMES / 2;
-  let smooth: Vec<f64> = (0..energies.len())
-    .map(|idx| {
-      let a = idx.saturating_sub(half);
-      let b = (idx + half + 1).min(energies.len());
-      energies[a..b].iter().sum::<f64>() / (b - a) as f64
-    })
-    .collect();
+  let smooth: Vec<f64> = if smooth_frames <= 1 {
+    energies.clone()
+  } else {
+    let half = smooth_frames / 2;
+    (0..energies.len())
+      .map(|idx| {
+        let a = idx.saturating_sub(half);
+        let b = (idx + half + 1).min(energies.len());
+        energies[a..b].iter().sum::<f64>() / (b - a) as f64
+      })
+      .collect()
+  };
   let (bi, bv) =
     smooth.iter().enumerate().fold(
       (0usize, 0.0f64),
@@ -639,8 +656,9 @@ fn analyze(mic: &[f32], far: &[f32], band: (f32, f32)) -> Option<Analysis> {
   if n < SAMPLE_RATE as usize / 5 {
     return None;
   }
-  let m = band_curve(&mic[..n], band.0, band.1)?;
-  let f = band_curve(&far[..n], band.0, band.1)?;
+  let m = band_curve(&mic[..n], band.0, band.1, ENV_SMOOTH_FRAMES)?;
+  // 远端是扬声器之前（或回环）抓到的系统参考：不平滑，保住尖峰。
+  let f = band_curve(&far[..n], band.0, band.1, 0)?;
   Some(Analysis {
     delay_raw_ms: m.peak_ms - f.peak_ms,
     mic: m,
@@ -648,13 +666,15 @@ fn analyze(mic: &[f32], far: &[f32], band: (f32, f32)) -> Option<Analysis> {
   })
 }
 
-/// 校准探针：**窄带** 1500→2500 Hz 对数扫频（120 ms，Hann 包络，0.9 幅度），前后留静音。
+/// 校准探针：**窄带** 1600→2400 Hz 对数扫频（50 ms，Hann 包络，-8 dBFS），前后留静音。
 ///
 /// 为什么不是 800→6000 的宽扫频：那样能量铺满整个频带，频谱是个大鼓包、
 /// 峰值被包络和低频倾斜拖着走（实测峰落在 2 kHz 之前、而且不尖）。窄带之后：
 /// - 频谱是一个 **1.5–2.5 kHz 的尖峰**，峰值位置稳定在 2 kHz 附近；
 /// - 峰值匹配窗只要开 1500–2500，避开低频能量汇聚处与麦克风 3.3 kHz 之后的滚降；
 /// - 仍是扫频（不是单音），房间反射在不同频点出现，不会和直达声在同一个频点叠成双峰。
+///
+/// 幅度只取 -8 dBFS、时长 50 ms：校准只要求峰值明显高于底噪，满刻度长扫频会让小音箱削波。
 pub fn make_probe() -> Vec<f32> {
   const SR: usize = SAMPLE_RATE as usize;
   let head = SR * 100 / 1000;
@@ -669,7 +689,7 @@ pub fn make_probe() -> Vec<f32> {
     let f = f0 * (k * t).exp();
     phase += 2.0 * std::f64::consts::PI * f / SR as f64;
     let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / dur as f64).cos();
-    v[head + i] = (0.9 * w * phase.sin()) as f32;
+    v[head + i] = (PROBE_AMP as f64 * w * phase.sin()) as f32;
   }
   v
 }
@@ -684,6 +704,12 @@ pub fn play_probe(hub: SharedHub, devices: Vec<String>, far_sink: Option<String>
   if let Some(sink) = far_sink {
     let p = probe.clone();
     let hub2 = hub.clone();
+    let name = if sink.is_empty() {
+      "系统默认输出".to_string()
+    } else {
+      crate::devices::display_name(&sink, false).unwrap_or_else(|_| sink.clone())
+    };
+    hub.push_ui("info", format!("校准探针（远端）→ {name}"));
     std::thread::Builder::new()
       .name("probe-far".into())
       .spawn(move || {
@@ -699,10 +725,16 @@ pub fn play_probe(hub: SharedHub, devices: Vec<String>, far_sink: Option<String>
       .ok();
   }
   for (i, dev) in devices.into_iter().enumerate() {
+    let name = crate::devices::display_name(&dev, false).unwrap_or_else(|_| dev.clone());
+    hub.push_ui("info", format!("校准探针 → {name}"));
     let fan = Arc::new(crate::audio::fanout::MultiFanout::new("校准探针", 1));
     let tag = format!("probe{i}");
     let Ok(handle) = crate::audio::playback::spawn(hub.clone(), dev.clone(), fan.clone(), tag)
     else {
+      hub.push_ui(
+        "error",
+        format!("校准探针播放流打不开：{name}（设备可能被独占）"),
+      );
       continue;
     };
     let fan2 = fan.clone();
@@ -712,13 +744,17 @@ pub fn play_probe(hub: SharedHub, devices: Vec<String>, far_sink: Option<String>
       .spawn(move || {
         // 等播放线程订阅并预热
         std::thread::sleep(std::time::Duration::from_millis(150));
+        // **一次性预灌**：订阅环容量 1 s，探针不到 0.35 s，不会溢出。
+        // 以前每 hop 睡 10 ms：Windows 定时器粒度 ~15.6 ms，生产慢于消费 →
+        // 设备环反复欠载，听感就是「噼啪 / 破音」。
         for chunk in probe2.chunks(crate::audio::HOP) {
           let mut hop = [0.0f32; crate::audio::HOP];
           hop[..chunk.len()].copy_from_slice(chunk);
           fan2.push_channel(0, &hop);
-          std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        // 等设备按真实时长把环里的探针播完，再停播放流。
+        let ms = (probe2.len() as u64 * 1000) / crate::audio::SAMPLE_RATE as u64;
+        std::thread::sleep(std::time::Duration::from_millis(ms + 300));
         handle.stop();
       })
       .ok();

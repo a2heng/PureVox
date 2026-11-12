@@ -849,7 +849,7 @@ mod tests {
       })
       .collect();
     assert!(
-      tpls.len() >= 5,
+      tpls.len() >= 4,
       "release_stage.sh 里的产物模板只剩 {} 个，命名规则变了要重新审这一段",
       tpls.len()
     );
@@ -877,7 +877,7 @@ mod tests {
       suffixes.push(suffix.to_string());
     }
 
-    // 五个平台段的后缀互不为彼此的后缀（`pick_asset` 只认后缀，重叠就会挑错）
+    // 各平台段的后缀互不为彼此的后缀（`pick_asset` 只认后缀，重叠就会挑错）
     for a in &suffixes {
       for b in &suffixes {
         if a != b {
@@ -968,7 +968,7 @@ mod tests {
       })
       .map(|n| n.to_ascii_lowercase())
       .collect();
-    assert!(staged.len() >= 5, "只抠出 {} 个 stage 模板", staged.len());
+    assert!(staged.len() >= 4, "只抠出 {} 个 stage 模板", staged.len());
 
     for name in &staged {
       // **Android 的 apk 是例外**：它由安卓客户端自己认领（本模块是桌面端更新逻辑，

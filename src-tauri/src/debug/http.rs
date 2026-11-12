@@ -45,7 +45,7 @@ use serde_json::{Value, json};
 
 use super::{Probe, SharedHub, UiCommand, events, http_port, metrics};
 
-const ENDPOINTS: [&str; 12] = [
+const ENDPOINTS: &[&str] = &[
   "/debug",
   "/debug/system",
   "/debug/audio",
@@ -58,6 +58,17 @@ const ENDPOINTS: [&str; 12] = [
   "/debug/viz",
   "/debug/bundle",
   "/debug/ui",
+  "/debug/ui/move",
+  "/debug/ui/connect",
+  "/debug/ui/disconnect",
+  "/debug/ui/channels",
+  "/debug/ui/enabled",
+  "/debug/ui/select",
+  "/debug/ui/arrange",
+  "/debug/ui/settings",
+  "/debug/ui/add",
+  "/debug/ui/calibrate",
+  "/debug/ui/run",
 ];
 
 /// 调试面板页面（浏览器版）的静态资源：**随二进制内嵌**，安装后不依赖磁盘上的 ui/ 目录。
@@ -305,6 +316,14 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
       }
       None => ("400 Bad Request", json!({"error": "需要 id"})),
     },
+    "/debug/ui/run" => match query_param(query, "on") {
+      Some(v) => {
+        let on = matches!(v, "1" | "true" | "yes" | "on");
+        hub.push_ui_command(UiCommand::SetEngine { on });
+        ("200 OK", json!({"queued": true}))
+      }
+      None => ("400 Bad Request", json!({"error": "需要 on=0|1"})),
+    },
     "/debug/ui/arrange" => {
       hub.push_ui_command(UiCommand::Arrange);
       ("200 OK", json!({"queued": true}))
@@ -312,6 +331,22 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
     "/debug/ui/settings" => {
       hub.push_ui_command(UiCommand::OpenSettings);
       ("200 OK", json!({"queued": true}))
+    }
+    "/debug/ui/add" => match query_param(query, "ptype") {
+      Some(ptype) if !ptype.is_empty() => {
+        hub.push_ui_command(UiCommand::AddNode {
+          ptype: ptype.to_string(),
+        });
+        ("200 OK", json!({"queued": true, "ptype": ptype}))
+      }
+      _ => ("400 Bad Request", json!({"error": "需要 ptype"})),
+    },
+    "/debug/ui/calibrate" => {
+      let id = query_param(query, "id")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0);
+      hub.push_ui_command(UiCommand::CalibrateAec { id });
+      ("200 OK", json!({"queued": true, "id": id}))
     }
 
     "/debug/bundle" => {

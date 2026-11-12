@@ -36,12 +36,11 @@
    - 工作流（`.github/workflows/`）：
      - `tests.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-24.04`
        （fmt/clippy/build/test/version/bundle）。**不打包**。
-     - `release.yml`：**桌面通道**，tag `v*` 或手动 → **Windows NSIS 安装包**：
-       门禁（fmt/clippy/test）+ `choco install nsis` + `python tools/automation/package_windows.py`
-       （`cargo build --release` + exe/opus.dll/models → `PureVox_<版本>_x64-setup.exe`）→
-       `PLATFORM=windows` 发 release；更新日志排除 `android/`。Linux 已有
-       `tools/automation/package_linux.py`（tar.gz + deb），但 release workflow 还未接；
-       接上后加回 Linux job 并切到 `PLATFORM=desktop`。
+     - `release.yml`：**桌面通道**，tag `v*` 或手动 → **Windows + Linux 一起打**：
+       `windows` job（门禁 + `choco install nsis` + `package_windows.py`）与 `linux` job
+       （门禁 + 系统依赖 + `package_linux.py --appimagetool` → `.deb` / `.AppImage`）并行，
+       release job `needs: [windows, linux]`、`PLATFORM=desktop` 一次挂上全部产物；
+       更新日志排除 `android/`。
      - `android-release.yml`：**安卓通道**，tag `android-v*` 或手动 → 只跑 Android：
        JDK17 + `install_android_sdk.py` + 从 `gh secret` 还原 keystore →
        `./gradlew assembleRelease` → **已签名的 release APK**；release 只附 APK、
@@ -86,9 +85,11 @@
      - `target/` 目录缓存更早就因「太大且总是 miss」删掉。
      代价是每版约 20~25 分钟（Windows 为主）；换来零写失败、零不可见状态、零作用域陷阱。
      版本与工具链仍只来自 `tools/automation/versions.env`（其余 workflow 不得硬编码版本）。
-   - **Linux 系统依赖**（本机与 CI 同）：`libwebkit2gtk-4.1-dev libssl-dev libxdo-dev
-     librsvg2-dev libgtk-3-dev libasound2-dev pkg-config file rpm`（wry→WebKitGTK、
-     cpal→ALSA、rpmbuild→rpm）；运行期还需系统 `libopus0`（缺时网络音频降级，见 §1.2）。
+   - **Linux 系统依赖**（本机与 CI 同）：`libssl-dev libasound2-dev libfontconfig1-dev
+     libfreetype-dev libx11-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev
+     libxkbcommon-x11-dev libwayland-dev libvulkan-dev libgl1-mesa-dev libegl1-mesa-dev
+     libdbus-1-dev pkg-config file dpkg-dev`（GPUI→X11/Wayland/Vulkan、cpal→ALSA，
+     dpkg-deb→deb）；运行期还需系统 `libopus0`（缺时网络音频降级，见 §1.2）。
    - `*.md` 改动不进 CI。
   - **Linux 基线 = ubuntu-24.04，打包与门禁都用它（唯一一档，不分双轨）**：
     glibc 的版本化符号**单方向兼容** —— 新 glibc 必定保留全部旧版本标签（实测 2.43 的

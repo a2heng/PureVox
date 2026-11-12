@@ -12,4 +12,17 @@ fn main() {
   // 是独立目标，`cargo test` 会一起链 —— 在这里显式声明，别靠偶然。
   #[cfg(windows)]
   println!("cargo:rustc-link-lib=shell32");
+
+  // 任务栏 / 标题栏左上角图标：GPUI 在 Windows 上用 `LoadImageW(模块, 资源 1)`
+  // 取图标，所以路径必须是把 `icons/icon.ico` 编进 exe 的第 1 个图标资源。
+  #[cfg(windows)]
+  {
+    let mut res = tauri_winres::WindowsResource::new();
+    res.set_icon("icons/icon.ico");
+    res.set("ProductName", "PureVox");
+    res.set("FileDescription", "PureVox");
+    if let Err(e) = res.compile() {
+      println!("cargo:warning=嵌入 Windows 图标失败：{e}");
+    }
+  }
 }

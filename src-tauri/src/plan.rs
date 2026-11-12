@@ -358,7 +358,8 @@ impl Plan {
       changed = true;
     }
 
-    // 补 ID / 补位置（按当前列顺序给默认值）。
+    // 补 ID / 补位置（按当前列顺序给默认值）。同一份计划里 ID 必须唯一：
+    // 读到手改 / 旧版合并坏掉的文件时，重复 ID 会重新编号。
     let mut seen = HashSet::new();
     let mut next = self.nodes().map(|n| n.id).max().unwrap_or(0) + 1;
     for (ci, c) in self.columns.iter_mut().enumerate() {
@@ -394,8 +395,8 @@ impl Plan {
         }
         if r.x == 0.0 && r.y == 0.0 {
           // 端子在上/下 => 同一条链自上而下；同一深度的分支横向排开。
-          r.x = 64.0 + ci as f32 * 280.0;
-          r.y = 48.0 + ri as f32 * 180.0;
+          r.x = 64.0 + ci as f32 * 272.0;
+          r.y = 48.0 + ri as f32 * 88.0;
           changed = true;
         }
       }
@@ -461,8 +462,9 @@ impl Plan {
       let row = per.entry(d).or_insert(0);
       if let Some(n) = self.node_mut(id) {
         // 端子在上/下 => 信号自上而下流：深度走 y，分支走 x。
-        n.x = 48.0 + *row as f32 * 300.0;
-        n.y = 64.0 + d as f32 * 190.0;
+        // 卡片 240 宽 / 36 高：留 32 px 横向、52 px 纵向走线，整理后不会「飞出去」。
+        n.x = 48.0 + *row as f32 * 272.0;
+        n.y = 64.0 + d as f32 * 88.0;
       }
       *row += 1;
     }
@@ -755,9 +757,9 @@ pub fn pad_hotkeys(plan: &Plan, hub: crate::debug::SharedHub) -> Vec<crate::hotk
 pub fn node_size(kind: RowKind, ptype: &str, _channels: u32) -> (f32, f32) {
   // 所有卡片同宽：端口固定在左侧固定槽位，换卡片也能一眼知道第 N 路的点在哪。
   match (kind, ptype) {
-    (RowKind::Input, _) | (RowKind::Output, _) | (_, "echo_cancel") => (240.0, 70.0),
-    (_, "eq31") => (240.0, 64.0),
-    _ => (240.0, 64.0),
+    (RowKind::Input, _) | (RowKind::Output, _) | (_, "echo_cancel") => (240.0, 36.0),
+    (_, "eq31") => (240.0, 36.0),
+    _ => (240.0, 36.0),
   }
 }
 

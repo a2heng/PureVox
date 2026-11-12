@@ -54,8 +54,10 @@ ROOT = Path(__file__).resolve().parents[2]
 # release_stage.sh，改了会红）。
 PRODUCT_LINES_DESKTOP = (
     "- **Windows**：`PureVox-<版本>-windows-x64-setup.exe`（NSIS 安装包，按用户安装）",
+    "- **Linux（deb）**：`PureVox-<版本>-linux-x64.deb`（Ubuntu / Debian，apt 安装）",
+    "- **Linux（AppImage）**：`PureVox-<版本>-linux-x64.AppImage`（免安装，chmod +x 后直接运行）",
     "",
-    "Linux 安装包（AppImage / deb / rpm）待恢复；桌面端内置 ONNX 模型，授权见 `MODEL-LICENSE.md`。",
+    "桌面端内置 ONNX 模型，授权见 `MODEL-LICENSE.md`。",
 )
 
 PRODUCT_LINES_ANDROID = (

@@ -34,6 +34,9 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("这个 release 没有更新说明", "This release has no notes");
     m.insert("没有匹配到本机安装方式可用的包", "No package matched this install kind");
     m.insert("设置", "Settings");
+    m.insert("跳过", "Skip");
+    m.insert("添加节点", "Add node");
+    m.insert("整理节点", "Arrange nodes");
     m.insert("启用全局热键", "Enable global hotkey");
     m.insert("录制", "Record");
     m.insert("按键…", "Press keys…");
@@ -59,6 +62,19 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("删除列", "Delete column");
     m.insert("加一列", "Add column");
     m.insert("近端", "Near");
+    m.insert("开机自启（静默运行）", "Start with Windows (silent)");
+    m.insert(
+      "登录后自动运行引擎并隐藏到托盘；点托盘图标显示窗口。",
+      "Runs the engine at login and hides to the tray; click the tray icon to show the window.",
+    );
+    m.insert(
+      "已开启：登录后自动运行引擎并隐藏到托盘",
+      "On: runs the engine at login and hides to the tray",
+    );
+    m.insert("已关闭开机自启", "Autostart disabled");
+    m.insert("远端峰值", "Far peak");
+    m.insert("麦克风峰值", "Mic peak");
+    m.insert("远端参考", "Far reference");
     m.insert("远端", "Far");
     m.insert("近端增益", "Near gain");
     m.insert("远端增益", "Far gain");
@@ -377,7 +393,7 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("毫秒", "ms");
     m.insert("说明", "Note");
     m.insert("未测到", "not measured");
-    m.insert("麦克风", "mic");
+    m.insert("麦克风", "Mic");
     m.insert("测试音（1kHz 测试用）", "Test tone (1 kHz test)");
     m.insert("AEC（回声消除）", "AEC (echo cancel)");
     m.insert("31 段均衡", "31-band EQ");
@@ -487,9 +503,11 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("网络结论：", "Network verdict: ");
     m.insert("AEC 校准", "AEC calibration");
     m.insert("开始校准", "Start calibration");
+    m.insert("从远端设备播放扫频探针", "Plays a sweep probe through the far device");
     m.insert("画板里没有 AEC 节点（＋ AI → 回声消除）。", "No AEC node on the canvas (＋ AI → Echo cancellation).");
     m.insert("还没校准（结果会写进 /debug/calib）", "Not calibrated yet (result is written to /debug/calib)");
-    m.insert("蓝：远端参考 · 绿：麦克风", "Blue: far reference · Green: microphone");
+    m.insert("蓝：远端参考 · 绿：麦克风", "Blue: far reference · Yellow: microphone");
+    m.insert("校准后显示远端 / 麦克风包络", "Envelopes appear here after calibration");
     m.insert("播放一段系统声音，让麦克风听到", "Play some system audio so the mic can hear it");
     m.insert("界面语言", "Language");
     m.insert("全局热键", "Global hotkey");
@@ -521,8 +539,6 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("保存提示音设置失败：", "Failed to save sound settings: ");
     m.insert("中文", "Chinese");
     m.insert("保存语言失败：", "Failed to save language: ");
-    m.insert("已开启 · 点击关闭", "On · click to turn off");
-    m.insert("已关闭 · 点击开启", "Off · click to turn on");
     m.insert("还没有手机连上", "no phone connected yet");
     m.insert("打开系统声音设置", "Open system sound settings");
     m.insert("链路：麦克风 → PureVox → CABLE Input → CABLE Output → 其它软件", "Chain: microphone → PureVox → CABLE Input → CABLE Output → other apps");
@@ -550,8 +566,6 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("通道", "Channels");
     m.insert("信息", "Info");
     m.insert("类型", "Type");
-    m.insert("启用中 · 点击静音", "Enabled · click to mute");
-    m.insert("已静音 · 点击启用", "Muted · click to enable");
     m.insert("参数", "Parameters");
     m.insert("参考语音", "Reference voice");
     m.insert("录制 10 秒参考", "Record 10 s reference");

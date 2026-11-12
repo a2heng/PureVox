@@ -6,10 +6,10 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use gpui_kit::component::Selectable as _;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 use gpui_kit::{
-  AnyElement, Context, Div, PathBuilder, Window, canvas, div, point, prelude::*, px, rgb,
+  AnyElement, Context, Div, PathBuilder, Window, bounds, canvas, div, fill, point, prelude::*, px,
+  rgb, rgba,
 };
 
 use super::theme as t;
@@ -60,10 +60,11 @@ impl Workspace {
     let latency = self.latency_short(ci);
 
     // ── 操作（上）────────────────────────────────────────────────────
+    let entity = cx.entity();
     let mut list = div()
       .flex()
       .flex_col()
-      .gap_3()
+      .gap_2()
       .child(
         div()
           .flex()
@@ -88,7 +89,7 @@ impl Workspace {
               ),
           )
           .child(
-            quiet_button(cx, format!("del:{id}"), "删除").on_click(cx.listener(
+            danger_button(cx, format!("del:{id}"), "删除").on_click(cx.listener(
               move |this, _, _window, cx| {
                 this.delete_node(id, cx);
               },
@@ -96,24 +97,20 @@ impl Workspace {
           ),
       )
       .child(section("操作"))
-      .child(
-        quiet_button(
-          cx,
-          format!("en:{id}"),
-          if enabled {
-            "启用中 · 点击静音"
-          } else {
-            "已静音 · 点击启用"
-          },
-        )
-        .on_click(cx.listener(move |this, _, _window, cx| {
-          this.snapshot();
-          if let Some(n) = this.plan.node_mut(id) {
-            n.enabled = !n.enabled;
-          }
-          this.apply_structure(cx);
-        })),
-      );
+      .child(skip_row(
+        format!("skip:{id}"),
+        !enabled,
+        move |next, _, cx| {
+          let skip = *next;
+          entity.update(cx, |this, cx| {
+            this.snapshot();
+            if let Some(n) = this.plan.node_mut(id) {
+              n.enabled = !skip;
+            }
+            this.apply_structure(cx);
+          });
+        },
+      ));
 
     // 媒体源（音效板 / 播放器）：文件选择 → 库内 WAV → 重建。
     if n.ptype == "soundpad" || n.ptype == "player" {
@@ -262,13 +259,16 @@ impl Workspace {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                       if recording {
-                        this.recording = None;
+                        this.end_record();
                         this.status = i18n::tr("已取消录制热键").into();
+                        cx.notify();
                       } else {
-                        this.recording = Some(RecordTarget::Pad { node: id, index: i });
-                        this.status = i18n::tr("按下这个音效的热键…（Esc 取消）").into();
+                        this.begin_record(
+                          RecordTarget::Pad { node: id, index: i },
+                          "按下这个音效的热键…（Esc 取消）",
+                          cx,
+                        );
                       }
-                      cx.notify();
                     })),
                   ),
               ),
@@ -276,7 +276,7 @@ impl Workspace {
         }
         if !pads.is_empty() {
           list = list.child(
-            quiet_button(cx, format!("padstop:{id}"), "全部停止").on_click(cx.listener(
+            ghost_button(cx, format!("padstop:{id}"), "全部停止").on_click(cx.listener(
               move |this, _, _, cx| {
                 if let Some((ci, ri)) = this.pos(id)
                   && let Some(s) = crate::engine::media::hub().slot(ci, ri)
@@ -307,23 +307,23 @@ impl Workspace {
             let did = d.id.clone();
             let dname = d.name.clone();
             list = list.child(
-              quiet_button(cx, format!("dev:{id}:{}", d.id), d.name)
-                .when(on, |b| b.selected(true))
-                .on_click(cx.listener(move |this, _, _window, cx| {
+              choice_button(cx, format!("dev:{id}:{}", d.id), d.name, on).on_click(cx.listener(
+                move |this, _, _window, cx| {
                   this.snapshot();
                   if let Some(n) = this.plan.node_mut(id) {
                     n.device = Some(did.clone());
                     n.device_name = Some(dname.clone());
                   }
                   this.apply_structure(cx);
-                })),
+                },
+              )),
             );
           }
         }
         "app_capture" => {
           list = list.child(section("应用音频"));
           list = list.child(
-            quiet_button(cx, format!("applist:{id}"), "刷新应用列表").on_click(cx.listener(
+            ghost_button(cx, format!("applist:{id}"), "刷新应用列表").on_click(cx.listener(
               |this, _, _window, cx| {
                 match crate::audio::app_capture::list_apps() {
                   Ok(v) => {
@@ -345,12 +345,12 @@ impl Workspace {
             let dev = format!("app:{pid}");
             let on = n.device.as_deref() == Some(dev.as_str());
             list = list.child(
-              quiet_button(
+              choice_button(
                 cx,
                 format!("app:{id}:{pid}"),
                 format!("{name}  ·  PID {pid}"),
+                on,
               )
-              .when(on, |b| b.selected(true))
               .on_click(cx.listener(move |this, _, _window, cx| {
                 this.snapshot();
                 if let Some(n) = this.plan.node_mut(id) {
@@ -371,32 +371,32 @@ impl Workspace {
           list = list.child(section("系统声音"));
           let on = n.device.as_deref().map(|d| d == "loopback").unwrap_or(true);
           list = list.child(
-            quiet_button(cx, format!("loop:{id}"), "系统默认输出")
-              .when(on, |b| b.selected(true))
-              .on_click(cx.listener(move |this, _, _window, cx| {
+            choice_button(cx, format!("loop:{id}"), "系统默认输出", on).on_click(cx.listener(
+              move |this, _, _window, cx| {
                 this.snapshot();
                 if let Some(n) = this.plan.node_mut(id) {
                   n.device = Some("loopback".into());
                   n.device_name = Some("系统声音（默认输出）".into());
                 }
                 this.apply_structure(cx);
-              })),
+              },
+            )),
           );
           for t in crate::devices::loopback_targets() {
             let on = n.device.as_deref() == Some(t.id.as_str());
             let did = t.id.clone();
             let dname = t.name.clone();
             list = list.child(
-              quiet_button(cx, format!("loop:{id}:{}", t.id), t.name)
-                .when(on, |b| b.selected(true))
-                .on_click(cx.listener(move |this, _, _window, cx| {
+              choice_button(cx, format!("loop:{id}:{}", t.id), t.name, on).on_click(cx.listener(
+                move |this, _, _window, cx| {
                   this.snapshot();
                   if let Some(n) = this.plan.node_mut(id) {
                     n.device = Some(did.clone());
                     n.device_name = Some(dname.clone());
                   }
                   this.apply_structure(cx);
-                })),
+                },
+              )),
             );
           }
         }
@@ -416,16 +416,16 @@ impl Workspace {
         let did = d.id.clone();
         let dname = d.name.clone();
         list = list.child(
-          quiet_button(cx, format!("odev:{id}:{}", d.id), d.name)
-            .when(on, |b| b.selected(true))
-            .on_click(cx.listener(move |this, _, _window, cx| {
+          choice_button(cx, format!("odev:{id}:{}", d.id), d.name, on).on_click(cx.listener(
+            move |this, _, _window, cx| {
               this.snapshot();
               if let Some(n) = this.plan.node_mut(id) {
                 n.device = Some(did.clone());
                 n.device_name = Some(dname.clone());
               }
               this.apply_structure(cx);
-            })),
+            },
+          )),
         );
       }
     }
@@ -555,7 +555,7 @@ impl Workspace {
               .child(format!("{src} · {fp} → {tp}")),
           )
           .child(
-            quiet_button(cx, format!("disc:{id}:{from}:{fp}:{tp}"), "断开").on_click(cx.listener(
+            danger_button(cx, format!("disc:{id}:{from}:{fp}:{tp}"), "断开").on_click(cx.listener(
               move |this, _, _, cx| {
                 this.disconnect(from, fp, id, tp, cx);
               },
@@ -591,85 +591,32 @@ impl Workspace {
       return hint("引擎未运行，或这一行还没有可视化数据。").into_any_element();
     };
 
+    // 频谱显示平滑（10 Hz 刷新，α=0.45 ≈ 200 ms）：Rust 侧给的是实测值（/debug 同源），
+    // 不为了好看改数据；这里只把「看起来的抖动」压下去，低频窄段尤其需要。
+    let key = (ci, ri);
+    let prev = self.viz_smooth.get(&key);
+    let bands: Vec<f32> = frame
+      .bands_db
+      .iter()
+      .enumerate()
+      .map(|(i, &v)| match prev.and_then(|p| p.get(i)) {
+        Some(&old) => old + 0.45 * (v - old),
+        None => v,
+      })
+      .collect();
+    self.viz_smooth.insert(key, bands.clone());
+
     let mut list = div().flex().flex_col().gap_2();
     if mode != "spectrum" {
       let peak = frame.peak_dbfs.unwrap_or(-160.0);
       let rms = frame.rms_dbfs.unwrap_or(-160.0);
-      let frac = ((peak + 60.0) / 60.0).clamp(0.0, 1.0);
-      let color = if peak > -3.0 {
-        t::DANGER
-      } else if peak > -12.0 {
-        t::AEC
-      } else {
-        t::OK
-      };
       list = list
         .child(field("峰值", format!("{peak:.1} dBFS")))
         .child(field("RMS", format!("{rms:.1} dBFS")))
-        .child(
-          div()
-            .h(px(10.0))
-            .w_full()
-            .rounded_sm()
-            .bg(rgb(t::BG))
-            .child(
-              div()
-                .h_full()
-                .w(gpui_kit::relative(frac))
-                .rounded_sm()
-                .bg(rgb(color)),
-            ),
-        );
+        .child(seg_meter(10f32.powf(peak / 20.0), 44, 5., 10.));
     }
     if mode != "vu" {
-      let bands = frame.bands_db.clone();
-      let lo = snap.band_hz[0];
-      let hi = snap.band_hz[1];
-      list = list
-        .child(
-          div()
-            .h(px(110.0))
-            .w_full()
-            .rounded_md()
-            .bg(rgb(t::BG))
-            .border_1()
-            .border_color(rgb(t::BORDER))
-            .child(
-              canvas(
-                |_, _, _| {},
-                move |bounds, _, window, _| {
-                  let w = bounds.size.width.as_f32();
-                  let h = bounds.size.height.as_f32();
-                  let n = bands.len().max(1) as f32;
-                  for (i, &db) in bands.iter().enumerate() {
-                    let v = ((db + 80.0) / 80.0).clamp(0.0, 1.0);
-                    let x = (i as f32 + 0.5) / n * w;
-                    let y0 = h;
-                    let y1 = h - v * h;
-                    let mut pb = PathBuilder::stroke(px(2.0));
-                    pb.move_to(bounds.origin + point(px(x), px(y0)));
-                    pb.line_to(bounds.origin + point(px(x), px(y1)));
-                    if let Ok(p) = pb.build() {
-                      window.paint_path(p, rgb(t::ACCENT));
-                    }
-                  }
-                },
-              )
-              .w_full()
-              .h_full(),
-            ),
-        )
-        .child(
-          div()
-            .flex()
-            .justify_between()
-            .text_size(px(t::TEXT_XS))
-            .text_color(rgb(t::MUTED))
-            .child(format!("{lo:.0} Hz"))
-            .child("1 kHz")
-            .child(format!("{hi:.0} Hz")),
-        )
-        .child(hint("64 段对数频谱；每 10 ms 一帧，界面 10 Hz 刷新。"));
+      list = list.child(spectrum_panel(bands));
     }
     list.into_any_element()
   }
@@ -760,34 +707,32 @@ impl Workspace {
     ] {
       let preset = eq_preset(key);
       presets = presets.child(
-        quiet_button(cx, format!("eqp:{id}:{key}"), label)
+        ghost_button(cx, format!("eqp:{id}:{key}"), label)
           .on_click(cx.listener(move |this, _, _, cx| this.eq_apply(id, &preset, true, cx))),
       );
     }
 
-    let toggle_cut = |key: &'static str, on: bool| {
+    let eq_entity = cx.entity();
+    let toggle_cut = |key: &'static str, label: &'static str, on: bool| {
       let eq = eq.clone();
-      let low = low_on;
-      let high = high_on;
-      quiet_button(
-        cx,
+      let entity = eq_entity.clone();
+      switch_row(
         format!("eqcut:{id}:{key}"),
-        if key == "low" {
-          "低切 80 Hz"
-        } else {
-          "高切 16 kHz"
+        label,
+        on,
+        move |next, _, cx| {
+          let on = *next;
+          let mut eq = eq.clone();
+          if key == "low" {
+            eq.low_cut_on = on;
+          } else {
+            eq.high_cut_on = on;
+          }
+          entity.update(cx, |this, cx| {
+            this.eq_apply(id, &eq, true, cx);
+          });
         },
       )
-      .when(on, |b| b.selected(true))
-      .on_click(cx.listener(move |this, _, _, cx| {
-        let mut eq = eq.clone();
-        if key == "low" {
-          eq.low_cut_on = !low;
-        } else {
-          eq.high_cut_on = !high;
-        }
-        this.eq_apply(id, &eq, true, cx);
-      }))
     };
 
     div()
@@ -822,9 +767,10 @@ impl Workspace {
       .child(
         div()
           .flex()
-          .gap_1()
-          .child(toggle_cut("low", low_on))
-          .child(toggle_cut("high", high_on)),
+          .flex_col()
+          .gap_2()
+          .child(toggle_cut("low", "低切 80 Hz", low_on))
+          .child(toggle_cut("high", "高切 16 kHz", high_on)),
       )
       .into_any_element()
   }
@@ -899,7 +845,8 @@ impl Workspace {
     };
     let ptype = n.ptype.clone();
     let spec = crate::engine::registry::get_spec(&ptype);
-    let mut list = div().flex().flex_col().gap_2();
+    let entity = cx.entity();
+    let mut list = div().flex().flex_col().gap_1();
     let Some(spec) = spec else {
       return list;
     };
@@ -913,6 +860,8 @@ impl Workspace {
         .cloned()
         .unwrap_or_else(|| p.default_text());
       let label = div()
+        .w(px(76.))
+        .flex_shrink_0()
         .text_size(px(t::TEXT_SM))
         .text_color(rgb(t::MUTED))
         .child(i18n::tr(p.label).to_string());
@@ -966,15 +915,20 @@ impl Workspace {
             _ => default,
           };
           let key = p.key.to_string();
-          quiet_button(
-            cx,
+          let entity = entity.clone();
+          switch_control(
             format!("pb:{id}:{}", p.key),
-            if on { "开" } else { "关" },
+            p.label,
+            on,
+            move |next, _, cx| {
+              let on = *next;
+              let key = key.clone();
+              entity.update(cx, |this, cx| {
+                this.snapshot();
+                this.set_param(id, &key, if on { "1" } else { "0" }.into(), cx);
+              });
+            },
           )
-          .on_click(cx.listener(move |this, _, _window, cx| {
-            this.snapshot();
-            this.set_param(id, &key, if on { "0" } else { "1" }.into(), cx);
-          }))
           .into_any_element()
         }
         crate::engine::registry::ParamKind::Choice { options, default } => {
@@ -988,12 +942,16 @@ impl Workspace {
             let key = p.key.to_string();
             let v = (*value).to_string();
             row = row.child(
-              quiet_button(cx, format!("pc:{id}:{}:{value}", p.key), *label)
-                .when(cur == *value, |b| b.selected(true))
-                .on_click(cx.listener(move |this, _, _window, cx| {
-                  this.snapshot();
-                  this.set_param(id, &key, v.clone(), cx);
-                })),
+              choice_button(
+                cx,
+                format!("pc:{id}:{}:{value}", p.key),
+                *label,
+                cur == *value,
+              )
+              .on_click(cx.listener(move |this, _, _window, cx| {
+                this.snapshot();
+                this.set_param(id, &key, v.clone(), cx);
+              })),
             );
           }
           row.into_any_element()
@@ -1022,12 +980,12 @@ impl Workspace {
               let k = key.clone();
               let on = cur == value;
               row = row.child(
-                quiet_button(cx, format!("pm:{id}:{}:{}", p.key, value), label)
-                  .when(on, |b| b.selected(true))
-                  .on_click(cx.listener(move |this, _, _window, cx| {
+                choice_button(cx, format!("pm:{id}:{}:{}", p.key, value), label, on).on_click(
+                  cx.listener(move |this, _, _window, cx| {
                     this.snapshot();
                     this.set_param(id, &k, v.clone(), cx);
-                  })),
+                  }),
+                ),
               );
             }
             row.into_any_element()
@@ -1040,7 +998,15 @@ impl Workspace {
           }
         }
       };
-      list = list.child(div().flex().flex_col().gap_1().child(label).child(control));
+      list = list.child(
+        div()
+          .flex()
+          .items_center()
+          .gap_2()
+          .min_h(px(22.))
+          .child(label)
+          .child(div().flex_1().min_w_0().child(control)),
+      );
     }
     list
   }
@@ -1102,6 +1068,158 @@ fn eq_preset(name: &str) -> EqSettings {
     _ => {}
   }
   s
+}
+
+/// 频谱面板：对数频率轴（20 Hz–20 kHz）+ dBFS 纵轴（0…-90），按**电平**分三色。
+///
+/// 与 VU 电平条同一套阈值（绿 ≤ -45、黄 -45..-30、红 > -30），刻度全部画在框里；
+/// 61 段是 ISO 1/6 倍频程，所以「等宽柱子 = 对数轴」，低频不会挤成一条线。
+fn spectrum_panel(bands: Vec<f32>) -> AnyElement {
+  const MIN_DB: f32 = -90.0;
+  const AXIS_W: f32 = 34.0;
+  const AXIS_H: f32 = 15.0;
+  const F_LO: f32 = 20.0;
+  const F_HI: f32 = 20480.0;
+  /// 显示下限：低于 ~60 Hz 的前几段只覆盖 1–2 个 FFT bin，插值会画出左右翘的锯齿，
+  /// 对麦克风降噪也没有意义。**只影响显示**：分析仍然是 20 Hz 起，数组不改。
+  const DISPLAY_LO: f32 = 60.0;
+  let n = bands.len().max(1);
+  div()
+    .relative()
+    .h(px(150.))
+    .w_full()
+    .rounded_md()
+    .bg(rgb(t::BG))
+    .border_1()
+    .border_color(rgb(t::BORDER))
+    .overflow_hidden()
+    .child(
+      canvas(
+        |_, _, _| {},
+        move |bounds, _, window, cx| {
+          let all_w = bounds.size.width.as_f32();
+          let all_h = bounds.size.height.as_f32();
+          let w = (all_w - AXIS_W).max(8.0);
+          let h = (all_h - AXIS_H).max(8.0);
+          let o = bounds.origin;
+          let y_of = |db: f32| (-db / -MIN_DB).clamp(0.0, 1.0) * h;
+          let grid = rgba((t::BORDER << 8) | 0x80);
+          // 横向 dB 网格 + 右侧刻度
+          for db in [0.0f32, -20.0, -40.0, -60.0, -80.0] {
+            let y = y_of(db);
+            let mut pb = PathBuilder::stroke(px(1.));
+            pb.move_to(point(o.x, o.y + px(y)));
+            pb.line_to(point(o.x + px(w), o.y + px(y)));
+            if let Ok(p) = pb.build() {
+              window.paint_path(p, grid);
+            }
+            let line = shape_text(window, &format!("{db:.0}"), 9.0, t::MUTED);
+            let lx = all_w - 4.0 - line.width.as_f32();
+            let _ = line.paint(
+              point(o.x + px(lx), o.y + px((y - 5.0).max(0.0))),
+              px(10.),
+              gpui_kit::TextAlign::Left,
+              None,
+              window,
+              cx,
+            );
+          }
+          // 只画 >= 60 Hz 的段；前面的极低频段 bin 太少，画出来就是左右翘的锯齿。
+          let first = (0..n)
+            .find(|i| F_LO * 2f32.powf(*i as f32 / 6.0) >= DISPLAY_LO)
+            .unwrap_or(0);
+          let vis: Vec<f32> = bands.iter().skip(first).copied().collect();
+          let n_vis = vis.len().max(1);
+          let f_lo = F_LO * 2f32.powf(first as f32 / 6.0);
+          // 纵向频率网格（对数轴）+ 底部刻度
+          let x_of = |f: f32| ((f / f_lo).ln() / (F_HI / f_lo).ln()) * w;
+          for (f, label) in [(100.0f32, "100"), (1000.0, "1k"), (10000.0, "10k")] {
+            let x = x_of(f);
+            let mut pb = PathBuilder::stroke(px(1.));
+            pb.move_to(point(o.x + px(x), o.y));
+            pb.line_to(point(o.x + px(x), o.y + px(h)));
+            if let Ok(p) = pb.build() {
+              window.paint_path(p, grid);
+            }
+            let line = shape_text(window, label, 9.0, t::MUTED);
+            let lx = (x - line.width.as_f32() / 2.0).clamp(0.0, w - line.width.as_f32());
+            let _ = line.paint(
+              point(o.x + px(lx), o.y + px(h + 3.0)),
+              px(10.),
+              gpui_kit::TextAlign::Left,
+              None,
+              window,
+              cx,
+            );
+          }
+          // 柱子：底部 → 顶部按电平分三段着色（填充矩形，不是描线）
+          let step = w / n_vis as f32;
+          let bw = (step - 1.0).max(1.0);
+          for (i, &raw) in vis.iter().enumerate() {
+            let db = raw.clamp(MIN_DB, 0.0);
+            if db <= MIN_DB + 0.5 {
+              continue;
+            }
+            let x = i as f32 * step;
+            // 绿：-90 → min(db, -45)
+            let green_top = db.min(-45.0);
+            if green_top > MIN_DB + 0.01 {
+              paint_bar(
+                window,
+                o.x.as_f32() + x,
+                o.y.as_f32(),
+                bw,
+                y_of(green_top),
+                y_of(MIN_DB),
+                t::OK,
+              );
+            }
+            // 黄：-45 → min(db, -30)
+            if db > -45.0 {
+              let top = db.min(-30.0);
+              paint_bar(
+                window,
+                o.x.as_f32() + x,
+                o.y.as_f32(),
+                bw,
+                y_of(top),
+                y_of(-45.0),
+                t::AEC,
+              );
+            }
+            // 红：-30 → db
+            if db > -30.0 {
+              paint_bar(
+                window,
+                o.x.as_f32() + x,
+                o.y.as_f32(),
+                bw,
+                y_of(db),
+                y_of(-30.0),
+                t::DANGER,
+              );
+            }
+          }
+        },
+      )
+      .w_full()
+      .h_full(),
+    )
+    .into_any_element()
+}
+
+/// 画一根频谱柱的一段（`y0..y1` 是框内坐标，左上为 0）。
+fn paint_bar(window: &mut Window, x: f32, y_base: f32, w: f32, y0: f32, y1: f32, color: u32) {
+  if y1 <= y0 {
+    return;
+  }
+  window.paint_quad(fill(
+    bounds(
+      point(px(x), px(y_base + y0)),
+      gpui_kit::size(px(w), px(y1 - y0)),
+    ),
+    rgb(color),
+  ));
 }
 
 #[cfg(test)]

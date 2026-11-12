@@ -47,6 +47,7 @@ export PV_HOME="C:/Users/<你>/AppData/Local/Temp/pv-home"
 mkdir -p "$PV_HOME/.purevox"
 # 需要特定计划就写 session.json；不写就是默认一列
 USERPROFILE="$PV_HOME" HOME="$PV_HOME" \
+  PUREVOX_ALLOW_MULTI=1 \              # 单实例默认挡住第二个；隔离测试必须显式放行
   PUREVOX_AUTOCALIB_MS=600000 \        # 自动启动会话并保持 10 分钟（之后才会尝试校准）
   "$PV_TARGET/debug/purevox.exe" >"$PV_HOME/run.log" 2>&1 &
 ```
@@ -59,6 +60,7 @@ USERPROFILE="$PV_HOME" HOME="$PV_HOME" \
 | `PUREVOX_AUTOCALIB_MS=<ms>` | 自动 `start()` 会话，`<ms>` 后跑一次 AEC 校准；**设大值 = 只为把引擎跑起来** |
 | `PUREVOX_AUTODEBUG=1` | 自动打开系统浏览器调试面板（本机 HTTP 47821） |
 | `PUREVOX_DEBUG_PORT=<port>` | 覆盖调试 HTTP 端口（默认 47821）。**本机已有 PureVox 在跑时，隔离实例必须换一个端口**，否则读到的会是用户那只 |
+| `PUREVOX_ALLOW_MULTI=1` | **隔离测试必设**：放行并行实例，并按 profile 区分互斥体/锁文件；不设时默认整个用户会话只允许一个 PureVox |
 
 读状态（中文用 Python/json，不用 PowerShell 解码）：
 

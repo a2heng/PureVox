@@ -355,6 +355,10 @@ pub struct DebugHub {
 pub enum UiCommand {
   /// 托盘菜单「启动 / 停止引擎」
   ToggleEngine,
+  /// 调试接口：把引擎设成指定的启停状态（`on` 与当前一致时不做事）
+  SetEngine {
+    on: bool,
+  },
   /// 右侧信息栏切到全局设置（调试验收用；与顶栏「设置」同一条路径）
   OpenSettings,
   /// 托盘「退出」（Linux 走这条；Windows 走 WM_CLOSE + quitting 标记）
@@ -388,6 +392,14 @@ pub enum UiCommand {
     id: u32,
   },
   Arrange,
+  /// 按节点类型加一个节点（调试/验收用；与「添加节点」菜单同一条路径）
+  AddNode {
+    ptype: String,
+  },
+  /// 触发 AEC 延时校准；`id == 0` = 第一个 AEC 节点
+  CalibrateAec {
+    id: u32,
+  },
 }
 
 pub type SharedHub = Arc<DebugHub>;

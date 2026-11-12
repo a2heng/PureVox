@@ -131,6 +131,10 @@ rustls-pemfile = { version = "2", default-features = false, features = ["std"] }
 hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio"] }
 mdns-sd = "0.21"
 
+[target.'cfg(windows)'.build-dependencies]
+# 只用来把 icons/icon.ico 编进 exe（GPUI 的 Windows 窗口图标按资源 ID 1 取）。
+tauri-winres = "0.3"
+
 [target.'cfg(windows)'.dependencies]
 # 系统托盘：tray-icon + muda（Tauri 同源）。只在 Windows 编；Linux 的托盘另走平台实现。
 tray-icon = { version = "0.25", default-features = false }

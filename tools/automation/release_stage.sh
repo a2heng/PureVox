@@ -93,8 +93,7 @@ else
     stage_win
     stage "out/PureVox-${VERSION}-linux-x64.AppImage" */*.AppImage *.AppImage || true
     stage "out/PureVox-${VERSION}-linux-x64.deb"      */*.deb *.deb || true
-    stage "out/PureVox-${VERSION}-linux-x64.rpm"      */*.rpm *.rpm || true
-    want=4
+    want=3
     title="PureVox $VERSION"
   fi
 fi

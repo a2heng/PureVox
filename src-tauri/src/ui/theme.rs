@@ -26,6 +26,8 @@ pub const TEXT: u32 = 0xdfe6ef;
 pub const MUTED: u32 = 0x8794a7;
 /// 强调色
 pub const ACCENT: u32 = 0x4f8cff;
+/// 选中项的淡强调底
+pub const ACCENT_SOFT: u32 = 0x1c2b47;
 /// 播放中 / 正常
 pub const OK: u32 = 0x3ecf8e;
 /// 录制中 / 错误
@@ -50,6 +52,8 @@ pub const DOCK_W: f32 = 340.0;
 pub const DOCK_PAD: f32 = 12.0;
 
 // ── 间距梯度：以 4 px 为基准，界面里不要再随手写 3/6/10 这类孤立数字 ──
+/// 2 px：密集卡片内部的半档间距。
+pub const SPACE_HALF: f32 = 2.0;
 /// 4 px：紧邻元素（标签与值、图标与文字）。
 pub const SPACE_1: f32 = 4.0;
 /// 8 px：同一组内的控件间距。

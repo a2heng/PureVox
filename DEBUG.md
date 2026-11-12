@@ -44,11 +44,17 @@ release 构建同样保留（不允许用编译开关剔除）。
 | `GET /debug/ui/connect?from&from_port&to&to_port` | 连一条线（跨列自动并组；成环会拒绝） |
 | `GET /debug/ui/disconnect?from&from_port&to&to_port` | 断一条线（节点保留，立即重建图） |
 | `GET /debug/ui/channels?id&channels` | 改节点通道数；只丢弃越界入线，合法连线保留 |
-| `GET /debug/ui/enabled?id&enabled=0\|1` | 启用 / 静音节点 |
+| `GET /debug/ui/enabled?id&enabled=0\|1` | 启用 / 跳过节点 |
 | `GET /debug/ui/select?id` / `GET /debug/ui/arrange` | 选中节点 / 按列整理 |
+| `GET /debug/ui/add?ptype=gain` | 按类型加节点（与「添加节点」菜单同一条路径；ptype 见 `engine/registry.rs`） |
+| `GET /debug/ui/calibrate?id` | 触发该 AEC 节点的延时校准（`id=0` = 第一个 AEC）；结果看 `/debug/calib` + 事件日志 |
+| `GET /debug/ui/run?on=0\|1` | 启动 / 停止引擎（与顶栏按钮、托盘、热键同一条 `toggle_engine` 路径；状态已一致时不做事） |
 | `GET /debug/calib` | AEC 校准的**结构化报告**（与快照 `calib_report`、`~/.purevox/calib_last.json` 同一份，见 1.4）：`schema_version` / `ok` / `created_ms` / 判定码与结论 / 两路峰值时刻与延时 / 回声路径 / 探针带电平与 SNR / 回填增益 / 平滑后的带内能量包络 `series` / 原始 dump 路径；未跑过时为 `pending` |
 | `GET /debug/ui` | **调试面板页面本体**（1.1 用系统浏览器打开它）：HTML + 同源静态资源（`/debug/ui/{debug.js,debug.css,i18n.js,snapshot.js,jsdebug.js}`）。页面只 `fetch('/debug')` 渲染，不经过 IPC；内嵌在二进制里，装完也能用 |
 
+- **桌面验收只走接口**：`/debug/ui/*` 是界面命令队列（与按钮/菜单同一条 `apply_command` 路径），
+  用它驱动加节点、连线、改通道、整理、校准；**不模拟鼠标/键盘，也不靠截图判断状态**。
+  截图只用于最后确认布局，数值与成败一律读 `/debug`、`/debug/calib`、`/debug/logs`。
 - `engine_info.threads[]` 带 `tid`（操作系统线程 ID）：与任务管理器/PerfMon 的线程 CPU 对得上号，
   排查「哪个线程在烧 CPU」不用猜。
 - 字段只增不改名；新增字段同步更新本表。

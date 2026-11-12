@@ -24,4 +24,4 @@ mod imp;
 #[path = "tray_other.rs"]
 mod imp;
 
-pub use imp::{hide_main, quitting, spawn};
+pub use imp::{hide_main, quitting, set_running, spawn};

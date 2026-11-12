@@ -56,7 +56,10 @@
   const SPEC_PER_OCT = 6
   const SPEC_MIN = -90
   const SPEC_MAX = 0
-  const SPEC_TICKS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+  // 显示下限：低于 ~60 Hz 的段只覆盖 1–2 个 FFT bin，插值会画出左右翘的锯齿；
+  // 只影响**显示**，`/debug` 与分析数组仍是 20 Hz 起。
+  const SPEC_DISPLAY_LO = 60
+  const SPEC_TICKS = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
   const SPEC_Z1 = -45
   const SPEC_Z2 = -30
   /** 平滑时间常数（ms）：10 Hz 与 2 Hz 下观感一致，不靠固定 α 猜帧率。 */
@@ -219,7 +222,12 @@
   function specState(cv) {
     let s = specStates.get(cv)
     if (!s) {
-      s = { smooth: new Float32Array(SPEC_BANDS), inited: false, lastTs: 0 }
+      s = {
+        smooth: new Float32Array(SPEC_BANDS),
+        peak: new Float32Array(SPEC_BANDS),
+        inited: false,
+        lastTs: 0,
+      }
       specStates.set(cv, s)
     }
     return s
@@ -236,6 +244,7 @@
     const dt = s.lastTs ? clamp(now - s.lastTs, 1, 2000) : 100
     s.lastTs = now
     const a = clamp(1 - Math.exp(-dt / SPEC_TAU_MS), 0.2, 0.9)
+    const firstFrame = !s.inited
     for (let i = 0; i < SPEC_BANDS; i++) {
       const v = Number.isFinite(bands[i]) ? bands[i] : SPEC_MIN
       s.smooth[i] = s.inited ? s.smooth[i] + a * (v - s.smooth[i]) : v
@@ -244,27 +253,58 @@
 
     const { g, w, h } = fit(cv)
     // 对数频率轴：20 Hz ~ 20.5 kHz（ISO 1/6 倍频程 61 段）。
-    // **对数轴不能从 0 开始**（log 0 = -∞），左边缘就是 20 Hz；底部标出 20/50/100…20k，
-    // 让「低频挤、高频疏」这件事一眼可见，而不是一排等距柱子。
+    // **对数轴不能从 0 开始**（log 0 = -∞），左边缘就是 20 Hz；底部标 20/50/100…20k，
+    // 右侧标 0/-20/…/-80 dBFS——通用频谱分析仪的读法，不用自创刻度。
     const labelH = h >= 70 ? 13 : 0
+    const axisW = w >= 240 ? 28 : 0
     const barH = h - labelH
-    const xOf = (f) => (Math.log2(clamp(f, SPEC_LO, SPEC_HI) / SPEC_LO) / Math.log2(SPEC_HI / SPEC_LO)) * w
+    const plotW = w - axisW
+    // 只画 >= 60 Hz 的段（等宽柱子 = 对数轴）
+    const first = Math.max(
+      0,
+      Math.ceil(Math.log2(SPEC_DISPLAY_LO / SPEC_LO) * SPEC_PER_OCT),
+    )
+    const vis = []
+    for (let i = first; i < SPEC_BANDS; i++) vis.push(i)
+    const fLo = SPEC_LO * 2 ** (first / SPEC_PER_OCT)
+    const xOf = (f) =>
+      (Math.log2(clamp(f, fLo, SPEC_HI) / fLo) / Math.log2(SPEC_HI / fLo)) * plotW
 
-    // 只留一条底线，不铺满高底槽（深色主题下满高槽位会像一排等高柱子）
+    // dB 网格（每 20 dB 一条）+ 右侧刻度
+    g.font = '9px Consolas, "Cascadia Mono", monospace'
+    g.textBaseline = 'middle'
+    for (let db = 0; db >= SPEC_MIN; db -= 20) {
+      const y = Math.round(barH - specR(db) * barH) + 0.5
+      g.globalAlpha = 0.18
+      g.fillStyle = cssVar('--line', '#232b36')
+      g.fillRect(0, y, plotW, 1)
+      g.globalAlpha = 1
+      if (axisW) {
+        g.fillStyle = cssVar('--muted', '#8a94a6')
+        g.textAlign = 'left'
+        g.fillText(String(db), plotW + 4, y)
+      }
+    }
+    // 底部一条实线
     g.fillStyle = cssVar('--line', '#232b36')
-    g.fillRect(0, barH - 1, w, 1)
+    g.fillRect(0, barH - 1, plotW, 1)
 
-    const step = w / SPEC_BANDS
+    const step = plotW / vis.length
     const gap = step >= 5 ? 1 : 0
     const zones = /** @type {Array<[number, number, string]>} */ ([
       [SPEC_MIN, SPEC_Z1, C_GREEN],
       [SPEC_Z1, SPEC_Z2, C_YELLOW],
       [SPEC_Z2, SPEC_MAX, C_RED],
     ])
-    for (let i = 0; i < SPEC_BANDS; i++) {
-      const x0 = (i / SPEC_BANDS) * w
+    const zoneColor = (db) => (db >= SPEC_Z2 ? C_RED : db >= SPEC_Z1 ? C_YELLOW : C_GREEN)
+    for (let k = 0; k < vis.length; k++) {
+      const i = vis[k]
+      const x0 = k * step
       const colW = Math.max(1, step - gap)
       const db = s.smooth[i]
+      // 峰值帽：保留每个频段的近期最高点，按 24 dB/s 回落（RTA 的常见画法）
+      if (firstFrame) s.peak[i] = db
+      else s.peak[i] = Math.max(db, s.peak[i] - 24 * (dt / 1000))
       if (!(db > SPEC_MIN + 0.5)) continue
       for (const [lo, hi, color] of zones) {
         const a0 = Math.max(SPEC_MIN, lo)
@@ -275,6 +315,13 @@
         g.fillStyle = color
         g.fillRect(x0, y0, colW, Math.max(1, y1 - y0))
       }
+      const py = barH - specR(s.peak[i]) * barH
+      if (py > 0.5) {
+        g.globalAlpha = 0.55
+        g.fillStyle = zoneColor(s.peak[i])
+        g.fillRect(x0, py - 1, colW, 1)
+        g.globalAlpha = 1
+      }
     }
 
     if (labelH) {
@@ -283,9 +330,9 @@
       g.fillStyle = cssVar('--muted', '#8a94a6')
       for (const f of SPEC_TICKS) {
         const x = xOf(f)
-        if (x < 8 || x > w - 2) continue
-        g.textAlign = x < 14 ? 'left' : x > w - 14 ? 'right' : 'center'
-        const label = f >= 1000 ? (f / 1000) + 'k' : String(f)
+        if (x < 8 || x > plotW - 2) continue
+        g.textAlign = x < 14 ? 'left' : x > plotW - 14 ? 'right' : 'center'
+        const label = f >= 1000 ? f / 1000 + 'k' : String(f)
         g.fillText(label, x, barH + 3)
         g.globalAlpha = 0.18
         g.fillRect(Math.round(x), 0, 1, barH)

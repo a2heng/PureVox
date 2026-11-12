@@ -15,7 +15,8 @@
 
 产物：
   dist/PureVox_<VERSION>_x64.tar.gz
-  dist/purevox_<VERSION>_amd64.deb   （可选）
+  dist/purevox_<VERSION>_amd64.deb   （有 dpkg-deb 时）
+  dist/PureVox_<VERSION>_x64.AppImage（传了 --appimagetool 时，CI 用这条）
 """
 
 from __future__ import annotations
@@ -151,10 +152,66 @@ def make_deb(ver: str, staged: Path) -> Path | None:
         shutil.rmtree(pkg, ignore_errors=True)
 
 
+def make_appimage(ver: str, staged: Path, tool: Path | None) -> Path | None:
+    """hand-made AppDir + appimagetool：便携单文件，不依赖安装包管理器。
+
+    `--appimage-extract-and-run` 让 appimagetool 在没 FUSE 的 CI 容器里也能跑。
+    """
+    if tool is None or not tool.is_file():
+        print("  跳过 AppImage：没给 --appimagetool（CI 下载后传进来）")
+        return None
+    appdir = Path(tempfile.mkdtemp(prefix="purevox-appdir-")) / "PureVox.AppDir"
+    try:
+        (appdir / "usr" / "bin").mkdir(parents=True)
+        (appdir / "usr" / "share" / "applications").mkdir(parents=True)
+        (appdir / "usr" / "share" / "icons" / "hicolor" / "128x128" / "apps").mkdir(
+            parents=True
+        )
+        shutil.copy2(staged / "purevox", appdir / "usr" / "bin" / "purevox")
+        (appdir / "usr" / "bin" / "purevox").chmod(0o755)
+        shutil.copytree(staged / "models", appdir / "usr" / "bin" / "models")
+        shutil.copy2(staged / "purevox.png", appdir / "purevox.png")
+        shutil.copy2(
+            staged / "purevox.png",
+            appdir / "usr" / "share" / "icons" / "hicolor" / "128x128" / "apps" / "purevox.png",
+        )
+        shutil.copy2(staged / "purevox.desktop", appdir / "purevox.desktop")
+        shutil.copy2(
+            staged / "purevox.desktop",
+            appdir / "usr" / "share" / "applications" / "purevox.desktop",
+        )
+        apprun = appdir / "AppRun"
+        apprun.write_text(
+            "#!/bin/sh\n"
+            'HERE="$(dirname "$(readlink -f "$0")")"\n'
+            'exec "$HERE/usr/bin/purevox" "$@"\n',
+            encoding="utf-8",
+        )
+        apprun.chmod(0o755)
+        DIST.mkdir(parents=True, exist_ok=True)
+        out = DIST / f"PureVox_{ver}_x64.AppImage"
+        env = dict(os.environ, ARCH="x86_64")
+        subprocess.run(
+            [str(tool), "--appimage-extract-and-run", str(appdir), str(out)],
+            check=True,
+            env=env,
+        )
+        out.chmod(0o755)
+        return out
+    finally:
+        shutil.rmtree(appdir.parent, ignore_errors=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="PureVox Linux 打包")
     ap.add_argument("--no-build", action="store_true", help="不跑 cargo build --release")
     ap.add_argument("--no-deb", action="store_true", help="只出 tar.gz，不出 deb")
+    ap.add_argument(
+        "--appimagetool",
+        type=Path,
+        default=None,
+        help="appimagetool 可执行文件（CI 下载后传入；不给就跳过 AppImage）",
+    )
     args = ap.parse_args()
     if sys.platform != "linux":
         raise SystemExit("package_linux.py 只能在 Linux 上跑（当前不是 Linux）")
@@ -172,6 +229,9 @@ def main() -> int:
             deb = make_deb(ver, pkg)
             if deb:
                 print(f"deb:    {deb}")
+        appimage = make_appimage(ver, pkg, args.appimagetool)
+        if appimage:
+            print(f"AppImage: {appimage}")
     finally:
         shutil.rmtree(pkg, ignore_errors=True)
     return 0

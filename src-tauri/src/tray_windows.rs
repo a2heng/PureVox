@@ -9,7 +9,7 @@
 //! Windows 系统托盘。
 //!
 //! - `tray-icon` 负责图标与菜单（它依赖外部消息循环，GPUI 的 win32 循环正好在跑）；
-//! - 菜单事件由 GPUI 的 80 ms tick 调用 [`poll`] 取走，不另开线程；
+//! - 左键单击 = 显示 / 隐藏主窗口，右键 = 菜单（菜单事件同样走主线程回调）；
 //! - 主窗口 WndProc 子类化只拦 `WM_SYSCOMMAND / SC_MINIMIZE`，改成隐藏到托盘；
 //!   关闭仍由 GPUI 的 `on_window_should_close` 决定（见 `main.rs`）。
 
@@ -28,6 +28,8 @@ use crate::debug::{SharedHub, UiCommand};
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 static OLD_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 static QUITTING: AtomicBool = AtomicBool::new(false);
+/// 引擎是否在运行：托盘图标据此在「亮 / 暗」两张图之间切换。
+static RUNNING: AtomicBool = AtomicBool::new(false);
 static HUB: std::sync::OnceLock<SharedHub> = std::sync::OnceLock::new();
 
 thread_local! {
@@ -47,6 +49,18 @@ pub fn spawn(main_hwnd: isize, hub: SharedHub) {
   tray_icon::menu::MenuEvent::set_event_handler(Some(|event: tray_icon::menu::MenuEvent| {
     on_menu(event.id().0.as_str());
   }));
+  tray_icon::TrayIconEvent::set_event_handler(Some(|event: tray_icon::TrayIconEvent| {
+    use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
+    // 左键抬起才切换：Windows 会先给 Down 再给 Up，只认 Up 避免一次点击切两次。
+    if let TrayIconEvent::Click {
+      button: MouseButton::Left,
+      button_state: MouseButtonState::Up,
+      ..
+    } = event
+    {
+      toggle_main();
+    }
+  }));
 
   use tray_icon::menu::{Menu, MenuItem};
   let show = MenuItem::with_id("show", "显示 / 隐藏", true, None);
@@ -57,16 +71,12 @@ pub fn spawn(main_hwnd: isize, hub: SharedHub) {
     return;
   };
 
-  let icon = image::load_from_memory(include_bytes!("../icons/32x32.png"))
-    .ok()
-    .and_then(|img| {
-      let rgba = img.to_rgba8();
-      tray_icon::Icon::from_rgba(rgba.as_raw().clone(), rgba.width(), rgba.height()).ok()
-    });
+  let icon = icon_for(RUNNING.load(Ordering::Relaxed));
 
   let mut builder = tray_icon::TrayIconBuilder::new()
     .with_menu(Box::new(menu))
-    .with_menu_on_left_click(true)
+    // 左键自己处理成显示/隐藏，菜单只在右键弹出。
+    .with_menu_on_left_click(false)
     .with_tooltip("PureVox");
   if let Some(icon) = icon {
     builder = builder.with_icon(icon);
@@ -144,6 +154,13 @@ unsafe extern "system" fn main_wndproc(
   wparam: WPARAM,
   lparam: LPARAM,
 ) -> LRESULT {
+  // 第二个进程启动时广播「显示已有窗口」：恢复被收进托盘的窗口并抢到前台。
+  let activate = crate::single_instance::activate_message();
+  if activate != 0 && msg == activate {
+    let _ = unsafe { ShowWindow(h, SW_SHOW) };
+    let _ = unsafe { SetForegroundWindow(h) };
+    return LRESULT(0);
+  }
   // 最小化（-）不进任务栏，直接隐藏到托盘。关闭（x）由 GPUI 的回调处理。
   if msg == WM_SYSCOMMAND && (wparam.0 as u32 & 0xFFF0) == SC_MINIMIZE {
     let _ = unsafe { ShowWindow(h, SW_HIDE) };
@@ -156,4 +173,27 @@ unsafe extern "system" fn main_wndproc(
   } else {
     unsafe { DefWindowProcW(h, msg, wparam, lparam) }
   }
+}
+
+/// 托盘图标：运行中 = 亮（`tray_running.png`），已停止 = 暗（`tray_stopped.png`）。
+fn icon_for(on: bool) -> Option<tray_icon::Icon> {
+  let bytes: &[u8] = if on {
+    include_bytes!("../icons/tray_running.png")
+  } else {
+    include_bytes!("../icons/tray_stopped.png")
+  };
+  image::load_from_memory(bytes).ok().and_then(|img| {
+    let rgba = img.to_rgba8();
+    tray_icon::Icon::from_rgba(rgba.as_raw().clone(), rgba.width(), rgba.height()).ok()
+  })
+}
+
+/// 引擎启停时换托盘图标（明 = 运行中，暗 = 已停止）；托盘还没建好时只记状态。
+pub fn set_running(on: bool) {
+  RUNNING.store(on, Ordering::Relaxed);
+  TRAY.with(|t| {
+    if let Some(tray) = t.borrow().as_ref() {
+      let _ = tray.set_icon(icon_for(on));
+    }
+  });
 }
