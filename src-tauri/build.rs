@@ -13,12 +13,20 @@ fn main() {
   #[cfg(windows)]
   println!("cargo:rustc-link-lib=shell32");
 
+  // 主线程栈：MSVC 默认只留 1 MB（实测 SizeOfStackReserve=1048576）。GPUI 的窗口创建
+  // 回调已经吃掉大半，再在主线程上同步 `AudioManager::start()`（静默自启路径）就溢出。
+  // 后台任务是 2 MB 的 std 线程所以没事；把主线程也抬到 8 MB，保留量不值钱。
+  #[cfg(windows)]
+  println!("cargo:rustc-link-arg=/STACK:8388608");
+
   // 任务栏 / 标题栏左上角图标：GPUI 在 Windows 上用 `LoadImageW(模块, 资源 1)`
   // 取图标，所以路径必须是把 `icons/icon.ico` 编进 exe 的第 1 个图标资源。
   #[cfg(windows)]
   {
     let mut res = tauri_winres::WindowsResource::new();
-    res.set_icon("icons/icon.ico");
+    // GPUI 的 Windows 后端用 `LoadImageW(模块, 资源 1)` 取窗口图标，
+    // 所以这里必须钉成 ID 1（`set_icon` 默认 32512 = IDI_APPLICATION）。
+    res.set_icon_with_id("icons/icon.ico", "1");
     res.set("ProductName", "PureVox");
     res.set("FileDescription", "PureVox");
     if let Err(e) = res.compile() {
