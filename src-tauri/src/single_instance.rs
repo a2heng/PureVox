@@ -29,6 +29,9 @@ mod imp;
 #[path = "single_instance_other.rs"]
 mod imp;
 
+// `activate_message` 只有 Windows 的托盘 WndProc 用；Unix 实现返回 0，不 re-export
+// 会在 `-D warnings` 下报 unused import（2026-11-12 Linux CI 实测）。
+#[cfg_attr(not(windows), allow(unused_imports))]
 pub use imp::{activate_message, claim};
 
 /// 是否允许并行实例（只给隔离测试用；正常启动绝不设这个变量）。
