@@ -353,6 +353,10 @@ pub struct DebugHub {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum UiCommand {
+  /// 托盘菜单「启动 / 停止引擎」
+  ToggleEngine,
+  /// 右侧信息栏切到全局设置（调试验收用；与顶栏「设置」同一条路径）
+  OpenSettings,
   Move {
     id: u32,
     x: f32,

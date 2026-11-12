@@ -21,7 +21,7 @@
 //! `Win32_NetworkManagement_Ndis` 两个 feature），**不引新依赖、不新增 C 编译链**
 //! —— 和 opus 运行时加载是同一套取舍（DEBUG.md §1.2）。
 
-use std::net::{Ipv4Addr, UdpSocket};
+use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
 
 use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
 use windows::Win32::NetworkManagement::IpHelper::{
@@ -29,7 +29,8 @@ use windows::Win32::NetworkManagement::IpHelper::{
   IP_ADAPTER_ADDRESSES_LH,
 };
 use windows::Win32::Networking::WinSock::{
-  ADDRESS_FAMILY, AF_INET, SOCKADDR, SOCKADDR_IN, WSADATA, WSAStartup,
+  ADDRESS_FAMILY, AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6, WSADATA,
+  WSAStartup,
 };
 
 use super::NetIface;
@@ -81,7 +82,7 @@ pub fn enumerate() -> Vec<NetIface> {
   let mut buf = vec![0u8; size as usize];
   let mut rc: u32 = unsafe {
     GetAdaptersAddresses(
-      AF_INET.0 as u32,
+      AF_UNSPEC.0 as u32,
       flags,
       None,
       Some(buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
@@ -92,7 +93,7 @@ pub fn enumerate() -> Vec<NetIface> {
     buf = vec![0u8; size as usize];
     rc = unsafe {
       GetAdaptersAddresses(
-        AF_INET.0 as u32,
+        AF_UNSPEC.0 as u32,
         flags,
         None,
         Some(buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
@@ -117,6 +118,8 @@ pub fn enumerate() -> Vec<NetIface> {
       utf16(friendly)
     };
 
+    let mut v4: Vec<String> = Vec::new();
+    let mut v6: Vec<String> = Vec::new();
     let mut ua = a.FirstUnicastAddress;
     while !ua.is_null() {
       // SAFETY: 同上，`Next` 走到 null。
@@ -126,23 +129,36 @@ pub fn enumerate() -> Vec<NetIface> {
         continue;
       }
       let sa = unsafe { &*u.Address.lpSockaddr };
-      if sa.sa_family != ADDRESS_FAMILY(AF_INET.0) {
-        continue;
+      if sa.sa_family == ADDRESS_FAMILY(AF_INET.0) {
+        // sockaddr_in 的 sin_addr 在结构体偏移 4 处（sa_family 占 2 字节，端口 2 字节）
+        let sin = unsafe { &*(sa as *const SOCKADDR as *const SOCKADDR_IN) };
+        // `S_addr` 是**按网络字节序躺在内存里的 u32**，不能直接喂 `Ipv4Addr::from`：
+        // `from(u32)` 按大端解释，于是每台机器都会拿到反过来的地址
+        // （172.26.38.56 → 56.38.26.172），而反过来的地址照样长得像一个 IP，连回环过滤都
+        // 滤不掉。`to_ne_bytes()` 拿到的就是内存里那 4 个字节本身，两种字节序下都对。
+        let b = unsafe { sin.sin_addr.S_un.S_addr }.to_ne_bytes();
+        let ip = Ipv4Addr::new(b[0], b[1], b[2], b[3]).to_string();
+        // 回环与链路本地手机都连不上，直接不列
+        if ip.starts_with("127.") || ip.starts_with("169.254.") {
+          continue;
+        }
+        v4.push(ip);
+      } else if sa.sa_family == ADDRESS_FAMILY(AF_INET6.0) {
+        // sockaddr_in6：sin6_addr 在偏移 8（family 2 + port 2 + flowinfo 4）。
+        let sin6 = unsafe { &*(sa as *const SOCKADDR as *const SOCKADDR_IN6) };
+        let b = unsafe { sin6.sin6_addr.u.Byte };
+        let ip = Ipv6Addr::from(b);
+        if ip.is_loopback() || ip.is_unspecified() || ip.is_unicast_link_local() {
+          continue;
+        }
+        v6.push(ip.to_string());
       }
-      // sockaddr_in 的 sin_addr 在结构体偏移 4 处（sa_family 占 2 字节，端口 2 字节）
-      let sin = unsafe { &*(sa as *const SOCKADDR as *const SOCKADDR_IN) };
-      // `S_addr` 是**按网络字节序躺在内存里的 u32**，不能直接喂 `Ipv4Addr::from`：
-      // `from(u32)` 按大端解释，于是每台机器都会拿到反过来的地址
-      // （172.26.38.56 → 56.38.26.172），而反过来的地址照样长得像一个 IP，连回环过滤都
-      // 滤不掉。`to_ne_bytes()` 拿到的就是内存里那 4 个字节本身，两种字节序下都对。
-      let b = unsafe { sin.sin_addr.S_un.S_addr }.to_ne_bytes();
-      let ip = Ipv4Addr::new(b[0], b[1], b[2], b[3]).to_string();
-      // 回环与链路本地手机都连不上，直接不列
-      if ip.starts_with("127.") || ip.starts_with("169.254.") {
-        continue;
-      }
+    }
+    // 选择/二维码仍以 IPv4 为键；只用 IPv6 的网卡目前不参与“告诉手机哪个地址”。
+    for ip in v4 {
       out.push(NetIface {
         is_default: ip == dflt,
+        ipv6: v6.clone(),
         ip,
         name: name.clone(),
         desc: desc.clone(),

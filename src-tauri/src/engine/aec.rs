@@ -289,59 +289,6 @@ impl AecStage {
   }
 }
 
-/// 网络 AEC 的「远端 = 网络出站」这个取值（`far_device` 里的哨兵）。
-pub const NET_FAR: &str = "network";
-
-/// 网络泵：把网络入站 / 出站各灌进一个普通 `Fanout`。
-///
-/// **为什么不直接改 `AecRow.mic` 的类型**：它是 `Consumer<f32>`（扇出订阅），而网络
-/// 入站是 `NetHub::take_rx_hop()`、出站是 `tx_last()`，都不是扇出。灌一层之后
-/// 网络近端就长得跟任何采集设备一模一样，`spawn_far_pump` 与 AEC 主循环**一个字都不用改**
-/// —— 与 `spawn_far_pump` 同一个套路。
-///
-/// **节拍用绝对时刻**（`next += 10ms`，再睡到 `next`，DEBUG.md §1.2）：近端与远端必须
-/// 在**同一个线程的同一次 tick** 上各取一格，两条时间轴才会锁在一起；两个各自
-/// `sleep(10ms)` 的线程会各自漂，`far_delay_ms` 这个标量就永远对不上。
-pub fn spawn_net_pumps(
-  net: Arc<crate::net::NetHub>,
-  near: Arc<Fanout>,
-  far: Arc<Fanout>,
-) -> WorkerHandle {
-  let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-  let stop2 = stop.clone();
-  let join = std::thread::Builder::new()
-    .name("aec-net-pump".into())
-    .spawn(move || {
-      let mut next = Instant::now();
-      let mut rx = [0.0f32; HOP];
-      while !stop2.load(Relaxed) {
-        // 近端：入站环按引擎节拍取（欠载 PLC / 淡出，与 remote_mic 行同一条路）
-        net.take_rx_hop(&mut rx);
-        near.push_hop(&rx);
-        // 远端：本 tick 推给客户端的那一格。同一列没挂 `remote_speaker` 时它不动，
-        // 参考就是静音 —— AEC 会认为没有回声，属于「没东西可消」，不是错误状态。
-        let (tx, _count) = net.tx_last();
-        far.push_hop(&tx);
-        next += Duration::from_millis(10);
-        let now = Instant::now();
-        if next > now {
-          std::thread::sleep(next - now);
-        }
-      }
-    });
-  match join {
-    Ok(j) => WorkerHandle::new(stop, j),
-    // 线程都起不来（资源耗尽）不能静默：句柄立刻是「停」状态并打日志，
-    // 行状态里由调用方看到远端参考没起来。
-    Err(e) => {
-      eprintln!("aec-net-pump 起线程失败：{e}");
-      WorkerHandle::dead(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-        true,
-      )))
-    }
-  }
-}
-
 /// 远端参考是否为「输出回环」：返回要回环的输出端点 ID（空串 = 系统默认输出）。
 /// - `loopback` → 默认输出；`loopback:<id>` → 指定输出；
 /// - 直接是输出设备 ID（扬声器）→ 回环该输出；

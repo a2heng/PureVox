@@ -583,13 +583,6 @@ impl NetHub {
     self.push_tx_inner(hop, true);
   }
 
-  /// 校准探针注入：**只**进网络音频通路（手机照常放、far 照常看得到），
-  /// 但**不记 `src_gap`** —— 探针不是引擎的正常输出，混进去会把
-  /// 「引擎推 hop 的间隔」这个排查第一现场读歪（NETWORK.md §3.4 第 0 步）。
-  pub fn push_probe_hop(&self, hop: &[f32]) {
-    self.push_tx_inner(hop, false);
-  }
-
   fn push_tx_inner(&self, hop: &[f32], count_src_gap: bool) {
     if count_src_gap {
       self

@@ -41,9 +41,6 @@ Int32，十位数的值装不进去，溢出只会让安装包悄悄变成 versi
 「开发构建」）。详见 main() 里的注释与 `_VERSION_CODE_MAX`。**两侧必须同算法**：
 应用侧是 `android/.../update/UpdateChecker.kt` 的 `stampToCode`。
 
-同时生成 Tauri 版本覆盖配置 `src-tauri/.build-version.json`（不提交，见该目录
-.gitignore），构建时用 `cargo tauri build --config .build-version.json`。
-
 tag 触发时 GITHUB_REF_NAME=v2026.10.08.1430；否则取当前 **UTC**（不是本地时间：
 CI 的 runner 与发版机器时区各不相同，只有 UTC 能让「同一天」的含义一致）。
 
@@ -58,7 +55,6 @@ CI 的 runner 与发版机器时区各不相同，只有 UTC 能让「同一天�
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -122,10 +118,6 @@ def main() -> int:
     # 阿拉伯语等 locale 会给非 ASCII 数字（那条链同样只有一条实现，两侧必须一模一样）。
     if not 0 < acode <= _VERSION_CODE_MAX:
         raise SystemExit(f"ACODE 越界（{acode}，tag {tag}）：versionCode 是 Int32")
-
-    # Tauri 的版本覆盖配置（不提交；构建时 --config 传进去）
-    cfg = ROOT / "src-tauri" / ".build-version.json"
-    cfg.write_text(json.dumps({"version": ver}) + "\n", encoding="utf-8", newline="\n")
 
     for line in (
         f"PLATFORM={platform}",

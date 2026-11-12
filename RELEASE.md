@@ -17,16 +17,16 @@
    都按它走）。
    **同日多次发布靠 tag 的时分区分**（tag 仍是完整时间戳 `v2026.10.08.1430`），
    更新检查比较的就是 tag（见 `src/update/`），因此显示版本重复不影响更新判定。
-   版本写入 `src-tauri/.build-version.json` 并由 `cargo tauri build --config` 覆盖（不提交该文件）；
    窗口标题与调试面板「版本」走 `PUREVOX_BUILD_VERSION`，比较更新用的时间戳走
-   `PUREVOX_BUILD_STAMP`（见 `src/version.rs`，开发态为空 → `is_dev()`）。
+   `PUREVOX_BUILD_STAMP`（见 `src/version.rs`，开发态为空 → `is_dev()`）。GPUI 构建不再
+   生成 Tauri 的 `.build-version.json`。
 7. **CI 与门禁（多平台：Windows + Linux + Android；测试与打包解耦，无自动触发）**：
    - **触发纪律**：**没有任何分支推送 / PR 触发**。`tests.yml`（只测试、不打包）只
      `workflow_dispatch` 手动触发；`release.yml`（打包发版）由 tag `v*` 触发、也可手动。
      日常提交零成本，要验证就手动 dispatch 一次。
-   - 门禁唯一实现 = `tools/automation/check.py`（**Python，跨平台唯一**：七道门禁 `fmt` /
-     `clippy`（`-D warnings`）/ `build` / `test` / `ui`（`tsc` + `i18n_lint`）/ `version` /
-     `bundle`）。选 Python 不选 PowerShell：门禁要跑 Windows / Linux / macOS 三边，pwsh 只有前两边
+   - 门禁唯一实现 = `tools/automation/check.py`（**Python，跨平台唯一**：`fmt` /
+     `clippy`（`-D warnings`）/ `build` / `test` / `version` / `bundle`；`ui` 是历史遗留，
+     GPUI 界面没有 `jsconfig.json` 时明确跳过）。选 Python 不选 PowerShell：门禁要跑 Windows / Linux / macOS 三边，pwsh 只有前两边
      装得像样（CI runner 自带、本机还得自己搞），Python 三边都自带，冷启动 ~20 ms vs pwsh ~330 ms，
      且只用标准库、不用 `pip install`。**CI 与本机跑同一份**（`-Gate` 拆 step 便于定位日志）。
      **判门禁只看退出码，而且要确认跑了几道**（启动先打印实际清单）：`-Gate` 可重复、不带 = 全部，
@@ -35,7 +35,7 @@
      CI 干净树才暴露）。两条都是 2026-10-18 连挂两轮发版踩出来的。
    - 工作流（`.github/workflows/`）：
      - `tests.yml`：手动 → Rust 门禁矩阵 `windows-latest` + `ubuntu-24.04`
-       （fmt/clippy/build/test）、`ui` 门禁（`ubuntu-24.04`：setup-node → `-Gate ui`）。**不打包**。
+       （fmt/clippy/build/test/version/bundle）。**不打包**。
      - `release.yml`：**桌面通道**，tag `v*` 或手动 → **Windows NSIS 安装包**：
        门禁（fmt/clippy/test）+ `choco install nsis` + `python tools/automation/package_windows.py`
        （`cargo build --release` + exe/opus.dll/models → `PureVox_<版本>_x64-setup.exe`）→

@@ -5,7 +5,13 @@
 
 ## 1. 环境
 
-- Windows 10/11 + VS Build Tools（MSVC）+ Rust stable（`1.95+`，本机 1.99）。
+- Windows 10/11 + VS Build Tools（MSVC）+ Rust stable（`1.95+`，本机 1.99）+ Python 3。
+- Linux 构建依赖（Ubuntu 24.04 实测，与 GPUI Kit 安装文档一致）：
+  ```bash
+  sudo apt install -y gcc g++ clang libfontconfig-dev libwayland-dev \
+    libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev \
+    vulkan-validationlayers libvulkan1 pkg-config file
+  ```
 - ONNX Runtime 不走下载：`~/.cargo/config.toml` 里已有（不进仓库）：
   ```toml
   [env]
@@ -54,6 +60,10 @@ USERPROFILE="$PV_HOME" HOME="$PV_HOME" \
 - 端点能力（需要真实声卡）：`wasapi_caps` / `wasapi_lowlat` 两个 `#[ignore]` 测试。
 - 界面自动化：见 `.opencode/skills/purevox-testing/SKILL.md`（隔离 profile + HTTP 读数 +
   PrintWindow 截图；GPUI 窗口同样适用）。
+- **门禁只有一份实现**：`python tools/automation/check.py`（fmt / clippy / build / test /
+  version / bundle）。CI 的 `tests.yml` 与本地跑同一条命令，不要另写一套脚本。
+- UI 设计取值先看 `UI.md` 的「设计系统」；界面原语在 `src-tauri/src/ui/widgets.rs`，
+  新页面不要复制按钮/字段样式。
 - Android：`cd android && ./gradlew :app:compileDebugKotlin`（或 `assembleDebug`）。
 
 ## 5. 打包

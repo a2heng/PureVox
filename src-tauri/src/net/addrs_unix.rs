@@ -77,6 +77,7 @@ pub fn enumerate() -> Vec<NetIface> {
       }
       out.push(NetIface {
         is_default: ip == dflt,
+        ipv6: Vec::new(),
         ip,
         desc: name.clone(),
         name,

@@ -309,6 +309,10 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
       hub.push_ui_command(UiCommand::Arrange);
       ("200 OK", json!({"queued": true}))
     }
+    "/debug/ui/settings" => {
+      hub.push_ui_command(UiCommand::OpenSettings);
+      ("200 OK", json!({"queued": true}))
+    }
 
     "/debug/bundle" => {
       let snap = hub.snapshot();

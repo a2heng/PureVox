@@ -44,6 +44,8 @@ pub struct NetIface {
   pub desc: String,
   /// 是否是默认路由那张（界面默认选中它，保持原有行为）
   pub is_default: bool,
+  /// 同一张网卡的 IPv6 地址（全局 / ULA；回环与链路本地已过滤）。可能有多条。
+  pub ipv6: Vec<String>,
 }
 
 #[cfg(windows)]

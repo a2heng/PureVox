@@ -24,16 +24,18 @@
 - **虚拟麦克风**：Windows 走 VB-CABLE，Linux 自建 `purevox_mic`，OBS / 浏览器 / 会议软件直接选它。
 - **手机当麦克风 / 扬声器**：局域网 HTTPS + Opus（网页版或 Android APK）。
   只传音频：手机端只有麦克风上行 / 扬声器下行，不做远程打字或按键注入。
-- **全局热键 / 提示音**：引擎启停热键与音效热键仍由引擎注册（界面入口待补）。
-- **界面语言**：GPUI 界面当前为中文；中英文切换待补。
+- **全局热键 / 提示音 / 开机自启**：设置页可开关、录制启停热键；音效板每个音效单独录制热键；启动/停止提示音可选预设并试听。
+- **系统托盘**：最小化（-）和关闭（×）都收进托盘；托盘菜单可显示/隐藏、启停引擎、退出。
+- **界面语言**：中文 / English 切换在设置页（缺译条目回退中文）。
 - **调试优先**：独立调试窗口与只读 HTTP 接口 `http://127.0.0.1:47821/debug` 同源同字段
   （系统指标、每路流的速率/缓冲/欠载/丢弃、模型推理耗时、频谱波形）。
 
 ## 状态
 
 音频引擎完整：输入采集与重采样、输出与时钟伺服、降噪 / TSE / AEC、OBS 滤镜、设备池与混音、
-网络（含 Android 客户端）、虚拟驱动、媒体行。界面已从 Tauri/WebView 迁移到 GPUI 混音台；
-托盘、窗口几何记忆、打包流水线、AEC/TSE/媒体行的界面卡片仍在阶段 B（见 `MIXER.md`）。
+网络（含 Android 客户端）、虚拟驱动、媒体行。界面已从 Tauri/WebView 迁移到 GPUI 节点画板；
+AEC 校准、TSE 参考录制、媒体节点的检查器都已接入；设置页有语言 / 开机自启 / 热键 / 提示音开关。
+仍在阶段 B：窗口几何记忆、Linux 打包流水线（见 `SESSION-V2.md`、`BUILD.md`）。
 
 - 下载：见 [Releases](https://github.com/a2heng/PureVox/releases)（版本号 = 年.月.日）。
 - 旧实现（Python + Tkinter）已删除；需要时用 `git log` 查历史。
@@ -74,8 +76,9 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 **构建期**
 
-- Rust（`rust-version = "1.95"`）；Linux 需 `libasound2-dev pkg-config` 与 GPUI 的 X11/Wayland 依赖。
-- Node.js 24（`tsc` + i18n 门禁）与 Python 3（`tools/automation/` 的构建/发版脚本）。
+- Rust（`rust-version = "1.95"`）；Linux 需 `libasound2-dev pkg-config` 与 GPUI 的
+  X11/Wayland/fontconfig/Vulkan 依赖（完整清单见 `BUILD.md`）。
+- Python 3（`tools/automation/` 的门禁 / 打包 / 发版脚本）；界面是 Rust，不需要 Node/tsc。
 - `onnxruntime` 由 `ort` 在构建时下载；Linux 也可链接系统/自备的 `libonnxruntime.so`
   （见 `BUILD.md` 的 `ORT_*` 环境变量说明）。
 

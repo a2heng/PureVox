@@ -333,12 +333,14 @@ mod tests {
   fn 失效的选定地址回落默认() {
     let list = vec![
       addrs::NetIface {
+        ipv6: Vec::new(),
         ip: "192.168.1.5".into(),
         name: "WLAN".into(),
         desc: "WLAN".into(),
         is_default: true,
       },
       addrs::NetIface {
+        ipv6: Vec::new(),
         ip: "192.168.7.1".into(),
         name: "以太网 4".into(),
         desc: "USB 以太网".into(),

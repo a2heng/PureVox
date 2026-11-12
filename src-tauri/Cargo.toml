@@ -28,6 +28,32 @@ rust-version = "1.95"
 # 需要真实声卡的测量（时钟 ppm）：默认不编译，手动 `cargo test --features hw-tests`
 hw-tests = []
 
+# 开发构建只优化框架依赖（应用代码仍是 Debug）：GPUI 的布局/文本/渲染在未优化时
+# 会明显拖慢界面，调试手感很差。这是 gpui-kit 官方推荐配置；不改变 release 产物。
+[profile.dev.package.gpui-pre]
+opt-level = 3
+[profile.dev.package.gpui-component]
+opt-level = 3
+[profile.dev.package.gpui-kit]
+opt-level = 3
+[profile.dev.package.gpui-kit-assets]
+opt-level = 3
+[profile.dev.package.gpui-pre-platform]
+opt-level = 3
+[profile.dev.package.rustybuzz]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
+[profile.dev.package.ttf-parser]
+opt-level = 3
+
+[lints.clippy]
+# 只钉“出现就是事故”的几项；其余交给 CI 的 `-D warnings`。
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+
 [dependencies]
 # 界面：GPUI Kit（GPUI + 组件库，纯 Rust，无 WebView / IPC）
 gpui-kit = "0.9.1"
@@ -106,6 +132,12 @@ hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "to
 mdns-sd = "0.21"
 
 [target.'cfg(windows)'.dependencies]
+# 系统托盘：tray-icon + muda（Tauri 同源）。只在 Windows 编；Linux 的托盘另走平台实现。
+tray-icon = { version = "0.25", default-features = false }
+# 托盘图标从仓库里的 PNG 解码成 RGBA（不依赖 exe 资源段）。
+image = { version = "0.25", default-features = false, features = ["png"] }
+# 从 GPUI 窗口拿原生 HWND（显隐 / 最小化到托盘）。
+raw-window-handle = "0.6"
 # 单应用音频回环的 COM 完成回调需要 `#[implement]`（宏展开按 crate 名找 `windows_core`）
 windows-core = "0.62"
 # 调试接口：GPU 占用 / 显存（DXGI + PDH）、进程私有字节

@@ -50,15 +50,17 @@ jobs:
             esac
           done < tools/automation/versions.env
 
-      # cpal 在 Linux 上要 ALSA 开发头（pkg-config 名字 `alsa`）；WebKitGTK 4.1 是 Tauri wry 运行时必需。
+      # GPUI 的 Linux 依赖（Ubuntu 24.04 实测清单，与 gpui-kit 安装文档一致）：
+      # X11/Wayland、fontconfig、Vulkan、ALSA；不再需要 Tauri/WebKitGTK。
       - name: Install Linux system deps
         if: runner.os == 'Linux'
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev libgtk-3-dev libasound2-dev \
-            libopus0 pkg-config file
+            gcc g++ clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev \
+            libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev \
+            vulkan-validationlayers libvulkan1 libopus0 pkg-config file
 
       - name: Install Rust toolchain (rustfmt + clippy)
         shell: bash
@@ -91,39 +93,7 @@ jobs:
         shell: bash
         run: python tools/automation/check.py -Gate version
 
-      # 打包配置自检（纯读 tauri.conf.json，不编译，两个平台都跑没意义 —— 放 ui job 旁边）
+      # 打包配置自检（NSIS 脚本 + 发版脚本，不编译；两个平台都跑没意义）
       - name: "Gate · bundle"
         shell: bash
         run: python tools/automation/check.py -Gate bundle
-
-  ui:
-    name: 界面检查（tsc + i18n）
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Load versions (versions.env 是唯一来源)
-        shell: bash
-        run: |
-          while IFS= read -r line || [ -n "$line" ]; do
-            case "$line" in
-              ''|'#'*) continue ;;
-              *=*) printf '%s\n' "$line" >> "$GITHUB_ENV" ;;
-            esac
-          done < tools/automation/versions.env
-
-      # 本仓库无 package.json，不设 setup-node 的 cache。
-      - uses: actions/setup-node@v7
-        with:
-          node-version: ${{ env.NODE_VER }}
-
-      - name: Install TypeScript (版本钉死在 versions.env)
-        shell: bash
-        run: npm install -g "typescript@$TS_VER"
-
-      - name: "Gate · ui (tsc + i18n_lint)"
-        shell: bash
-        run: python tools/automation/check.py -Gate ui

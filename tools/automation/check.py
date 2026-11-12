@@ -21,7 +21,10 @@
   python tools/automation/check.py -Gate fmt        # 单项（CI 按 step 拆开跑，日志好定位）
 
 门禁项：fmt（rustfmt 校验）/ clippy（-D warnings 零容忍）/ build / test /
-ui（tsc + i18n_lint）/ version（版本号推导）/ bundle（deb 依赖清单非空 + rpm 必须靠自动生成）。
+version（版本号推导）/ bundle（NSIS 安装包 + 发版脚本）。
+
+`ui` 是历史遗留的 WebView 门禁：GPUI 界面是 Rust，没有 `jsconfig.json` 时会明确跳过，
+保留它只为让旧调试面板的 JS 仍可在需要时被单独检查。
 
 为什么是 Python：门禁要在 Windows / Linux / macOS 上跑，而 PowerShell 只有前两者
 装得像样、还得单独装（CI runner 自带，本机要自己搞）。Python 三边都是系统自带，
@@ -33,7 +36,6 @@ ui（tsc + i18n_lint）/ version（版本号推导）/ bundle（deb 依赖清单
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
@@ -49,8 +51,8 @@ import _utf8  # noqa: E402  （刻意放在 path 注入之后）
 _utf8.force()
 
 ROOT = Path(__file__).resolve().parents[2]
-TAURI = ROOT / "src-tauri"
-UI = TAURI / "ui"
+SRC = ROOT / "src-tauri"
+UI = SRC / "ui"
 
 GATES = ("fmt", "clippy", "build", "test", "ui", "version", "bundle")
 
@@ -120,7 +122,7 @@ def run(cmd: list[str], cwd: Path, *, env: dict[str, str] | None = None) -> str:
 # 各道门禁
 # --------------------------------------------------------------------------
 def gate_fmt() -> None:
-    run(["cargo", "fmt", "--check"], TAURI)
+    run(["cargo", "fmt", "--check"], SRC)
 
 
 def gate_clippy() -> None:
@@ -129,16 +131,16 @@ def gate_clippy() -> None:
     # 于是「门禁绿」静默退化成「上次编译时是绿的」。本地缓存几乎总能命中，CI 干净树才暴露真相：
     # 2026-10-18 实测，同一份代码本地报绿、CI 报 `manual_is_multiple_of`，白跑一轮发版。
     # 只碰 crate 根：依赖仍是 Fresh（它们的 lint 本来也不报），代价就是本包重编一次。
-    (TAURI / "src" / "main.rs").touch()
-    run(["cargo", "clippy", "--all-targets", "--", "-D", "warnings"], TAURI)
+    (SRC / "src" / "main.rs").touch()
+    run(["cargo", "clippy", "--all-targets", "--", "-D", "warnings"], SRC)
 
 
 def gate_build() -> None:
-    run(["cargo", "build"], TAURI)
+    run(["cargo", "build"], SRC)
 
 
 def gate_test() -> None:
-    out = run(["cargo", "test"], TAURI)
+    out = run(["cargo", "test"], SRC)
     for line in out.splitlines():
         if line.startswith("test result:"):
             print(f"  {line.strip()}")
@@ -164,54 +166,38 @@ def gate_version() -> None:
     版本推导错了的表现是包名 / 产物文件名里的日期不对 —— 要等用户装上、或去 release
     页面找安装包时才发现。所以在这钉死，不依赖联网。
 
-    **跑完必须把 `.build-version.json` 删掉**：version.py 每跑一次就重写它，而这道门禁
-    喂的是 4 个**假** tag。留着的话本机会永远带着一个测试日期（本机实测踩到过：文件里
-    停在 `26.10.14`），随后 `cargo tauri build --config .build-version.json` 会静默打出一
-    个日期错的包 —— 比不打版本号更难查。删掉是无损的：真实构建流程总是先跑一次
-    `version.py`（release.yml 的 `Set app version` 就在 `cargo tauri build` 之前），
-    谁构建谁重新生成。
+    版本只由 `version.py` 输出到环境（`VERSION` / `STAMP` / `TAG`），不再写 Tauri 的
+    `.build-version.json` —— GPUI 构建直接用 `PUREVOX_BUILD_*` 环境变量。门禁喂的是
+    5 个**假** tag，不能污染本机任何构建配置。
     """
     script = ROOT / "tools" / "automation" / "version.py"
-    cfg = TAURI / ".build-version.json"
-    try:
-        for tag, version, stamp, acode, bstamp, platform in VERSION_CASES:
-            env = _env()
-            env["GITHUB_REF_NAME"] = tag
-            out = run([sys.executable, script], ROOT, env=env)
-            kv = dict(
-                line.split("=", 1) for line in out.splitlines() if "=" in line.strip()
-            )
-            want = {
-                "PLATFORM": platform,
-                "TAG": tag,
-                "VERSION": version,
-                "STAMP": stamp,
-                "ACODE": acode,
-                "PUREVOX_BUILD_VERSION": version,
-                "PUREVOX_BUILD_STAMP": bstamp,
-            }
-            for k, v in want.items():
-                got = kv.get(k)
-                if got != v:
-                    raise GateError(f"tag {tag}：{k} = {got!r}，期望 {v!r}")
-            # Tauri 的版本覆盖配置要跟着走（构建时 --config 传进去，忘了写就还是 0.1.0）
-            got_cfg = json.loads(cfg.read_text(encoding="utf-8")).get("version")
-            if got_cfg != version:
-                raise GateError(
-                    f"tag {tag}：.build-version.json 的 version = {got_cfg!r}，期望 {version!r}"
-                )
-            print(f"  {tag} -> VERSION={version}  STAMP={stamp}  ACODE={acode}")
-    finally:
-        if cfg.unlink(missing_ok=True) is not None:
-            print("  已删掉门禁留下的 .build-version.json（里面是假 tag 的日期，会污染下一次构建）")
+    for tag, version, stamp, acode, bstamp, platform in VERSION_CASES:
+        env = _env()
+        env["GITHUB_REF_NAME"] = tag
+        out = run([sys.executable, script], ROOT, env=env)
+        kv = dict(line.split("=", 1) for line in out.splitlines() if "=" in line.strip())
+        want = {
+            "PLATFORM": platform,
+            "TAG": tag,
+            "VERSION": version,
+            "STAMP": stamp,
+            "ACODE": acode,
+            "PUREVOX_BUILD_VERSION": version,
+            "PUREVOX_BUILD_STAMP": bstamp,
+        }
+        for k, v in want.items():
+            got = kv.get(k)
+            if got != v:
+                raise GateError(f"tag {tag}：{k} = {got!r}，期望 {v!r}")
+        print(f"  {tag} -> VERSION={version}  STAMP={stamp}  ACODE={acode}")
 
 
 def gate_bundle() -> None:
     """打包 / 发版自检。
 
-    **安装包流水线（tauri bundler）已随 GPUI 重建下线**，当前唯一在用的桌面产物是
-    便携 zip（`package_portable.py`）。这道门禁只做两件不会误报的事：
-    1. 便携包脚本存在、能解析，且真的把 `opus.dll` / `models/` / zip 写进去；
+    当前桌面产物是 NSIS 安装包（`package_windows.py` + `nsis/purevox.nsi`）。
+    这道门禁只做两件不会误报的事：
+    1. 安装包脚本存在、能解析，且真的把 `opus.dll` / `models/` / `makensis` 写进去；
     2. 发版那一步的真实实现（`release_stage.sh`）用假产物树 + 假 `gh` 跑通。
     """
     import ast

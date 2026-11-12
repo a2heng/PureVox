@@ -230,6 +230,12 @@ impl Hotkeys {
   }
 }
 
+impl Drop for Hotkeys {
+  fn drop(&mut self) {
+    self.stop();
+  }
+}
+
 // 平台实现分文件（CONTRIBUTING.md）：Windows 用 `RegisterHotKey`；Linux 走 XDG 门户
 // `GlobalShortcuts`（Wayland 唯一的全局快捷键通路）；其它平台明确不可用。
 #[cfg(windows)]

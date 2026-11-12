@@ -376,6 +376,22 @@ impl Plan {
           r.input_gain_db = format!("{:.1}", a + b);
           changed = true;
         }
+        // 网络麦克风的 AEC 已解耦为独立节点（2026-11-12）。旧计划里残留的
+        // `aec` / 远端参数没有第二条入口，直接清掉；要消回声就把 AEC 节点接在这条支路上。
+        if r.ptype == "remote_mic" {
+          for k in [
+            "aec",
+            "far_device",
+            "mic_gain_db",
+            "far_gain_db",
+            "bypass",
+            "far_delay_ms",
+          ] {
+            if r.params.remove(k).is_some() {
+              changed = true;
+            }
+          }
+        }
         if r.x == 0.0 && r.y == 0.0 {
           // 端子在上/下 => 同一条链自上而下；同一深度的分支横向排开。
           r.x = 64.0 + ci as f32 * 280.0;
@@ -751,6 +767,30 @@ pub type SharedPlan = Arc<Plan>;
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn normalize_strips_legacy_network_aec_params() {
+    let mut row = RowSpec {
+      kind: RowKind::Input,
+      ptype: "remote_mic".into(),
+      ..Default::default()
+    };
+    row.params.insert("aec".into(), "1".into());
+    row.params.insert("far_device".into(), "loopback".into());
+    row.params.insert("mic_gain_db".into(), "2.0".into());
+    let mut plan = Plan {
+      v: VERSION,
+      columns: vec![ColumnSpec {
+        rows: vec![row],
+        enabled: true,
+      }],
+    };
+    assert!(plan.normalize());
+    let node = &plan.columns[0].rows[0];
+    assert!(!node.params.contains_key("aec"));
+    assert!(!node.params.contains_key("far_device"));
+    assert!(!node.params.contains_key("mic_gain_db"));
+  }
 
   /// 端口 = 通道：多通道处理节点的输入/输出端口数都跟着 `channels` 走。
   /// 立体声降噪必须有 2 个输出端口，否则界面连不出第二条通道。

@@ -54,6 +54,7 @@ mod sound_panel;
 #[cfg(not(any(windows, target_os = "linux")))]
 #[path = "sound_panel_other.rs"]
 mod sound_panel;
+mod tray;
 mod ui;
 mod update;
 #[cfg(windows)]
@@ -164,14 +165,36 @@ fn main() {
           window_bounds: Some(WindowBounds::Windowed(bounds)),
           window_min_size: Some(size(px(900.), px(560.))),
           titlebar: Some(TitlebarOptions {
-            title: Some(format!("PureVox Mix {}", version::VERSION).into()),
+            title: Some(format!("PureVox {}", version::VERSION).into()),
             ..Default::default()
           }),
           ..Default::default()
         },
         cx,
         move |window, cx| {
-          window.set_window_title(&format!("PureVox Mix {}", version::VERSION));
+          window.set_window_title(&format!("PureVox {}", version::VERSION));
+          #[cfg(windows)]
+          {
+            let hwnd = raw_window_handle::HasWindowHandle::window_handle(window)
+              .ok()
+              .and_then(|h| match h.as_raw() {
+                raw_window_handle::RawWindowHandle::Win32(w) => Some(w.hwnd.get()),
+                _ => None,
+              });
+            if let Some(hwnd) = hwnd {
+              tray::spawn(hwnd, hub.clone());
+            }
+          }
+          #[cfg(not(windows))]
+          tray::spawn(0, hub.clone());
+          // 关闭（x）默认收进托盘；只有托盘菜单「退出」才真正关窗口。
+          window.on_window_should_close(cx, |_window, _cx| {
+            if tray::quitting() {
+              true
+            } else {
+              !tray::hide_main()
+            }
+          });
           let audio = audio.clone();
           let hub = hub.clone();
           cx.new(|cx| ui::Workspace::new(audio, hub, window, cx))

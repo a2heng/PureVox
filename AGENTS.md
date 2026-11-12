@@ -15,16 +15,17 @@
 | `SESSION-V2.md` | **当前权威**：节点图（节点/端口/连线）、DAG 执行、AEC 两输入、Element 风格画板、迁移与验收 |
 | `ARCHITECTURE.md` | 分层、数据不变量、图/节点、Stage/Pipeline、设备池、模型生命周期、内存、扩展、实施顺序 |
 | `PLUGINS.md` | 节点清单（输入/处理/输出/可视化）、AEC/TSE、媒体行、OBS 滤镜、31 段 EQ、AGC |
-| `MIXER.md` | 多设备混音/路由台（GPUI 界面、Plan 映射、延迟纪律、网络嵌入、阶段计划） |
 | `NETWORK.md` | 手机 ⇄ 电脑链路、协议、缓冲、TLS/mDNS、Android/网页客户端、网络卡片 |
-| `UI.md` | 视觉风格与布局（不写死高度、侧栏宽度、网络卡、EQ、调试面板） |
+| `UI.md` | **设计系统 + 视觉规范**：token 梯度、组件原语、状态、右侧信息栏、节点卡、EQ、调试面板 |
 | `UX.md` | 交互行为（热参数、行/列开关、扫码/重连、预设、失败不静默） |
 | `DEBUG.md` | 调试优先：面板、HTTP 接口、Probe、实现约束、AI 可复现 |
 | `RELEASE.md` | 版本号、CI 门禁、打包/产物、更新检查 |
 | `RELEASE-CHANNELS.md` | **桌面 / 安卓独立发布通道**：tag、工作流、更新日志范围、提交 scope 纪律（发版与提交前必读） |
 | `DEV.md` | 本机开发环境（Windows/Git Bash/WSL 的实测结论） |
-| `CONTRIBUTING.md` | 命名、平台文件拆分、i18n、README 双语 |
-| `BUILD.md` | GPUI 构建/运行/测试；打包流水线待恢复 |
+| `CONTRIBUTING.md` | 命名、平台文件拆分、i18n、软件工程基线（模块边界 / 错误 / 测试 / 提交） |
+| `BUILD.md` | GPUI 构建/运行/测试/门禁；打包流水线待恢复 |
+| `SECURITY.md` | 安全问题报告方式、支持范围、已知边界 |
+| `CODE_OF_CONDUCT.md` | 贡献者行为准则 |
 | `IDEAS.md` | 还没开工的设想（不是承诺） |
 
 ## 维护准则（简版）

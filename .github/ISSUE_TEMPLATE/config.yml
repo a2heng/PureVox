@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用与构建问题
+    url: https://github.com/a2heng/PureVox/blob/main/BUILD.md
+    about: 先看构建/运行/测试说明；仍无法解决再开 issue。
+  - name: 安全问题
+    url: https://github.com/a2heng/PureVox/security/advisories/new
+    about: 不要公开披露；走私有安全公告。
