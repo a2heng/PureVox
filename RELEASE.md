@@ -120,9 +120,11 @@
       本脚本要的 `shutil` 直接 `ModuleNotFoundError`），以及**模块级不许算仓库路径**
       （容器里脚本挂在 `/pv/test_packages.py`，`parents[2]` 直接 `IndexError`，三项断言一项
       都跑不到）。三档验证互相独立、一档挂了其余照跑，最后统一汇总。
-  - **Linux 产物的可信度排序**：AppImage 最兼容（linuxdeploy 把非系统库打进去）> deb
-    （限 Ubuntu 系，基线对齐后 24.04/26.04 都能跑，且容器里双向都验了）> rpm（在 Ubuntu
-    上用 rpmbuild 打的，对 Fedora 只当「拦住明显装不上」，别当兼容性证明）。
+  - **Linux 产物**：AppImage（`package_linux.py` 自建 AppDir + 官方 appimagetool）把
+    **libopus 这类非系统库**复制到 `usr/lib/purevox`，AppRun 设 `LD_LIBRARY_PATH`——宿主
+    没装 `libopus0` 时网络音频也能用（旧 Tauri 版 `pack_appimage.sh` 同款做法）；X11 /
+    Wayland / ALSA 仍按常规依赖宿主机。deb 走包管理器依赖（`Depends: libopus0`），
+    图标与 desktop 条目和 AppImage 用同一份（256 px、含 zh_CN 名称与 Keywords）。
 
 
 - **新功能的完成标准**包含调试输出：新增模块（流、设备、模型、效果）必须同时把自身状态
