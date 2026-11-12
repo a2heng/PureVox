@@ -113,7 +113,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends             pkg-config libssl-dev libasound2-dev libfontconfig1-dev libfreetype-dev             libx11-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev             libwayland-dev libvulkan-dev libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev             dpkg-dev file
+          sudo apt-get install -y --no-install-recommends             pkg-config libssl-dev libasound2-dev libfontconfig1-dev libfreetype-dev             libx11-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev             libwayland-dev libvulkan-dev libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev             libopus0 dpkg-dev file
 
       - name: "Gate · fmt"
         shell: bash
