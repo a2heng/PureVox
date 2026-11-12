@@ -27,11 +27,15 @@
     <color name="pv_accent">#9BC2FF</color>
     <color name="pv_blue">#A8C7FA</color>
     <color name="pv_on_blue">#0A1F3A</color>
-    <!-- 暗色：底、卡片、描边（亮色那边是中性白，这里同样只用明度分层） -->
-    <color name="pv_bg">#0F1115</color>
-    <color name="pv_surface">#171A1F</color>
-    <color name="pv_outline">#262A31</color>
+    <color name="pv_err">#FF9A8F</color>
+    <!-- 暗色：底、卡片、高亮面板、描边（同样只用明度分层） -->
+    <color name="pv_bg">#0E1014</color>
+    <color name="pv_surface">#171A20</color>
+    <color name="pv_surface_alt">#1E222A</color>
+    <color name="pv_outline">#2A2F38</color>
     <!-- 顶栏：暗色下压暗，不刺眼 -->
     <color name="pv_header">#0B1524</color>
-    <color name="pv_header_light">#1E4E8C</color>
+    <color name="pv_header_light">#15355F</color>
+    <color name="pv_dot_wait">#D8A94E</color>
+    <color name="pv_dot_off">#5B6577</color>
 </resources>

@@ -8,19 +8,15 @@
 
   SPDX-License-Identifier: GPL-3.0-or-later
 -->
-<!-- 顶栏菜单点：三个白点（不依赖 Material 图标资源，自绘矢量）。 -->
+<!-- 关闭图标（设置卡片右上角）：两条 45° 斜线，颜色由 ImageButton 的 tint 决定。 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M12,5.2m-1.6,0a1.6,1.6 0,1 1,3.2 0a1.6,1.6 0,1 1,-3.2 0" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M12,12m-1.6,0a1.6,1.6 0,1 1,3.2 0a1.6,1.6 0,1 1,-3.2 0" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M12,18.8m-1.6,0a1.6,1.6 0,1 1,3.2 0a1.6,1.6 0,1 1,-3.2 0" />
+        android:pathData="M6.5,6.5 L17.5,17.5 M17.5,6.5 L6.5,17.5"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeWidth="2" />
 </vector>

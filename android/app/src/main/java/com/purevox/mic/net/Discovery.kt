@@ -22,6 +22,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.util.Log
+import com.purevox.mic.R
 
 /**
  * 局域网自动发现（NETWORK.md §4.1.1）。
@@ -66,7 +67,7 @@ class Discovery(
      */
     fun start() {
         val m = nsd ?: run {
-            onError("这台系统的 NSD 服务不可用，请手动填地址")
+            onError(app.getString(R.string.err_nsd_unavailable))
             return
         }
         if (running) return
@@ -93,7 +94,7 @@ class Discovery(
 
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
                 running = false
-                onError("开始发现失败（$errorCode），请手动填地址")
+                onError(app.getString(R.string.err_discovery_start_code, errorCode))
             }
 
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
@@ -113,10 +114,10 @@ class Discovery(
             Log.w(TAG, "重复发现，先停一次", e)
             runCatching { m.stopServiceDiscovery(l) }
             runCatching { m.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, l) }
-                .onFailure { running = false; onError("发现启动失败：${e.message}") }
+                .onFailure { running = false; onError(app.getString(R.string.err_discovery_start, e.message ?: "")) }
         } catch (e: Exception) {
             running = false
-            onError("发现启动失败：${e.message}")
+            onError(app.getString(R.string.err_discovery_start, e.message ?: ""))
         }
     }
 
@@ -149,8 +150,16 @@ class Discovery(
      * 前导零的压缩写法**（例如 `fe80::1` 而不是 `fe80:0000:...:0001`），而我们连的是
      * 局域网 IPv4，直接取 `Inet4Address` 的四个字节拼点分十进制最稳，不受任何格式化规则影响。
      */
+    @Suppress("DEPRECATION")
     private fun hostOf(info: NsdServiceInfo): String? {
-        val a = info.host ?: return null
+        // API 34 起 `host` 弃用，改用 `hostAddresses`（同一台机器可能同时报 v4/v6）；
+        // 旧系统仍只有 `host`。优先取 IPv4：我们连的是局域网 IPv4。
+        val a = if (Build.VERSION.SDK_INT >= 34) {
+            info.hostAddresses.firstOrNull { it is java.net.Inet4Address }
+                ?: info.hostAddresses.firstOrNull()
+        } else {
+            info.host
+        } ?: return null
         val v4 = a as? java.net.Inet4Address ?: return a.hostAddress
         val b = v4.address
         // 不用字符串模板拼：`${b[i] & 0xFF}` 里同时有下标与位运算，模板解析容易出问题，

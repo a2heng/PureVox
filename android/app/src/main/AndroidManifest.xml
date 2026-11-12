@@ -61,6 +61,7 @@
 
     <application
         android:allowBackup="true"
+        android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -92,6 +93,20 @@
             android:name=".service.CaptureService"
             android:exported="false"
             android:foregroundServiceType="microphone|dataSync" />
+
+        <!--
+          界面语言的持久化（AppCompat per-app locale）：`setApplicationLocales` 的选择
+          由这个只带 meta-data 的服务存进 AppCompat 自己的偏好里，下次启动仍然生效。
+          `enabled=false` 是官方要求 —— 它不承载任何组件，只提供 meta-data。
+        -->
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data
+                android:name="autoStoreLocales"
+                android:value="true" />
+        </service>
 
         <!-- 应用内更新：把私有目录里下载好的 APK 通过 FileProvider 交给系统安装器 -->
         <provider

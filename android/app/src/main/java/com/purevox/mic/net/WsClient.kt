@@ -19,8 +19,10 @@
 
 package com.purevox.mic.net
 
+import android.content.Context
 import android.util.Log
 import com.purevox.mic.Proto
+import com.purevox.mic.R
 import com.purevox.mic.ServerMsg
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -62,6 +64,8 @@ class WsClient(
     private val host: String,
     private val port: Int,
     private val listener: Listener,
+    /** 取故障文案用（上屏，跟随界面语言）。 */
+    private val context: Context,
 ) {
 
     interface Listener {
@@ -300,7 +304,11 @@ class WsClient(
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             opened = false
             stopPing()
-            val why = if (reason.isNullOrEmpty()) "电脑关闭了连接（code=$code）" else reason
+            val why = if (reason.isNullOrEmpty()) {
+                context.getString(R.string.err_ws_closed, code)
+            } else {
+                reason
+            }
             listener.onClosed(this@WsClient, why)
         }
 
@@ -312,17 +320,16 @@ class WsClient(
         }
     }
 
-    /** 把异常翻译成人能看懂的中文（直连失败是最常见的场景）。 */
+    /** 把异常翻译成人能看懂的说明（直连失败是最常见的场景）。 */
     private fun describe(t: Throwable): String = when (t) {
         is IOException -> {
             val m = t.message.orEmpty()
             if (m.contains("refused", true) || m.contains("Failed to connect", true) || t is java.net.ConnectException) {
-                "连不上 $host:$port —— 请确认电脑已启动网络服务（端口 ${Proto.PORT}）、" +
-                    "手机与电脑在同一局域网、电脑防火墙放行了该端口"
+                context.getString(R.string.err_ws_refused, host, port, Proto.PORT)
             } else if (m.isEmpty()) {
-                "网络错误（${t.javaClass.simpleName}）"
+                context.getString(R.string.err_net_generic, t.javaClass.simpleName)
             } else {
-                "网络错误：$m"
+                context.getString(R.string.err_net_detail, m)
             }
         }
         else -> t.message ?: t.javaClass.simpleName

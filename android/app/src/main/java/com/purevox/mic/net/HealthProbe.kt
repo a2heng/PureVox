@@ -19,10 +19,12 @@
 
 package com.purevox.mic.net
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.purevox.mic.Proto
+import com.purevox.mic.R
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.OkHttpClient
@@ -54,14 +56,19 @@ object HealthProbe {
     /**
      * 回调 `(成功?, 说明)`，在 OkHttp 线程上调用（调用方自己切 UI 线程）。
      */
-    fun check(host: String, port: Int = Proto.PORT, cb: (Boolean, String) -> Unit) {
+    fun check(
+        context: Context,
+        host: String,
+        port: Int = Proto.PORT,
+        cb: (Boolean, String) -> Unit,
+    ) {
         // 与 WsClient 同理：证书校验前先记下目标主机，否则私有地址的自签证书也会被拒
         LocalTls.setTarget(host)
         val request = Request.Builder().url(Proto.healthUrl(host, port)).get().build()
         try {
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    cb(false, "GET /health 失败：${e.message ?: e.javaClass.simpleName}")
+                    cb(false, context.getString(R.string.err_health_failed, e.message ?: e.javaClass.simpleName))
                 }
 
                 override fun onResponse(call: Call, response: Response) {
@@ -76,7 +83,9 @@ object HealthProbe {
             })
         } catch (e: Throwable) {
             Log.w(TAG, "发起自检异常", e)
-            Handler(Looper.getMainLooper()).post { cb(false, "发起自检异常：${e.message}") }
+            Handler(Looper.getMainLooper()).post {
+                cb(false, context.getString(R.string.err_health_exception, e.message ?: ""))
+            }
         }
     }
 }

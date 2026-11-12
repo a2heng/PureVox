@@ -163,7 +163,7 @@ class CaptureService : Service() {
                 // 这里不能让它炸掉界面：保活失败只是「没通知」，连接与推流照常。日志留痕，
                 // **并且写进界面/诊断** —— 看不见的「保活没生效」等于没有保活。
                 Log.e(TAG, "起前台服务失败（保活未生效）", e)
-                lastError = "起前台服务被拒：${e.javaClass.simpleName}"
+                lastError = ctx.getString(R.string.err_service_start, e.javaClass.simpleName)
             }
         }
     }
@@ -240,7 +240,7 @@ class CaptureService : Service() {
         } catch (e: Throwable) {
             // Android 12+ 从后台起前台服务会抛；界面会把它显示出来，不静默
             Log.e(TAG, "startForeground 失败", e)
-            noteError("startForeground 失败：${e.javaClass.simpleName}")
+            noteError(getString(R.string.err_start_foreground, e.javaClass.simpleName))
             stopSelf()
         }
     }

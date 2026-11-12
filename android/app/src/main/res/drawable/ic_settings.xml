@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!--
+  设置入口图标：两条横轨 + 两个旋钮（比「三个点」更直白地表示设置，
+  且与底部导航时代留下的圆点语义不同）。白色，压在品牌渐变上。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M4,8.5 L20,8.5 M4,15.5 L20,15.5"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="1.8" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M9,8.5m-2.4,0a2.4,2.4 0,1 1,4.8 0a2.4,2.4 0,1 1,-4.8 0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M15,15.5m-2.4,0a2.4,2.4 0,1 1,4.8 0a2.4,2.4 0,1 1,-4.8 0" />
+</vector>

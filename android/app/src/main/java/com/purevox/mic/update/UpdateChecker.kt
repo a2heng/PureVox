@@ -176,17 +176,24 @@ object UpdateChecker {
                     }
                     val body = r.body?.string()
                     if (body.isNullOrBlank()) {
-                        onDone(UpdateResult.Failed("空响应"))
+                        onDone(UpdateResult.Failed(ctx.getString(com.purevox.mic.R.string.err_update_empty_response)))
                         return
                     }
                     val info = try {
                         parseReleases(body)
                     } catch (e: Exception) {
-                        onDone(UpdateResult.Failed("解析失败：${e.message ?: e.javaClass.simpleName}"))
+                        onDone(
+                            UpdateResult.Failed(
+                                ctx.getString(
+                                    com.purevox.mic.R.string.err_update_parse,
+                                    e.message ?: e.javaClass.simpleName,
+                                ),
+                            ),
+                        )
                         return
                     }
                     if (info == null) {
-                        onDone(UpdateResult.Failed("还没有安卓版 release（或没有可用的 APK 资产）"))
+                        onDone(UpdateResult.Failed(ctx.getString(com.purevox.mic.R.string.err_update_no_release)))
                         return
                     }
                     onDone(

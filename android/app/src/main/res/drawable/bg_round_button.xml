@@ -11,5 +11,8 @@
 <!-- 头图右上角的圆点按钮底：半透明白，压在品牌渐变上也能看清。 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
-    <solid android:color="#2EFFFFFF" />
+    <solid android:color="#33FFFFFF" />
+    <stroke
+        android:width="1dp"
+        android:color="#38FFFFFF" />
 </shape>

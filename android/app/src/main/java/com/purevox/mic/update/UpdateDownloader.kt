@@ -54,7 +54,7 @@ object UpdateDownloader {
     ) {
         val dir = File(ctx.getExternalFilesDir(null), "update")
         if (!dir.exists() && !dir.mkdirs()) {
-            onDone(null, "无法创建下载目录 ${dir.absolutePath}")
+            onDone(null, ctx.getString(com.purevox.mic.R.string.err_download_dir, dir.absolutePath))
             return
         }
         dir.listFiles()?.forEach { it.delete() }
@@ -77,11 +77,8 @@ object UpdateDownloader {
                         onDone(null, "HTTP ${r.code}")
                         return
                     }
+                    // OkHttp 5 的 body 不再可空；空响应由 contentLength = -1 / 0 字节体现
                     val body = r.body
-                    if (body == null) {
-                        onDone(null, "空响应")
-                        return
-                    }
                     val total = body.contentLength()
                     try {
                         body.byteStream().use { input ->

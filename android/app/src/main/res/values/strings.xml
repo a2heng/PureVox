@@ -17,19 +17,24 @@
 
   SPDX-License-Identifier: GPL-3.0-or-later
 -->
+<!--
+  中文即默认资源（`values/`），英文在 `values-en/`。**两份键集合必须一致**：
+  新增中文串时同一次提交补上英文，漏了就是漏译。
+
+  不上屏的中文（注释、调试日志、诊断内部细节）不进这里 —— 与桌面端 i18n 边界一致。
+-->
 <resources>
     <string name="app_name">PureVox</string>
 
     <!-- 标题区 -->
-    <string name="subtitle">远程麦克风 · 扬声器 · 键盘客户端</string>
-    <string name="hint_host">电脑 IP 或主机名（可直接粘电脑端复制的网址）</string>
+    <string name="subtitle">远程麦克风 · 扬声器</string>
+    <string name="hint_host">电脑 IP / 主机名</string>
     <string name="hint_port">端口</string>
     <string name="btn_scan">扫描电脑上的二维码</string>
     <string name="scan_prompt">对准电脑「网络」卡片上的二维码</string>
     <string name="msg_scan_failed">二维码里没有可用的地址：%1$s</string>
     <string name="msg_scan_camera_denied">没有相机权限，无法扫码（也可以手动填 IP 和端口）</string>
     <string name="msg_port_invalid">端口 %1$s 无效，已改回默认 59123</string>
-    <string name="btn_connect">连接</string>
     <!-- 品牌字标的后半截：头图里「彩色 P + ureVox」拼成 PureVox。品牌名，不翻译。 -->
     <string name="wordmark_tail" translatable="false">ureVox</string>
     <!-- 头图右上角圆点：打开设置弹出层 -->
@@ -37,8 +42,7 @@
     <string name="sheet_title">设置</string>
     <string name="sheet_close">关闭</string>
     <!-- 连接做成开关：位置本身就是状态 -->
-    <string name="sw_connect">连接</string>
-    <string name="btn_disconnect">断开</string>
+    <string name="sw_connect">连接电脑</string>
     <string name="btn_health">自检 GET /health</string>
     <string name="btn_rediscover">发现电脑</string>
     <string name="btn_reconnect">重新连接</string>
@@ -50,15 +54,20 @@
     <string name="msg_proto_mismatch">电脑端协议版本 %2$d 与本客户端 %1$d 不一致，请更新客户端</string>
 
     <!-- 卡片标题 -->
-    <string name="section_connect">连接</string>
-    <string name="section_function">功能</string>
     <string name="section_keepalive">后台保活</string>
     <string name="section_update">更新</string>
+    <string name="section_language">界面语言</string>
+    <string name="section_target">连接目标</string>
+    <string name="hero_target_auto">自动发现电脑中…</string>
+    <string name="footer_hint">局域网直连 · 音频不经服务器</string>
 
-    <!-- 诊断页（一页式：默认收起，点标题下的「展开诊断」） -->
+    <!-- 界面语言（设置层）：跟随系统 / 中文 / English -->
+    <string name="lang_system">跟随系统</string>
+    <string name="lang_zh">中文</string>
+    <string name="lang_en">English</string>
+
+    <!-- 诊断（设置层，默认收起） -->
     <string name="diag_title">诊断</string>
-    <string name="diag_expand">展开诊断</string>
-    <string name="diag_collapse">收起诊断</string>
 
     <!-- 实时监控两块（与 MainActivity.updateStatus 一一对应） -->
     <string name="diag_net">网络</string>
@@ -85,14 +94,111 @@
     <string name="status_opus">Opus 探测</string>
     <string name="status_health">自检　</string>
 
+    <!-- 连接状态（connState） -->
+    <string name="state_connecting">连接中…</string>
+    <string name="state_disconnected">已断开</string>
+    <string name="state_connected_wait_ready">已连接（等待 ready）</string>
+    <string name="state_ready">就绪</string>
+    <string name="msg_server">电脑：%1$s</string>
+    <string name="err_proto">协议版本不符：电脑 %1$d，手机 %2$d</string>
+    <string name="err_codec">电脑音频编码是 %1$s，手机只支持 %2$s</string>
+    <string name="err_rate">电脑音频是 %1$d Hz，手机播放按 %2$d Hz 打开</string>
+    <string name="err_downlink_start">下行播放启动失败</string>
+    <string name="err_battery_settings">无法打开电池优化设置：%1$s</string>
+    <string name="err_unknown">未知错误</string>
+    <string name="err_apk_missing">安装包已不存在</string>
+    <string name="clip_diag_label">PureVox 诊断</string>
+
+    <!-- 自检（GET /health） -->
+    <string name="health_none">未自检</string>
+    <string name="health_checking">自检中…</string>
+    <string name="health_unavailable">不可用 · %1$s</string>
+
+    <!-- 诊断读数（updateStatus 里的动态行） -->
+    <string name="diag_no_pong">尚无 pong（1 s 一次）</string>
+    <string name="diag_rtt_row">最近 %1$s · 平均 %2$s · 最大 %3$s（%4$d 样本）</string>
+    <string name="diag_off">未开启</string>
+    <string name="diag_both_off">上行/下行都未开启</string>
+    <string name="diag_enc_capture">编码 %1$s · 采集 %2$s</string>
+    <string name="diag_no_uplink">未上行</string>
+    <string name="diag_decode">解码 %1$s</string>
+    <string name="diag_no_sub">未订阅</string>
+    <string name="diag_up_counts">编出 %1$d 包 · 丢 %2$d 样本</string>
+    <string name="diag_play_row">欠载 %1$d（%2$s/s） · 丢包 %3$d（%4$s/s） · 掩盖 %5$d（%6$s/s） · 底层欠载 %7$d</string>
+    <string name="diag_latency_row">环 %1$d/%2$d ms · 单向 %3$s · 底层 %4$d ms · 时钟 %5$s</string>
+    <string name="diag_measuring">测量中</string>
+    <string name="diag_sampling">采样中</string>
+    <string name="rate_not_connected">未连接</string>
+    <string name="rate_sampling">采样中…</string>
+    <string name="rate_row">%1$s 包/s · %2$s kbps · 累计 %3$d 包</string>
+    <string name="level_silent">静音</string>
+    <string name="list_sep">、</string>
+
+    <!-- 网络质量 / 音频质量判定（RtStats） -->
+    <string name="verdict_not_connected">未连接</string>
+    <string name="verdict_not_connected_detail">连上电脑后每 1 s 出一次 RTT</string>
+    <string name="verdict_sampling">采样中…</string>
+    <string name="verdict_rtt_samples">RTT 样本 %1$d/%2$d</string>
+    <string name="verdict_latency">延迟 %1$s ms</string>
+    <string name="verdict_jitter">抖动 %1$s ms</string>
+    <string name="verdict_good">优</string>
+    <string name="verdict_fair">良</string>
+    <string name="verdict_weak">弱</string>
+    <string name="verdict_poor">差</string>
+    <string name="verdict_net_ok">延迟低、抖动小</string>
+    <string name="verdict_audio_off_detail">未订阅电脑音频</string>
+    <string name="verdict_no_rate_sample">还没到第一次速率采样</string>
+    <string name="verdict_underrun">欠载 %1$s/s</string>
+    <string name="verdict_concealed">掩盖 %1$s/s</string>
+    <string name="verdict_dropped">丢包 %1$s/s</string>
+    <string name="verdict_normal">正常</string>
+    <string name="verdict_normal_detail">无欠载、无丢包</string>
+    <string name="verdict_occasional">偶发丢帧</string>
+    <string name="verdict_broken">断流/丢包</string>
+
+    <!-- 网络层错误 / 发现 / 自检 -->
+    <string name="err_nsd_unavailable">这台系统的 NSD 服务不可用，请手动填地址</string>
+    <string name="err_discovery_start">发现启动失败：%1$s</string>
+    <string name="err_discovery_start_code">开始发现失败（%1$d），请手动填地址</string>
+    <string name="err_ws_refused">连不上 %1$s:%2$d —— 请确认电脑已启动网络服务（端口 %3$d）、手机与电脑在同一局域网、电脑防火墙放行了该端口</string>
+    <string name="err_net_generic">网络错误（%1$s）</string>
+    <string name="err_net_detail">网络错误：%1$s</string>
+    <string name="err_ws_closed">电脑关闭了连接（code=%1$d）</string>
+    <string name="err_health_failed">GET /health 失败：%1$s</string>
+    <string name="err_health_exception">发起自检异常：%1$s</string>
+
+    <!-- 采集 / 播放 / 编解码错误 -->
+    <string name="err_mic_permission">未授予麦克风权限，无法上行推流（系统设置里给 PureVox 的「麦克风」开权限）</string>
+    <string name="err_opus_encoder">Opus 编码器不可用</string>
+    <string name="err_opus_decoder">Opus 解码器不可用</string>
+    <string name="err_record_unsupported">本机 AudioRecord 不支持 %1$d Hz 单声道采集（API=%2$s）—— %3$s</string>
+    <string name="err_mic_start">麦克风启动失败：%1$s</string>
+    <string name="err_mic_state">麦克风启动失败：AudioRecord 状态 = %1$d</string>
+    <string name="err_mic_read">麦克风读取中断：AudioRecord.read = %1$d</string>
+    <string name="err_decode">解码异常：%1$s</string>
+    <string name="err_audio_track_create">AudioTrack 创建失败：%1$s</string>
+    <string name="err_audio_track_play">AudioTrack.play 失败：%1$s</string>
+    <string name="err_audio_track_write">AudioTrack.write 异常：%1$s</string>
+    <string name="err_audio_track_write_ret">AudioTrack.write 返回 %1$d（输出设备不可用）</string>
+    <string name="err_opus_unavailable">不可用：%1$s</string>
+    <string name="err_encoding">编码 %1$d</string>
+    <string name="err_service_start">起前台服务被拒：%1$s</string>
+    <string name="err_start_foreground">startForeground 失败：%1$s</string>
+
+    <!-- 更新（网络 / 解析错误） -->
+    <string name="err_update_empty_response">空响应</string>
+    <string name="err_update_parse">解析失败：%1$s</string>
+    <string name="err_update_no_release">还没有安卓版 release（或没有可用的 APK 资产）</string>
+    <string name="err_download_dir">无法创建下载目录 %1$s</string>
+
     <!-- 抖动缓冲滑块（手动，10~200 ms） -->
     <string name="ring_label">抖动缓冲 %1$d 帧（%2$d ms）</string>
 
     <!-- 功能开关 -->
     <string name="sw_mic">手机麦克风 → 电脑</string>
     <string name="sw_speaker">电脑音频 → 手机扬声器</string>
-    <string name="mic_source_label">麦克风 API（采集源）</string>
-    <string name="mic_source_hint">按常用程度从上到下排列；系统专用/隐藏 API 通常没有权限，会自动回退到 MIC。</string>
+    <string name="mic_source_label">麦克风 API</string>
+    <string name="mic_source_hint">隐藏 / 系统专用 API 通常没有权限，会自动回退到 MIC。</string>
     <string name="mic_src_mic">MIC（默认，最常用）</string>
     <string name="mic_src_voice_recognition">VOICE_RECOGNITION（语音识别）</string>
     <string name="mic_src_voice_communication">VOICE_COMMUNICATION（通话/降噪）</string>
@@ -117,19 +223,19 @@
     <string name="section_about">关于</string>
     <string name="about_version">PureVox %1$s（versionCode %2$s）</string>
     <string name="about_license">源码 GPL-3.0-or-later；内置 AI 模型不随 GPL 授权，仅随 PureVox 经授权使用（见 MODEL-LICENSE.md）。</string>
-    <string name="keepalive_desc">应用开着就常驻前台服务通知（带「停止 / 断开」按钮）—— 撤掉通知系统会随手掐掉本进程。再允许「忽略电池优化」，息屏久一点也不会被系统冻结。</string>
-    <string name="btn_battery_settings">忽略电池优化设置</string>
-    <string name="battery_ignored">电池优化：已忽略 ✓（后台不易被冻结）</string>
-    <string name="battery_not_ignored">电池优化：未忽略（息屏久了可能被冻结）</string>
-    <string name="keepalive_notif_on">常驻通知：已挂 ✓（系统不会随手掐掉本进程）</string>
+    <string name="keepalive_desc">常驻通知避免进程被系统掐掉；忽略电池优化避免息屏后被冻结。</string>
+    <string name="btn_battery_settings">电池优化设置</string>
+    <string name="battery_ignored">电池优化：已忽略 ✓</string>
+    <string name="battery_not_ignored">电池优化：未忽略</string>
+    <string name="keepalive_notif_on">常驻通知：已挂 ✓</string>
     <string name="keepalive_notif_off">常驻通知：未挂</string>
     <string name="keepalive_notif_failed">常驻通知：没挂上（%1$s）—— 切回前台会自动补挂</string>
 
     <!-- 通知权限（Android 13+ 必须允许，通知才看得见） -->
     <string name="notif_perm_unknown">通知权限：未知</string>
     <string name="notif_perm_on">通知权限：已允许 ✓</string>
-    <string name="notif_perm_off">通知权限：**没允许** —— 保活通知看不见，系统可能随手掐掉本进程（点下面按钮打开）</string>
-    <string name="notif_perm_channel_off">通知权限：已允许，但这个通知渠道被关掉了（点下面按钮打开）</string>
+    <string name="notif_perm_off">通知权限：未允许</string>
+    <string name="notif_perm_channel_off">通知权限：渠道已关闭</string>
     <string name="btn_notif_settings">通知设置</string>
 
     <!-- 前台服务通知 -->
@@ -140,7 +246,7 @@
     <!-- 通知正文只留一行状态：文案一长系统就把三个按钮折叠进「展开」，
          而保活本来就由通知**存在**这件事表达，不需要再写一遍 -->
     <string name="notif_connected">已连接电脑</string>
-        <string name="notif_idle">待连接</string>
+    <string name="notif_idle">待连接</string>
     <!-- 通知栏三个按钮：麦克风 / 扬声器 / 重新连接（标签随当前状态变） -->
     <string name="notif_action_mic_on">开麦克风</string>
     <string name="notif_action_mic_off">关麦克风</string>
@@ -162,5 +268,4 @@
     <string name="update_failed">检查更新失败：%1$s</string>
     <string name="update_install_denied">需要先在系统设置里允许本应用「安装未知应用」</string>
     <string name="update_install_started">已调起系统安装程序</string>
-    <string name="update_no_apk">该版本没有可用的 APK 资产</string>
 </resources>

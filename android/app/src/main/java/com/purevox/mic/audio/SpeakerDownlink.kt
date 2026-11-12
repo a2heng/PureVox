@@ -19,6 +19,7 @@
 
 package com.purevox.mic.audio
 
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -26,6 +27,7 @@ import android.os.Build
 import android.os.Process
 import android.util.Log
 import com.purevox.mic.Proto
+import com.purevox.mic.R
 
 /**
  * 下行播放（电脑音频 → 手机扬声器）。
@@ -55,6 +57,8 @@ import com.purevox.mic.Proto
  * 它也是伺服要吃掉的那个量 —— 先量，再决定要不要调参（DEBUG.md §1.4）。
  */
 class SpeakerDownlink(
+    /** 取文案用（故障原因上屏，跟随界面语言）。 */
+    private val context: Context,
     /**
      * 电脑算出的时钟偏移（手机 − 电脑，µs）；还没测出来时返回 null。
      * 用来把下行帧头的时间戳换成**单向延迟**。
@@ -210,7 +214,7 @@ class SpeakerDownlink(
         val name = try {
             dec.start { pcm, n, plc -> ring.push(pcm, n, System.nanoTime(), plc) }
         } catch (e: Throwable) {
-            lastError = e.message ?: "Opus 解码器不可用"
+            lastError = e.message ?: context.getString(R.string.err_opus_decoder)
             Log.e(TAG, "解码器启动失败", e)
             return false
         }
@@ -292,7 +296,7 @@ class SpeakerDownlink(
             try {
                 dec.decode(payload, payload.size)
             } catch (e: Throwable) {
-                lastError = "解码异常：${e.message ?: e.javaClass.simpleName}"
+                lastError = context.getString(R.string.err_decode, e.message ?: e.javaClass.simpleName)
                 Log.w(TAG, "解码异常（seq=$seq）", e)
             }
         }
@@ -357,7 +361,7 @@ class SpeakerDownlink(
                 Log.w(TAG, "AudioTrack 创建失败", e)
             }
         }
-        lastError = "AudioTrack 创建失败：$lastReason"
+        lastError = context.getString(R.string.err_audio_track_create, lastReason)
         return null
     }
 
@@ -377,7 +381,7 @@ class SpeakerDownlink(
         try {
             at.play()
         } catch (e: Throwable) {
-            lastError = "AudioTrack.play 失败：${e.message}"
+            lastError = context.getString(R.string.err_audio_track_play, e.message ?: e.javaClass.simpleName)
             return
         }
 
@@ -459,12 +463,12 @@ class SpeakerDownlink(
             val w = try {
                 at.write(buf, off, buf.size - off, AudioTrack.WRITE_BLOCKING)
             } catch (e: Throwable) {
-                lastError = "AudioTrack.write 异常：${e.message ?: e.javaClass.simpleName}"
+                lastError = context.getString(R.string.err_audio_track_write, e.message ?: e.javaClass.simpleName)
                 Log.w(TAG, "write 异常", e)
                 return false
             }
             if (w <= 0) {
-                if (w < 0) lastError = "AudioTrack.write 返回 $w（输出设备不可用）"
+                if (w < 0) lastError = context.getString(R.string.err_audio_track_write_ret, w)
                 try {
                     Thread.sleep(1)
                 } catch (e: InterruptedException) {

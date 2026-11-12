@@ -121,7 +121,7 @@ class MicUplink(
     fun start(): Boolean {
         if (running) return true
         if (!hasPermission()) {
-            onError("未授予麦克风权限，无法上行推流（系统设置里给 PureVox 的“麦克风”开权限）")
+            onError(context.getString(com.purevox.mic.R.string.err_mic_permission))
             return false
         }
 
@@ -129,7 +129,7 @@ class MicUplink(
         try {
             enc.start { pkt -> onPacket(pkt, lastReadTsUs) }
         } catch (e: Throwable) {
-            onError(e.message ?: "Opus 编码器不可用")
+            onError(e.message ?: context.getString(com.purevox.mic.R.string.err_opus_encoder))
             Log.e(TAG, "编码器启动失败", e)
             return false
         }
@@ -159,8 +159,12 @@ class MicUplink(
             enc.stop()
             encoder = null
             onError(
-                "本机 AudioRecord 不支持 ${SAMPLE_RATE} Hz 单声道采集（API=" +
-                    "${MicSources.label(context, sourceId)}）—— $lastBuildReason",
+                context.getString(
+                    com.purevox.mic.R.string.err_record_unsupported,
+                    SAMPLE_RATE,
+                    MicSources.label(context, sourceId),
+                    lastBuildReason,
+                ),
             )
             return false
         }
@@ -170,7 +174,7 @@ class MicUplink(
         try {
             rec.startRecording()
         } catch (e: Throwable) {
-            onError("麦克风启动失败：${e.message ?: e.javaClass.simpleName}")
+            onError(context.getString(com.purevox.mic.R.string.err_mic_start, e.message ?: e.javaClass.simpleName))
             rec.release()
             record = null
             enc.stop()
@@ -178,7 +182,7 @@ class MicUplink(
             return false
         }
         if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-            onError("麦克风启动失败：AudioRecord 状态 = ${rec.recordingState}")
+            onError(context.getString(com.purevox.mic.R.string.err_mic_state, rec.recordingState))
             rec.release()
             record = null
             enc.stop()
@@ -192,7 +196,7 @@ class MicUplink(
         thread = Thread({ captureLoop(rec, enc) }, "pv-mic").also { it.isDaemon = true; it.start() }
         Log.i(
             TAG,
-            "上行采集启动：$sourceName · ${OpusSupport.pcmName(recordEncoding)} @${SAMPLE_RATE}Hz → $encoderName",
+            "上行采集启动：$sourceName · ${OpusSupport.pcmName(context, recordEncoding)} @${SAMPLE_RATE}Hz → $encoderName",
         )
         return true
     }
@@ -230,7 +234,7 @@ class MicUplink(
         for (enc in intArrayOf(AudioFormat.ENCODING_PCM_FLOAT, AudioFormat.ENCODING_PCM_16BIT)) {
             val minBytes = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_MASK, enc)
             if (minBytes <= 0) {
-                lastReason = "AudioRecord.getMinBufferSize = $minBytes（${OpusSupport.pcmName(enc)}）"
+                lastReason = "AudioRecord.getMinBufferSize = $minBytes（${OpusSupport.pcmName(context, enc)}）"
                 continue
             }
             val bufBytes = maxOf(minBytes, READ_SAMPLES * 4 * 4)
@@ -246,12 +250,12 @@ class MicUplink(
                     .setBufferSizeInBytes(bufBytes)
                     .build()
             } catch (e: Throwable) {
-                lastReason = "${OpusSupport.pcmName(enc)}：${e.message ?: e.javaClass.simpleName}"
+                lastReason = "${OpusSupport.pcmName(context, enc)}：${e.message ?: e.javaClass.simpleName}"
                 Log.w(TAG, "AudioRecord 创建失败（source=$source, enc=$enc）", e)
                 continue
             }
             if (rec.state != AudioRecord.STATE_INITIALIZED) {
-                lastReason = "${OpusSupport.pcmName(enc)}：state=${rec.state}"
+                lastReason = "${OpusSupport.pcmName(context, enc)}：state=${rec.state}"
                 rec.release()
                 continue
             }
@@ -278,7 +282,7 @@ class MicUplink(
                     got == AudioRecord.ERROR_BAD_VALUE ||
                     got == AudioRecord.ERROR_DEAD_OBJECT
                 ) {
-                    onError("麦克风读取中断：AudioRecord.read = $got")
+                    onError(context.getString(com.purevox.mic.R.string.err_mic_read, got))
                     running = false
                     return
                 }

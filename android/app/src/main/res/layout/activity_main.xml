@@ -18,536 +18,353 @@
   SPDX-License-Identifier: GPL-3.0-or-later
 -->
 <!--
-  **一页式**：没有底部选项卡了。
+  **一页式 + edge-to-edge + 无卡片**。
 
-  页面上只留「现在在做什么」：品牌头图 → 连接 → 音频 → 诊断（默认收起）。
-  设置（后台保活 / 更新 / 关于）全部收进头图右上角圆点按钮弹出的设置层
-  （`sheet_settings.xml`）—— 它们不构成第二件事，不该占一整页。
+  主页面只回答三个问题，且都在第一屏：
+    1. 现在是什么状态、连到哪（头图：大字状态 + 目标地址）；
+    2. 三个最常用的开关（连接 / 麦克风 / 扬声器）；
+    3. 其余参数（地址、麦克风 API、抖动缓冲）**平铺在下面**，不折叠、不套卡片。
 
-  约束不变（DEBUG.md §1.3）：**不写死高度**，每张卡片 wrap_content；
-  整页是一个 ScrollView，可滚动区域只有这一处。
+  为什么不用卡片：上一版每张卡片自带描边 + 圆角 + 内边距，控件再各自带描边，
+  一层套一层，屏幕被切得很碎。现在整页只有头图一块色块，下面全是行 + 分隔线。
+
+  约束不变（DEBUG.md §1.3）：**不写死高度**，行高由内容决定；整页一个 ScrollView。
+  状态栏 / 导航栏的 inset 由 `MainActivity.applyEdgeToEdge` 填进头图与页面底部。
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/pv_bg"
     android:orientation="vertical">
 
     <ScrollView
         android:id="@+id/pageMain"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:clipToPadding="false">
+        android:clipToPadding="false"
+        android:overScrollMode="ifContentScrolls">
 
         <LinearLayout
+            android:id="@+id/pageContent"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingStart="16dp"
-            android:paddingTop="12dp"
-            android:paddingEnd="16dp"
-            android:paddingBottom="16dp">
+            android:paddingBottom="20dp">
 
             <!--
-              头图：一条，四角全圆。
-                左：品牌字标 = 彩色「P」（`ic_p_mark.xml`）+ 后面的 "ureVox"，下面状态 + 产品描述
-                右：圆点按钮，弹出设置层
+              头图：满宽，铺到状态栏后面。
+                一行：字标 + 产品描述 + 设置按钮（描述贴着字标，不单独占行）
+                下一行：状态点 + 大字状态（这是整页最重要的信息）
+                再下一行：目标地址（连到哪 / 正在自动发现）
               字标是**品牌**，不进 i18n（不做翻译）。
             -->
             <LinearLayout
+                android:id="@+id/hero"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:background="@drawable/bg_hero"
                 android:orientation="vertical"
-                android:paddingStart="18dp"
-                android:paddingTop="16dp"
+                android:paddingStart="20dp"
+                android:paddingTop="10dp"
                 android:paddingEnd="14dp"
-                android:paddingBottom="14dp">
+                android:paddingBottom="18dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:gravity="top"
+                    android:gravity="center_vertical"
                     android:orientation="horizontal">
 
-                    <LinearLayout
+                    <!-- translationY：P 的包围盒比文字的大写高度高，按中心对齐会显得偏低，
+                         往上挪 2dp 让它跟 "ureVox" 的视觉基线贴住（**别再往下调**）。 -->
+                    <ImageView
+                        android:layout_width="24dp"
+                        android:layout_height="36dp"
+                        android:contentDescription="@string/app_name"
+                        android:src="@drawable/ic_p_mark"
+                        android:translationY="-2dp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="2dp"
+                        android:letterSpacing="0.02"
+                        android:text="@string/wordmark_tail"
+                        android:textColor="#FFFFFF"
+                        android:textSize="24sp"
+                        android:textStyle="bold" />
+
+                    <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
                         android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <LinearLayout
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal">
-
-                            <!-- translationY：P 的包围盒比文字的大写高度高，按中心对齐会显得偏低，
-                                 往上挪 3dp 让它跟 "ureVox" 的视觉基线贴住（**别再往下调**）。 -->
-                            <ImageView
-                                android:layout_width="27dp"
-                                android:layout_height="41dp"
-                                android:contentDescription="@string/app_name"
-                                android:src="@drawable/ic_p_mark"
-                                android:translationY="-3dp" />
-
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="2dp"
-                                android:letterSpacing="0.02"
-                                android:text="@string/wordmark_tail"
-                                android:textColor="#FFFFFF"
-                                android:textSize="26sp"
-                                android:textStyle="bold" />
-                        </LinearLayout>
-
-                        <TextView
-                            android:id="@+id/tvHeroStatus"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:background="@drawable/bg_chip"
-                            android:fontFamily="monospace"
-                            android:paddingStart="10dp"
-                            android:paddingTop="4dp"
-                            android:paddingEnd="10dp"
-                            android:paddingBottom="4dp"
-                            android:text="@string/msg_not_connected"
-                            android:textColor="#FFFFFF"
-                            android:textSize="10sp" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="5dp"
-                            android:text="@string/subtitle"
-                            android:textColor="#B9D2F5"
-                            android:textSize="11sp" />
-                    </LinearLayout>
+                        android:ellipsize="end"
+                        android:letterSpacing="0.02"
+                        android:maxLines="1"
+                        android:text="@string/subtitle"
+                        android:textColor="#B9D2F5"
+                        android:textSize="11sp" />
 
                     <ImageButton
                         android:id="@+id/btnMenu"
-                        android:layout_width="40dp"
-                        android:layout_height="40dp"
-                        android:layout_marginStart="8dp"
+                        android:layout_width="42dp"
+                        android:layout_height="42dp"
+                        android:layout_marginStart="6dp"
                         android:background="@drawable/bg_round_button"
                         android:contentDescription="@string/btn_settings"
-                        android:padding="8dp"
-                        android:src="@drawable/ic_more"
+                        android:padding="9dp"
+                        android:src="@drawable/ic_settings"
                         android:tooltipText="@string/btn_settings" />
                 </LinearLayout>
+
+                <!-- 状态：点 + 大字。颜色点与文字一起变，不靠读一句话判断连没连上 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:id="@+id/vHeroDot"
+                        android:layout_width="9dp"
+                        android:layout_height="9dp"
+                        android:background="@drawable/bg_dot" />
+
+                    <TextView
+                        android:id="@+id/tvHeroStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="9dp"
+                        android:letterSpacing="0.01"
+                        android:text="@string/msg_not_connected"
+                        android:textColor="#FFFFFF"
+                        android:textSize="17sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- 目标地址：连到哪 / 还没地址时说明在自动发现 -->
+                <TextView
+                    android:id="@+id/tvHeroTarget"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="18dp"
+                    android:layout_marginTop="3dp"
+                    android:ellipsize="end"
+                    android:fontFamily="monospace"
+                    android:maxLines="1"
+                    android:text="@string/hero_target_auto"
+                    android:textColor="#B9D2F5"
+                    android:textSize="11sp" />
             </LinearLayout>
 
-            <!-- ============================ 连接 ============================ -->
-            <com.google.android.material.card.MaterialCardView
-                style="@style/PvCard"
+            <!-- =========================== 开关 =========================== -->
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp">
+                android:orientation="vertical"
+                android:paddingStart="20dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="20dp">
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/swConnect"
+                    style="@style/PvSwitch"
+                    android:text="@string/sw_connect" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/swMic"
+                    style="@style/PvSwitch"
+                    android:text="@string/sw_mic" />
+
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/swSpeaker"
+                    style="@style/PvSwitch"
+                    android:text="@string/sw_speaker" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="20dp"
+                android:layout_marginTop="10dp"
+                android:layout_marginEnd="20dp"
+                android:background="?attr/colorOutlineVariant" />
+
+            <!-- ========================== 连接目标 ========================== -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingStart="20dp"
+                android:paddingTop="12dp"
+                android:paddingEnd="20dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/section_target"
+                    android:textColor="?android:attr/textColorSecondary"
+                    android:textSize="12sp" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="12dp">
+                    android:layout_marginTop="6dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
 
-                    <TextView
-                        style="@style/PvCardTitle"
-                        android:text="@string/section_connect" />
-
-                    <!--
-                      连接本身做成**开关**（不是按钮），且**放在地址上面**：先看「连没连上」，
-                      再看「连去哪」—— 开关的位置本身就代表状态，不用读文字判断。
-                    -->
-                    <com.google.android.material.materialswitch.MaterialSwitch
-                        android:id="@+id/swConnect"
-                        android:layout_width="match_parent"
+                    <EditText
+                        android:id="@+id/etHost"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:minHeight="40dp"
-                        android:text="@string/sw_connect"
+                        android:layout_weight="1"
+                        android:autofillHints=""
+                        android:background="@drawable/bg_field"
+                        android:hint="@string/hint_host"
+                        android:importantForAutofill="no"
+                        android:inputType="textUri"
+                        android:maxLines="1"
+                        android:minHeight="44dp"
+                        android:paddingStart="12dp"
+                        android:paddingTop="10dp"
+                        android:paddingEnd="12dp"
+                        android:paddingBottom="10dp"
                         android:textSize="14sp" />
 
-                    <!-- 地址拆成两格：IP / 主机名 + 端口。粘整条网址也仍然能用。 -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
+                    <EditText
+                        android:id="@+id/etPort"
+                        android:layout_width="84dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
+                        android:layout_marginStart="8dp"
+                        android:autofillHints=""
+                        android:background="@drawable/bg_field"
+                        android:digits="0123456789"
+                        android:hint="@string/hint_port"
+                        android:importantForAutofill="no"
+                        android:inputType="number"
+                        android:maxLength="5"
+                        android:maxLines="1"
+                        android:minHeight="44dp"
+                        android:padding="10dp"
+                        android:text="59123"
+                        android:textSize="14sp" />
 
-                        <EditText
-                            android:id="@+id/etHost"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:autofillHints=""
-                            android:background="@drawable/bg_field"
-                            android:hint="@string/hint_host"
-                            android:importantForAutofill="no"
-                            android:inputType="textUri"
-                            android:maxLines="1"
-                            android:minHeight="40dp"
-                            android:padding="10dp"
-                            android:textSize="14sp" />
+                    <ImageButton
+                        android:id="@+id/btnScan"
+                        android:layout_width="44dp"
+                        android:layout_height="44dp"
+                        android:layout_marginStart="2dp"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="@string/btn_scan"
+                        android:padding="10dp"
+                        android:src="@drawable/ic_scan"
+                        android:tint="?attr/colorControlNormal"
+                        android:tooltipText="@string/btn_scan" />
+                </LinearLayout>
 
-                        <EditText
-                            android:id="@+id/etPort"
-                            android:layout_width="82dp"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="6dp"
-                            android:autofillHints=""
-                            android:background="@drawable/bg_field"
-                            android:digits="0123456789"
-                            android:hint="@string/hint_port"
-                            android:importantForAutofill="no"
-                            android:inputType="number"
-                            android:maxLength="5"
-                            android:maxLines="1"
-                            android:minHeight="40dp"
-                            android:padding="10dp"
-                            android:text="59123"
-                            android:textSize="14sp" />
-
-                        <ImageButton
-                            android:id="@+id/btnScan"
-                            android:layout_width="44dp"
-                            android:layout_height="44dp"
-                            android:layout_marginStart="2dp"
-                            android:background="?attr/selectableItemBackgroundBorderless"
-                            android:contentDescription="@string/btn_scan"
-                            android:padding="10dp"
-                            android:src="@drawable/ic_scan"
-                            android:tint="?attr/colorControlNormal"
-                            android:tooltipText="@string/btn_scan" />
-                    </LinearLayout>
+                <!-- 恢复动作：不再叠两个描边按钮，做成文字按钮 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:gravity="end"
+                    android:orientation="horizontal">
 
                     <Button
                         android:id="@+id/btnRediscover"
-                        style="@style/PvButton.Outlined"
-                        android:layout_width="match_parent"
-                        android:layout_marginTop="8dp"
+                        style="@style/PvButton.Text"
+                        android:layout_width="wrap_content"
                         android:text="@string/btn_rediscover" />
 
                     <Button
                         android:id="@+id/btnReconnect"
-                        style="@style/PvButton.Outlined"
-                        android:layout_width="match_parent"
-                        android:layout_marginTop="8dp"
+                        style="@style/PvButton.Text"
+                        android:layout_width="wrap_content"
+                        android:layout_marginStart="4dp"
                         android:text="@string/btn_reconnect" />
                 </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
+            </LinearLayout>
 
-            <!-- ============================ 音频 ============================ -->
-            <com.google.android.material.card.MaterialCardView
-                style="@style/PvCard"
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginStart="20dp"
+                android:layout_marginTop="6dp"
+                android:layout_marginEnd="20dp"
+                android:background="?attr/colorOutlineVariant" />
+
+            <!-- ======================= 麦克风 / 缓冲 ======================= -->
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp">
+                android:orientation="vertical"
+                android:paddingStart="20dp"
+                android:paddingTop="12dp"
+                android:paddingEnd="20dp">
 
-                <LinearLayout
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/tilMicSource"
+                    style="@style/Widget.Material3.TextInputLayout.FilledBox.ExposedDropdownMenu"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="12dp">
+                    android:hint="@string/mic_source_label"
+                    app:boxCornerRadiusBottomEnd="12dp"
+                    app:boxCornerRadiusBottomStart="12dp"
+                    app:boxCornerRadiusTopEnd="12dp"
+                    app:boxCornerRadiusTopStart="12dp">
 
-                    <TextView
-                        style="@style/PvCardTitle"
-                        android:text="@string/section_function" />
-
-                    <com.google.android.material.materialswitch.MaterialSwitch
-                        android:id="@+id/swMic"
+                    <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                        android:id="@+id/spMicSource"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:minHeight="40dp"
-                        android:text="@string/sw_mic"
-                        android:textSize="14sp" />
+                        android:inputType="none"
+                        android:minHeight="48dp" />
+                </com.google.android.material.textfield.TextInputLayout>
 
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:id="@+id/tilMicSource"
-                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:hint="@string/mic_source_label"
-                        app:boxCornerRadiusBottomEnd="14dp"
-                        app:boxCornerRadiusBottomStart="14dp"
-                        app:boxCornerRadiusTopEnd="14dp"
-                        app:boxCornerRadiusTopStart="14dp">
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:lineSpacingExtra="1dp"
+                    android:text="@string/mic_source_hint"
+                    android:textColor="?android:attr/textColorSecondary"
+                    android:textSize="11sp" />
 
-                        <com.google.android.material.textfield.MaterialAutoCompleteTextView
-                            android:id="@+id/spMicSource"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:inputType="none"
-                            android:minHeight="52dp" />
-                    </com.google.android.material.textfield.TextInputLayout>
+                <!-- 抖动缓冲：手动滑块；刻度点关掉（19 个点纯噪音，数值就写在上面） -->
+                <TextView
+                    android:id="@+id/tvRing"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="@string/ring_label"
+                    android:textColor="?android:attr/textColorSecondary"
+                    android:textSize="12sp" />
 
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="@string/mic_source_hint"
-                        android:textColor="?android:attr/textColorSecondary"
-                        android:textSize="11sp" />
+                <com.google.android.material.slider.Slider
+                    android:id="@+id/slRing"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:stepSize="10"
+                    android:value="50"
+                    android:valueFrom="10"
+                    android:valueTo="200"
+                    app:tickVisible="false" />
+            </LinearLayout>
 
-                    <com.google.android.material.materialswitch.MaterialSwitch
-                        android:id="@+id/swSpeaker"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:minHeight="40dp"
-                        android:text="@string/sw_speaker"
-                        android:textSize="14sp" />
-
-                    <!-- 抖动缓冲深度（**手动**滑块，10~200 ms、10 ms 步进）。
-                         默认 50 ms：先把底线留够，再谈压延迟。 -->
-                    <TextView
-                        android:id="@+id/tvRing"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:text="@string/ring_label"
-                        android:textColor="?android:attr/textColorSecondary"
-                        android:textSize="12sp" />
-
-                    <com.google.android.material.slider.Slider
-                        android:id="@+id/slRing"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:stepSize="10"
-                        android:value="50"
-                        android:valueFrom="10"
-                        android:valueTo="200" />
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- ============================ 诊断 ============================ -->
-            <com.google.android.material.card.MaterialCardView
-                style="@style/PvCard"
+            <!-- 页脚：一句话说明这软件是什么链路，不占操作区 -->
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp">
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="12dp">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal">
-
-                        <TextView
-                            style="@style/PvCardTitle"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:layout_marginBottom="0dp"
-                            android:text="@string/diag_title" />
-
-                        <Button
-                            android:id="@+id/btnHealth"
-                            style="@style/PvButton.Outlined"
-                            android:layout_width="wrap_content"
-                            android:text="@string/btn_health" />
-
-                        <Button
-                            android:id="@+id/btnCopyDiag"
-                            style="@style/PvButton.Outlined"
-                            android:layout_width="wrap_content"
-                            android:layout_marginStart="8dp"
-                            android:text="@string/btn_copy_diag" />
-                    </LinearLayout>
-
-                    <TextView
-                        android:id="@+id/tvDiagToggle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:background="?attr/selectableItemBackground"
-                        android:paddingTop="6dp"
-                        android:paddingBottom="6dp"
-                        android:text="@string/diag_expand"
-                        android:textColor="@color/pv_blue"
-                        android:textSize="12sp" />
-
-                    <LinearLayout
-                        android:id="@+id/llDiag"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:visibility="gone">
-
-                        <!-- 实时监控 · 网络 -->
-                        <TextView
-                            style="@style/PvCardTitle"
-                            android:layout_marginTop="4dp"
-                            android:text="@string/diag_net" />
-
-                        <TextView
-                            android:id="@+id/tvNet"
-                            style="@style/PvStatus" />
-
-                        <!-- 实时监控 · 音频：电平与缓冲水位 -->
-                        <TextView
-                            style="@style/PvCardTitle"
-                            android:layout_marginTop="12dp"
-                            android:text="@string/diag_audio" />
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="6dp"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal">
-
-                            <TextView
-                                android:layout_width="72dp"
-                                android:layout_height="wrap_content"
-                                android:text="@string/diag_level_up"
-                                android:textSize="11sp" />
-
-                            <com.google.android.material.progressindicator.LinearProgressIndicator
-                                android:id="@+id/pbUpLevel"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:max="100"
-                                app:indicatorColor="@color/pv_accent"
-                                app:trackColor="?attr/colorSurfaceVariant"
-                                app:trackCornerRadius="2dp"
-                                app:trackStopIndicatorSize="0dp"
-                                app:trackThickness="6dp" />
-
-                            <TextView
-                                android:id="@+id/tvUpLevel"
-                                android:layout_width="92dp"
-                                android:layout_height="wrap_content"
-                                android:fontFamily="monospace"
-                                android:gravity="end"
-                                android:textSize="11sp" />
-                        </LinearLayout>
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal">
-
-                            <TextView
-                                android:layout_width="72dp"
-                                android:layout_height="wrap_content"
-                                android:text="@string/diag_level_down"
-                                android:textSize="11sp" />
-
-                            <com.google.android.material.progressindicator.LinearProgressIndicator
-                                android:id="@+id/pbDownLevel"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:max="100"
-                                app:indicatorColor="@color/pv_accent"
-                                app:trackColor="?attr/colorSurfaceVariant"
-                                app:trackCornerRadius="2dp"
-                                app:trackStopIndicatorSize="0dp"
-                                app:trackThickness="6dp" />
-
-                            <TextView
-                                android:id="@+id/tvDownLevel"
-                                android:layout_width="92dp"
-                                android:layout_height="wrap_content"
-                                android:fontFamily="monospace"
-                                android:gravity="end"
-                                android:textSize="11sp" />
-                        </LinearLayout>
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal">
-
-                            <TextView
-                                android:layout_width="72dp"
-                                android:layout_height="wrap_content"
-                                android:text="@string/diag_buffer"
-                                android:textSize="11sp" />
-
-                            <com.google.android.material.progressindicator.LinearProgressIndicator
-                                android:id="@+id/pbBuffer"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:max="100"
-                                app:indicatorColor="@color/pv_accent"
-                                app:trackColor="?attr/colorSurfaceVariant"
-                                app:trackCornerRadius="2dp"
-                                app:trackStopIndicatorSize="0dp"
-                                app:trackThickness="6dp" />
-
-                            <TextView
-                                android:id="@+id/tvBuffer"
-                                android:layout_width="92dp"
-                                android:layout_height="wrap_content"
-                                android:fontFamily="monospace"
-                                android:gravity="end"
-                                android:textSize="11sp" />
-                        </LinearLayout>
-
-                        <TextView
-                            android:id="@+id/tvAudio"
-                            style="@style/PvStatus"
-                            android:layout_marginTop="6dp" />
-
-                        <!-- 连接与状态 -->
-                        <TextView
-                            style="@style/PvCardTitle"
-                            android:layout_marginTop="14dp"
-                            android:text="@string/diag_state" />
-
-                        <TextView
-                            android:id="@+id/tvStatus"
-                            style="@style/PvStatus"
-                            android:layout_marginTop="6dp" />
-
-                        <TextView
-                            android:id="@+id/tvHealth"
-                            style="@style/PvStatus"
-                            android:layout_marginTop="6dp"
-                            android:textSize="10sp" />
-
-                        <TextView
-                            android:id="@+id/tvErr"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="6dp"
-                            android:textColor="@color/pv_err"
-                            android:textSize="11sp"
-                            android:visibility="gone" />
-
-                        <!-- 日志：最近 200 行（复制诊断会带上它） -->
-                        <TextView
-                            style="@style/PvCardTitle"
-                            android:layout_marginTop="14dp"
-                            android:text="@string/diag_log" />
-
-                        <TextView
-                            android:id="@+id/tvLog"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:fontFamily="monospace"
-                            android:lineSpacingExtra="2dp"
-                            android:textColor="?android:attr/textColorSecondary"
-                            android:textSize="10sp" />
-                    </LinearLayout>
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:lineSpacingExtra="2dp"
+                android:text="@string/footer_hint"
+                android:textColor="?android:attr/textColorSecondary"
+                android:textSize="11sp" />
         </LinearLayout>
     </ScrollView>
 </LinearLayout>

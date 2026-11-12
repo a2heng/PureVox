@@ -19,8 +19,10 @@
 
 package com.purevox.mic.audio
 
+import android.content.Context
 import android.media.AudioFormat
 import com.purevox.mic.Proto
+import com.purevox.mic.R
 
 /**
  * Opus 的**协议常量与显示格式**。
@@ -48,17 +50,17 @@ object OpusSupport {
      * 只报在用的编解码器，不报「本机系统 codec 如何如何」——那是一段解释设计取舍的
      * 长文，放在状态栏只会占位置；真要查设计理由看 `cpp/pv_opus.cpp` 与 AGENTS.md 即可。
      */
-    fun describe(): String =
+    fun describe(context: Context): String =
         if (OpusNative.available) {
             OpusNative.version
         } else {
-            "不可用：${OpusNative.loadError}"
+            context.getString(R.string.err_opus_unavailable, OpusNative.loadError)
         }
 
     /** 人类可读的 PCM 格式名（状态栏用）。 */
-    fun pcmName(encoding: Int): String = when (encoding) {
+    fun pcmName(context: Context, encoding: Int): String = when (encoding) {
         AudioFormat.ENCODING_PCM_FLOAT -> "PCM_FLOAT"
         AudioFormat.ENCODING_PCM_16BIT -> "PCM_16BIT"
-        else -> "编码 $encoding"
+        else -> context.getString(R.string.err_encoding, encoding)
     }
 }

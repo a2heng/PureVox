@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!--
+  English resources. Key set must match `values/strings.xml` 1:1
+  (a missing key here is a missing translation: the app falls back to Chinese).
+-->
+<resources>
+    <string name="app_name" translatable="false">PureVox</string>
+
+    <!-- Header -->
+    <string name="subtitle">Remote mic · speaker</string>
+    <string name="hint_host">Computer IP / hostname</string>
+    <string name="hint_port">Port</string>
+    <string name="btn_scan">Scan the QR code on the computer</string>
+    <string name="scan_prompt">Point at the QR code on the desktop’s “Network” card</string>
+    <string name="msg_scan_failed">The QR code has no usable address: %1$s</string>
+    <string name="msg_scan_camera_denied">No camera permission, cannot scan (you can still type IP and port)</string>
+    <string name="msg_port_invalid">Port %1$s is invalid, reverted to the default 59123</string>
+    <string name="wordmark_tail" translatable="false">ureVox</string>
+    <string name="btn_settings">Settings</string>
+    <string name="sheet_title">Settings</string>
+    <string name="sheet_close">Close</string>
+    <string name="sw_connect">Connect to computer</string>
+    <string name="btn_health">Self-check GET /health</string>
+    <string name="btn_rediscover">Find computer</string>
+    <string name="btn_reconnect">Reconnect</string>
+    <string name="msg_discovering">Looking for computers on the LAN…</string>
+    <string name="msg_reuse_cached">Connecting to %1$s (last used address)…</string>
+    <string name="msg_found">Found %1$s (%2$s:%3$d), connecting…</string>
+    <string name="msg_lost">The service on %1$s has stopped</string>
+    <string name="msg_no_target">Enter the computer’s IP or hostname first (type it manually if discovery fails)</string>
+    <string name="msg_proto_mismatch">Desktop protocol version %2$d does not match this client’s %1$d — please update the client</string>
+
+    <!-- Card titles -->
+    <string name="section_keepalive">Background keep-alive</string>
+    <string name="section_update">Update</string>
+    <string name="section_language">Language</string>
+    <string name="section_target">Target</string>
+    <string name="hero_target_auto">Looking for the computer…</string>
+    <string name="footer_hint">Direct LAN · audio never leaves your network</string>
+
+    <!-- Language (settings sheet): follow system / Chinese / English -->
+    <string name="lang_system">Follow system</string>
+    <string name="lang_zh">中文</string>
+    <string name="lang_en">English</string>
+
+    <!-- Diagnostics (in the settings sheet, collapsed by default) -->
+    <string name="diag_title">Diagnostics</string>
+
+    <!-- Live monitors (mirrors MainActivity.updateStatus) -->
+    <string name="diag_net">Network</string>
+    <string name="diag_audio">Audio</string>
+    <string name="diag_state">Connection &amp; state</string>
+    <string name="diag_log">Log</string>
+    <string name="diag_jitter">Jitter</string>
+    <string name="diag_quality">Quality</string>
+    <string name="diag_level_up">Uplink level</string>
+    <string name="diag_level_down">Downlink level</string>
+    <string name="diag_buffer">Downlink buffer</string>
+    <string name="diag_chain">Chain</string>
+    <string name="btn_copy_diag">Copy diagnostics</string>
+    <string name="diag_copied">Diagnostics copied to clipboard</string>
+
+    <!-- State rows (fixed row count, mirrors MainActivity.updateStatus) -->
+    <string name="status_conn">State</string>
+    <string name="status_host">Computer</string>
+    <string name="status_rtt">RTT</string>
+    <string name="status_up">Uplink</string>
+    <string name="status_down">Downlink</string>
+    <string name="status_play">Playback</string>
+    <string name="diag_latency">Latency</string>
+    <string name="status_opus">Opus</string>
+    <string name="status_health">Self-check </string>
+
+    <!-- Connection state (connState) -->
+    <string name="state_connecting">Connecting…</string>
+    <string name="state_disconnected">Disconnected</string>
+    <string name="state_connected_wait_ready">Connected (waiting for ready)</string>
+    <string name="state_ready">Ready</string>
+    <string name="msg_server">Desktop: %1$s</string>
+    <string name="err_proto">Protocol mismatch: desktop %1$d, phone %2$d</string>
+    <string name="err_codec">Desktop audio codec is %1$s, the phone only supports %2$s</string>
+    <string name="err_rate">Desktop audio is %1$d Hz; the phone opens playback at %2$d Hz</string>
+    <string name="err_downlink_start">Failed to start downlink playback</string>
+    <string name="err_battery_settings">Cannot open battery-optimization settings: %1$s</string>
+    <string name="err_unknown">unknown error</string>
+    <string name="err_apk_missing">The downloaded package no longer exists</string>
+    <string name="clip_diag_label">PureVox diagnostics</string>
+
+    <!-- Self-check (GET /health) -->
+    <string name="health_none">Not checked</string>
+    <string name="health_checking">Checking…</string>
+    <string name="health_unavailable">Unavailable · %1$s</string>
+
+    <!-- Diagnostics rows (dynamic lines in updateStatus) -->
+    <string name="diag_no_pong">No pong yet (1 per second)</string>
+    <string name="diag_rtt_row">last %1$s · avg %2$s · max %3$s (%4$d samples)</string>
+    <string name="diag_off">off</string>
+    <string name="diag_both_off">uplink and downlink are both off</string>
+    <string name="diag_enc_capture">encode %1$s · capture %2$s</string>
+    <string name="diag_no_uplink">no uplink</string>
+    <string name="diag_decode">decode %1$s</string>
+    <string name="diag_no_sub">not subscribed</string>
+    <string name="diag_up_counts">%1$d packets out · %2$d samples dropped</string>
+    <string name="diag_play_row">underruns %1$d (%2$s/s) · dropped %3$d (%4$s/s) · concealed %5$d (%6$s/s) · device underruns %7$d</string>
+    <string name="diag_latency_row">ring %1$d/%2$d ms · one-way %3$s · device %4$d ms · clock %5$s</string>
+    <string name="diag_measuring">measuring</string>
+    <string name="diag_sampling">sampling</string>
+    <string name="rate_not_connected">not connected</string>
+    <string name="rate_sampling">sampling…</string>
+    <string name="rate_row">%1$s pkt/s · %2$s kbps · %3$d total</string>
+    <string name="level_silent">silent</string>
+    <string name="list_sep">, </string>
+
+    <!-- Network / audio verdicts (RtStats) -->
+    <string name="verdict_not_connected">not connected</string>
+    <string name="verdict_not_connected_detail">RTT appears once connected (1/s)</string>
+    <string name="verdict_sampling">sampling…</string>
+    <string name="verdict_rtt_samples">RTT samples %1$d/%2$d</string>
+    <string name="verdict_latency">latency %1$s ms</string>
+    <string name="verdict_jitter">jitter %1$s ms</string>
+    <string name="verdict_good">good</string>
+    <string name="verdict_fair">fair</string>
+    <string name="verdict_weak">weak</string>
+    <string name="verdict_poor">poor</string>
+    <string name="verdict_net_ok">low latency, low jitter</string>
+    <string name="verdict_audio_off_detail">not subscribed to desktop audio</string>
+    <string name="verdict_no_rate_sample">no rate sample yet</string>
+    <string name="verdict_underrun">underruns %1$s/s</string>
+    <string name="verdict_concealed">concealed %1$s/s</string>
+    <string name="verdict_dropped">dropped %1$s/s</string>
+    <string name="verdict_normal">normal</string>
+    <string name="verdict_normal_detail">no underruns, no dropped packets</string>
+    <string name="verdict_occasional">occasional dropouts</string>
+    <string name="verdict_broken">stalling / dropping</string>
+
+    <!-- Network errors / discovery / self-check -->
+    <string name="err_nsd_unavailable">This system’s NSD service is unavailable; enter the address manually</string>
+    <string name="err_discovery_start">Discovery failed to start: %1$s</string>
+    <string name="err_discovery_start_code">Discovery failed to start (%1$d); enter the address manually</string>
+    <string name="err_ws_refused">Cannot reach %1$s:%2$d — check that the desktop network service is running (port %3$d), that the phone and computer are on the same LAN, and that the firewall allows the port</string>
+    <string name="err_net_generic">Network error (%1$s)</string>
+    <string name="err_net_detail">Network error: %1$s</string>
+    <string name="err_ws_closed">The desktop closed the connection (code=%1$d)</string>
+    <string name="err_health_failed">GET /health failed: %1$s</string>
+    <string name="err_health_exception">Self-check failed: %1$s</string>
+
+    <!-- Capture / playback / codec errors -->
+    <string name="err_mic_permission">Microphone permission is not granted, cannot stream uplink (allow “Microphone” for PureVox in system settings)</string>
+    <string name="err_opus_encoder">Opus encoder unavailable</string>
+    <string name="err_opus_decoder">Opus decoder unavailable</string>
+    <string name="err_record_unsupported">This device’s AudioRecord does not support %1$d Hz mono capture (API=%2$s) — %3$s</string>
+    <string name="err_mic_start">Microphone failed to start: %1$s</string>
+    <string name="err_mic_state">Microphone failed to start: AudioRecord state = %1$d</string>
+    <string name="err_mic_read">Microphone read interrupted: AudioRecord.read = %1$d</string>
+    <string name="err_decode">Decode error: %1$s</string>
+    <string name="err_audio_track_create">AudioTrack creation failed: %1$s</string>
+    <string name="err_audio_track_play">AudioTrack.play failed: %1$s</string>
+    <string name="err_audio_track_write">AudioTrack.write error: %1$s</string>
+    <string name="err_audio_track_write_ret">AudioTrack.write returned %1$d (output device unavailable)</string>
+    <string name="err_opus_unavailable">Unavailable: %1$s</string>
+    <string name="err_encoding">encoding %1$d</string>
+    <string name="err_service_start">Foreground service refused: %1$s</string>
+    <string name="err_start_foreground">startForeground failed: %1$s</string>
+
+    <!-- Update (network / parse errors) -->
+    <string name="err_update_empty_response">empty response</string>
+    <string name="err_update_parse">parse failed: %1$s</string>
+    <string name="err_update_no_release">no Android release yet (or no usable APK asset)</string>
+    <string name="err_download_dir">Cannot create download directory %1$s</string>
+
+    <!-- Jitter buffer slider (manual, 10–200 ms) -->
+    <string name="ring_label">Jitter buffer %1$d frames (%2$d ms)</string>
+
+    <!-- Feature switches -->
+    <string name="sw_mic">Phone microphone → computer</string>
+    <string name="sw_speaker">Computer audio → phone speaker</string>
+    <string name="mic_source_label">Microphone API</string>
+    <string name="mic_source_hint">Hidden / system-only APIs usually lack permission and fall back to MIC.</string>
+    <string name="mic_src_mic">MIC (default, most common)</string>
+    <string name="mic_src_voice_recognition">VOICE_RECOGNITION (speech recognition)</string>
+    <string name="mic_src_voice_communication">VOICE_COMMUNICATION (call / noise suppression)</string>
+    <string name="mic_src_camcorder">CAMCORDER (video recording)</string>
+    <string name="mic_src_unprocessed">UNPROCESSED (raw, API 24+)</string>
+    <string name="mic_src_voice_performance">VOICE_PERFORMANCE (low latency, API 29+)</string>
+    <string name="mic_src_default">DEFAULT (system default)</string>
+    <string name="mic_src_voice_call">VOICE_CALL (call, needs system permission)</string>
+    <string name="mic_src_voice_uplink">VOICE_UPLINK (uplink, needs system permission)</string>
+    <string name="mic_src_voice_downlink">VOICE_DOWNLINK (downlink, needs system permission)</string>
+    <string name="mic_src_remote_submix">REMOTE_SUBMIX (internal capture, needs system permission)</string>
+    <string name="mic_src_hotword">HOTWORD (hotword, hidden API)</string>
+    <string name="mic_src_echo_reference">ECHO_REFERENCE (echo reference, hidden API)</string>
+    <string name="mic_src_fm_tuner">FM_TUNER (FM, hidden API)</string>
+    <string name="mic_src_voice_signalling">VOICE_COMMUNICATION_SIGNALLING (hidden API)</string>
+    <string name="mic_source_fallback">The selected microphone API is unavailable, fell back to MIC: %1$s</string>
+
+    <!-- Text input -->
+    <string name="msg_not_connected">Not connected</string>
+
+    <!-- Background keep-alive -->
+    <string name="section_about">About</string>
+    <string name="about_version">PureVox %1$s (versionCode %2$s)</string>
+    <string name="about_license">Source code is GPL-3.0-or-later; the built-in AI models are not GPL-licensed and are only used with PureVox under authorization (see MODEL-LICENSE.md).</string>
+    <string name="keepalive_desc">A persistent notification keeps the process alive; ignoring battery optimization prevents freezing when the screen is off.</string>
+    <string name="btn_battery_settings">Battery settings</string>
+    <string name="battery_ignored">Battery: ignored ✓</string>
+    <string name="battery_not_ignored">Battery: not ignored</string>
+    <string name="keepalive_notif_on">Notification: shown ✓</string>
+    <string name="keepalive_notif_off">Persistent notification: not shown</string>
+    <string name="keepalive_notif_failed">Persistent notification: failed (%1$s) — retried automatically when the app returns to foreground</string>
+
+    <!-- Notification permission (Android 13+ must allow it) -->
+    <string name="notif_perm_unknown">Notification permission: unknown</string>
+    <string name="notif_perm_on">Notification permission: granted ✓</string>
+    <string name="notif_perm_off">Notifications: not allowed</string>
+    <string name="notif_perm_channel_off">Notifications: channel off</string>
+    <string name="btn_notif_settings">Notification settings</string>
+
+    <!-- Foreground service notification -->
+    <string name="notif_channel_name">Microphone streaming</string>
+    <string name="notif_channel_desc">Keep the microphone available in the background</string>
+    <string name="notif_starting">Starting microphone…</string>
+    <string name="notif_default">Streaming</string>
+    <string name="notif_connected">Connected to computer</string>
+    <string name="notif_idle">Waiting for connection</string>
+    <string name="notif_action_mic_on">Mic on</string>
+    <string name="notif_action_mic_off">Mic off</string>
+    <string name="notif_action_spk_on">Speaker on</string>
+    <string name="notif_action_spk_off">Speaker off</string>
+    <string name="notif_action_reconnect">Reconnect</string>
+
+    <!-- Update -->
+    <string name="btn_check_update">Check for updates</string>
+    <string name="btn_download">Download</string>
+    <string name="btn_install">Install</string>
+    <string name="update_installed">Installed: %1$s (%2$s)</string>
+    <string name="update_checking">Checking for updates…</string>
+    <string name="update_uptodate">Already up to date</string>
+    <string name="update_dev_build">Development build (no version timestamp); cannot compare versions</string>
+    <string name="update_available">New version available: %1$s</string>
+    <string name="update_downloading">Downloading… %1$d%%</string>
+    <string name="update_downloaded">Downloaded — tap “Install”</string>
+    <string name="update_failed">Update check failed: %1$s</string>
+    <string name="update_install_denied">Allow “install unknown apps” for PureVox in system settings first</string>
+    <string name="update_install_started">System installer launched</string>
+</resources>

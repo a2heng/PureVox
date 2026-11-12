@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!--
+  设置卡片入场：0.94 → 1 的**轻微放大** + 淡入（不是从屏幕底部推上来）。
+  位移为 0，所以观感是「浮现」而不是「弹出」。
+-->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="220"
+    android:fillAfter="true"
+    android:interpolator="@android:interpolator/decelerate_cubic">
+    <scale
+        android:fromXScale="0.94"
+        android:fromYScale="0.94"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:toXScale="1.0"
+        android:toYScale="1.0" />
+    <alpha
+        android:fromAlpha="0.0"
+        android:toAlpha="1.0" />
+</set>

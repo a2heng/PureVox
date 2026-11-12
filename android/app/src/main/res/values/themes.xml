@@ -18,7 +18,6 @@
   SPDX-License-Identifier: GPL-3.0-or-later
 -->
 <resources>
-    <!-- 日夜跟随系统（DayNight），亮/暗自动切换。 -->
     <!-- 扫码页：全屏黑底（相机预览铺满），状态栏 / 导航栏透明 -->
     <style name="Theme.PureVox.Scan" parent="Theme.PureVox">
         <item name="android:windowFullscreen">true</item>
@@ -28,16 +27,54 @@
         <item name="android:windowLightStatusBar">false</item>
     </style>
 
+    <!--
+      主主题：**edge-to-edge**。状态栏透明、内容画到状态栏后面（头图的品牌渐变延伸上去），
+      所以状态栏图标固定为浅色；导航栏图标由代码按日夜切换（`MainActivity.applyEdgeToEdge`）。
+    -->
     <style name="Theme.PureVox" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/pv_blue</item>
         <item name="colorOnPrimary">@color/pv_on_blue</item>
         <!-- 中性灰白三档（底 / 卡片 / 描边）：层次靠明度差，不靠阴影叠卡片 -->
         <item name="android:colorBackground">@color/pv_bg</item>
         <item name="colorSurface">@color/pv_surface</item>
+        <item name="colorSurfaceVariant">@color/pv_surface_alt</item>
         <item name="colorOutlineVariant">@color/pv_outline</item>
-        <!-- 状态栏与顶栏同色，窗口看起来是一整块，不是「系统条 + 应用」两截 -->
-        <item name="android:statusBarColor">@color/pv_header</item>
+        <!-- edge-to-edge：两条系统栏都透明，背景由头图 / 页面自己铺 -->
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
+        <item name="android:enforceStatusBarContrast">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <!-- 输入法弹出时自己用 insets 让内容让位（见 MainActivity） -->
+        <item name="android:windowSoftInputMode">adjustResize</item>
+    </style>
+
+    <!--
+      设置弹窗：**居中浮现的卡片**，不是从底下滑上来的底部弹层。
+      窗口背景透明（卡片自己画圆角和描边），遮罩由 dimAmount 提供；
+      进出动画见 `PvDialogAnimation`（缩放 + 淡入，不动位移）。
+    -->
+    <style name="Theme.PureVox.Dialog" parent="Theme.PureVox">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowCloseOnTouchOutside">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.48</item>
+        <item name="android:windowAnimationStyle">@style/PvDialogAnimation</item>
+        <item name="android:windowMinWidthMajor">0%</item>
+        <item name="android:windowMinWidthMinor">0%</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+
+    <!--
+      弹窗动画：0.94 → 1 + 淡入，退场反过来。
+      用 scale + alpha 而不是 translate（底弹层的「推上来」观感正是这次要避免的）。
+    -->
+    <style name="PvDialogAnimation">
+        <item name="android:windowEnterAnimation">@anim/pv_dialog_in</item>
+        <item name="android:windowExitAnimation">@anim/pv_dialog_out</item>
     </style>
 
     <!--
@@ -48,19 +85,32 @@
     -->
     <style name="PvButton" parent="Widget.Material3.Button">
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:minHeight">40dp</item>
+        <item name="android:minHeight">42dp</item>
         <item name="android:insetTop">0dp</item>
         <item name="android:insetBottom">0dp</item>
         <item name="android:minWidth">0dp</item>
         <item name="android:textSize">13sp</item>
         <item name="android:textAllCaps">false</item>
         <item name="android:letterSpacing">0.02</item>
-        <item name="cornerRadius">12dp</item>
+        <item name="cornerRadius">13dp</item>
     </style>
 
     <!-- 次操作：可见边框（父样式不同，尺寸那几项与 PvButton 逐条一致） -->
     <style name="PvButton.Outlined" parent="Widget.Material3.Button.OutlinedButton">
         <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">42dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0.02</item>
+        <item name="cornerRadius">13dp</item>
+    </style>
+
+    <!-- 文字按钮：恢复类操作（发现 / 重连）用它，不再叠一层描边容器 -->
+    <style name="PvButton.Text" parent="Widget.Material3.Button.TextButton">
+        <item name="android:layout_height">wrap_content</item>
         <item name="android:minHeight">40dp</item>
         <item name="android:insetTop">0dp</item>
         <item name="android:insetBottom">0dp</item>
@@ -68,16 +118,33 @@
         <item name="android:textSize">13sp</item>
         <item name="android:textAllCaps">false</item>
         <item name="android:letterSpacing">0.02</item>
+        <item name="android:paddingStart">12dp</item>
+        <item name="android:paddingEnd">12dp</item>
+    </style>
+
+    <!-- 语言分段选择：三个等宽小按钮，选中态用容器色区分（不是 checkbox 那种勾） -->
+    <style name="PvButton.Segment" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">40dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0.01</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
         <item name="cornerRadius">12dp</item>
     </style>
 
-    <!-- 卡片：圆角 14、无阴影、细描边；日夜都跟主题走（不用写死颜色）。 -->
+    <!-- 卡片：圆角 20、无阴影、细描边；日夜都跟主题走（不用写死颜色）。 -->
     <style name="PvCard" parent="Widget.Material3.CardView.Outlined">
         <item name="android:layout_width">match_parent</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:layout_marginTop">10dp</item>
-        <item name="cardCornerRadius">14dp</item>
+        <item name="android:layout_marginTop">12dp</item>
+        <item name="cardCornerRadius">20dp</item>
         <item name="cardElevation">0dp</item>
+        <item name="cardPreventCornerOverlap">true</item>
         <item name="strokeWidth">1dp</item>
         <item name="strokeColor">?attr/colorOutlineVariant</item>
         <item name="cardBackgroundColor">?attr/colorSurface</item>
@@ -94,20 +161,31 @@
     </style>
 
     <!--
-      卡片标题：**小一号、次要色**。以前是品牌色 + 加粗 + 13 sp，卡片一多满屏都是「标题」，
-      看着热但没信息量 —— 标题只是分隔用的标签，让它退到背景里去。
+      卡片标题：**小一号、次要色 + 一个品牌色短竖条**。以前是品牌色 + 加粗 + 13 sp，
+      卡片一多满屏都是「标题」，看着热但没信息量 —— 标题只是分隔用的标签，
+      让它退到背景里去，只留一小段色条做视觉锚点。
     -->
     <style name="PvCardTitle">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:layout_marginBottom">4dp</item>
+        <item name="android:layout_marginBottom">6dp</item>
+        <item name="android:drawableStart">@drawable/ic_section_bar</item>
+        <item name="android:drawablePadding">7dp</item>
         <item name="android:textSize">11sp</item>
         <item name="android:textStyle">bold</item>
-        <item name="android:letterSpacing">0.08</item>
+        <item name="android:letterSpacing">0.1</item>
         <item name="android:textColor">?android:attr/textColorSecondary</item>
     </style>
 
-    <!-- 状态读数底板 -->
+    <!-- 设置项开关：行高统一，卡片里一条一条排开（48dp 是列表行的触控下限） -->
+    <style name="PvSwitch" parent="Widget.Material3.CompoundButton.MaterialSwitch">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textColor">?android:attr/textColorPrimary</item>
+    </style>
+
     <style name="PvStatus">
         <item name="android:layout_width">match_parent</item>
         <item name="android:layout_height">wrap_content</item>

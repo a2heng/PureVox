@@ -19,6 +19,8 @@
 
 package com.purevox.mic.diag
 
+import android.content.Context
+import com.purevox.mic.R
 import kotlin.math.abs
 import kotlin.math.log10
 
@@ -34,10 +36,10 @@ import kotlin.math.log10
  * [audioVerdict] 只看音频有没有真的在流动（欠载 / 解码掩盖 / 丢包）。
  * 「声音断了」可能是网络、也可能是电脑端没喂上数据，混成一个数字就再也分不出来。
  *
- * 诊断文本直接写在 Kotlin 里（Android 侧本来就没有桌面那份 `ui/i18n.js` 字典，
- * 现有状态串也是这么写的）；它属于调试输出，不进用户可见文案的翻译范围。
+ * 结论标签与依据是**用户可见文案**（诊断面板里的一行），所以走字符串资源，
+ * 跟着界面语言变 —— 中文即默认资源，英文在 `values-en/`。
  */
-class RtStats {
+class RtStats(private val context: Context) {
 
     companion object {
         /** RTT 统计窗口：1 Hz 探针 → 20 s。 */
@@ -161,9 +163,19 @@ class RtStats {
      * [connected] = false 时报「未连接」而不是拿空样本硬算出「优」——没连上就没有网络质量可言。
      */
     fun netVerdict(net: Net, connected: Boolean): Verdict {
-        if (!connected) return Verdict(0, "未连接", "连上电脑后每 1 s 出一次 RTT")
+        if (!connected) {
+            return Verdict(
+                0,
+                context.getString(R.string.verdict_not_connected),
+                context.getString(R.string.verdict_not_connected_detail),
+            )
+        }
         if (net.rttSamples < VERDICT_MIN_SAMPLES) {
-            return Verdict(0, "采样中…", "RTT 样本 ${net.rttSamples}/$VERDICT_MIN_SAMPLES")
+            return Verdict(
+                0,
+                context.getString(R.string.verdict_sampling),
+                context.getString(R.string.verdict_rtt_samples, net.rttSamples, VERDICT_MIN_SAMPLES),
+            )
         }
         val reasons = ArrayList<String>(2)
         var level = when {
@@ -172,7 +184,7 @@ class RtStats {
             net.rttAvg < 300 -> 2
             else -> 3
         }
-        if (level > 0) reasons += "延迟 ${fmt(net.rttAvg)} ms"
+        if (level > 0) reasons += context.getString(R.string.verdict_latency, fmt(net.rttAvg))
 
         val jl = when {
             net.jitter < 15 -> 0
@@ -181,16 +193,26 @@ class RtStats {
             else -> 3
         }
         if (jl > 0) {
-            reasons += "抖动 ${fmt(net.jitter)} ms"
+            reasons += context.getString(R.string.verdict_jitter, fmt(net.jitter))
             if (jl > level) level = jl
         }
-        val label = when (level) {
-            0 -> "优"
-            1 -> "良"
-            2 -> "弱"
-            else -> "差"
-        }
-        return Verdict(level, label, if (reasons.isEmpty()) "延迟低、抖动小" else reasons.joinToString("、"))
+        val label = context.getString(
+            when (level) {
+                0 -> R.string.verdict_good
+                1 -> R.string.verdict_fair
+                2 -> R.string.verdict_weak
+                else -> R.string.verdict_poor
+            },
+        )
+        return Verdict(
+            level,
+            label,
+            if (reasons.isEmpty()) {
+                context.getString(R.string.verdict_net_ok)
+            } else {
+                reasons.joinToString(context.getString(R.string.list_sep))
+            },
+        )
     }
 
     /**
@@ -200,18 +222,37 @@ class RtStats {
      * 没订阅电脑音频时它们恒为 0，直接算出来就会谎报「正常」。
      */
     fun audioVerdict(net: Net, subscribed: Boolean): Verdict {
-        if (!subscribed) return Verdict(0, "未开启", "未订阅电脑音频")
-        if (!net.hasRate) return Verdict(0, "采样中…", "还没到第一次速率采样")
+        if (!subscribed) {
+            return Verdict(
+                0,
+                context.getString(R.string.diag_off),
+                context.getString(R.string.verdict_audio_off_detail),
+            )
+        }
+        if (!net.hasRate) {
+            return Verdict(
+                0,
+                context.getString(R.string.verdict_sampling),
+                context.getString(R.string.verdict_no_rate_sample),
+            )
+        }
         val bad = net.underrunPps + net.concealedPps + net.droppedPps
         val detail = buildString {
-            append("欠载 ${fmt(net.underrunPps)}/s")
-            append(" · 掩盖 ${fmt(net.concealedPps)}/s")
-            append(" · 丢包 ${fmt(net.droppedPps)}/s")
+            append(context.getString(R.string.verdict_underrun, fmt(net.underrunPps)))
+            append(" · ")
+            append(context.getString(R.string.verdict_concealed, fmt(net.concealedPps)))
+            append(" · ")
+            append(context.getString(R.string.verdict_dropped, fmt(net.droppedPps)))
         }
         return when {
-            bad <= 0.0 -> Verdict(0, "正常", "无欠载、无丢包")
-            bad < 1.0 -> Verdict(1, "偶发丢帧", detail)
-            else -> Verdict(2, "断流/丢包", detail)
+            bad <= 0.0 -> Verdict(
+                0,
+                context.getString(R.string.verdict_normal),
+                context.getString(R.string.verdict_normal_detail),
+            )
+
+            bad < 1.0 -> Verdict(1, context.getString(R.string.verdict_occasional), detail)
+            else -> Verdict(2, context.getString(R.string.verdict_broken), detail)
         }
     }
 
