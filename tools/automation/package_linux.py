@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 import shutil
 import subprocess
@@ -39,7 +40,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src-tauri"
 DIST = ROOT / "dist"
 MODELS = ROOT / "models"
-ICON = SRC / "icons" / "128x128.png"
+# 与旧 Tauri 版一致：deb / AppImage 用 256 px 图标（桌面环境更常见）
+ICON = SRC / "icons" / "256x256.png"
+if not ICON.is_file():
+    ICON = SRC / "icons" / "128x128.png"
 BIN = SRC / "target" / "release" / "purevox"
 
 
@@ -59,6 +63,43 @@ def build() -> None:
     )
 
 
+DESKTOP_ENTRY = """[Desktop Entry]
+Type=Application
+Name=PureVox
+Name[zh_CN]=PureVox
+GenericName=AI Mic Noise Reduction
+GenericName[zh_CN]=AI 麦克风降噪
+Comment=Real-time AI microphone noise reduction
+Comment[zh_CN]=实时 AI 麦克风降噪
+Exec=purevox
+Icon=purevox
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+Keywords=mic;noise;denoise;audio;PureVox;
+StartupNotify=false
+"""
+
+
+def bundle_opus(dest: Path) -> None:
+    """把系统 libopus 带进 AppImage（旧 Tauri 版同款做法）。
+
+    网络音频在 Linux 上 `dlopen("libopus.so.1")`；宿主机没装 libopus0 时不该
+    静默丢掉网络音频。AppRun 会把 `usr/lib/purevox` 加进 LD_LIBRARY_PATH。
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for pattern in (
+        "/usr/lib/x86_64-linux-gnu/libopus.so*",
+        "/usr/lib64/libopus.so*",
+        "/usr/lib/libopus.so*",
+    ):
+        for so in glob.glob(pattern):
+            shutil.copy2(so, dest / Path(so).name)
+            copied += 1
+    if copied == 0:
+        print("  警告：没找到 libopus.so；AppImage 里的网络音频将依赖宿主机 libopus0")
+
+
 def stage(dest: Path) -> Path:
     """把运行所需文件塞进 dest/（目录布局同时给 tar.gz 和 deb 用）。"""
     if dest.exists():
@@ -75,18 +116,7 @@ def stage(dest: Path) -> Path:
             shutil.copy2(src, dest / name)
     if ICON.is_file():
         shutil.copy2(ICON, dest / "purevox.png")
-    (dest / "purevox.desktop").write_text(
-        """[Desktop Entry]
-Name=PureVox
-Comment=AI microphone noise reduction and mixer
-Exec=purevox
-Icon=purevox
-Terminal=false
-Type=Application
-Categories=AudioVideo;Audio;
-""",
-        encoding="utf-8",
-    )
+    (dest / "purevox.desktop").write_text(DESKTOP_ENTRY, encoding="utf-8")
     return dest
 
 
@@ -109,14 +139,14 @@ def make_deb(ver: str, staged: Path) -> Path | None:
         (root / "usr" / "bin").mkdir(parents=True)
         (root / "usr" / "lib" / "purevox").mkdir(parents=True)
         (root / "usr" / "share" / "applications").mkdir(parents=True)
-        (root / "usr" / "share" / "icons" / "hicolor" / "128x128" / "apps").mkdir(parents=True)
+        (root / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps").mkdir(parents=True)
         shutil.copy2(staged / "purevox", root / "usr" / "bin" / "purevox.bin")
         (root / "usr" / "bin" / "purevox.bin").chmod(0o755)
         shutil.copytree(staged / "models", root / "usr" / "lib" / "purevox" / "models")
         if (staged / "purevox.png").is_file():
             shutil.copy2(
                 staged / "purevox.png",
-                root / "usr" / "share" / "icons" / "hicolor" / "128x128" / "apps" / "purevox.png",
+                root / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps" / "purevox.png",
             )
         shutil.copy2(staged / "purevox.desktop", root / "usr" / "share" / "applications" / "purevox.desktop")
         # 运行时按 exe 同级找 models/；deb 的二进制在 /usr/bin，模型在 /usr/lib/purevox，
@@ -164,7 +194,7 @@ def make_appimage(ver: str, staged: Path, tool: Path | None) -> Path | None:
     try:
         (appdir / "usr" / "bin").mkdir(parents=True)
         (appdir / "usr" / "share" / "applications").mkdir(parents=True)
-        (appdir / "usr" / "share" / "icons" / "hicolor" / "128x128" / "apps").mkdir(
+        (appdir / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps").mkdir(
             parents=True
         )
         shutil.copy2(staged / "purevox", appdir / "usr" / "bin" / "purevox")
@@ -173,7 +203,7 @@ def make_appimage(ver: str, staged: Path, tool: Path | None) -> Path | None:
         shutil.copy2(staged / "purevox.png", appdir / "purevox.png")
         shutil.copy2(
             staged / "purevox.png",
-            appdir / "usr" / "share" / "icons" / "hicolor" / "128x128" / "apps" / "purevox.png",
+            appdir / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps" / "purevox.png",
         )
         shutil.copy2(staged / "purevox.desktop", appdir / "purevox.desktop")
         shutil.copy2(

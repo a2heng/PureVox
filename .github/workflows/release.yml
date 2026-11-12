@@ -131,7 +131,7 @@ jobs:
       - name: Fetch appimagetool
         shell: bash
         run: |
-          curl -fsSL -o /tmp/appimagetool             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          curl -fsSL -o /tmp/appimagetool             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x /tmp/appimagetool
 
       - name: Build Linux packages
