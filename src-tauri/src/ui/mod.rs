@@ -224,6 +224,8 @@ pub struct Workspace {
   pending_cue: Option<&'static str>,
   /// 正在等待用户按下新的热键组合（录制中时根节点拦截按键）
   recording: Option<RecordTarget>,
+  /// TSE 参考录音已经处理过的最新代号：完成后只重建一次，不让每拍都重载
+  tse_ref_seen: u64,
   /// 上一拍引擎运行状态：托盘/全局热键启停发生在界面之外，靠它触发重绘
   was_running: bool,
   /// 上次把窗口几何写进 settings 的时刻（拖动时节流，关闭时无条件写）
@@ -314,6 +316,7 @@ impl Workspace {
       hotkeys: None,
       pending_cue: None,
       recording: None,
+      tse_ref_seen: 0,
       was_running,
       last_geom_save: Instant::now(),
       eq_geom: Rc::new(Cell::new(EqGeom::default())),
@@ -534,6 +537,25 @@ impl Workspace {
     if let Some(pm) = pick {
       self.finish_media_pick(pm, cx);
       dirty = true;
+    }
+    // TSE 参考写完：重建会话，让运行中的 TSE Stage 重新加载新参考。
+    // 同一代只处理一次；录音失败也在这里落一次界面提示。
+    let rec = self.audio.recorder_status();
+    if rec.token != 0 && rec.token != self.tse_ref_seen {
+      match rec.phase {
+        crate::recorder::RecorderPhase::Done => {
+          self.tse_ref_seen = rec.token;
+          self.status = "TSE 参考已更新，正在重新加载".into();
+          self.apply_structure(cx);
+          dirty = true;
+        }
+        crate::recorder::RecorderPhase::Failed => {
+          self.tse_ref_seen = rec.token;
+          self.status = "录制 TSE 参考失败（详见调试面板）".into();
+          dirty = true;
+        }
+        _ => {}
+      }
     }
     // 上一个重建跑完后，应用排队里的**最后一份**计划（连点模型/结构参数不排长队）。
     if self.job.is_none()

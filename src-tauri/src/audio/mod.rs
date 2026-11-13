@@ -285,19 +285,20 @@ impl AudioManager {
     self.hub.set_engine_stopped();
   }
 
-  /// 录制 TSE 参考（降噪后、原样，48 kHz 单声道；时长见 [`crate::recorder::REF_RECORD_SECONDS`]，
-  /// TSE 注册 1001 帧 = 10 s）；返回目标文件路径。
+  /// 录制 TSE 参考（进入 TSE 节点、经过节点输入增益、TSE 处理之前；48 kHz 单声道）。
+  /// `node` = 从哪张 TSE 卡片发起；只录那个节点的输入，不允许录到别的 TSE / 后级。
+  /// 时长见 [`crate::recorder::REF_RECORD_SECONDS`]（中间 10 s，前后各丢 0.5 s）。
   ///
   /// **必须引擎在跑**：参考取自列线程的实时链路，没跑就没有样本（legacy 也是这个语义，
   /// 并明确提示「请先启动音频处理」）。同时挂看门狗：录满时间内收不到音频就明确失败，
   /// 不会永远停在「录制中 0.0/10 s」。
-  pub fn record_reference(&self) -> Result<String, String> {
+  pub fn record_reference(&self, node: Option<u32>) -> Result<String, String> {
     if !self.is_running() {
       return Err("请先启动音频处理，再录制参考（TSE 参考取自运行中的链路）".into());
     }
     let plan = self.plan();
     let path = config::default_tse_reference();
-    let token = self.rec.start(&plan, path.clone())?;
+    let token = self.rec.start(&plan, path.clone(), node)?;
     let rec = self.rec.clone();
     let secs = crate::recorder::ref_capture_seconds();
     std::thread::Builder::new()
@@ -313,6 +314,11 @@ impl AudioManager {
       })
       .ok();
     Ok(path.display().to_string())
+  }
+
+  /// TSE 参考录音的进度（界面进度条用；与 `/debug` 的 `recorder` 文本同源状态）。
+  pub fn recorder_status(&self) -> crate::recorder::RecorderStatus {
+    self.rec.status()
   }
 
   /// 测 AEC 延时：对指定的（缺省 = 第一个）AEC 行采集 1.5 s，并向会话所有输出设备送扫频探针；

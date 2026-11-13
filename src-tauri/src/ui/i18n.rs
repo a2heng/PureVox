@@ -589,6 +589,19 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("参数", "Parameters");
     m.insert("参考语音", "Reference voice");
     m.insert("录制 10 秒参考", "Record 10 s reference");
+    m.insert("重新录制 10 秒参考", "Re-record 10 s reference");
+    m.insert("录制中…", "Recording…");
+    m.insert("录制中", "Recording");
+    m.insert("准备中…（0.5 s 后开始计数）", "Preparing… (counting starts in 0.5 s)");
+    m.insert("收尾中…", "Finishing…");
+    m.insert("正在写入参考文件…", "Writing reference file…");
+    m.insert("还没录（TSE 直通）", "Not recorded (TSE passes through)");
+    m.insert("当前参考：", "Current reference: ");
+    m.insert("（重新录制会覆盖）", " (re-recording overwrites it)");
+    m.insert(
+      "录的是进入 TSE 节点、经过节点输入增益之后的信号，不是 TSE 的输出。",
+      "Records the signal entering the TSE node after its input trim, not the TSE output.",
+    );
     m.insert("＋ 输入", "＋ Input");
     m.insert("＋ AI", "＋ AI");
     m.insert("＋ 处理", "＋ Process");

@@ -332,6 +332,26 @@ pub(super) fn meter_bar(peak: f32, cells: usize, cell_h: f32) -> AnyElement {
     .into_any_element()
 }
 
+/// 录音进度条：`fraction` 0~1，轨道占满宽度。
+pub(super) fn progress_bar(fraction: f32, color: u32) -> Div {
+  div()
+    .relative()
+    .h(px(6.))
+    .w_full()
+    .rounded_full()
+    .bg(rgb(t::CONTROL))
+    .overflow_hidden()
+    .child(
+      div()
+        .absolute()
+        .left_0()
+        .top_0()
+        .h_full()
+        .w(gpui_kit::relative(fraction.clamp(0.0, 1.0)))
+        .bg(rgb(color)),
+    )
+}
+
 /// 频谱面板：对数频率轴（20 Hz–20 kHz）+ dBFS 纵轴（0…-90），按**电平**分三色。
 ///
 /// 与电平条同一套阈值（绿 ≤ -45、黄 -45..-30、红 > -30），刻度全部画在框里；

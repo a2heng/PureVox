@@ -15,13 +15,14 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! TSE 参考录音（ARCHITECTURE.md §7）：在列工作线程里对「降噪后、TSE 前」的信号取样，
-//! 写 48 kHz 单声道 WAV，并把实测 RMS / 峰值一起报出来。
+//! TSE 参考录音（ARCHITECTURE.md §7）：在列工作线程里对「进入 TSE 节点、经过节点
+//! 输入增益、TSE 处理之前」的信号取样，写 48 kHz 单声道 WAV，并把实测 RMS / 峰值一起报出来。
 //!
-//! **保留窗口恒为 10 s，外面还有头尾**（2026-11-04）：点「录制」后**立刻开始采**，
-//! 先录 [`REF_WARMUP_SECONDS`] 预热（丢头，设备起流/重采样器稳定前不算数），再保留
+//! **保留窗口恒为 10 s，前后各丢 0.5 s**：点「录制」后**立刻开始采**（点鼠标那一下的
+//! 杂音落在头部被丢掉），先录 [`REF_WARMUP_SECONDS`] 预热，再保留
 //! [`REF_RECORD_SECONDS`] 秒，最后录 [`REF_TAIL_SECONDS`] 余量（丢尾，TSE 有 1 hop 滞后 +
-//! 设备缓冲，保证第 10 s 的语音收全）。写盘只写中间那段，长度恒为 10 s。
+//! 设备缓冲，保证第 10 s 的语音收全）。写盘只写中间那段，长度恒为 10 s；界面进度条
+//! 也从预热结束才开始走、在尾巴开始前到 100%。
 //!
 //! **不做音量归一化 / 限幅**（2026-10-26 实测 + legacy 对照）：
 //! - 主模型对参考电平不敏感：同一段参考整体 ±20 dB 后喂 ref_encoder + 主模型，
@@ -31,8 +32,8 @@
 //!
 //! 只保留最小校验（近静音拒绝），避免录出一段没法用的参考。
 //!
-//! 采样点由计划决定：优先第一个**启用**的 TSE 行的输入（降噪后）；没有 TSE 行则取最后一个
-//! 启用降噪行的输出。进度与结果发布到调试快照的 `recorder` 字段。
+//! 采样点由界面传入的 TSE 节点 id 决定：只录**那个节点**的输入（已经过节点输入增益），
+//! 不录 TSE 输出，也不会串到别的 TSE / 后级。进度与结果发布到调试快照的 `recorder` 字段。
 //!
 //! 三条纪律（对应 legacy `_Recorder` 的行为）：
 //! - **写盘不在音频线程**：录满后把缓冲交给后台线程写 WAV，列线程下一拍继续跑；
@@ -53,8 +54,9 @@ use crate::plan::Plan;
 /// 参考录音时长（秒）：**最终保留 10 s**（TSE 注册 1001 帧 = 10 s，不裁剪）。
 pub const REF_RECORD_SECONDS: f64 = 10.0;
 
-/// 起录**预热**（丢头，秒）：设备刚起流/重采样器稳定前的声音不可信，先录一段再开始计数。
-pub const REF_WARMUP_SECONDS: f64 = 1.0;
+/// 起录**预热**（丢头，秒）：点下按钮就开路，先丢掉鼠标点击那一下的杂音；
+/// 进度条也从这之后才开始走。用户要求前后各 0.5 s，总占用 11 s，保留中间 10 s。
+pub const REF_WARMUP_SECONDS: f64 = 0.5;
 
 /// 收尾**余量**（丢尾，秒）：TSE 有 1 hop 滞后 + 设备缓冲，留一段尾巴保证第 10 s 的语音收全。
 pub const REF_TAIL_SECONDS: f64 = 0.5;
@@ -69,6 +71,29 @@ pub fn ref_capture_seconds() -> f64 {
 pub enum Phase {
   Pre,
   Post,
+}
+
+/// 录音对外状态（界面画进度条用；调试 `recorder` 文本仍保留人话）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecorderPhase {
+  Idle,
+  /// 正在收中间 10 s（预热已经过去，进度条在走）
+  Recording,
+  /// 10 s 已收满，正在收最后 0.5 s 尾巴（进度条停在 100%，还没写盘）
+  Finishing,
+  /// 正在后台写 WAV
+  Encoding,
+  Done,
+  Failed,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RecorderStatus {
+  pub phase: RecorderPhase,
+  /// 本次录音代号：同一代只触发一次「完成后重建 TSE」
+  pub token: u64,
+  pub elapsed_s: f64,
+  pub total_s: f64,
 }
 
 enum State {
@@ -88,9 +113,15 @@ enum State {
     last_pub: Instant,
   },
   /// 正在后台归一化 + 写盘（此时不再收样本，也不允许开新录音）
-  Encoding,
-  Done,
-  Failed,
+  Encoding {
+    token: u64,
+  },
+  Done {
+    token: u64,
+  },
+  Failed {
+    token: u64,
+  },
 }
 
 pub struct RecorderHub {
@@ -117,12 +148,64 @@ impl RecorderHub {
     )
   }
 
+  /// 界面进度条：只读一份状态，不解析人话文本。
+  pub fn status(&self) -> RecorderStatus {
+    let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+    match &*st {
+      State::Idle => RecorderStatus {
+        phase: RecorderPhase::Idle,
+        token: 0,
+        elapsed_s: 0.0,
+        total_s: REF_RECORD_SECONDS,
+      },
+      State::Recording {
+        token,
+        buf,
+        needed,
+        skip,
+        ..
+      } => {
+        let got = buf.len().saturating_sub(*skip).min(*needed);
+        let phase = if buf.len() >= skip + needed {
+          RecorderPhase::Finishing
+        } else {
+          RecorderPhase::Recording
+        };
+        RecorderStatus {
+          phase,
+          token: *token,
+          elapsed_s: got as f64 / SAMPLE_RATE as f64,
+          total_s: *needed as f64 / SAMPLE_RATE as f64,
+        }
+      }
+      State::Encoding { token } => RecorderStatus {
+        phase: RecorderPhase::Encoding,
+        token: *token,
+        elapsed_s: REF_RECORD_SECONDS,
+        total_s: REF_RECORD_SECONDS,
+      },
+      State::Done { token } => RecorderStatus {
+        phase: RecorderPhase::Done,
+        token: *token,
+        elapsed_s: REF_RECORD_SECONDS,
+        total_s: REF_RECORD_SECONDS,
+      },
+      State::Failed { token } => RecorderStatus {
+        phase: RecorderPhase::Failed,
+        token: *token,
+        elapsed_s: 0.0,
+        total_s: REF_RECORD_SECONDS,
+      },
+    }
+  }
+
   /// 开始录制参考：先录 [`REF_WARMUP_SECONDS`] 预热（丢头），再保留
   /// [`REF_RECORD_SECONDS`] 秒，最后录 [`REF_TAIL_SECONDS`] 余量（丢尾），写完 `path`。
   /// 返回本次录音代号（看门狗用）。
-  pub fn start(&self, plan: &Plan, path: PathBuf) -> Result<u64, String> {
-    let target = resolve_target(plan)
-      .ok_or_else(|| "计划里没有启用的 TSE 行，也没有降噪行；请先加一个再录参考".to_string())?;
+  pub fn start(&self, plan: &Plan, path: PathBuf, node: Option<u32>) -> Result<u64, String> {
+    let target = resolve_target(plan, node).ok_or_else(|| {
+      "选中的 TSE 节点不可用（需要已启用并接在链路上），计划里也没有其它可录的 TSE".to_string()
+    })?;
     let needed = (REF_RECORD_SECONDS * SAMPLE_RATE as f64) as usize;
     let skip = (REF_WARMUP_SECONDS * SAMPLE_RATE as f64) as usize;
     let total = (ref_capture_seconds() * SAMPLE_RATE as f64) as usize;
@@ -130,7 +213,7 @@ impl RecorderHub {
     let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
     match &*st {
       State::Recording { .. } => return Err("已经在录制参考，请等这一段落完".into()),
-      State::Encoding => return Err("上一段参考正在写盘，请稍候".into()),
+      State::Encoding { .. } => return Err("上一段参考正在写盘，请稍候".into()),
       _ => {}
     }
     *st = State::Recording {
@@ -158,7 +241,7 @@ impl RecorderHub {
       State::Recording { token: t, .. } if *t == token
     );
     if hit {
-      *st = State::Failed;
+      *st = State::Failed { token };
       drop(st);
       crate::debug::events::log("warn", "recorder", reason.clone());
       self.hub.set_recorder(Probe::unavailable(reason));
@@ -195,18 +278,28 @@ impl RecorderHub {
         let got = buf.len().saturating_sub(*skip).min(*needed);
         let secs = got as f64 / SAMPLE_RATE as f64;
         let total = *needed as f64 / SAMPLE_RATE as f64;
-        self
-          .hub
-          .set_recorder(Probe::ok(format!("录制中 {secs:.1}/{total:.0} s")));
+        let text = if got == 0 {
+          "准备中…（0.5 s 后开始计数）".to_string()
+        } else if got >= *needed {
+          format!("收尾中…（已收满 {total:.0} s）")
+        } else {
+          format!("录制中 {secs:.1}/{total:.0} s")
+        };
+        self.hub.set_recorder(Probe::ok(text));
       }
       return;
     }
 
     // 收满：立刻把状态切成 Encoding 并 release 锁；裁剪/写盘在后台线程做，
     // 绝不占住列工作线程的 10 ms 节拍。
-    let prev = std::mem::replace(&mut *st, State::Encoding);
+    let token = match &*st {
+      State::Recording { token, .. } => *token,
+      _ => 0,
+    };
+    let prev = std::mem::replace(&mut *st, State::Encoding { token });
     drop(st);
     let State::Recording {
+      token,
       buf,
       needed,
       skip,
@@ -232,13 +325,13 @@ impl RecorderHub {
               rms_db = level.rms_db,
               peak_db = level.peak_db,
             );
-            *st = State::Done;
+            *st = State::Done { token };
             drop(st);
             crate::debug::events::log("info", "recorder", format!("{text} → {}", path.display()));
             hub.set_recorder(Probe::ok(text));
           }
           Err(e) => {
-            *st = State::Failed;
+            *st = State::Failed { token };
             drop(st);
             crate::debug::events::log("error", "recorder", e.clone());
             hub.set_recorder(Probe::unavailable(e));
@@ -248,7 +341,7 @@ impl RecorderHub {
     if let Err(e) = spawned {
       // 线程都起不来：至少别让状态停在 Encoding
       let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-      *st = State::Failed;
+      *st = State::Failed { token };
       drop(st);
       let msg = format!("起写盘线程失败：{e}");
       crate::debug::events::log("error", "recorder", msg.clone());
@@ -257,8 +350,22 @@ impl RecorderHub {
   }
 }
 
-/// 采样目标：第一个**启用**的 TSE 行的输入（降噪后）；否则最后一个启用降噪行的输出。
-fn resolve_target(plan: &Plan) -> Option<(usize, usize, Phase)> {
+/// 采样目标：**指定 TSE 节点的输入**（已过节点输入增益、未过 TSE）；没有指定时
+/// 取第一个启用 TSE 行。没有 TSE 才回退到最后一个启用降噪行的输出。
+fn resolve_target(plan: &Plan, node: Option<u32>) -> Option<(usize, usize, Phase)> {
+  if let Some(id) = node {
+    for (ci, c) in plan.columns.iter().enumerate() {
+      if !c.enabled {
+        continue;
+      }
+      for (ri, r) in c.rows.iter().enumerate() {
+        if r.enabled && r.ptype == "tse" && r.id == id {
+          return Some((ci, ri, Phase::Pre));
+        }
+      }
+    }
+    return None;
+  }
   for (ci, c) in plan.columns.iter().enumerate() {
     if !c.enabled {
       continue;
@@ -340,6 +447,35 @@ mod tests {
     }
   }
 
+  /// 进度条：预热 0.5 s 内不动；中间 10 s 走完就进入 Finishing（尾巴期间不再前进）。
+  #[test]
+  fn status_tracks_preroll_and_finishing() {
+    let hub = crate::debug::DebugHub::new();
+    let rec = RecorderHub::new(hub);
+    let mut tse = row(RowKind::Process, "tse", true);
+    tse.id = 7;
+    let plan = Plan {
+      v: 0,
+      columns: vec![ColumnSpec {
+        enabled: true,
+        rows: vec![row(RowKind::Input, "tone", true), tse],
+      }],
+    };
+    let p = std::env::temp_dir().join("pv-rec-progress.wav");
+    let _token = rec.start(&plan, p, Some(7)).expect("开始录音");
+    let st = rec.status();
+    assert_eq!(st.phase, RecorderPhase::Recording);
+    assert_eq!(st.elapsed_s, 0.0);
+    assert_eq!(st.total_s, REF_RECORD_SECONDS);
+
+    let skip = (REF_WARMUP_SECONDS * SAMPLE_RATE as f64) as usize;
+    let needed = (REF_RECORD_SECONDS * SAMPLE_RATE as f64) as usize;
+    rec.tap(0, 1, Phase::Pre, &vec![0.1; skip + needed]);
+    let st = rec.status();
+    assert_eq!(st.phase, RecorderPhase::Finishing);
+    assert!((st.elapsed_s - REF_RECORD_SECONDS).abs() < 1e-6);
+  }
+
   /// 停用的 TSE 行不能被选成录音目标（否则永远收不到 Pre 抽头）。
   #[test]
   fn resolve_target_skips_disabled_rows() {
@@ -355,7 +491,31 @@ mod tests {
         ],
       }],
     };
-    assert_eq!(resolve_target(&plan), Some((0, 2, Phase::Post)));
+    assert_eq!(resolve_target(&plan, None), Some((0, 2, Phase::Post)));
+  }
+
+  /// 指定 TSE 节点时只录它自己的输入；不能退到别的 TSE / 降噪行。
+  #[test]
+  fn resolve_target_prefers_requested_tse_node() {
+    let mut tse_a = row(RowKind::Process, "tse", true);
+    tse_a.id = 7;
+    let mut tse_b = row(RowKind::Process, "tse", true);
+    tse_b.id = 8;
+    let plan = Plan {
+      v: 0,
+      columns: vec![ColumnSpec {
+        enabled: true,
+        rows: vec![
+          row(RowKind::Input, "tone", true),
+          tse_a,
+          tse_b,
+          row(RowKind::Process, "denoise", true),
+        ],
+      }],
+    };
+    assert_eq!(resolve_target(&plan, Some(8)), Some((0, 2, Phase::Pre)));
+    assert_eq!(resolve_target(&plan, Some(7)), Some((0, 1, Phase::Pre)));
+    assert_eq!(resolve_target(&plan, Some(99)), None);
   }
 
   #[test]
@@ -370,9 +530,9 @@ mod tests {
       }],
     };
     let p = std::env::temp_dir().join("pv-rec-test.wav");
-    let t = rec.start(&plan, p.clone()).expect("第一次应当开始");
+    let t = rec.start(&plan, p.clone(), None).expect("第一次应当开始");
     assert!(rec.active());
-    assert!(rec.start(&plan, p).is_err(), "录制中不许再开一段");
+    assert!(rec.start(&plan, p, None).is_err(), "录制中不许再开一段");
     rec.timeout_if_recording(t, "测试超时".into());
     assert!(!rec.active(), "看门狗必须把状态置回非录制");
   }

@@ -507,25 +507,79 @@ impl Workspace {
     if n.ptype == "tse" {
       let path = crate::config::default_tse_reference();
       let exists = path.exists();
-      list = list
-        .child(section("参考语音"))
-        .child(
-          quiet_button(cx, format!("rec:{id}"), "录制 10 秒参考").on_click(cx.listener(
-            move |this, _, _, cx| {
-              let mgr = this.audio.clone();
-              this.snapshot();
-              this.spawn_job("录制 TSE 参考", move || {
-                mgr.record_reference().map(|p| format!("参考已写入 {p}"))
-              });
-              cx.notify();
-            },
-          )),
-        )
-        .child(hint(if exists {
-          format!("已有参考：{}", path.display())
-        } else {
-          "还没录（TSE 直通）".to_string()
+      let rec = self.audio.recorder_status();
+      let busy = matches!(
+        rec.phase,
+        crate::recorder::RecorderPhase::Recording
+          | crate::recorder::RecorderPhase::Finishing
+          | crate::recorder::RecorderPhase::Encoding
+      );
+      let label = if busy {
+        "录制中…"
+      } else if exists {
+        "重新录制 10 秒参考"
+      } else {
+        "录制 10 秒参考"
+      };
+      let mut rec_btn = quiet_button(cx, format!("rec:{id}"), label);
+      if !busy {
+        rec_btn = rec_btn.on_click(cx.listener(move |this, _, _, cx| {
+          let mgr = this.audio.clone();
+          match mgr.record_reference(Some(id)) {
+            Ok(p) => this.status = format!("开始录制 TSE 参考，完成后覆盖 {p}"),
+            Err(e) => this.status = e,
+          }
+          cx.notify();
         }));
+      }
+      list = list.child(section("参考语音")).child(rec_btn);
+      if busy {
+        let fraction = if rec.phase == crate::recorder::RecorderPhase::Encoding {
+          1.0
+        } else if rec.total_s > 0.0 {
+          (rec.elapsed_s / rec.total_s) as f32
+        } else {
+          0.0
+        };
+        let text = match rec.phase {
+          crate::recorder::RecorderPhase::Recording if rec.elapsed_s <= 0.0 => {
+            i18n::tr("准备中…（0.5 s 后开始计数）").to_string()
+          }
+          crate::recorder::RecorderPhase::Recording => format!(
+            "{} {:.1}/{:.0} s",
+            i18n::tr("录制中"),
+            rec.elapsed_s,
+            rec.total_s
+          ),
+          crate::recorder::RecorderPhase::Finishing => i18n::tr("收尾中…").to_string(),
+          crate::recorder::RecorderPhase::Encoding => i18n::tr("正在写入参考文件…").to_string(),
+          _ => String::new(),
+        };
+        list = list
+          .child(progress_bar(
+            fraction,
+            if rec.phase == crate::recorder::RecorderPhase::Encoding {
+              t::ACCENT
+            } else {
+              t::OK
+            },
+          ))
+          .child(hint(text));
+      } else {
+        list = list.child(hint(if exists {
+          format!(
+            "{}{}{}",
+            i18n::tr("当前参考："),
+            path.display(),
+            i18n::tr("（重新录制会覆盖）")
+          )
+        } else {
+          i18n::tr("还没录（TSE 直通）").to_string()
+        }));
+      }
+      list = list.child(hint(
+        "录的是进入 TSE 节点、经过节点输入增益之后的信号，不是 TSE 的输出。",
+      ));
     }
 
     // ── 信息（下）────────────────────────────────────────────────────
