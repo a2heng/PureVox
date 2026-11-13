@@ -68,6 +68,9 @@ APPSTREAM = """<?xml version="1.0" encoding="UTF-8"?>
   <id>com.purevox.PureVox</id>
   <name>PureVox</name>
   <summary>Real-time AI microphone noise reduction</summary>
+  <developer id="com.purevox.PureVox">
+    <name>a2heng</name>
+  </developer>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <description>
@@ -82,6 +85,7 @@ APPSTREAM = """<?xml version="1.0" encoding="UTF-8"?>
   <categories>
     <category>AudioVideo</category>
   </categories>
+  <content_rating type="oars-1.1"/>
 </component>
 """
 
@@ -172,7 +176,7 @@ def make_deb(ver: str, staged: Path) -> Path | None:
                 root / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps" / "purevox.png",
             )
         shutil.copy2(staged / "purevox.desktop", root / "usr" / "share" / "applications" / "purevox.desktop")
-        (root / "usr" / "share" / "metainfo" / "purevox.appdata.xml").write_text(
+        (root / "usr" / "share" / "metainfo" / "com.purevox.PureVox.metainfo.xml").write_text(
             APPSTREAM, encoding="utf-8"
         )
         # 运行时按 exe 同级找 models/；deb 的二进制在 /usr/bin，模型在 /usr/lib/purevox，
@@ -237,9 +241,9 @@ def make_appimage(ver: str, staged: Path, tool: Path | None) -> Path | None:
             staged / "purevox.desktop",
             appdir / "usr" / "share" / "applications" / "purevox.desktop",
         )
-        (appdir / "usr" / "share" / "metainfo" / "purevox.appdata.xml").write_text(
-            APPSTREAM, encoding="utf-8"
-        )
+        (
+            appdir / "usr" / "share" / "metainfo" / "com.purevox.PureVox.metainfo.xml"
+        ).write_text(APPSTREAM, encoding="utf-8")
         apprun = appdir / "AppRun"
         apprun.write_text(
             "#!/bin/sh\n"
