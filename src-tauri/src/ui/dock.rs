@@ -9,8 +9,12 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::PathBuilder;
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
-use gpui_kit::{AnyElement, Context, Window, canvas, div, point, prelude::*, px, rgb, rgba};
+use gpui_kit::{
+  AnyElement, Context, Entity, Window, canvas, div, point, prelude::*, px, rgb, rgba,
+};
 
 use super::theme as t;
 use super::widgets::*;
@@ -32,7 +36,7 @@ impl Workspace {
       Some(n) => {
         let mut body = div().flex().flex_col().gap_2();
         if node_module(&n.ptype) == NodeModule::Network {
-          body = body.child(self.net_card(cx));
+          body = body.child(self.net_card(window, cx));
         }
         body
           .child(self.inspect_node(n, window, cx))
@@ -115,12 +119,14 @@ impl Workspace {
 
   /// 网络服务地址（二维码 / 复制 / 显示共用同一个）。
   pub(super) fn net_url(&self) -> String {
-    let port = self
-      .net_stats
-      .as_ref()
-      .map(|s| s.port)
-      .filter(|p| *p != 0)
-      .unwrap_or_else(|| crate::net::hub().port());
+    let port = self.net_port_draft.unwrap_or_else(|| {
+      self
+        .net_stats
+        .as_ref()
+        .map(|s| s.port)
+        .filter(|p| *p != 0)
+        .unwrap_or_else(|| crate::net::hub().port())
+    });
     let ip = if self.net_ip.is_empty() {
       "127.0.0.1".to_string()
     } else {
@@ -130,7 +136,7 @@ impl Workspace {
   }
 
   /// 网络卡片：服务开关 / 地址 / 二维码 / 客户端状态 / 环深度。常驻右侧。
-  pub(super) fn net_card(&mut self, cx: &mut Context<Self>) -> AnyElement {
+  pub(super) fn net_card(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
     let st = self
       .net_stats
       .clone()
@@ -169,126 +175,204 @@ impl Workspace {
         .child(hint("服务未启动：启动后手机 / 网页才能连。"))
         .into_any_element();
     }
-    let url = self.net_url();
-    // ── 手机怎么连 ──────────────────────────────────────────────────
-    list = list
-      .child(section("手机连接"))
-      .child(hint(
-        "手机和电脑连同一个 Wi-Fi：用手机 App 扫下面的二维码；或者用浏览器直接打开地址。",
-      ))
-      .child(field("地址", url.clone()))
-      .child(
-        div()
-          .flex()
-          .flex_wrap()
-          .gap_1()
+    let port = st.port;
+    // ── 第二行：左边说明、右边二维码（横向排，省掉原来竖着堆的高度）─────────
+    let mut qr_box = div()
+      .flex()
+      .flex_col()
+      .items_center()
+      .gap_1()
+      .w(px(128.))
+      .flex_shrink_0();
+    match &self.net_qr {
+      Some(path) => {
+        qr_box = qr_box
+          .child(gpui_kit::img(path.clone()).w(px(120.)).h(px(120.)))
           .child(
-            quiet_button(cx, "net-copy", "复制地址").on_click(cx.listener(
-              move |this, _, _, cx| {
-                let url = this.net_url();
-                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(url.clone()));
-                this.status = format!("已复制：{url}");
-                cx.notify();
-              },
+            div()
+              .text_size(px(t::TEXT_XS))
+              .text_color(rgb(t::MUTED))
+              .child(i18n::tr("手机扫码连接")),
+          );
+      }
+      None => {
+        qr_box = qr_box.child(
+          div()
+            .text_size(px(t::TEXT_XS))
+            .text_color(rgb(t::MUTED))
+            .child(i18n::tr("二维码生成中…")),
+        );
+      }
+    }
+    list = list.child(
+      div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+          div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .flex_col()
+            .gap_1()
+            .child(hint(
+              "手机和电脑连同一个 Wi-Fi：用 App 扫右边的码，或用浏览器打开下面的地址。",
+            ))
+            .child(hint(
+              "浏览器首次访问会提示证书不安全：点「CA 说明」安装一次本地 CA。",
             )),
-          )
-          .child(quiet_button(cx, "net-ca", "安装 CA").on_click(cx.listener(
-            move |this, _, _, cx| {
-              let url = format!("{}ca-cert", this.net_url());
-              match crate::openurl::open(&url) {
-                Ok(()) => this.status = format!("已打开 {url}"),
-                Err(e) => this.status = format!("打开 CA 失败：{e}"),
-              }
-              cx.notify();
-            },
-          ))),
-      );
+        )
+        .child(qr_box),
+    );
+    // ── 第三行：地址:可编辑端口 · 复制 · CA 说明 ─────────────────────
+    let port_state = match self.net_port_input.clone() {
+      Some(s) => s,
+      None => {
+        let s = cx.new(|cx| {
+          gpui_kit::component::input::InputState::new(window, cx).default_value(port.to_string())
+        });
+        let sub = cx.subscribe(
+          &s,
+          |this: &mut Workspace,
+           state: Entity<gpui_kit::component::input::InputState>,
+           event: &gpui_kit::component::input::InputEvent,
+           cx| {
+            if matches!(
+              event,
+              gpui_kit::component::input::InputEvent::PressEnter { .. }
+                | gpui_kit::component::input::InputEvent::Blur
+            ) {
+              let value = state.read(cx).value().to_string();
+              this.apply_net_port(&value, cx);
+            } else if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+              let value = state.read(cx).value().to_string();
+              this.on_net_port_typed(&value, cx);
+            }
+          },
+        );
+        self.subs.push(sub);
+        self.net_port_input = Some(s.clone());
+        s
+      }
+    };
+    let addr_ip = if self.net_ip.is_empty() {
+      "127.0.0.1".to_string()
+    } else {
+      self.net_ip.clone()
+    };
+    list = list.child(
+      div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_1()
+        .min_w(px(0.))
+        .child(
+          div()
+            .flex_shrink_0()
+            .text_size(px(t::TEXT_SM))
+            .text_color(rgb(t::TEXT))
+            .child(format!("{addr_ip}:")),
+        )
+        .child(
+          div().w(px(64.)).flex_shrink_0().child(
+            gpui_kit::component::input::Input::new(&port_state)
+              .appearance(true)
+              .bordered(true)
+              .focus_bordered(true)
+              .with_size(gpui_kit::component::Size::XSmall)
+              .w(px(64.))
+              .aria_label(i18n::tr("端口").to_string()),
+          ),
+        )
+        .child(
+          quiet_button(cx, "net-copy", "复制").on_click(cx.listener(move |this, _, _, cx| {
+            let url = this.net_url();
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(url.clone()));
+            this.status = format!("已复制：{url}");
+            cx.notify();
+          })),
+        )
+        .child(quiet_button(cx, "net-ca", "CA 说明").on_click(cx.listener(
+          move |this, _, _, cx| {
+            match crate::net::tls::write_help_page(i18n::current()) {
+              Ok(page) => match crate::openurl::open(&page.to_string_lossy()) {
+                Ok(()) => this.status = format!("已打开 CA 说明：{}", page.display()),
+                Err(e) => this.status = format!("打开 CA 说明失败：{e}"),
+              },
+              Err(e) => this.status = e,
+            }
+            cx.notify();
+          },
+        ))),
+    );
+    // ── 第四行：紧凑的网卡选择卡片（一行一个网卡，不再铺 IPv6）──────────
     if self.net_ifaces.len() > 1 {
-      let mut row = div().flex().flex_col().gap_1().w_full();
+      let mut row = div().flex().flex_wrap().gap_1().w_full();
       for i in self.net_ifaces.clone() {
         let ip = i.ip.clone();
         let ip_for_click = ip.clone();
         let on = self.net_ip == ip;
-        let mut card = div()
-          .id(format!("net-ip:{ip}"))
-          .flex()
-          .flex_col()
-          .gap_1()
-          .w_full()
-          .px(px(t::SPACE_2))
-          .py(px(t::SPACE_2))
-          .rounded_md()
-          .border_1()
-          .border_color(rgb(if on { t::ACCENT } else { t::BORDER }))
-          .bg(rgb(if on { t::PANEL_HI } else { t::CONTROL }))
-          .cursor_pointer()
-          .tab_index(0)
-          .on_click(cx.listener(move |this, _, _, cx| {
-            this.net_ip = ip_for_click.clone();
-            this.settings.net_ip = ip_for_click.clone();
-            let _ = crate::config::save_settings(&this.settings);
-            this.net_last = Instant::now() - Duration::from_secs(2);
-            this.status = format!("网络地址：{ip_for_click}");
-            cx.notify();
-          }))
-          // 第一行网卡名、第二行 IPv4、之后每个 IPv6 独占一行；窄栏里自然换行。
-          .child(
-            div()
-              .w_full()
-              .text_size(px(t::TEXT_SM))
-              .text_color(rgb(t::TEXT))
-              // Windows 的 AdapterName 是 `{GUID}`；网卡名用 FriendlyName（desc），
-              // 没有才回退 GUID。GUID 仍保留在 `name` 里做内部标识。
-              .child(if i.desc.is_empty() {
-                i.name.clone()
-              } else {
-                i.desc.clone()
-              }),
-          )
-          .child(
-            div()
-              .w_full()
-              .text_size(px(t::TEXT_XS))
-              .text_color(rgb(t::MUTED))
-              .child(format!("IPv4  {ip}")),
-          );
-        for v6 in i.ipv6.clone() {
-          card = card.child(
-            div()
-              .w_full()
-              .text_size(px(t::TEXT_XS))
-              .text_color(rgb(t::MUTED))
-              .child(format!("IPv6  {v6}")),
-          );
+        let name = if i.desc.is_empty() {
+          i.name.clone()
+        } else {
+          i.desc.clone()
+        };
+        // IPv6 不占卡片行，鼠标悬停才显示（可能有好几条）。
+        let mut tip = String::new();
+        for v6 in &i.ipv6 {
+          tip.push_str("IPv6  ");
+          tip.push_str(v6);
+          tip.push('\n');
         }
-        row = row.child(card);
-      }
-      list = list
-        .child(hint(
-          "地址要告诉手机哪一张网卡？（服务本身监听所有网卡，这里只影响二维码/复制）",
-        ))
-        .child(row);
-    }
-    match &self.net_qr {
-      Some(path) => {
-        list = list.child(
-          div()
+        if tip.is_empty() {
+          tip = format!("IPv4  {ip}");
+        }
+        row = row.child(
+          Button::new(format!("net-ip:{ip}"))
+            .xsmall()
+            .ghost()
+            .flex_1()
+            .min_w(px(138.))
             .flex()
-            .flex_col()
             .items_center()
             .gap_1()
-            .py(px(2.))
-            .child(gpui_kit::img(path.clone()).w(px(152.)).h(px(152.)))
-            .child(hint("手机扫码连接")),
+            .px(px(t::SPACE_2))
+            .py(px(t::SPACE_1))
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(if on { t::ACCENT } else { t::BORDER }))
+            .bg(rgb(if on { t::PANEL_HI } else { t::CONTROL }))
+            .tooltip(tip.trim_end().to_string())
+            .on_click(cx.listener(move |this, _, _, cx| {
+              this.net_ip = ip_for_click.clone();
+              this.settings.net_ip = ip_for_click.clone();
+              let _ = crate::config::save_settings(&this.settings);
+              this.net_last = Instant::now() - Duration::from_secs(2);
+              this.status = format!("网络地址：{ip_for_click}");
+              cx.notify();
+            }))
+            .child(
+              div()
+                .flex_1()
+                .min_w(px(0.))
+                .truncate()
+                .text_size(px(t::TEXT_XS))
+                .text_color(rgb(t::TEXT))
+                .child(name),
+            )
+            .child(
+              div()
+                .flex_shrink_0()
+                .text_size(px(t::TEXT_XS))
+                .text_color(rgb(if on { t::ACCENT } else { t::MUTED }))
+                .child(ip),
+            ),
         );
       }
-      None => {
-        list = list.child(hint("二维码生成中…（手机 App 也能在局域网里自动发现本机）"));
-      }
+      list = list.child(row);
     }
-    list = list.child(hint(
-      "浏览器打开会提示证书不安全：点「安装 CA」，按手机提示装到系统即可永久消除。",
-    ));
 
     // ── 连上之后发生了什么 ──────────────────────────────────────────
     list = list
@@ -333,6 +417,75 @@ impl Workspace {
       list = list.child(hint("扫码 / 打开地址后，这里会显示客户端与速率。"));
     }
     list.into_any_element()
+  }
+
+  /// 输入框每次变化：二维码 / 复制立即跟着草稿端口走；停止输入 700 ms 后才真正重启服务。
+  fn on_net_port_typed(&mut self, text: &str, cx: &mut Context<Self>) {
+    self.net_port_gen = self.net_port_gen.wrapping_add(1);
+    let generation = self.net_port_gen;
+    match text
+      .trim()
+      .parse::<u16>()
+      .ok()
+      .filter(|p| (1024..=65535).contains(p))
+    {
+      Some(p) => {
+        self.net_port_draft = Some(p);
+        self.net_last = Instant::now() - Duration::from_secs(2);
+        self.status = format!("端口 {p}（停止输入后应用）");
+        let handle = cx.spawn(async move |weak, cx| {
+          cx.background_executor()
+            .timer(Duration::from_millis(700))
+            .await;
+          let _ = weak.update(cx, |this, cx| {
+            if this.net_port_gen == generation {
+              this.apply_net_port_value(p, cx);
+            }
+          });
+        });
+        handle.detach();
+      }
+      None => {
+        self.net_port_draft = None;
+        self.status = "端口必须是 1024–65535 的数字".into();
+      }
+    }
+    cx.notify();
+  }
+
+  /// 端口输入框 Enter / 失焦：立即保存并重启网络服务（换端口必须重绑监听）。
+  fn apply_net_port(&mut self, text: &str, cx: &mut Context<Self>) {
+    let Ok(p) = text.trim().parse::<u16>() else {
+      self.status = "端口必须是 1024–65535 的数字".into();
+      cx.notify();
+      return;
+    };
+    if !(1024..=65535).contains(&p) {
+      self.status = "端口必须是 1024–65535 的数字".into();
+      cx.notify();
+      return;
+    }
+    self.apply_net_port_value(p, cx);
+  }
+
+  fn apply_net_port_value(&mut self, p: u16, cx: &mut Context<Self>) {
+    self.net_port_draft = Some(p);
+    if self.settings.net_port == p {
+      return;
+    }
+    self.settings.net_port = p;
+    let saved = crate::config::save_settings(&self.settings);
+    crate::net::hub().set_port(p);
+    let r = crate::net::restart();
+    self.status = match (saved, r) {
+      (Err(e), _) => format!("端口已应用，但设置保存失败：{e}"),
+      (_, Ok(m)) => format!("端口 {p}：{m}"),
+      (_, Err(e)) => format!("端口 {p} 启动失败：{e}"),
+    };
+    self.net_last = Instant::now() - Duration::from_secs(2);
+    self.net_qr_url.clear();
+    self.net_qr = None;
+    cx.notify();
   }
 
   /// 网络环深度滑杆（10–200 ms，10 ms 步进）。默认值在 `config::d_net_ring_ms`（50 ms）。

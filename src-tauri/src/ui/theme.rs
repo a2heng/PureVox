@@ -52,6 +52,8 @@ pub const CARD_PAD: f32 = 6.0;
 pub const CARD_SWITCH_W: f32 = 24.0;
 /// 卡片首行右侧处理前增益的固定宽度。
 pub const CARD_PREGAIN_W: f32 = 46.0;
+/// 隐藏 VU 时卡片少掉的高度：VU 行 8 px + 上下间距 2 px。
+pub const CARD_VU_H: f32 = 10.0;
 /// 顶栏高度（像素）。
 pub const TOP_H: f32 = 52.0;
 /// 底栏高度。

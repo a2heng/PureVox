@@ -80,6 +80,81 @@ fn dir() -> Result<PathBuf, String> {
   crate::config::config_dir().map(|d| d.join("ca"))
 }
 
+/// 写一份**本地 HTML 说明页**（和 `ca.crt` 同目录），用默认浏览器打开。
+///
+/// 为什么不直接用 `https://…/ca-cert`：浏览器会先在证书错误页拦一次，用户看到的是
+/// 「不安全，继续访问」而不是「这是什么、怎么装」。HTML 走 `file://`，零证书提示，
+/// 页面里的 `ca.crt` 相对链接就是下载按钮。
+pub fn write_help_page(lang: &str) -> Result<PathBuf, String> {
+  let d = dir()?;
+  let ca = d.join("ca.crt");
+  if !ca.is_file() {
+    return Err("CA 证书还没生成：请先启动网络服务，再点「CA 说明」".into());
+  }
+  let en = lang == "en";
+  let (title, lead, steps, note, button) = if en {
+    (
+      "PureVox local CA",
+      "PureVox uses a local CA to sign the HTTPS/WSS certificate for this computer. \
+       Installing this CA once removes the browser warning and lets the web client use the microphone.",
+      "<li>Tap <b>Download CA certificate</b> below.</li>\
+       <li>Android: Settings → Security → Encryption &amp; credentials → Install a certificate → \
+       CA certificate → choose <code>purevox-ca.crt</code>.</li>\
+       <li>Windows: open the downloaded file → Install Certificate → Current User → \
+       Place all certificates in <b>Trusted Root Certification Authorities</b>.</li>\
+       <li>Reopen the PureVox address. The warning should be gone.</li>",
+      "Only install this CA if you trust this computer. You can remove it later in the system certificate settings.",
+      "Download CA certificate",
+    )
+  } else {
+    (
+      "PureVox 本地 CA",
+      "PureVox 用一张本地 CA 给这台电脑的 HTTPS / WSS 证书签名。安装一次之后，\
+       浏览器不再提示「不安全」，网页版也能正常申请麦克风权限。",
+      "<li>先点下面的 <b>下载 CA 证书</b>。</li>\
+       <li>Android：设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书 → 选择刚下载的 \
+       <code>purevox-ca.crt</code>。</li>\
+       <li>Windows：双击下载的文件 → 安装证书 → 当前用户 → \
+       把证书放入 <b>受信任的根证书颁发机构</b>。</li>\
+       <li>重新打开 PureVox 地址，警告应该消失。</li>",
+      "只在你信任这台电脑时安装这张 CA。之后可以在系统证书设置里移除。",
+      "下载 CA 证书",
+    )
+  };
+  let html = format!(
+    r#"<!doctype html>
+<html lang="{lang_attr}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>
+:root{{color-scheme:dark light}}
+body{{font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;max-width:760px;margin:0 auto;padding:32px 20px;background:#0d1015;color:#dfe6ef}}
+h1{{font-size:26px;margin:0 0 12px}}p,li{{color:#b9c4d4}}code{{background:#1b2230;padding:1px 5px;border-radius:4px;color:#dfe6ef}}
+.card{{background:#141922;border:1px solid #283244;border-radius:12px;padding:22px;margin-top:18px}}
+.btn{{display:inline-block;margin:8px 0 18px;padding:11px 18px;border-radius:8px;background:#4f8cff;color:#fff;text-decoration:none;font-weight:600}}
+ol{{padding-left:22px}}small{{color:#8794a7}}
+@media (prefers-color-scheme:light){{body{{background:#f7f9fc;color:#18202b}}p,li{{color:#334155}}code{{background:#eef2f7;color:#18202b}}.card{{background:#fff;border-color:#e2e7f0}}.btn{{background:#1b3a63}}small{{color:#64748b}}}}
+</style>
+</head>
+<body>
+<h1>{title}</h1>
+<p>{lead}</p>
+<div class="card">
+<a class="btn" href="ca.crt" download="purevox-ca.crt">{button}</a>
+<ol>{steps}</ol>
+<p><small>{note}</small></p>
+</div>
+</body>
+</html>"#,
+    lang_attr = if en { "en" } else { "zh-CN" },
+  );
+  let page = d.join("install-ca.html");
+  std::fs::write(&page, html).map_err(|e| format!("写 CA 说明页失败：{e}"))?;
+  Ok(page)
+}
+
 /// 读出来的服务端材料：**叶证书 + 私钥**，以及供用户安装的 **CA 证书 PEM**。
 pub struct Tls {
   /// 交给 `rustls` 的服务端配置（叶证书 + 私钥）
@@ -338,5 +413,18 @@ mod tests {
     assert!(!matches!(leaf.is_ca, IsCa::Ca(_)));
     leaf.is_ca = IsCa::ExplicitNoCa;
     assert!(!matches!(leaf.is_ca, IsCa::Ca(_)));
+  }
+
+  /// CA 说明页必须是本地 file:// HTML，下载按钮指向同目录的 `ca.crt`（不经过 HTTPS）。
+  #[test]
+  fn ca说明页是本地html并指向相对证书() {
+    let d = dir().unwrap();
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("ca.crt"), "dummy").unwrap();
+    let page = write_help_page("zh").unwrap();
+    let html = std::fs::read_to_string(&page).unwrap();
+    assert!(page.ends_with("install-ca.html"));
+    assert!(html.contains("href=\"ca.crt\""), "下载按钮必须用相对链接");
+    assert!(html.contains("下载 CA 证书"), "中文页面要有下载按钮");
   }
 }

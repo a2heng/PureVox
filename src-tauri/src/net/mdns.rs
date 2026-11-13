@@ -25,9 +25,9 @@
 //! 能搜到」发生，而连过去必然失败——那比搜不到更难排查。「服务没开 → 搜不到」是**预期
 //! 行为**，界面上要写明，不要让人以为坏了。
 //!
-//! **TXT 只放 `v` 与 `proto`，不放 host**：mDNS 本来就是用来找 host 的（SRV 记录带地址），
-//! 再放一遍是冗余，还会让两处不一致。`proto` 是给客户端判断协议版本用的——版本不符时直接
-//! 告诉用户「客户端版本太旧」，而不是连上去再被服务端断开。
+//! **TXT 放 `v` / `proto` / `port`，不放 host**：mDNS 本来就是用来找 host 的（SRV 记录带地址），
+//! 再放一遍是冗余，还会让两处不一致。`proto` 是给客户端判断协议版本用的；`port` 是 SRV
+//! 端口的冗余副本（Android NSD 在旧缓存/多网卡下可能拿到过期 SRV 端口，客户端优先看 TXT）。
 //!
 //! 实例名带网卡 IP：同一台电脑有多张网卡时，每张各广播一条、实例名各不相同。这样「手机连的
 //! 是哪张卡」在发现结果里就一目了然，省得用户回去猜。
@@ -53,8 +53,14 @@ pub fn advertise(ips: &[String], port: u16) -> Result<String, String> {
   let daemon = mdns_sd::ServiceDaemon::new().map_err(|e| format!("起 mDNS 守护线程失败：{e}"))?;
   let host = hostname();
   let proto = super::proto::PROTO.to_string();
-  // 必须是 `&[(K, V)]`（切片），传数组 / `TxtProperties` 都不满足 mdns-sd 的 trait bound
-  let props: Vec<(&str, &str)> = vec![("v", crate::version::VERSION), ("proto", &proto)];
+  // 端口同时写进 TXT：SRV 里本来有，但 Android 的 NSD 在旧缓存/多网卡场景下可能
+  // 只拿到一个过期的 SRV 端口；TXT 里再明确放一份 `port`，客户端可以优先用它。
+  let port_text = port.to_string();
+  let props: Vec<(&str, &str)> = vec![
+    ("v", crate::version::VERSION),
+    ("proto", &proto),
+    ("port", &port_text),
+  ];
 
   let mut n = 0usize;
   let mut first_err = String::new();
@@ -138,7 +144,12 @@ mod tests {
   fn 能构造出合法的服务记录() {
     let daemon = mdns_sd::ServiceDaemon::new().expect("守护线程");
     let proto = super::super::proto::PROTO.to_string();
-    let props: Vec<(&str, &str)> = vec![("v", crate::version::VERSION), ("proto", &proto)];
+    let port_text = "59123".to_string();
+    let props: Vec<(&str, &str)> = vec![
+      ("v", crate::version::VERSION),
+      ("proto", &proto),
+      ("port", &port_text),
+    ];
     let info = mdns_sd::ServiceInfo::new(
       SERVICE_TYPE,
       "PureVox 192.0.2.1",
@@ -149,14 +160,17 @@ mod tests {
     );
     assert!(info.is_ok(), "{:?}", info.err());
     let info = info.unwrap();
-    // TXT 只放 v 与 proto，不放 host —— mDNS 本来就是找 host 的，放了是冗余且会有两处不一致。
-    // `TxtProperty` 的 `key` 字段是私有的，只能靠 `Display` 看到键值对
+    // TXT 放 v / proto / port —— port 是 SRV 的冗余副本，给 Android NSD 旧缓存兜底。
     let txt = info.get_properties();
-    assert_eq!(txt.len(), 2, "TXT 只该有两条：{txt:?}");
+    assert_eq!(txt.len(), 3, "TXT 该有 v/proto/port 三条：{txt:?}");
     let rendered: Vec<String> = txt.iter().map(|p| p.to_string()).collect();
     assert!(rendered.iter().any(|s| s.starts_with("v=")), "{rendered:?}");
     assert!(
       rendered.iter().any(|s| s.starts_with("proto=")),
+      "{rendered:?}"
+    );
+    assert!(
+      rendered.iter().any(|s| s.starts_with("port=59123")),
       "{rendered:?}"
     );
     assert!(

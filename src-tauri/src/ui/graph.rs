@@ -495,17 +495,23 @@ impl Workspace {
     }
   }
 
-  pub(super) fn card_size_parts(kind: RowKind, ptype: &str, channels: u32) -> (f32, f32) {
+  pub(super) fn card_size_parts_for(
+    kind: RowKind,
+    ptype: &str,
+    channels: u32,
+    show_vu: bool,
+  ) -> (f32, f32) {
     let (base_w, base) = node_size(kind, ptype, channels);
     let ins = input_ports(ptype, channels);
     let outs = crate::plan::output_ports(ptype, channels);
-    // 端子按固定槽位从左侧排；16 路时卡片才变宽，平常一律 240。
+    // 端子按固定槽位从左侧排；16 路时卡片才变宽，平常一律 200。
     let need = TERM_PAD * 2.0 + ins.max(outs) as f32 * TERM_SLOT;
-    (base_w.max(need), base)
+    let h = if show_vu { base } else { base - t::CARD_VU_H };
+    (base_w.max(need), h)
   }
 
-  pub(super) fn card_size(n: &RowSpec) -> (f32, f32) {
-    Self::card_size_parts(n.kind, &n.ptype, n.channels)
+  pub(super) fn card_size_for(n: &RowSpec, show_vu: bool) -> (f32, f32) {
+    Self::card_size_parts_for(n.kind, &n.ptype, n.channels, show_vu)
   }
 
   /// 端子的绝对坐标（画线、画端口、命中都用这一份，绝不各算一套）。
@@ -529,7 +535,7 @@ impl Workspace {
     let mut y = 72.0;
     for _ in 0..400 {
       let hit = self.plan.nodes().any(|n| {
-        let (nw, nh) = Self::card_size(n);
+        let (nw, nh) = Self::card_size_for(n, self.show_vu);
         x < n.x + nw + 16.0 && x + w + 16.0 > n.x && y < n.y + nh + 16.0 && y + h + 16.0 > n.y
       });
       if !hit {
@@ -595,7 +601,7 @@ impl Workspace {
   ) {
     self.snapshot();
     let id = self.plan.next_id();
-    let (w, h) = Self::card_size_parts(kind, ptype, 1);
+    let (w, h) = Self::card_size_parts_for(kind, ptype, 1, self.show_vu);
     let (x, y) = self.free_spot(w, h);
     let mut params = std::collections::BTreeMap::new();
     let mut device = None;

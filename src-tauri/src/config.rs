@@ -124,6 +124,9 @@ pub struct AppSettings {
   /// 启动时自动运行引擎并隐藏窗口（收到托盘）
   #[serde(default)]
   pub start_hidden: bool,
+  /// 节点卡片是否显示 VU 电平行（工具栏开关；默认开）
+  #[serde(default = "d_true")]
+  pub show_vu: bool,
   /// 网络服务监听端口（**固定但可编辑**，NETWORK.md §4.1.11）。默认 `proto::PORT`。
   /// 改了要重启服务才生效（监听端口变了必须重绑）。
   #[serde(default = "d_net_port")]
@@ -229,6 +232,7 @@ impl Default for AppSettings {
       cue_start: d_cue(),
       cue_stop: d_cue(),
       start_hidden: false,
+      show_vu: true,
       net_port: d_net_port(),
       net_ip: String::new(),
       net_ring_ms: d_net_ring_ms(),

@@ -43,7 +43,7 @@ impl Workspace {
       _ => None,
     };
     for n in &nodes {
-      let (w, h) = Self::card_size(n);
+      let (w, h) = Self::card_size_for(n, self.show_vu);
       let color = Self::node_color(n.kind, &n.ptype);
       let in_ports = input_ports(&n.ptype, n.channels);
       let out_ports = crate::plan::output_ports(&n.ptype, n.channels);
@@ -79,7 +79,7 @@ impl Workspace {
         let Some(src) = nodes.iter().find(|x| x.id == e.from) else {
           continue;
         };
-        let (sw, sh) = Self::card_size(src);
+        let (sw, sh) = Self::card_size_for(src, self.show_vu);
         let (ax, ay) = Self::port_xy(src, false, e.from_port as usize, sw, sh);
         let (bx, by) = Self::port_xy(n, true, e.to_port as usize, w, h);
         // 线画在端口方块下面，端点取方块外沿，视觉上正好接住端子。
@@ -278,7 +278,7 @@ impl Workspace {
     window: &Window,
     cx: &mut Context<Self>,
   ) -> AnyElement {
-    let (w, h) = Self::card_size(&n);
+    let (w, h) = Self::card_size_for(&n, self.show_vu);
     let color = Self::node_color(n.kind, &n.ptype);
     let selected = self.selected == Some(n.id);
     let id = n.id;
@@ -298,7 +298,11 @@ impl Workspace {
     }
     let on = n.enabled;
     let (ci, ri) = self.pos(id).unwrap_or((0, 0));
-    let peak = self.hub.row_peak(ci, ri);
+    let peak = if self.show_vu {
+      Some(self.hub.row_peak(ci, ri))
+    } else {
+      None
+    };
     let gain = n.input_gain_db.parse::<f32>().unwrap_or(0.0);
     // 处理前增益固定占右侧一条车道：0.0 也画，避免数字左右跳。
     let gain_text = format!("{gain:+.1} dB");
@@ -415,15 +419,17 @@ impl Workspace {
                   .child(gain_text),
               ),
           )
-          // 第二行：VU 铺满整行。
-          .child(
-            div()
-              .flex()
-              .items_center()
-              .h(px(8.))
-              .px(px(t::CARD_PAD))
-              .child(meter_bar(peak, 24, 8.)),
-          )
+          // 第二行：VU 铺满整行；工具栏关掉电平后整行消失，卡片同步变矮。
+          .when_some(peak, |card, peak| {
+            card.child(
+              div()
+                .flex()
+                .items_center()
+                .h(px(8.))
+                .px(px(t::CARD_PAD))
+                .child(meter_bar(peak, 24, 8.)),
+            )
+          })
           // 第三行：小字详情（应用名 / 设备名 / 关键参数）。
           .child(
             div()

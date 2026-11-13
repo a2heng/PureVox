@@ -485,6 +485,16 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("正常", "OK");
     m.insert("手机连接", "Phone connection");
     m.insert("手机扫码连接", "Scan with the phone app");
+    m.insert("CA 说明", "About CA");
+    m.insert("二维码生成中…", "Generating QR code…");
+    m.insert(
+      "手机和电脑连同一个 Wi-Fi：用 App 扫右边的码，或用浏览器打开下面的地址。",
+      "Keep the phone and computer on the same Wi-Fi: scan the QR code or open the address below in a browser.",
+    );
+    m.insert(
+      "浏览器首次访问会提示证书不安全：点「CA 说明」安装一次本地 CA。",
+      "The browser will warn about the certificate on first visit: use “About CA” to install the local CA once.",
+    );
     m.insert("连接状态", "Connection status");
     m.insert("播放缓冲", "Playback buffer");
     m.insert("电脑 → 手机", "PC → phone");
@@ -589,6 +599,11 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("参数", "Parameters");
     m.insert("参考语音", "Reference voice");
     m.insert("录制 10 秒参考", "Record 10 s reference");
+    m.insert("隐藏电平", "Hide meters");
+    m.insert("显示电平", "Show meters");
+    m.insert("已隐藏电平", "Meters hidden");
+    m.insert("已显示电平", "Meters shown");
+    m.insert("保存设置失败：", "Failed to save settings: ");
     m.insert("重新录制 10 秒参考", "Re-record 10 s reference");
     m.insert("录制中…", "Recording…");
     m.insert("录制中", "Recording");

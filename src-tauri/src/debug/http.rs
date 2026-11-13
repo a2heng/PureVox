@@ -48,6 +48,7 @@ use super::{Probe, SharedHub, UiCommand, events, http_port, metrics};
 const ENDPOINTS: &[&str] = &[
   "/debug",
   "/debug/system",
+  "/debug/cpu",
   "/debug/audio",
   "/debug/devices",
   "/debug/logs",
@@ -165,6 +166,53 @@ fn route(hub: &SharedHub, path: &str, query: &str) -> (&'static str, Value) {
       (
         "200 OK",
         head(json!({ "system": snap.system }), snap.ts, snap.uptime_ms),
+      )
+    }
+    // CPU 归因专用：进程/系统占用 + 线程存活 + 每列每行的推理/节拍耗时。
+    // 调 VU 开关、加节点组合时，直接对比 process_pct 与 rows[].inference_ms_*。
+    "/debug/cpu" => {
+      let snap = hub.snapshot();
+      let columns: Vec<Value> = snap
+        .audio
+        .engine_info
+        .columns
+        .iter()
+        .map(|c| {
+          json!({
+            "index": c.index,
+            "state": c.state,
+            "hop_rate": c.hop_rate,
+            "max_work_ms": c.max_work_ms,
+            "last_late_ms": c.last_late_ms,
+            "max_late_ms": c.max_late_ms,
+            "tick_overrun_per_s": c.tick_overrun_per_s,
+            "rows": c.rows.iter().map(|r| json!({
+              "index": r.index,
+              "kind": r.kind,
+              "ptype": r.ptype,
+              "label": r.label,
+              "channels": r.channels,
+              "enabled": r.enabled,
+              "inference_ms_avg": r.inference_ms_avg,
+              "inference_ms_max": r.inference_ms_max,
+              "inference_over_per_s": r.inference_over_per_s,
+              "buffer_ms": r.buffer_ms,
+            })).collect::<Vec<_>>(),
+          })
+        })
+        .collect();
+      (
+        "200 OK",
+        head(
+          json!({
+            "cpu": snap.system.cpu,
+            "threads": snap.audio.engine_info.threads,
+            "columns": columns,
+            "models": snap.audio.engine_info.models,
+          }),
+          snap.ts,
+          snap.uptime_ms,
+        ),
       )
     }
     "/debug/audio" => {

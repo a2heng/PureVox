@@ -199,8 +199,16 @@ pub struct Workspace {
   subs: Vec<Subscription>,
   /// 设置缓存（网络端口 / 抖动缓冲等；右侧网络卡片直接改它并落盘）
   settings: crate::config::AppSettings,
+  /// 节点卡片是否显示 VU 电平行（工具栏开关，落盘到 settings.show_vu）
+  show_vu: bool,
   /// 网络服务快照（每 1 s 刷一次；卡片常驻在右侧）
   net_stats: Option<crate::net::hub::NetStats>,
+  /// 网络卡片里的端口输入框（懒创建；输入即更新二维码，暂停后自动应用）
+  net_port_input: Option<Entity<gpui_kit::component::input::InputState>>,
+  /// 输入框里正在显示的端口（二维码 / 复制立即跟随；实际监听在暂停后重启）
+  net_port_draft: Option<u16>,
+  /// 端口输入防抖代号：只有最后一次输入会真正重启服务
+  net_port_gen: u64,
   net_ifaces: Vec<crate::net::addrs::NetIface>,
   net_ip: String,
   net_qr: Option<std::path::PathBuf>,
@@ -281,6 +289,7 @@ impl Workspace {
       _ => 0,
     };
     let was_running = audio.is_running();
+    let show_vu = settings.show_vu;
     let mut this = Workspace {
       focus_handle,
       audio,
@@ -301,7 +310,11 @@ impl Workspace {
       sliders: std::collections::HashMap::new(),
       subs: Vec::new(),
       settings,
+      show_vu,
       net_stats: None,
+      net_port_input: None,
+      net_port_draft: None,
+      net_port_gen: 0,
       net_ifaces,
       net_ip,
       net_qr: None,
@@ -564,8 +577,17 @@ impl Workspace {
       self.spawn_apply(plan);
       dirty = true;
     }
-    // 引擎运行时逐节点电平在动，必须重绘；停着就只等上面两件事。
-    dirty || self.audio.is_running()
+    // 引擎运行时逐节点电平在动，必须重绘；关掉 VU 且没有频谱/录音进度时，
+    // 不再按 12.5 Hz 空转重绘（音频引擎本身不受这个开关影响）。
+    let recorder_busy = matches!(
+      rec.phase,
+      crate::recorder::RecorderPhase::Recording
+        | crate::recorder::RecorderPhase::Finishing
+        | crate::recorder::RecorderPhase::Encoding
+    );
+    let live = self.audio.is_running()
+      && (self.show_vu || recorder_busy || self.plan.nodes().any(|n| n.ptype == "viz"));
+    dirty || live
   }
 
   fn spawn_job(&mut self, what: &str, f: impl FnOnce() -> Result<String, String> + Send + 'static) {
@@ -650,7 +672,7 @@ impl Workspace {
       if count == 0 {
         continue;
       }
-      let (w, h) = Self::card_size(n);
+      let (w, h) = Self::card_size_for(n, self.show_vu);
       for p in 0..count {
         let (x, y) = Self::port_xy(n, want_input, p, w, h);
         // 吸附到端子的外沿（线本来画到方块外面）
@@ -827,7 +849,7 @@ impl Render for Workspace {
                       let Some(n) = this.plan.node(node) else {
                         return;
                       };
-                      let (w, h) = Self::card_size(n);
+                      let (w, h) = Self::card_size_for(n, this.show_vu);
                       let (sx, sy) = Self::port_xy(n, input, port as usize, w, h);
                       (sx, sy, pos)
                     }
@@ -853,7 +875,7 @@ impl Render for Workspace {
               if let Some((tn, tinput, tp)) = target
                 && let Some(n) = this.plan.node(tn)
               {
-                let (w, h) = Self::card_size(n);
+                let (w, h) = Self::card_size_for(n, this.show_vu);
                 let (tx, ty) = Self::port_xy(n, tinput, tp as usize, w, h);
                 cur = (tx, ty + if tinput { -PORT_H / 2.0 } else { PORT_H / 2.0 });
               }
@@ -1008,6 +1030,38 @@ impl Workspace {
             cx.notify();
           },
         )),
+      )
+      // VU 显示开关：眼睛带斜线 = 隐藏；不是胶囊开关，保持顶栏图标命令的统一形态。
+      .child(
+        toolbar_icon(
+          cx,
+          "vu",
+          if self.show_vu {
+            IconName::Eye
+          } else {
+            IconName::EyeOff
+          },
+          if self.show_vu {
+            "隐藏电平"
+          } else {
+            "显示电平"
+          },
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+          let next = !this.show_vu;
+          this.show_vu = next;
+          this.settings.show_vu = next;
+          this.status = match crate::config::save_settings(&this.settings) {
+            Ok(()) => i18n::tr(if next {
+              "已显示电平"
+            } else {
+              "已隐藏电平"
+            })
+            .to_string(),
+            Err(e) => format!("保存设置失败：{e}"),
+          };
+          cx.notify();
+        })),
       )
       .child(div().flex_1())
       .child(
