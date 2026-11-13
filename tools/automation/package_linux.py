@@ -256,7 +256,17 @@ def make_appimage(ver: str, staged: Path, tool: Path | None) -> Path | None:
         out = DIST / f"PureVox_{ver}_x64.AppImage"
         env = dict(os.environ, ARCH="x86_64")
         subprocess.run(
-            [str(tool), "--appimage-extract-and-run", str(appdir), str(out)],
+            # appimagetool 只找 `<desktop名>.appdata.xml`，而 AppStream 规范要求
+            # 文件名跟随反向域名 ID（我们是 com.purevox.PureVox.metainfo.xml）。
+            # 这个检查在 appimagetool 里是出了名的误报；用 --no-appstream 关掉它的
+            # 旧检查，元数据仍然原样打进 AppDir，发行版 / 软件中心照样能读。
+            [
+                str(tool),
+                "--appimage-extract-and-run",
+                "--no-appstream",
+                str(appdir),
+                str(out),
+            ],
             check=True,
             env=env,
         )
