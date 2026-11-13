@@ -47,7 +47,7 @@
     <string name="btn_rediscover">发现电脑</string>
     <string name="btn_reconnect">重新连接</string>
     <string name="msg_discovering">正在发现局域网里的电脑…</string>
-    <string name="msg_reuse_cached">正在用上次的地址连接 %1$s…</string>
+    <string name="msg_reuse_cached">正在用上次的地址连接 %1$s:%2$d…</string>
     <string name="msg_found">已发现 %1$s（%2$s:%3$d），正在连接…</string>
     <string name="msg_lost">%1$s 上的服务已停止</string>
     <string name="msg_no_target">请先填写电脑的 IP 或主机名（没搜到时可以手动填）</string>
@@ -161,6 +161,8 @@
     <string name="err_discovery_start">发现启动失败：%1$s</string>
     <string name="err_discovery_start_code">开始发现失败（%1$d），请手动填地址</string>
     <string name="err_ws_refused">连不上 %1$s:%2$d —— 请确认电脑已启动网络服务（端口 %3$d）、手机与电脑在同一局域网、电脑防火墙放行了该端口</string>
+    <string name="state_waiting_local_net">需要允许「本地网络」权限才能连接电脑</string>
+    <string name="err_local_net_permission">未授予本地网络权限：请在系统设置里允许 PureVox 访问本地网络</string>
     <string name="err_net_generic">网络错误（%1$s）</string>
     <string name="err_net_detail">网络错误：%1$s</string>
     <string name="err_ws_closed">电脑关闭了连接（code=%1$d）</string>

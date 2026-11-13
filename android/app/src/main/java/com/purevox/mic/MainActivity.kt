@@ -143,6 +143,9 @@ class MainActivity : AppCompatActivity() {
     private var downlink: SpeakerDownlink? = null
 
     private var host = DEFAULT_HOST
+    /** 当前**已建立/正在建立**的这次连接的真实目标；成功后才写进偏好。 */
+    private var sessionHost = ""
+    private var sessionPort = Proto.PORT
 
     /**
      * 电脑端的端口。**独立于 host 存**，因为它是用户可改的（NETWORK.md §4.1.1），
@@ -205,6 +208,10 @@ class MainActivity : AppCompatActivity() {
     private var found = false
     /** 发现到的协议版本；与本客户端不一致时明确告诉用户「客户端太旧」。 */
     private var foundProto: Int? = null
+    /** 用户扫码 / 手填 / 手动点连接选定的目标：mDNS 不得再覆盖它。 */
+    private var manualTarget = false
+    /** 等本地网络权限回来后是否要自动继续连接。 */
+    private var pendingLocalNetConnect = false
 
     // 界面控件
     private lateinit var etHost: EditText
@@ -340,6 +347,11 @@ class MainActivity : AppCompatActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            if (pendingLocalNetConnect) {
+                pendingLocalNetConnect = false
+                if (hasLocalNetworkPermission()) connect()
+                else log(getString(R.string.err_local_net_permission))
+            }
             applyState()
             updateStatus()
         }
@@ -377,7 +389,13 @@ class MainActivity : AppCompatActivity() {
 
         swConnect.setOnCheckedChangeListener { _, checked ->
             if (suppressConnectToggle) return@setOnCheckedChangeListener
-            if (checked && ws == null && !connecting) connect() else if (!checked) disconnect()
+            if (checked && ws == null && !connecting) {
+                // 用户手动打开连接 = 目标由用户选定，后续 mDNS 不再改它。
+                manualTarget = true
+                connect()
+            } else if (!checked) {
+                disconnect()
+            }
         }
 
         // 抖动缓冲滑块：**拖一下就生效**（不重建会话、不重连），并同步给电脑
@@ -411,11 +429,13 @@ class MainActivity : AppCompatActivity() {
         //   3. **扫码 / 手填** —— 首次配对、换电脑、或组播被交换机挡了（AP 隔离）。
         //
         // 三者不是三条实现，是**同一个「连上电脑」动作的三种拿地址方式**（AGENTS §2.1）。
-        startDiscovery()
-        // 缓存地址非空且不是出厂默认值（= 说明用户之前真的连过）就直接连，不问
+        // 有上次地址就直接连，**不先启动发现**：mDNS 缓存里可能还有旧端口记录，
+        // 在连接过程中把 59662 改回 59123。发现只在「没有缓存地址」或「缓存连接失败」时兜底。
         if (host.isNotEmpty()) {
-            log(getString(R.string.msg_reuse_cached, host))
+            log(getString(R.string.msg_reuse_cached, host, port))
             connect()
+        } else {
+            startDiscovery()
         }
 
         swMic.setOnCheckedChangeListener { _, _ ->
@@ -629,8 +649,14 @@ class MainActivity : AppCompatActivity() {
             showErr(getString(R.string.msg_scan_failed, text.take(80)))
             return
         }
+        manualTarget = true
+        // 扫码是用户明确选定目标：停掉自动发现，别让缓存里的旧端口记录再改输入框。
+        discovery?.stop()
+        discovery = null
         etHost.setText(h)
         etPort.setText((explicit ?: p).toString())
+        // 扫码是用户明确选择：立即保存，不等连接成功（连接失败也保留这次结果）。
+        saveTarget(h, explicit ?: p)
         log("扫码：${h}:${explicit ?: p} → 自动连接")
         // 扫完直接连：已经在连/已连着就先拆掉旧会话，再连新地址（同一台电脑也无碍）
         if (ws != null || connecting) disconnect()
@@ -674,6 +700,7 @@ class MainActivity : AppCompatActivity() {
      * 的监听一旦注册就绑定了当时的网络状态，换了 Wi-Fi 之后它不会自己跟上，必须重来。
      */
     private fun rediscover() {
+        manualTarget = false
         startDiscovery()
         connState = getString(R.string.msg_discovering)
         updateStatus()
@@ -697,13 +724,36 @@ class MainActivity : AppCompatActivity() {
                         updateStatus()
                         return@runOnUiThread
                     }
-                    // **端口必须一起带上**：电脑端的端口是可编辑的（NETWORK.md §4.1.1），
-                    // mDNS 报的是它在用的那个真实端口。只填 IP 会退回默认 59123，于是用户
-                    // 改过端口之后手机这边「怎么都连不上」，而症状完全看不出是端口问题。
+                    // **没有端口就忽略**：NSD 偶尔会先给一条 port=0 的未完成记录。
+                    // 不能拿它回退到 59123 —— 那正是「发现到的端口和电脑实际端口不一致」的来源。
+                    if (p <= 0) {
+                        log("mDNS 服务 $name 还没给出端口，忽略")
+                        return@runOnUiThread
+                    }
+                    // 扫码 / 手填 / 手动连接选定的目标优先：mDNS 里可能还有旧端口记录，
+                    // 不能在用户已经选好目标时把端口改回 59123。点「重新发现」会清掉这个标记。
+                    if (manualTarget) {
+                        log("已选定 ${host}:${port}，忽略 mDNS 发现 $h:$p")
+                        return@runOnUiThread
+                    }
+                    // **已连上就不要再让后来的 mDNS 记录改输入框**：同一台电脑可能还有
+                    // 旧服务记录 / 多张网卡，等一会儿才到的 59123 会把已经连上的 59662
+                    // 覆盖成默认端口，用户看到的就是「连的是 59662，重启后框里却是 59123」。
+                    if (ws != null && ready) {
+                        if (h != host || p != port) {
+                            log("发现另一台电脑 $h:$p，保持当前连接 $host:$port")
+                        }
+                        return@runOnUiThread
+                    }
+                    val sameTarget = h == host && p == port
+                    if (connecting && sameTarget) return@runOnUiThread
+                    // 缓存地址正在连但发现到的端口/地址不一样：取消旧尝试，立刻连 mDNS 给的
+                    // 真实端口。否则旧尝试会先超时 8 s，用户看到的就是「明明发现了却连不上」。
+                    if (connecting) disconnect()
+                    // 端口必须一起带上：电脑端端口可编辑，mDNS 报的是真实端口。
                     etHost.setText(h)
                     etPort.setText((if (p > 0) p else Proto.PORT).toString())
-                    // **不锁输入框 / 扫描按钮**：发现只是「帮你填好」，用户随时可以改端口
-                    // 或扫另一台电脑的码（锁上会让扫描按钮点了没反应，用户实测 2026-10-27）。
+                    // 发现只是「帮你填好」，不锁输入框 / 扫描按钮。
                     connState = getString(R.string.msg_found, name, h, p)
                     updateStatus()
                     // 自动连上：发现即连接，用户什么都不用点
@@ -749,6 +799,7 @@ class MainActivity : AppCompatActivity() {
     // ---------------------------------------------------------------- 连接
 
     private fun connect() {
+        if (!ensureLocalNetworkPermission()) return
         val target = readTarget()
         if (target.isEmpty()) {
             showErr(getString(R.string.msg_no_target))
@@ -759,7 +810,8 @@ class MainActivity : AppCompatActivity() {
         val (h, p) = splitTarget(target)
         host = h
         port = p
-        savePrefs()
+        sessionHost = h
+        sessionPort = p
         connecting = true
         ready = false
         rt = RtStats(this)
@@ -860,6 +912,8 @@ class MainActivity : AppCompatActivity() {
     private fun onReady(msg: ServerMsg.Ready) {
         ready = true
         connecting = false
+        // 连接成功才把目标写进偏好：手填/发现/扫码三条路都走这里，失败不落盘。
+        commitTarget(sessionHost, sessionPort)
         connState = getString(R.string.state_ready)
         if (msg.proto != Proto.VERSION) {
             showErr(getString(R.string.err_proto, msg.proto, Proto.VERSION))
@@ -1321,9 +1375,34 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
+    /** Android 17（API 37）起，访问局域网电脑需要这个运行时权限；之前的系统恒为 true。 */
+    private fun hasLocalNetworkPermission(): Boolean =
+        Build.VERSION.SDK_INT < 37 ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_LOCAL_NETWORK,
+            ) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * 连接前确认本地网络权限。没有就弹一次系统权限框，授权后自动继续刚才的连接。
+     * 没有这个权限时 TCP 会一直超时（看起来像防火墙/网线问题），mDNS 却可能仍然能发现电脑。
+     */
+    private fun ensureLocalNetworkPermission(): Boolean {
+        if (hasLocalNetworkPermission()) return true
+        pendingLocalNetConnect = true
+        connState = getString(R.string.state_waiting_local_net)
+        updateStatus()
+        log(getString(R.string.state_waiting_local_net))
+        permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK))
+        return false
+    }
+
     private fun requestPermissions() {
         val want = ArrayList<String>()
         if (!hasMicPermission()) want.add(Manifest.permission.RECORD_AUDIO)
+        if (!hasLocalNetworkPermission()) {
+            want.add(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val p = Manifest.permission.POST_NOTIFICATIONS
             if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
@@ -1938,12 +2017,28 @@ class MainActivity : AppCompatActivity() {
         spMicSource.setText(MicSources.label(this, micSourceId), false)
     }
 
-    private fun savePrefs() {
-        // 存归一后的 host + 端口（别把 `http://…/` 整串存进去；端口不是默认值时单独存）
-        if (etHost.text.toString().trim().isNotEmpty()) readTarget()
+    /** 只有「连接成功」才把目标写回偏好；失败 / 只是改了输入框都不落盘。 */
+    private fun commitTarget(h: String, p: Int) {
+        if (h.isEmpty() || p !in 1..65535) return
+        host = h
+        port = p
+        etHost.setText(h)
+        etPort.setText(p.toString())
+        saveTarget(h, p)
+    }
+
+    /** 扫码结果立即保存（用户明确选了目标），与是否连上无关。 */
+    private fun saveTarget(h: String, p: Int) {
+        if (h.isEmpty() || p !in 1..65535) return
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putString("host", host)
-            .putInt("port", port)
+            .putString("host", h)
+            .putInt("port", p)
+            .apply()
+    }
+
+    private fun savePrefs() {
+        // 目标地址只在连接成功 / 扫码时写；这里只存与连接目标无关的开关。
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putBoolean("mic", swMic.isChecked)
             .putBoolean("speaker", swSpeaker.isChecked)
             .putInt("micSource", micSourceId)

@@ -134,7 +134,14 @@ class Discovery(
                     ?.toString(Charsets.UTF_8)
                     ?.trim()
                     ?.toIntOrNull()
-                onFound(host, info.port, name, proto)
+                // TXT 里的 port 是 SRV 的冗余副本：Android NSD 在旧缓存/多网卡时可能
+                // 拿到过期 SRV 端口；有 TXT 就优先用 TXT 的真实端口。
+                val txtPort = info.attributes["port"]
+                    ?.toString(Charsets.UTF_8)
+                    ?.trim()
+                    ?.toIntOrNull()
+                    ?.takeIf { it in 1..65535 }
+                onFound(host, txtPort ?: info.port, name, proto)
             }
         }
         resolving = rl

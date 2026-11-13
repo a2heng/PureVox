@@ -520,9 +520,15 @@ python tools/automation/net_loopback.py --mode roundtrip --seconds 10 --json rt.
 `addrs_other.rs`（明确不可用的桩），**不引新依赖**。
 
 **服务端 mDNS**：注册 `_purevox._tcp`，端口即 `proto::PORT`，**随服务启停**（不做常驻）。
-TXT 只放 `v=<显示版本>` 与 `proto=<协议号>`，**不放 host** —— mDNS 本来就是用来找 host
-的，再放一遍是冗余。只在服务启动后广播，所以「服务没开 → 客户端扫不到 / 发现不到」是
-**预期行为**，界面上要写明，不要让人以为二维码坏了。
+TXT 放 `v=<显示版本>`、`proto=<协议号>` 与 `port=<实际监听端口>`，**不放 host** —— mDNS
+本来就是用来找 host 的，再放一遍是冗余。`port` 是 SRV 端口的冗余副本：Android 的 NSD
+在旧缓存 / 多网卡时可能拿到过期的 SRV 端口，客户端优先用 TXT 里的 `port`。只在服务启动后
+广播，所以「服务没开 → 客户端扫不到 / 发现不到」是**预期行为**，界面上要写明，不要让人
+以为二维码坏了。
+
+**Android 17（API 37）本地网络权限**：客户端 targetSdk 37，必须声明并请求
+`android.permission.ACCESS_LOCAL_NETWORK`；没有它时 mDNS/`adb shell nc` 可能还能用，
+但 App 自己发起的 TCP 会超时（看起来像防火墙）。授权后自动继续刚才的连接。
 
 #### 4.1.12 HTTPS 与编解码（2026-10-13 定）
 

@@ -325,7 +325,7 @@ class WsClient(
         is IOException -> {
             val m = t.message.orEmpty()
             if (m.contains("refused", true) || m.contains("Failed to connect", true) || t is java.net.ConnectException) {
-                context.getString(R.string.err_ws_refused, host, port, Proto.PORT)
+                context.getString(R.string.err_ws_refused, host, port, port)
             } else if (m.isEmpty()) {
                 context.getString(R.string.err_net_generic, t.javaClass.simpleName)
             } else {

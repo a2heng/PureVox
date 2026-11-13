@@ -33,7 +33,7 @@
     <string name="btn_rediscover">Find computer</string>
     <string name="btn_reconnect">Reconnect</string>
     <string name="msg_discovering">Looking for computers on the LAN…</string>
-    <string name="msg_reuse_cached">Connecting to %1$s (last used address)…</string>
+    <string name="msg_reuse_cached">Connecting to %1$s:%2$d (last used address)…</string>
     <string name="msg_found">Found %1$s (%2$s:%3$d), connecting…</string>
     <string name="msg_lost">The service on %1$s has stopped</string>
     <string name="msg_no_target">Enter the computer’s IP or hostname first (type it manually if discovery fails)</string>
@@ -147,6 +147,8 @@
     <string name="err_discovery_start">Discovery failed to start: %1$s</string>
     <string name="err_discovery_start_code">Discovery failed to start (%1$d); enter the address manually</string>
     <string name="err_ws_refused">Cannot reach %1$s:%2$d — check that the desktop network service is running (port %3$d), that the phone and computer are on the same LAN, and that the firewall allows the port</string>
+    <string name="state_waiting_local_net">Allow “Local network” access to connect to the computer</string>
+    <string name="err_local_net_permission">Local network permission was denied; allow PureVox to access the local network in system settings</string>
     <string name="err_net_generic">Network error (%1$s)</string>
     <string name="err_net_detail">Network error: %1$s</string>
     <string name="err_ws_closed">The desktop closed the connection (code=%1$d)</string>
