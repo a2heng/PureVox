@@ -22,7 +22,7 @@
   [target.x86_64-pc-windows-msvc]
   rustflags = ["-C", "link-arg=DirectML.lib"]
   ```
-- Android：`D:/AndroidDev/jdk` + `D:/AndroidDev/sdk`（见 `android/README.md`）。
+- Android：`D:/AndroidDevToolchain/jdk/jdk-21` + `D:/AndroidDevToolchain/sdk`（见 `android/README.md`）。
 
 ## 2. 开发构建
 
