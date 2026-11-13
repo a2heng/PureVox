@@ -505,9 +505,10 @@ impl Analyzer {
     let guard = 24;
     let mut best_k = 0usize;
     let mut best = f32::NEG_INFINITY;
-    for k in guard..=K_MAX.saturating_sub(guard) {
-      if self.corr[k] > best {
-        best = self.corr[k];
+    let end = K_MAX.saturating_sub(guard);
+    for (k, &c) in self.corr.iter().enumerate().take(end + 1).skip(guard) {
+      if c > best {
+        best = c;
         best_k = k;
       }
     }
@@ -522,9 +523,9 @@ impl Analyzer {
     }
     let guard_samples = 3 * PROBE_PER_MS; // 3 ms
     let mut second = f32::NEG_INFINITY;
-    for k in guard..=K_MAX.saturating_sub(guard) {
+    for (k, &c) in self.corr.iter().enumerate().take(end + 1).skip(guard) {
       if k.abs_diff(best_k) > guard_samples {
-        second = second.max(self.corr[k]);
+        second = second.max(c);
       }
     }
     let margin = if second.is_finite() {
