@@ -156,6 +156,7 @@ impl Default for Plan {
 // ── 端口 ──────────────────────────────────────────────────────────────
 
 /// 输入端口数。端口 = 通道；AEC 例外（近端/远端两个语义端口，固定单通道）。
+/// AI 节点（降噪 / TSE / 可视化）固定一个输入：多路接进来就在这 1 路求和。
 pub fn input_ports(ptype: &str, channels: u32) -> usize {
   match ptype {
     "echo_cancel" => 2,
@@ -164,6 +165,7 @@ pub fn input_ports(ptype: &str, channels: u32) -> usize {
     // 引擎仍按 Process 行执行（带着 media_slot 跑），但画板上它们是源节点。
     "soundpad" | "player" => 0,
     "audio_output" | "remote_speaker" => channels.max(1) as usize,
+    "denoise" | "tse" | "viz" => 1,
     _ => channels.max(1) as usize,
   }
 }
@@ -172,6 +174,7 @@ pub fn output_ports(ptype: &str, channels: u32) -> usize {
   match ptype {
     "audio_output" | "remote_speaker" => 0,
     "echo_cancel" => 1,
+    "denoise" | "tse" | "viz" => 1,
     _ => channels.max(1) as usize,
   }
 }
@@ -179,9 +182,9 @@ pub fn output_ports(ptype: &str, channels: u32) -> usize {
 /// 该节点允许的通道数上限（UI / 校验共用）。
 pub fn max_channels(ptype: &str) -> u32 {
   match ptype {
+    // AI 模型 / 语义节点固定单声道：端口只有一个，多路输入在这一个端口求和。
     "echo_cancel" | "tse" | "remote_mic" | "tone" | "remote_speaker" | "soundpad" | "player"
-    | "viz" | "app_capture" => 1,
-    "denoise" => 2,
+    | "viz" | "app_capture" | "denoise" => 1,
     "audio_input" | "loopback" | "audio_output" => 16,
     _ => 8,
   }
@@ -369,6 +372,17 @@ impl Plan {
           next += 1;
           changed = true;
         }
+        // 通道数不能超过节点类型的上限：旧计划里的 2 通道 AI 节点在这里收敛成单声道，
+        // 越界的入线随后由下面的端口校验丢掉（端口只有一个 → 多路进来就在 1 路求和）。
+        let max = max_channels(&r.ptype);
+        if r.channels > max {
+          r.channels = max;
+          changed = true;
+        }
+        if r.channels == 0 {
+          r.channels = 1;
+          changed = true;
+        }
         // 旧的 loopback「音量」/ 输出「发送增益」统一并进节点输入微调：
         // 图里只留一个增益控制，引擎也只读 `input_gain_db`。
         if let Some(v) = r.params.remove("volume_db") {
@@ -400,6 +414,39 @@ impl Plan {
           changed = true;
         }
       }
+    }
+
+    // 同一输出设备只保留一张卡片：重复节点的入线并入第一张，避免同一设备被两条
+    // 混音路径重复写（旧文件 / 手改会话里可能出现）。输出节点没有出线，合并是安全的。
+    let mut canonical: HashMap<String, u32> = HashMap::new();
+    let mut merge: Vec<(u32, u32)> = Vec::new();
+    for n in self.nodes() {
+      if n.ptype != "audio_output" {
+        continue;
+      }
+      let Some(dev) = n.device.as_ref().filter(|d| !d.is_empty()) else {
+        continue;
+      };
+      if let Some(&keep) = canonical.get(dev) {
+        merge.push((n.id, keep));
+      } else {
+        canonical.insert(dev.clone(), n.id);
+      }
+    }
+    for (dup, keep) in merge {
+      let (inputs, enabled, channels) = self
+        .node(dup)
+        .map(|n| (n.inputs.clone(), n.enabled, n.channels))
+        .unwrap_or_default();
+      if let Some(k) = self.node_mut(keep) {
+        k.inputs.extend(inputs);
+        k.enabled |= enabled;
+        k.channels = k.channels.max(channels);
+      }
+      for c in &mut self.columns {
+        c.rows.retain(|r| r.id != dup);
+      }
+      changed = true;
     }
 
     // 丢掉指向不存在节点 / 没有输出 / 端口越界的入线。
@@ -457,14 +504,28 @@ impl Plan {
       }
     }
     let mut per: HashMap<usize, usize> = HashMap::new();
+    // 每一层的高度取该层最高的卡片（可视化卡片更高），层与层之间留 44 px 走线。
+    let max_d = depth.values().copied().max().unwrap_or(0);
+    let mut depth_h = vec![0.0f32; max_d + 1];
+    for n in self.nodes() {
+      let d = depth.get(&n.id).copied().unwrap_or(0);
+      let h = node_size(n.kind, &n.ptype, n.channels).1;
+      depth_h[d] = depth_h[d].max(h);
+    }
+    let mut depth_y = vec![0.0f32; max_d + 1];
+    let mut y = 64.0;
+    for d in 0..=max_d {
+      depth_y[d] = y;
+      y += depth_h[d] + 44.0;
+    }
     for id in ids {
       let d = depth.get(&id).copied().unwrap_or(0);
       let row = per.entry(d).or_insert(0);
       if let Some(n) = self.node_mut(id) {
         // 端子在上/下 => 信号自上而下流：深度走 y，分支走 x。
-        // 卡片 240 宽 / 36 高：留 32 px 横向、52 px 纵向走线，整理后不会「飞出去」。
-        n.x = 48.0 + *row as f32 * 272.0;
-        n.y = 64.0 + d as f32 * 88.0;
+        // 卡片 200 宽：留 32 px 横向走线；纵向按每层最高卡片算，可视化不会被下一层压住。
+        n.x = 48.0 + *row as f32 * 232.0;
+        n.y = depth_y[d];
       }
       *row += 1;
     }
@@ -753,13 +814,12 @@ pub fn pad_hotkeys(plan: &Plan, hub: crate::debug::SharedHub) -> Vec<crate::hotk
 }
 
 /// 供 UI 使用：一个节点在画板上的默认尺寸（布局/碰撞用）。
-/// 卡片**主体**尺寸（不含上下端子排；UI 再按端口数加上端子高度）。
+/// 端子已经并进卡片边缘，不再是额外的一条编号带；高度只随「是否可视化卡片」变。
 pub fn node_size(kind: RowKind, ptype: &str, _channels: u32) -> (f32, f32) {
-  // 所有卡片同宽：端口固定在左侧固定槽位，换卡片也能一眼知道第 N 路的点在哪。
+  // 卡片三行：标题 + 前置增益 / VU / 内容；可视化卡片下面再放频谱。
   match (kind, ptype) {
-    (RowKind::Input, _) | (RowKind::Output, _) | (_, "echo_cancel") => (240.0, 36.0),
-    (_, "eq31") => (240.0, 36.0),
-    _ => (240.0, 36.0),
+    (_, "viz") => (200.0, 110.0),
+    _ => (200.0, 54.0),
   }
 }
 
@@ -794,12 +854,16 @@ mod tests {
     assert!(!node.params.contains_key("mic_gain_db"));
   }
 
-  /// 端口 = 通道：多通道处理节点的输入/输出端口数都跟着 `channels` 走。
-  /// 立体声降噪必须有 2 个输出端口，否则界面连不出第二条通道。
+  /// 端口 = 通道：多通道 DSP 节点的输入/输出端口数都跟着 `channels` 走。
+  /// AI 节点（降噪 / TSE / 可视化）固定单声道：只有 1 个输入 / 1 个输出。
   #[test]
   fn ports_follow_channels() {
-    assert_eq!(input_ports("denoise", 2), 2);
-    assert_eq!(output_ports("denoise", 2), 2);
+    assert_eq!(input_ports("denoise", 2), 1);
+    assert_eq!(output_ports("denoise", 2), 1);
+    assert_eq!(input_ports("tse", 2), 1);
+    assert_eq!(output_ports("tse", 2), 1);
+    assert_eq!(input_ports("viz", 2), 1);
+    assert_eq!(output_ports("viz", 2), 1);
     assert_eq!(input_ports("gain", 4), 4);
     assert_eq!(output_ports("gain", 4), 4);
     assert_eq!(input_ports("audio_output", 2), 2);
@@ -838,5 +902,109 @@ mod tests {
     assert!(plan.connect(1, 1, 2, 1).is_ok());
     assert!(plan.connect(1, 2, 2, 0).is_err(), "来源没有第 3 个端口");
     assert!(plan.connect(1, 0, 2, 2).is_err(), "目标没有第 3 个端口");
+  }
+
+  /// 同一输出设备的多张卡片合并成一张：入线保留，设备只混音一次。
+  #[test]
+  fn normalize_merges_duplicate_output_devices() {
+    let mut plan = Plan {
+      v: VERSION,
+      columns: vec![ColumnSpec {
+        enabled: true,
+        rows: vec![
+          RowSpec {
+            id: 1,
+            kind: RowKind::Input,
+            ptype: "tone".into(),
+            ..Default::default()
+          },
+          RowSpec {
+            id: 2,
+            kind: RowKind::Output,
+            ptype: "audio_output".into(),
+            device: Some("wasapi:test-out".into()),
+            channels: 1,
+            inputs: vec![PortInput {
+              from: 1,
+              from_port: 0,
+              to_port: 0,
+            }],
+            ..Default::default()
+          },
+          RowSpec {
+            id: 3,
+            kind: RowKind::Output,
+            ptype: "audio_output".into(),
+            device: Some("wasapi:test-out".into()),
+            channels: 2,
+            inputs: vec![PortInput {
+              from: 1,
+              from_port: 0,
+              to_port: 1,
+            }],
+            ..Default::default()
+          },
+        ],
+      }],
+    };
+    plan.normalize();
+    let outputs: Vec<&RowSpec> = plan.nodes().filter(|n| n.ptype == "audio_output").collect();
+    assert_eq!(outputs.len(), 1, "同一设备只应保留一张输出卡片");
+    let out = outputs[0];
+    assert_eq!(out.channels, 2, "合并时保留更大的通道数");
+    assert_eq!(out.inputs.len(), 2, "两条不同通道的入线都保留");
+    assert!(out.inputs.iter().any(|e| e.from == 1 && e.to_port == 0));
+    assert!(out.inputs.iter().any(|e| e.from == 1 && e.to_port == 1));
+  }
+
+  /// 整理时按每层最高卡片排 y：可视化卡片比普通卡片高，下一层不能被它压住。
+  #[test]
+  fn layout_leaves_room_for_tall_cards() {
+    let mut plan = Plan {
+      v: VERSION,
+      columns: vec![ColumnSpec {
+        enabled: true,
+        rows: vec![
+          RowSpec {
+            id: 1,
+            kind: RowKind::Input,
+            ptype: "tone".into(),
+            ..Default::default()
+          },
+          RowSpec {
+            id: 2,
+            kind: RowKind::Process,
+            ptype: "viz".into(),
+            inputs: vec![PortInput {
+              from: 1,
+              from_port: 0,
+              to_port: 0,
+            }],
+            ..Default::default()
+          },
+          RowSpec {
+            id: 3,
+            kind: RowKind::Output,
+            ptype: "remote_speaker".into(),
+            inputs: vec![PortInput {
+              from: 2,
+              from_port: 0,
+              to_port: 0,
+            }],
+            ..Default::default()
+          },
+        ],
+      }],
+    };
+    plan.layout_by_depth();
+    let viz = plan.node(2).unwrap();
+    let out = plan.node(3).unwrap();
+    let viz_h = node_size(viz.kind, &viz.ptype, viz.channels).1;
+    assert!(
+      out.y >= viz.y + viz_h,
+      "下一层压住了可视化卡片：viz y={} h={viz_h} out y={}",
+      viz.y,
+      out.y
+    );
   }
 }

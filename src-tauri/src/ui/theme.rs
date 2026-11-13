@@ -42,6 +42,16 @@ pub const NET: u32 = 0x4f8cff;
 pub const LOOPBACK: u32 = 0xa06bff;
 /// 回声消除（两路输入）
 pub const AEC: u32 = 0xe0a35a;
+/// 卡片标题字号：先在最大字号下量宽，放不进标题车道就按比例缩到最小字号。
+pub const CARD_TITLE_MAX: f32 = 11.0;
+/// 标题最小字号：长类型名（含翻译）可以缩到这么小，保证不把首行的增益挤掉。
+pub const CARD_TITLE_MIN: f32 = 6.0;
+/// 卡片内边距（左右）。
+pub const CARD_PAD: f32 = 6.0;
+/// 卡片首行跳过开关的宽度（与 `mini_switch` 同值）。
+pub const CARD_SWITCH_W: f32 = 24.0;
+/// 卡片首行右侧处理前增益的固定宽度。
+pub const CARD_PREGAIN_W: f32 = 46.0;
 /// 顶栏高度（像素）。
 pub const TOP_H: f32 = 52.0;
 /// 底栏高度。

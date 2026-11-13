@@ -53,15 +53,12 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 
 type Job = Arc<std::sync::Mutex<Option<Result<String, String>>>>;
 
-/// 多通道端子编号条的高度。
-const TERM_H: f32 = 16.0;
-
-/// 端子只占**一排**：号码 + 边缘上的接线凸起，通道再多也不加厚。
-fn term_rows(n: usize) -> usize {
-  // 单通道不画端子条（端子方块直接贴在卡片边缘）；多通道才占用一行放编号。
-  if n > 1 { 1 } else { 0 }
-}
-const PORT_SIZE: f32 = 12.0;
+/// 端子只占**一排**：号码直接写进突起的端点方块，不再另开编号条。
+const PORT_H: f32 = 14.0;
+/// 普通通道端点的宽度（一位 / 两位数字都在里面）。
+const PORT_W: f32 = 16.0;
+/// AEC 的「近端 / 远端」端点：两个字比通道号宽。
+const PORT_W_WIDE: f32 = 21.0;
 /// 端子固定槽位：第 1 路永远在同一 x，第 2 路永远在 +22，和卡片类型/通道数无关。
 const TERM_SLOT: f32 = 22.0;
 const TERM_PAD: f32 = 8.0;
@@ -237,6 +234,8 @@ pub struct Workspace {
   eq_drag: Option<EqDrag>,
   /// 可视化频谱的显示平滑（按 (列, 行)）；Rust 侧不改实测值
   viz_smooth: std::collections::HashMap<(usize, usize), Vec<f32>>,
+  /// 已经平滑到哪一帧：卡片和检查器可能在同一拍各渲染一次，不能平滑两次。
+  viz_seen: std::collections::HashMap<(usize, usize), u64>,
 }
 
 impl Drop for Workspace {
@@ -289,7 +288,7 @@ impl Workspace {
       last_refresh: Instant::now(),
       selected,
       dock_page: DockPage::Node,
-      status: "点「添加节点」加节点；拖动端口连线，点节点改参数".into(),
+      status: i18n::tr("点「添加节点」加节点；拖动端口连线，点节点改参数").into(),
       job: None,
       latency,
       drag: None,
@@ -320,6 +319,7 @@ impl Workspace {
       eq_geom: Rc::new(Cell::new(EqGeom::default())),
       eq_drag: None,
       viz_smooth: std::collections::HashMap::new(),
+      viz_seen: std::collections::HashMap::new(),
     };
     this.restart_hotkeys();
     // 热键录制：在 GPUI 动作分发之前截走按键（普通 key_down 会被动作抢先，见 `graph.rs`）。
@@ -367,6 +367,34 @@ impl Workspace {
     self.plan.position(id)
   }
 
+  /// 某一行的显示频谱（已做 EMA 平滑）。同一帧只平滑一次：卡片先渲染、检查器
+  /// 后渲染时不会把 α 吃掉两次。Rust 侧的实测值不改，这里只压显示抖动。
+  pub(super) fn viz_bands(&mut self, col: usize, row: usize) -> Option<Vec<f32>> {
+    let snap = crate::engine::viz::snapshot();
+    let frame = snap.frames.iter().find(|f| f.col == col && f.row == row)?;
+    let key = (col, row);
+    if self.viz_seen.get(&key) == Some(&frame.seq) {
+      return self
+        .viz_smooth
+        .get(&key)
+        .cloned()
+        .or_else(|| Some(frame.bands_db.clone()));
+    }
+    let prev = self.viz_smooth.get(&key);
+    let bands: Vec<f32> = frame
+      .bands_db
+      .iter()
+      .enumerate()
+      .map(|(i, &v)| match prev.and_then(|p| p.get(i)) {
+        Some(&old) => old + 0.45 * (v - old),
+        None => v,
+      })
+      .collect();
+    self.viz_smooth.insert(key, bands.clone());
+    self.viz_seen.insert(key, frame.seq);
+    Some(bands)
+  }
+
   fn selected_node(&self) -> Option<&RowSpec> {
     self.selected.and_then(|id| self.node(id))
   }
@@ -385,6 +413,9 @@ impl Workspace {
     let running = self.audio.is_running();
     if running != self.was_running {
       self.was_running = running;
+      // 引擎停 / 起时频谱换代：不要拿着上一代的平滑值继续画。
+      self.viz_smooth.clear();
+      self.viz_seen.clear();
       // 托盘图标：运行中 = 亮，已停止 = 暗（与 Tauri 版的 sync_tray 同一行为）。
       crate::tray::set_running(running);
       dirty = true;
@@ -602,9 +633,9 @@ impl Workspace {
         let (x, y) = Self::port_xy(n, want_input, p, w, h);
         // 吸附到端子的外沿（线本来画到方块外面）
         let y = if want_input {
-          y - PORT_SIZE / 2.0
+          y - PORT_H / 2.0
         } else {
-          y + PORT_SIZE / 2.0
+          y + PORT_H / 2.0
         };
         let d = ((x - cur.0).powi(2) + (y - cur.1).powi(2)).sqrt();
         if d < best_d {
@@ -802,14 +833,7 @@ impl Render for Workspace {
               {
                 let (w, h) = Self::card_size(n);
                 let (tx, ty) = Self::port_xy(n, tinput, tp as usize, w, h);
-                cur = (
-                  tx,
-                  ty + if tinput {
-                    -PORT_SIZE / 2.0
-                  } else {
-                    PORT_SIZE / 2.0
-                  },
-                );
+                cur = (tx, ty + if tinput { -PORT_H / 2.0 } else { PORT_H / 2.0 });
               }
               this.drag = Some(Drag::Wire {
                 node,
@@ -998,7 +1022,7 @@ impl Workspace {
   /// 组内条目是 ghost 行，只有文字和悬停底色，读起来像菜单而不是一排按钮。
   fn menu_panel(&self, _menu: Menu, cx: &mut Context<Self>) -> AnyElement {
     type Item = (&'static str, RowKind, &'static str);
-    let groups: [(&str, &[Item]); 5] = [
+    let groups: [(&str, &[Item]); 4] = [
       (
         "输入",
         &[
@@ -1039,13 +1063,6 @@ impl Workspace {
           ("音乐播放器", RowKind::Process, "player"),
         ],
       ),
-      (
-        "输出",
-        &[
-          ("输出设备", RowKind::Output, "audio_output"),
-          ("手机 / 客户端", RowKind::Output, "remote_speaker"),
-        ],
-      ),
     ];
     let mut panel = div()
       .absolute()
@@ -1055,7 +1072,7 @@ impl Workspace {
       .flex_wrap()
       .items_start()
       .gap_5()
-      .w(px(832.))
+      .w(px(880.))
       .p(px(t::SPACE_4))
       .rounded_lg()
       .bg(rgb(t::PANEL_HI))
@@ -1090,6 +1107,94 @@ impl Workspace {
       }
       panel = panel.child(col);
     }
+    // 输出：每台设备一行；点一下直接建一张已绑定设备的输出卡片，并自动接在选中节点后。
+    // 同设备已经在画板上时会在点击后选中已有卡片（`add_node` 的去重），标签也先标出来。
+    let mut out_col = div().flex().flex_col().gap_1().min_w(px(160.));
+    out_col = out_col.child(
+      div()
+        .pb(px(t::SPACE_1))
+        .text_size(px(t::TEXT_XS))
+        .text_color(rgb(t::MUTED))
+        .child(i18n::tr("输出").to_string()),
+    );
+    let mut outputs: Vec<(String, String, bool)> = self
+      .devices
+      .iter()
+      .filter(|d| d.direction == "output")
+      .map(|d| (d.id.clone(), d.name.clone(), d.is_default))
+      .collect();
+    outputs.sort_by_key(|(_, _, is_default)| !*is_default);
+    if outputs.is_empty() {
+      out_col = out_col.child(
+        Button::new("menu-item:audio_output")
+          .xsmall()
+          .ghost()
+          .w_full()
+          .accessibility_label(i18n::tr("输出设备").to_string())
+          .child(
+            div()
+              .flex_1()
+              .min_w_0()
+              .truncate()
+              .text_left()
+              .child(i18n::tr("输出设备").to_string()),
+          )
+          .on_click(cx.listener(move |this, _, _window, cx| {
+            this.menu = None;
+            this.add_node(RowKind::Output, "audio_output", cx);
+          })),
+      );
+    } else {
+      for (id, name, is_default) in outputs {
+        let used = self
+          .plan
+          .nodes()
+          .any(|n| n.ptype == "audio_output" && n.device.as_deref() == Some(id.as_str()));
+        let mut label = if is_default {
+          format!("{} · {name}", i18n::tr("默认"))
+        } else {
+          name.clone()
+        };
+        if used {
+          label.push_str(&format!(" · {}", i18n::tr("已添加")));
+        }
+        let item_id = format!("menu-out:{id}");
+        let dev = (id, name);
+        out_col = out_col.child(
+          Button::new(item_id)
+            .xsmall()
+            .ghost()
+            .w_full()
+            .accessibility_label(label.clone())
+            .child(div().flex_1().min_w_0().truncate().text_left().child(label))
+            .on_click(cx.listener(move |this, _, _window, cx| {
+              this.menu = None;
+              this.add_node_with_device(RowKind::Output, "audio_output", Some(dev.clone()), cx);
+            })),
+        );
+      }
+    }
+    let remote = i18n::tr("手机 / 客户端").to_string();
+    out_col = out_col.child(
+      Button::new("menu-item:remote_speaker")
+        .xsmall()
+        .ghost()
+        .w_full()
+        .accessibility_label(remote.clone())
+        .child(
+          div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .text_left()
+            .child(remote),
+        )
+        .on_click(cx.listener(move |this, _, _window, cx| {
+          this.menu = None;
+          this.add_node(RowKind::Output, "remote_speaker", cx);
+        })),
+    );
+    panel = panel.child(out_col);
     panel.into_any_element()
   }
 }
@@ -1109,15 +1214,17 @@ impl Workspace {
       .text_size(px(t::TEXT_SM))
       .text_color(rgb(if running { t::TEXT } else { t::MUTED }))
       .child(if self.job.is_some() {
-        "应用图中…".to_string()
+        i18n::tr("应用图中…").to_string()
       } else {
         self.status.clone()
       })
       .child(div().flex_1())
       .child(format!(
-        "{} 节点 · {} 条线 · {}",
+        "{} {} · {} {} · {}",
         self.plan.nodes().count(),
+        i18n::tr("节点"),
         self.plan.nodes().map(|n| n.inputs.len()).sum::<usize>(),
+        i18n::tr("条线"),
         if running {
           i18n::tr("引擎运行中")
         } else {

@@ -8,8 +8,7 @@
 
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 use gpui_kit::{
-  AnyElement, Context, Div, PathBuilder, Window, bounds, canvas, div, fill, point, prelude::*, px,
-  rgb, rgba,
+  AnyElement, Context, Div, PathBuilder, Window, canvas, div, point, prelude::*, px, rgb,
 };
 
 use super::theme as t;
@@ -576,49 +575,15 @@ impl Workspace {
       .into_any_element()
   }
 
-  /// 可视化节点：读 VizHub 的最新一帧，画电平 / 64 段频谱（10 Hz 由 tick 重绘）。
+  /// 可视化节点：画板卡片已经显示频谱；这里只给大图，不再重复 VU。
   pub(super) fn viz_editor(&mut self, id: u32, _cx: &mut Context<Self>) -> AnyElement {
     let Some((ci, ri)) = self.pos(id) else {
       return hint("这个节点不在计划里。").into_any_element();
     };
-    let mode = self
-      .plan
-      .node(id)
-      .and_then(|n| n.params.get("mode").cloned())
-      .unwrap_or_else(|| "both".into());
-    let snap = crate::engine::viz::snapshot();
-    let Some(frame) = snap.frames.iter().find(|f| f.col == ci && f.row == ri) else {
-      return hint("引擎未运行，或这一行还没有可视化数据。").into_any_element();
-    };
-
-    // 频谱显示平滑（10 Hz 刷新，α=0.45 ≈ 200 ms）：Rust 侧给的是实测值（/debug 同源），
-    // 不为了好看改数据；这里只把「看起来的抖动」压下去，低频窄段尤其需要。
-    let key = (ci, ri);
-    let prev = self.viz_smooth.get(&key);
-    let bands: Vec<f32> = frame
-      .bands_db
-      .iter()
-      .enumerate()
-      .map(|(i, &v)| match prev.and_then(|p| p.get(i)) {
-        Some(&old) => old + 0.45 * (v - old),
-        None => v,
-      })
-      .collect();
-    self.viz_smooth.insert(key, bands.clone());
-
-    let mut list = div().flex().flex_col().gap_2();
-    if mode != "spectrum" {
-      let peak = frame.peak_dbfs.unwrap_or(-160.0);
-      let rms = frame.rms_dbfs.unwrap_or(-160.0);
-      list = list
-        .child(field("峰值", format!("{peak:.1} dBFS")))
-        .child(field("RMS", format!("{rms:.1} dBFS")))
-        .child(seg_meter(10f32.powf(peak / 20.0), 44, 5., 10.));
+    match self.viz_bands(ci, ri) {
+      Some(bands) => spectrum_panel(bands, 150.).into_any_element(),
+      None => hint("引擎未运行，或这一行还没有可视化数据。").into_any_element(),
     }
-    if mode != "vu" {
-      list = list.child(spectrum_panel(bands));
-    }
-    list.into_any_element()
   }
 
   /// 31 段 EQ 编辑器：拖柱子改增益（热参数），预设 / 低切高切一键写整份设置。
@@ -1068,158 +1033,6 @@ fn eq_preset(name: &str) -> EqSettings {
     _ => {}
   }
   s
-}
-
-/// 频谱面板：对数频率轴（20 Hz–20 kHz）+ dBFS 纵轴（0…-90），按**电平**分三色。
-///
-/// 与 VU 电平条同一套阈值（绿 ≤ -45、黄 -45..-30、红 > -30），刻度全部画在框里；
-/// 61 段是 ISO 1/6 倍频程，所以「等宽柱子 = 对数轴」，低频不会挤成一条线。
-fn spectrum_panel(bands: Vec<f32>) -> AnyElement {
-  const MIN_DB: f32 = -90.0;
-  const AXIS_W: f32 = 34.0;
-  const AXIS_H: f32 = 15.0;
-  const F_LO: f32 = 20.0;
-  const F_HI: f32 = 20480.0;
-  /// 显示下限：低于 ~60 Hz 的前几段只覆盖 1–2 个 FFT bin，插值会画出左右翘的锯齿，
-  /// 对麦克风降噪也没有意义。**只影响显示**：分析仍然是 20 Hz 起，数组不改。
-  const DISPLAY_LO: f32 = 60.0;
-  let n = bands.len().max(1);
-  div()
-    .relative()
-    .h(px(150.))
-    .w_full()
-    .rounded_md()
-    .bg(rgb(t::BG))
-    .border_1()
-    .border_color(rgb(t::BORDER))
-    .overflow_hidden()
-    .child(
-      canvas(
-        |_, _, _| {},
-        move |bounds, _, window, cx| {
-          let all_w = bounds.size.width.as_f32();
-          let all_h = bounds.size.height.as_f32();
-          let w = (all_w - AXIS_W).max(8.0);
-          let h = (all_h - AXIS_H).max(8.0);
-          let o = bounds.origin;
-          let y_of = |db: f32| (-db / -MIN_DB).clamp(0.0, 1.0) * h;
-          let grid = rgba((t::BORDER << 8) | 0x80);
-          // 横向 dB 网格 + 右侧刻度
-          for db in [0.0f32, -20.0, -40.0, -60.0, -80.0] {
-            let y = y_of(db);
-            let mut pb = PathBuilder::stroke(px(1.));
-            pb.move_to(point(o.x, o.y + px(y)));
-            pb.line_to(point(o.x + px(w), o.y + px(y)));
-            if let Ok(p) = pb.build() {
-              window.paint_path(p, grid);
-            }
-            let line = shape_text(window, &format!("{db:.0}"), 9.0, t::MUTED);
-            let lx = all_w - 4.0 - line.width.as_f32();
-            let _ = line.paint(
-              point(o.x + px(lx), o.y + px((y - 5.0).max(0.0))),
-              px(10.),
-              gpui_kit::TextAlign::Left,
-              None,
-              window,
-              cx,
-            );
-          }
-          // 只画 >= 60 Hz 的段；前面的极低频段 bin 太少，画出来就是左右翘的锯齿。
-          let first = (0..n)
-            .find(|i| F_LO * 2f32.powf(*i as f32 / 6.0) >= DISPLAY_LO)
-            .unwrap_or(0);
-          let vis: Vec<f32> = bands.iter().skip(first).copied().collect();
-          let n_vis = vis.len().max(1);
-          let f_lo = F_LO * 2f32.powf(first as f32 / 6.0);
-          // 纵向频率网格（对数轴）+ 底部刻度
-          let x_of = |f: f32| ((f / f_lo).ln() / (F_HI / f_lo).ln()) * w;
-          for (f, label) in [(100.0f32, "100"), (1000.0, "1k"), (10000.0, "10k")] {
-            let x = x_of(f);
-            let mut pb = PathBuilder::stroke(px(1.));
-            pb.move_to(point(o.x + px(x), o.y));
-            pb.line_to(point(o.x + px(x), o.y + px(h)));
-            if let Ok(p) = pb.build() {
-              window.paint_path(p, grid);
-            }
-            let line = shape_text(window, label, 9.0, t::MUTED);
-            let lx = (x - line.width.as_f32() / 2.0).clamp(0.0, w - line.width.as_f32());
-            let _ = line.paint(
-              point(o.x + px(lx), o.y + px(h + 3.0)),
-              px(10.),
-              gpui_kit::TextAlign::Left,
-              None,
-              window,
-              cx,
-            );
-          }
-          // 柱子：底部 → 顶部按电平分三段着色（填充矩形，不是描线）
-          let step = w / n_vis as f32;
-          let bw = (step - 1.0).max(1.0);
-          for (i, &raw) in vis.iter().enumerate() {
-            let db = raw.clamp(MIN_DB, 0.0);
-            if db <= MIN_DB + 0.5 {
-              continue;
-            }
-            let x = i as f32 * step;
-            // 绿：-90 → min(db, -45)
-            let green_top = db.min(-45.0);
-            if green_top > MIN_DB + 0.01 {
-              paint_bar(
-                window,
-                o.x.as_f32() + x,
-                o.y.as_f32(),
-                bw,
-                y_of(green_top),
-                y_of(MIN_DB),
-                t::OK,
-              );
-            }
-            // 黄：-45 → min(db, -30)
-            if db > -45.0 {
-              let top = db.min(-30.0);
-              paint_bar(
-                window,
-                o.x.as_f32() + x,
-                o.y.as_f32(),
-                bw,
-                y_of(top),
-                y_of(-45.0),
-                t::AEC,
-              );
-            }
-            // 红：-30 → db
-            if db > -30.0 {
-              paint_bar(
-                window,
-                o.x.as_f32() + x,
-                o.y.as_f32(),
-                bw,
-                y_of(db),
-                y_of(-30.0),
-                t::DANGER,
-              );
-            }
-          }
-        },
-      )
-      .w_full()
-      .h_full(),
-    )
-    .into_any_element()
-}
-
-/// 画一根频谱柱的一段（`y0..y1` 是框内坐标，左上为 0）。
-fn paint_bar(window: &mut Window, x: f32, y_base: f32, w: f32, y0: f32, y1: f32, color: u32) {
-  if y1 <= y0 {
-    return;
-  }
-  window.paint_quad(fill(
-    bounds(
-      point(px(x), px(y_base + y0)),
-      gpui_kit::size(px(w), px(y1 - y0)),
-    ),
-    rgb(color),
-  ));
 }
 
 #[cfg(test)]

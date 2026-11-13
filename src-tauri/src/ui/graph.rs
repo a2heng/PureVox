@@ -17,8 +17,8 @@ use gpui_kit::{Context, Keystroke, MouseMoveEvent, Window};
 
 use super::theme as t;
 use super::{
-  DeleteNode, PendingMedia, RecordTarget, Redo, RefreshDevices, TERM_H, TERM_PAD, TERM_SLOT,
-  ToggleEngine, Undo, Workspace, i18n, term_rows,
+  DeleteNode, PendingMedia, RecordTarget, Redo, RefreshDevices, TERM_PAD, TERM_SLOT, ToggleEngine,
+  Undo, Workspace, i18n,
 };
 use crate::engine::hot::EqSettings;
 use crate::plan::{Plan, PortInput, RowKind, RowSpec, input_ports, max_channels, node_size};
@@ -441,15 +441,67 @@ impl Workspace {
     i18n::tr(Self::node_kind_label(n.kind, &n.ptype)).to_string()
   }
 
+  pub(super) fn node_detail(&self, n: &RowSpec, label: &str) -> String {
+    match n.kind {
+      RowKind::Input | RowKind::Output => {
+        let title = self.node_title(n);
+        if title == label {
+          // 只有真正需要设备的节点才提示「未选择设备」；测试音 / 手机由各自路径提供信号。
+          if matches!(
+            n.ptype.as_str(),
+            "audio_input" | "loopback" | "app_capture" | "audio_output"
+          ) && n.device.is_none()
+            && n.device_name.is_none()
+          {
+            i18n::tr("未选择设备").to_string()
+          } else {
+            String::new()
+          }
+        } else {
+          title
+        }
+      }
+      RowKind::Process => match n.ptype.as_str() {
+        "denoise" => n
+          .params
+          .get("model")
+          .and_then(|m| {
+            crate::infer::denoise_models()
+              .iter()
+              .find(|(f, _)| *f == m)
+              .map(|(_, l)| i18n::tr(l).to_string())
+          })
+          .unwrap_or_default(),
+        "gain" => n
+          .params
+          .get("gain_db")
+          .map(|v| format!("{v} dB"))
+          .unwrap_or_default(),
+        "echo_cancel" => {
+          let delay = n
+            .params
+            .get("far_delay_ms")
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.0);
+          if delay.abs() >= 0.05 {
+            format!("{} · {} ms", i18n::tr("近端 + 远端"), delay)
+          } else {
+            i18n::tr("近端 + 远端").to_string()
+          }
+        }
+        "viz" => i18n::tr("频谱").to_string(),
+        _ => String::new(),
+      },
+    }
+  }
+
   pub(super) fn card_size_parts(kind: RowKind, ptype: &str, channels: u32) -> (f32, f32) {
     let (base_w, base) = node_size(kind, ptype, channels);
     let ins = input_ports(ptype, channels);
     let outs = crate::plan::output_ports(ptype, channels);
     // 端子按固定槽位从左侧排；16 路时卡片才变宽，平常一律 240。
     let need = TERM_PAD * 2.0 + ins.max(outs) as f32 * TERM_SLOT;
-    let w = base_w.max(need);
-    let add = (term_rows(ins) + term_rows(outs)) as f32 * TERM_H;
-    (w, base + add)
+    (base_w.max(need), base)
   }
 
   pub(super) fn card_size(n: &RowSpec) -> (f32, f32) {
@@ -483,10 +535,10 @@ impl Workspace {
       if !hit {
         return (x, y);
       }
-      x += 264.0;
+      x += 232.0;
       if x > 2600.0 {
         x = 64.0;
-        y += 104.0;
+        y += 100.0;
       }
     }
     (64.0, 72.0)
@@ -530,6 +582,17 @@ impl Workspace {
   }
 
   pub(super) fn add_node(&mut self, kind: RowKind, ptype: &str, cx: &mut Context<Self>) {
+    self.add_node_with_device(kind, ptype, None, cx);
+  }
+
+  /// `output_device` 只用于 `audio_output`：菜单里直接选一台输出设备时把 id/名字带进来。
+  pub(super) fn add_node_with_device(
+    &mut self,
+    kind: RowKind,
+    ptype: &str,
+    output_device: Option<(String, String)>,
+    cx: &mut Context<Self>,
+  ) {
     self.snapshot();
     let id = self.plan.next_id();
     let (w, h) = Self::card_size_parts(kind, ptype, 1);
@@ -570,7 +633,10 @@ impl Workspace {
         params.insert("far_delay_ms".into(), "0.0".into());
       }
       "audio_output" => {
-        if let Ok(id) =
+        if let Some((dev, name)) = output_device {
+          device = Some(dev);
+          device_name = Some(name);
+        } else if let Ok(id) =
           crate::devices::default_output_id().ok_or_else(|| "没有输出设备".to_string())
         {
           device_name = crate::devices::display_name(&id, false).ok();
@@ -615,16 +681,42 @@ impl Workspace {
       cx.notify();
       return;
     }
+    // 输出设备继承选中节点的通道数（不超过设备物理通道），这样立体声接多台输出
+    // 时默认就是 L→L、R→R，而不是只接左声道。
+    if node.ptype == "audio_output"
+      && let Some(sel) = self.selected.and_then(|id| self.node(id)).cloned()
+    {
+      let src_ch = crate::plan::output_ports(&sel.ptype, sel.channels) as u32;
+      let dev_ch = node
+        .device
+        .as_deref()
+        .and_then(|d| self.device_channels(d))
+        .unwrap_or(16)
+        .clamp(1, 16);
+      node.channels = src_ch.clamp(1, dev_ch);
+    }
     // 新节点默认接在选中节点的输出上（如果类型合适），像 Element 的 auto-connect。
     if let Some(sel) = self.selected.and_then(|id| self.node(id)).cloned()
       && input_ports(&node.ptype, node.channels) > 0
       && crate::plan::output_ports(&sel.ptype, sel.channels) > 0
     {
-      node.inputs.push(PortInput {
-        from: sel.id,
-        from_port: 0,
-        to_port: 0,
-      });
+      if node.ptype == "audio_output" {
+        let ports = input_ports(&node.ptype, node.channels)
+          .min(crate::plan::output_ports(&sel.ptype, sel.channels));
+        for ch in 0..ports {
+          node.inputs.push(PortInput {
+            from: sel.id,
+            from_port: ch as u8,
+            to_port: ch as u8,
+          });
+        }
+      } else {
+        node.inputs.push(PortInput {
+          from: sel.id,
+          from_port: 0,
+          to_port: 0,
+        });
+      }
     }
     if self.plan.columns.is_empty() {
       self.plan.columns.push(crate::plan::ColumnSpec {
@@ -656,6 +748,18 @@ impl Workspace {
       self.status = format!("{} = {value}（重建生效）", key);
       self.apply_structure(cx);
     }
+  }
+
+  /// 输出设备的物理通道数（缓存里有原生格式时才算得出来）。
+  fn device_channels(&self, id: &str) -> Option<u32> {
+    self
+      .devices
+      .iter()
+      .find(|d| d.id == id && d.direction == "output")
+      .and_then(|d| match &d.native {
+        crate::debug::Probe::Ok { value } => Some(value.channels),
+        _ => None,
+      })
   }
 
   /// 该节点允许的最大通道数：节点类型上限与设备原生通道数取小。

@@ -588,25 +588,14 @@ static SPECS: &[NodeSpec] = &[
     kind: NodeKind::Process,
     params: &[],
   },
-  // 可视化：不改变信号，只在本行**所在位置**取电平与频谱（ARCHITECTURE.md §4）。
-  // `mode` 只决定界面画哪个（电平 / 频谱 / 两者），引擎两侧都算、都发布，所以改它
-  // **不需要重建会话**（界面走 `persist_plan`，见 `ui/viz.js`）。
+  // 可视化：不改变信号，只在本行**所在位置**取频谱（ARCHITECTURE.md §4 / UI.md）。
+  // 画板卡片的第一行已经有通用 VU，可视化只负责频谱；引擎照常同时发布电平和频谱，
+  // `/debug/viz` 仍能读到两者（界面不再提供 `mode`，避免同一份数据显示两遍）。
   NodeSpec {
     ptype: "viz",
     label: "可视化",
     kind: NodeKind::Process,
-    params: &[ParamSpec {
-      key: "mode",
-      label: "显示内容",
-      kind: ParamKind::Choice {
-        default: "both",
-        options: &[
-          ("both", "电平 + 频谱"),
-          ("vu", "电平（VU）"),
-          ("spectrum", "频谱"),
-        ],
-      },
-    }],
+    params: &[],
   },
   // ---- OBS 音频滤镜（参数默认值 / 范围 / 步进与 ~/obs-studio/plugins/obs-filters 对齐） ----
   NodeSpec {

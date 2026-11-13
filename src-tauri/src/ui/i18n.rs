@@ -520,6 +520,10 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("拖动柱子调 ±24 dB；拖动实时生效，松手落盘。", "Drag a band for ±24 dB; changes are live and saved on release.");
     m.insert("64 段对数频谱；每 10 ms 一帧，界面 10 Hz 刷新。", "64-band log spectrum; one frame per 10 ms, redrawn at 10 Hz.");
     m.insert("引擎未运行，或这一行还没有可视化数据。", "Engine is stopped, or this node has no visualization data yet.");
+    m.insert("引擎未运行", "Engine stopped");
+    m.insert("近端 + 远端", "Near + far");
+    m.insert("默认", "Default");
+    m.insert("已添加", "Added");
     m.insert("已取消录制热键", "Hotkey recording cancelled");
     m.insert("按下新的全局热键…（Esc 取消）", "Press the new global hotkey… (Esc to cancel)");
     m.insert("按下这个音效的热键…（Esc 取消）", "Press this pad's hotkey… (Esc to cancel)");
@@ -552,6 +556,22 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("刷新应用列表", "Refresh app list");
     m.insert("只列出正在出声的应用（Windows 10 2004+）；点「刷新应用列表」。", "Only apps currently playing audio are listed (Windows 10 2004+); click “Refresh app list”.");
     m.insert("当前应用", "Current app");
+    m.insert("系统声音（回环）", "System audio (loopback)");
+    m.insert("手机麦克风", "Phone microphone");
+    m.insert("测试音", "Test tone");
+    m.insert("AI 降噪", "AI denoise");
+    m.insert("回声消除 AEC", "Echo cancellation AEC");
+    m.insert("31 段 EQ", "31-band EQ");
+    m.insert("输出设备", "Output device");
+    m.insert("手机 / 客户端", "Phone / client");
+    m.insert("自动增益", "Auto gain");
+    m.insert("节点", "nodes");
+    m.insert("条线", "wires");
+    m.insert("应用图中…", "Applying graph…");
+    m.insert(
+      "点「添加节点」加节点；拖动端口连线，点节点改参数",
+      "Click “Add node” to add one; drag ports to connect; click a node to edit.",
+    );
     m.insert("内容", "Content");
     m.insert("引擎运行中", "Engine running");
     m.insert("引擎已停止", "Engine stopped");
