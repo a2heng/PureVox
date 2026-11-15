@@ -991,7 +991,7 @@ impl Workspace {
             ),
         )
         .child(hint(
-          "创建后，在其它软件里把「PureVox out」或「PureVox mic」设为麦克风即可。",
+          "用法：在 PureVox 里把输出设备选成「PureVox out」，其它软件再把「PureVox mic」设为麦克风。",
         ));
     }
 

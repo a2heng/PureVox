@@ -223,6 +223,7 @@ pub(crate) fn reopen_main_window(cx: &mut gpui_kit::App) {
 pub(crate) fn hide_main_window(cx: &mut gpui_kit::App) -> bool {
   #[cfg(windows)]
   {
+    let _ = cx;
     tray::hide_main()
   }
   #[cfg(not(windows))]

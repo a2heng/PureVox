@@ -501,6 +501,7 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("未创建", "Not created");
     m.insert("正在处理…", "Working…");
     m.insert("创建后，在其它软件里把「PureVox out」或「PureVox mic」设为麦克风即可。", "After creating, pick \"PureVox out\" or \"PureVox mic\" as the microphone in other apps.");
+    m.insert("用法：在 PureVox 里把输出设备选成「PureVox out」，其它软件再把「PureVox mic」设为麦克风。", "Usage: select \"PureVox out\" as PureVox's output device, then pick \"PureVox mic\" as the microphone in other apps.");
     m.insert("不可用", "Unavailable");
     m.insert("正常", "OK");
     m.insert("手机连接", "Phone connection");
