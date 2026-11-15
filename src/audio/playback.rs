@@ -131,9 +131,14 @@ fn run(
 
   // ---- 打开设备（WASAPI 直连：低延迟共享优先）----
   let setup = crate::audio::with_device_retry(|| -> Result<Setup, String> {
-    let (_, raw_name) = crate::devices::find(&device_id, false)?;
-    // 调试面板/流名字用枚举缓存里的系统名（Pulse 的 Description），不要 cpal 的裸名。
-    let name = crate::devices::display_name(&device_id, false).unwrap_or(raw_name);
+    // `pulse:<sink>`（蓝牙 / 虚拟声卡）不是 cpal 设备，不能走 `devices::find`；
+    // 它的名字从枚举缓存取，真正打开在 `out::probe/start` 里分派给 pacat。
+    let name = if device_id.starts_with("pulse:") {
+      crate::devices::display_name(&device_id, false).unwrap_or_else(|_| device_id.clone())
+    } else {
+      let (_, raw_name) = crate::devices::find(&device_id, false)?;
+      crate::devices::display_name(&device_id, false).unwrap_or(raw_name)
+    };
     let format = crate::audio::out::probe(&device_id)?;
     let conv = Converter::new(SAMPLE_RATE, format.rate, HOP, true)?;
     // 设备环目标水位：低延迟共享（2.67 ms 周期）10 ms 就够；退回普通共享（10 ms 周期、
