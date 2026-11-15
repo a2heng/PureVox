@@ -61,7 +61,7 @@ SMOKE_POLL = 60      # 轮询次数
 SMOKE_INTERVAL = 0.5  # 秒
 
 ROOT = Path(__file__).resolve().parents[2]
-BUNDLE = ROOT / "src-tauri" / "target" / "release" / "bundle"
+BUNDLE = ROOT / "target" / "release" / "bundle"
 
 IS_WIN = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")

@@ -20,7 +20,7 @@
 <!--
   自适应图标的**背景层**：满幅竖向渐变，**不能带圆角**。
 
-  色值量自 src-tauri/icons/icon.png 与 cargo tauri icon 生成的
+  色值量自 icons/icon.png 与 cargo tauri icon 生成的
   mipmap-*/ic_launcher_foreground.png（P 两处独立实测一致）。
 
   为什么不是纯色：`cargo tauri icon` 从 `audio_icon_base.png` 提取主色填

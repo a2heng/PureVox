@@ -51,7 +51,7 @@ import _utf8  # noqa: E402  （刻意放在 path 注入之后）
 _utf8.force()
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src-tauri"
+SRC = ROOT
 UI = SRC / "ui"
 
 GATES = ("fmt", "clippy", "build", "test", "ui", "version", "bundle")
@@ -150,7 +150,7 @@ def gate_ui() -> None:
     # 旧 WebView 前端已随 GPUI 重建删除，只剩调试面板的 JS（debug.js / i18n.js …）。
     # 没有 `jsconfig.json` 就没有可类型检查的工程 —— **明确跳过并说明**，不要静默通过。
     if not (UI / "jsconfig.json").is_file():
-        print("  跳过：src-tauri/ui/jsconfig.json 不存在（GPUI 界面是 Rust；调试面板 JS 无类型配置）")
+        print("  跳过：ui/jsconfig.json 不存在（GPUI 界面是 Rust；调试面板 JS 无类型配置）")
         return
     # Windows 上 tsc 常常只以 .cmd/.ps1 形式存在（npm 全局包装脚本），shutil.which 只认
     # 可执行扩展名。这里显式把三种形态都试一遍，找不到再报「工具缺失」而不是

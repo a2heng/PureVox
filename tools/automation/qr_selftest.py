@@ -27,7 +27,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-QR_JS = ROOT / "src-tauri" / "ui" / "qrcode.js"
+QR_JS = ROOT / "ui" / "qrcode.js"
 
 # 覆盖：典型局域网 URL（手机面板实际会渲染的东西）、IPv6、带查询串、
 # 纯 ASCII 边界（触发模式自动切换）、逐档长度（触发版本自动选择与分块/交错）。

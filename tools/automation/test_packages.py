@@ -62,7 +62,7 @@ def repo_root() -> Path:
 
 
 def bundle_dir() -> Path:
-    return repo_root() / "src-tauri" / "target" / "release" / "bundle"
+    return repo_root() / "" / "target" / "release" / "bundle"
 
 
 def say(*parts: str) -> None:

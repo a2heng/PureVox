@@ -12,5 +12,5 @@
 
 - [ ] 一个提交只做一件事，scope 写明 `desktop` / `android` / `core` / `docs` / `ci`
 - [ ] 设计变更已先改文档（`UI.md` / `SESSION-V2.md` 等）
-- [ ] 新增用户可见中文已补 `src-tauri/src/ui/i18n.rs` 的 en 条目
+- [ ] 新增用户可见中文已补 `src/ui/i18n.rs` 的 en 条目
 - [ ] 没有留下未使用的实现 / 旧路径 / 临时调试输出

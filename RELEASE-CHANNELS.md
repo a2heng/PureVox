@@ -9,7 +9,7 @@
 
 | 通道 | tag | 工作流 | 更新检查 | 更新日志范围 | 产物 |
 | --- | --- | --- | --- | --- | --- |
-| 桌面（Windows + Linux） | `v<yyyy.MM.dd.HHmm>` | `.github/workflows/release.yml` | `src-tauri/src/update/`（`.deb` / `.AppImage` / `-setup.exe`） | 除 `android/` 外的提交 | Windows `...-setup.exe` + Linux `...-linux-x64.deb` / `.AppImage` |
+| 桌面（Windows + Linux） | `v<yyyy.MM.dd.HHmm>` | `.github/workflows/release.yml` | `src/update/`（`.deb` / `.AppImage` / `-setup.exe`） | 除 `android/` 外的提交 | Windows `...-setup.exe` + Linux `...-linux-x64.deb` / `.AppImage` |
 | 安卓 | `android-v<yyyy.MM.dd.HHmm>` | `.github/workflows/android-release.yml` | `UpdateChecker`（只认 `android-v*`） | 只列 `android/` 下的提交 | 签名 APK |
 
 桌面通道**一个 tag 同时打 Windows 和 Linux**（`release.yml` 的 `windows` + `linux` 两个 job，
@@ -78,13 +78,13 @@ tag 的 `HHmm` 区分；显示版本 `yy.M.d` 可以重复，但 tag 必须唯�
    也不要把无关重构塞进功能提交（更新日志是按提交标题生成的，混在一起用户就看不懂）。
 2. **scope 写平台**（conventional commits 的 scope）：
    - `feat(android): ...` / `fix(android): ...` —— 只改 `android/`；
-   - `feat(desktop): ...` / `fix(desktop): ...` —— 只改桌面（`src-tauri/` 等）；
+   - `feat(desktop): ...` / `fix(desktop): ...` —— 只改桌面（`src/`、`icons/`、`ui/` 等）；
    - `feat(core): ...` / `fix(core): ...` —— 两边共享（协议、工具链、共享文档）；
    - `feat(ui): ...` / `fix(ui): ...` —— 桌面界面；
    - `docs:` / `chore:` / `ci:` —— 不面向用户，更新日志里尽量少出现。
 3. **路径要诚实**：更新日志按**路径**筛，不按提交前缀猜。
    - 安卓专属代码放 `android/`；
-   - 桌面专属代码放 `src-tauri/` 等；
+   - 桌面专属代码放 `src/`、`icons/`、`ui/` 等；
    - 共享协议 / 文档放两边都会读的位置（`NETWORK.md`、`AGENTS.md` 等），两边日志都会出现
      —— 这是正确的，因为两边真的都受影响。
 4. **协议兼容**：改手机 ⇄ 电脑协议时必须同一次提交更新 `NETWORK.md` +
@@ -96,7 +96,7 @@ tag 的 `HHmm` 区分；显示版本 `yy.M.d` 可以重复，但 tag 必须唯�
 
 ## 4. 更新检查（两条链，各自只认自己的 tag）
 
-- **桌面**：`src-tauri/src/update/mod.rs` 请求 GitHub `releases/latest`，只接受 `v*`
+- **桌面**：`src/update/mod.rs` 请求 GitHub `releases/latest`，只接受 `v*`
   （`tag_to_stamp` 会拒绝 `android-v*`）；`ASSET_SUFFIXES` 按平台匹配安装包。
 - **安卓**：`UpdateChecker` 拉一页 release 列表，只筛 `android-v*`，取 `versionCode`
   最大的那条，再取 `*.apk` 资产。**不能**用 `/releases/latest`：桌面的新 release 会排在

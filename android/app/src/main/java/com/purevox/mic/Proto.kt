@@ -22,7 +22,7 @@ package com.purevox.mic
 import org.json.JSONObject
 
 /**
- * 电脑端 WebSocket 协议的唯一镜像（对应 `src-tauri/src/net/proto.rs`）。
+ * 电脑端 WebSocket 协议的唯一镜像（对应 `src/net/proto.rs`）。
  *
  * 这里只做「拼 JSON / 解 JSON / 拼 8 字节帧头」，不含任何状态 —— 状态在
  * `net/WsClient.kt`、`audio/SpeakerDownlink.kt`、`audio/MicUplink.kt`。

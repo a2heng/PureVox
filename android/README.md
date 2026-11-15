@@ -22,7 +22,7 @@
 
 包名 `com.purevox.mic`，应用名 PureVox。
 
-## 协议（与 `src-tauri/src/net/proto.rs` 一一对应）
+## 协议（与 `src/net/proto.rs` 一一对应）
 
 | 项 | 值 |
 | --- | --- |
@@ -62,7 +62,7 @@ app/src/main/java/com/purevox/mic/
 │   ├── OpusDecoder.kt           下行解码（输出帧长按实际样本数，不假设）
 │   ├── MicUplink.kt             AudioRecord 采集 + 编码线程
 │   └── SpeakerDownlink.kt       收包即解码 → 播放环 → AudioTrack 阻塞写（唯一主时钟）
-│   └── Rt.kt                    播放环（固定 20 ms，与 src-tauri/src/net/rt.rs 逐行镜像）
+│   └── Rt.kt                    播放环（固定 20 ms，与 src/net/rt.rs 逐行镜像）
 ├── service/
 │   └── CaptureService.kt        会话前台服务（常驻通知 + WakeLock；通知按钮发广播回界面）
 └── update/

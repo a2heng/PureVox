@@ -30,13 +30,13 @@
 export PATH="/c/Users/<你>/.cargo/bin:$PATH"
 cd /d/PureVox
 
-cargo build --manifest-path src-tauri/Cargo.toml
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo fmt   --manifest-path src-tauri/Cargo.toml
-cargo test  --manifest-path src-tauri/Cargo.toml --bin purevox
+cargo build
+cargo clippy --all-targets -- -D warnings
+cargo fmt  
+cargo test  --bin purevox
 ```
 
-产物：`src-tauri/target/debug/purevox.exe`。
+产物：`target/debug/purevox.exe`。
 
 ## 3. 运行（隔离实例）
 
@@ -46,7 +46,7 @@ mkdir -p "$PV_HOME/.purevox"
 USERPROFILE="$PV_HOME" HOME="$PV_HOME" \
   PUREVOX_DEBUG_PORT=47823 \
   PUREVOX_MODEL_DIR="D:/PureVox/models" \
-  ./src-tauri/target/debug/purevox.exe
+  ./target/debug/purevox.exe
 ```
 
 验证钩子：`PUREVOX_MIX_AUTOSTART=1` 启动后自动开引擎；`PUREVOX_AUTONET=1` 自动开网络；
@@ -62,7 +62,7 @@ USERPROFILE="$PV_HOME" HOME="$PV_HOME" \
   PrintWindow 截图；GPUI 窗口同样适用）。
 - **门禁只有一份实现**：`python tools/automation/check.py`（fmt / clippy / build / test /
   version / bundle）。CI 的 `tests.yml` 与本地跑同一条命令，不要另写一套脚本。
-- UI 设计取值先看 `UI.md` 的「设计系统」；界面原语在 `src-tauri/src/ui/widgets.rs`，
+- UI 设计取值先看 `UI.md` 的「设计系统」；界面原语在 `src/ui/widgets.rs`，
   新页面不要复制按钮/字段样式。
 - Android：`cd android && ./gradlew :app:compileDebugKotlin`（或 `assembleDebug`）。
 
@@ -86,8 +86,8 @@ python3 tools/automation/package_linux.py --no-build
 
 产物：`dist/PureVox_<版本>_x64.tar.gz`、`dist/purevox_<版本>_amd64.deb`。
 deb 用 `/usr/bin/purevox` 包装脚本把 `PUREVOX_MODEL_DIR` 指到 `/usr/lib/purevox/models`。
-Linux 托盘只做「启停引擎 / 退出」（ksni，无 GTK）；关闭窗口按桌面正常退出（没有统一的
-「隐藏到托盘」协议）。
+Linux 托盘（ksni，无 GTK）提供「显示窗口 / 启停引擎 / 退出」；关闭窗口直接把窗口移除、
+进程与引擎继续跑（真正的托盘隐藏），托盘左键显示 / 隐藏，退出走托盘菜单。
 
 `RELEASE.md` 里的版本号与产物命名规则仍然有效，打包命令部分待重写。
 

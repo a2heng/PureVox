@@ -31,13 +31,13 @@ description: PureVox 无人值守 / 不改用户环境的验证手法（**以 Wi
 ```bash
 # Git Bash；临时目录按机器选
 export PV_TARGET="$LOCALAPPDATA/Temp/pv-target"   # 或 C:/Users/<你>/AppData/Local/Temp/pv-target
-CARGO_TARGET_DIR="$PV_TARGET" cargo build --manifest-path src-tauri/Cargo.toml
+CARGO_TARGET_DIR="$PV_TARGET" cargo build
 # 产物：$PV_TARGET/debug/purevox.exe
 ```
 
 - 依赖已有缓存时增量构建约 5~10 s；新依赖首次会久一些。
-- 前端资源（`src-tauri/ui/*`）是**编译期嵌入**的：改完 JS/CSS 必须重新 `cargo build`
-  （必要时 `touch src-tauri/src/main.rs` 强制重编），否则跑的仍是旧界面。
+- 前端资源（`ui/*`）是**编译期嵌入**的：改完 JS/CSS 必须重新 `cargo build`
+  （必要时 `touch src/main.rs` 强制重编），否则跑的仍是旧界面。
 - Linux 门禁用 WSL `Ubuntu-24.04`；本机 Windows 的 cargo 只编 Windows。
 
 ## 2. 隔离启动 + 调试钩子
@@ -154,7 +154,7 @@ adb shell am start -n com.purevox.mic.debug/com.purevox.mic.MainActivity
 python tools/automation/check.py            # fmt/clippy/build/test/ui/version/bundle
 # 或单项：python tools/automation/check.py -Gate clippy
 node tools/automation/i18n_lint.js          # 0 error / 0 warning
-cd src-tauri/ui && tsc -p jsconfig.json --noEmit
+cd ui && tsc -p jsconfig.json --noEmit
 ```
 
 - `check.py` 的 `clippy` 会先碰 crate 根强制重编；看到 `Fresh` 不代表刚编过。

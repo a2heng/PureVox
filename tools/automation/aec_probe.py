@@ -26,7 +26,7 @@ import sys
 import numpy as np
 
 SR = 48000
-F0, F1 = 1500.0, 2500.0      # 窄带扫频（与 src-tauri/src/engine/calib.rs 的 PROBE_F0/F1 一致）
+F0, F1 = 1500.0, 2500.0      # 窄带扫频（与 src/engine/calib.rs 的 PROBE_F0/F1 一致）
 DUR_MS = 120                 # 扫频时长
 LEAD_MS = 400                # 播放前的静音（给录音一点底噪样本）
 TAIL_MS = 900                # 播放后的余量（要能容下几十~几百 ms 的延时）

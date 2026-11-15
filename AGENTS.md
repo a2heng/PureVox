@@ -3,7 +3,7 @@
 实时 AI 音频降噪 / 目标说话人提取 / 回声消除的桌面应用。
 
 **栈**：GPUI + GPUI Kit（纯 Rust，无 WebView / IPC）+ Rust 音频引擎
-**工程**：`src-tauri/`（目录名保留；编译/运行见 `BUILD.md`）
+**工程**：仓库根（`Cargo.toml` + `src/`；编译/运行见 `BUILD.md`）
 
 > **本文件只保留总纲、索引和跨主题硬约束；细节在子文档里。**
 > 开工前先读 `ARCHITECTURE.md`；**实现与文档冲突时以文档为准**，改设计先改文档。
@@ -49,7 +49,7 @@
    - **已删除**（现役实现不引用，2026-10-27 随快照一起清掉）：
      `assets/icons/{audio_icon.ico, tray_running.ico, tray_stopped.ico, lite_tray.ico, lite_tray.png}`、
      `assets/fonts/ark-pixel-12px-monospaced-zh_cn.ttf`、`html/wasm/libopus-encoder.wasm.min.wasm`。
-     现役图标是 `src-tauri/icons/`、界面用系统字体（不捆绑字体文件）。
+     现役图标是 `icons/`、界面用系统字体（不捆绑字体文件）。
 6. **跨平台提交与发版**按 `RELEASE-CHANNELS.md`：桌面 `v*`、安卓 `android-v*` 两条独立
    通道（各自 release / 更新日志 / 更新检查），**不为某个平台开长期分支**；提交 scope 必须
    写明 `android` / `desktop` / `core`，更新日志按**路径**筛。发版前先读那份文档。

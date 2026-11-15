@@ -17,12 +17,12 @@
 
 | 层 | 位置 | 职责 | 禁止 |
 | --- | --- | --- | --- |
-| L0 平台 | `src-tauri/src/audio/`（capture / playback / fanout）、`devices.rs` | 设备枚举与打开、流读写、时钟主控 | 不做 DSP |
-| L1 DSP | `src-tauri/src/dsp/`（resampler / meter / ring） | 重采样、hop 切片、环形缓冲、播放时钟伺服、频谱 | 不碰设备 |
-| L2 引擎 | `src-tauri/src/engine/`（stage / pipeline / registry / column / components） | 列与行、信号装配、会话生命周期 | 不做设备枚举 |
-| L3 计划 | `src-tauri/src/plan.rs` | `SessionPlan`：配置 → 可启动描述；纯函数 | 不做 I/O |
-| L4 推理 | `src-tauri/src/infer/` | ONNX 会话加载/卸载与流式推理 | 不碰设备 |
-| L5 界面 | `src-tauri/src/ui/`（GPUI + GPUI Kit）、`main.rs` | 混音台、设备/路由、调试入口 | 不做信号处理 |
+| L0 平台 | `src/audio/`（capture / playback / fanout）、`devices.rs` | 设备枚举与打开、流读写、时钟主控 | 不做 DSP |
+| L1 DSP | `src/dsp/`（resampler / meter / ring） | 重采样、hop 切片、环形缓冲、播放时钟伺服、频谱 | 不碰设备 |
+| L2 引擎 | `src/engine/`（stage / pipeline / registry / column / components） | 列与行、信号装配、会话生命周期 | 不做设备枚举 |
+| L3 计划 | `src/plan.rs` | `SessionPlan`：配置 → 可启动描述；纯函数 | 不做 I/O |
+| L4 推理 | `src/infer/` | ONNX 会话加载/卸载与流式推理 | 不碰设备 |
+| L5 界面 | `src/ui/`（GPUI + GPUI Kit）、`main.rs` | 混音台、设备/路由、调试入口 | 不做信号处理 |
 
 **单一实现路径**：DSP 只在 L1，播放缓冲策略只在 L1，设备枚举只在 L0，推理会话只在 L4。
 新增音频功能 = 新增一个 Stage 或一种行/源，不改骨架。

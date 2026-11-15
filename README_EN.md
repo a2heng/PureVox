@@ -16,7 +16,7 @@ A1/A2. It is not a VoiceMeeter clone; AI processing and low latency come first.
   speakerphone), with delay calibration and level matching.
 - **OBS audio filters**: noise gate, compressor, limiter, expander, upward compressor, 3-band EQ and
   polarity invert — ranges, defaults and steps match OBS.
-- **31-band EQ / visualizer**: drag 31 bands (±24 dB, presets, low/high cut) and read VU + 64-band spectrum in the inspector.
+- **31-band EQ / visualizer**: drag 31 band dots (±24 dB, exact input, presets, low/high cut) and read VU + 64-band spectrum in the inspector.
 - **Multi-device mixer (native GPUI node canvas)**: sources, processing nodes and outputs are nodes;
   drag a wire between ports to route. Nodes can fan out / fan in; buses are named by purpose.
 - **Device pool**: one device used by several columns is opened once; multiple sources are summed by
@@ -49,15 +49,15 @@ reference recording, media nodes, tray, hotkey recording and cue presets are wir
 
 ```bash
 # Development build + run
-cargo build --manifest-path src-tauri/Cargo.toml
-./src-tauri/target/debug/purevox.exe
+cargo build
+./target/debug/purevox.exe
 
 # Tests / gate
-cargo test  --manifest-path src-tauri/Cargo.toml --bin purevox
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test  --bin purevox
+cargo clippy --all-targets -- -D warnings
 ```
 
-Installer packaging is not restored yet (the Tauri bundler is gone); see `BUILD.md`.
+Installers: NSIS on Windows, deb / AppImage on Linux (`python tools/automation/package_*.py`); see `BUILD.md` §5.
 
 ## Dependencies
 

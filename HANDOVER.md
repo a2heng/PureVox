@@ -91,14 +91,14 @@ buffer=280 f (5.83 ms)
 
 | 文件 | 作用 |
 | --- | --- |
-| `src-tauri/src/audio/out.rs` | **输出后端选择层**：定义 `Format` / `Sample`，按平台 re-export |
-| `src-tauri/src/audio/wasapi_out.rs` | Windows 输出：`probe()` 问格式+周期，`start()` 建流；回调线程 `run()` |
-| `src-tauri/src/audio/cpal_out.rs` | 非 Windows 输出（cpal），接口与上面一致 |
-| `src-tauri/src/audio/playback.rs` | 播放工作线程：48k 环 + 伺服 + 转换器 + 设备环补水 |
-| `src-tauri/src/audio/capture.rs` | 采集（仍是 cpal）+ PI 时钟伺服；`CallbackStats` 已改 `pub(crate)` |
-| `src-tauri/src/audio/loopback_windows.rs` | AEC 回环；`resolve_device` / `read_format` 改 `pub(super)` 供输出复用；**两个探测测试**也在文件末尾 |
-| `src-tauri/src/engine/latency.rs` | 逐列延迟探针 + 分段预算 + `/debug/latency` |
-| `src-tauri/src/audio/rt_guard.rs` | MMCSS（`Pro Audio`） |
+| `src/audio/out.rs` | **输出后端选择层**：定义 `Format` / `Sample`，按平台 re-export |
+| `src/audio/wasapi_out.rs` | Windows 输出：`probe()` 问格式+周期，`start()` 建流；回调线程 `run()` |
+| `src/audio/cpal_out.rs` | 非 Windows 输出（cpal），接口与上面一致 |
+| `src/audio/playback.rs` | 播放工作线程：48k 环 + 伺服 + 转换器 + 设备环补水 |
+| `src/audio/capture.rs` | 采集（仍是 cpal）+ PI 时钟伺服；`CallbackStats` 已改 `pub(crate)` |
+| `src/audio/loopback_windows.rs` | AEC 回环；`resolve_device` / `read_format` 改 `pub(super)` 供输出复用；**两个探测测试**也在文件末尾 |
+| `src/engine/latency.rs` | 逐列延迟探针 + 分段预算 + `/debug/latency` |
+| `src/audio/rt_guard.rs` | MMCSS（`Pro Audio`） |
 
 ## 5. 本机构建（Windows）
 
@@ -121,10 +121,10 @@ rustflags = ["-C", "link-arg=DirectML.lib"]           # pyke 包是 DirectML 版
 export PATH="/c/Users/a2heng/.cargo/bin:$PATH"
 cd /d/PureVox
 
-cargo build  --manifest-path src-tauri/Cargo.toml           # 约 1~2 min
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo fmt    --manifest-path src-tauri/Cargo.toml
-cargo test   --manifest-path src-tauri/Cargo.toml --bin purevox   # 176 passed, 3 ignored
+cargo build            # 约 1~2 min
+cargo clippy --all-targets -- -D warnings
+cargo fmt   
+cargo test   --bin purevox   # 176 passed, 3 ignored
 ```
 
 cargo 用国内镜像 `rsproxy`；rustup 用 USTC（`RUSTUP_DIST_SERVER`）。
@@ -140,7 +140,7 @@ USERPROFILE="$PV_HOME" HOME="$PV_HOME" \
   PUREVOX_DEBUG_PORT=47822 \
   PUREVOX_AUTOCALIB_MS=600000 \
   PUREVOX_MODEL_DIR="D:/PureVox/models" \
-  ./src-tauri/target/debug/purevox.exe
+  ./target/debug/purevox.exe
 ```
 
 读数据：
@@ -163,8 +163,8 @@ curl -s "http://127.0.0.1:47822/debug/latency"
 ### 6.2 两个端点测试（需要真实设备）
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml --bin purevox wasapi_caps   -- --ignored --nocapture
-cargo test --manifest-path src-tauri/Cargo.toml --bin purevox wasapi_lowlat -- --ignored --nocapture
+cargo test --bin purevox wasapi_caps   -- --ignored --nocapture
+cargo test --bin purevox wasapi_lowlat -- --ignored --nocapture
 ```
 
 ⚠️ `wasapi_lowlat` 里的 `ENDPOINT` 是这台机器 CABLE 的 GUID **硬编码**。换机器要改，

@@ -10,8 +10,8 @@ libopus（电脑端）
 许可证: BSD 3-Clause License
 网站: https://opus-codec.org/
 源代码: https://github.com/xiph/opus
-用途: 网络音频的 Opus 编解码。src-tauri/opus.dll 是预编译 x64 产物，运行时
-      LoadLibraryExW 加载（见 src-tauri/src/net/opus_sys.rs）；Linux 用系统
+用途: 网络音频的 Opus 编解码。opus.dll 是预编译 x64 产物，运行时
+      LoadLibraryExW 加载（见 src/net/opus_sys.rs）；Linux 用系统
       libopus.so.0。
 
 ==========================================================================
@@ -41,7 +41,7 @@ libopus-wasm
 许可证: MIT License
 网站: https://www.npmjs.com/package/libopus-wasm
 源代码: https://github.com/openclaw/libopus-wasm
-用途: 网页版客户端的 Opus 编解码（src-tauri/src/net/wasm/，随包分发的预编译产物）
+用途: 网页版客户端的 Opus 编解码（src/net/wasm/，随包分发的预编译产物）
 
 Copyright (c) 2026 openclaw
 

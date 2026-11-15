@@ -25,7 +25,7 @@ release 构建同样保留（不允许用编译开关剔除）。
 ### 1.2 本机 HTTP 调试接口
 
 - 只绑 `127.0.0.1`（禁止监听 `0.0.0.0` 或局域网地址），只读（JSON + 面板静态页面），无鉴权、无写操作。
-- 端口 **47821**（`http://127.0.0.1:47821/debug`），唯一定义在 `src-tauri/src/debug/mod.rs` 的
+- 端口 **47821**（`http://127.0.0.1:47821/debug`），唯一定义在 `src/debug/mod.rs` 的
   `DEBUG_HTTP_PORT`，改动须同步本节；端口被占用时日志报错并在 UI 面板「调试接口」行显示原因，不静默失败。
   **隔离测试实例**可用环境变量 `PUREVOX_DEBUG_PORT` 覆盖（默认仍是 47821，`debug::http_port()` 是唯一入口），
   这样本机已有 PureVox 在跑时第二个实例也能被脚本读到。
@@ -56,6 +56,10 @@ release 构建同样保留（不允许用编译开关剔除）。
 - **桌面验收只走接口**：`/debug/ui/*` 是界面命令队列（与按钮/菜单同一条 `apply_command` 路径），
   用它驱动加节点、连线、改通道、整理、校准；**不模拟鼠标/键盘，也不靠截图判断状态**。
   截图只用于最后确认布局，数值与成败一律读 `/debug`、`/debug/calib`、`/debug/logs`。
+- **输入探针**（`/debug` 的 `input` 段，无截图）：`downs / moves / last_x / last_y / last_ms / scale / tick_ms`。
+  区分三类问题：`tick_ms` 不前进 = UI 线程卡死；`moves/downs` 不增长 = 事件没到窗口；
+  坐标与 `scale` 对不上 = 命中框按错误的像素空间算（Wayland 逻辑像素 / X11 物理像素）。
+  最近一次鼠标按下由根节点的 `capture_any_mouse_down` 记录，先于子元素处理，不会被控件吞掉。
 - `engine_info.threads[]` 带 `tid`（操作系统线程 ID）：与任务管理器/PerfMon 的线程 CPU 对得上号，
   排查「哪个线程在烧 CPU」不用猜。
 - 字段只增不改名；新增字段同步更新本表。
@@ -90,9 +94,9 @@ release 构建同样保留（不允许用编译开关剔除）。
 
 ### 1.3 实现约束
 
-- **单一数据源**：Rust 侧 `DebugHub`（`src-tauri/src/debug/mod.rs`）维护唯一快照，UI 面板
+- **单一数据源**：Rust 侧 `DebugHub`（`src/debug/mod.rs`）维护唯一快照，UI 面板
   （GPUI 界面直接读 `DebugHub`，50 ms 轮询）与 HTTP 接口序列化的是**同一个 `DebugSnapshot`**；
-  调试面板（`src-tauri/ui/debug.js`）只渲染，禁止自己另算一套。
+  调试面板（`ui/debug.js`）只渲染，禁止自己另算一套。
 - **采集来源**（`debug/{system,gpu_*,mem_*}.rs`，按平台分文件）：
   - CPU / 内存总量与工作集：两平台都用 `sysinfo`，同一套口径。
   - **私有字节**：Windows `GetProcessMemoryInfo`（`PrivateUsage`，含已换出）；
@@ -107,7 +111,7 @@ release 构建同样保留（不允许用编译开关剔除）。
   由 `audio/out.rs` 分平台选择。设备刷新单一入口
   `devices::spawn_refresh`（启动时 + 面板「刷新」按钮），后台线程执行。
 - GPUI 界面在进程内绘制；「本进程」指标包含界面开销（不再有独立的 WebView2 子进程）。
-- **采集链路**（`src-tauri/src/audio/`）：设备按原生默认格式打开 → 回调线程只做交织样本写入 +
+- **采集链路**（`src/audio/`）：设备按原生默认格式打开 → 回调线程只做交织样本写入 +
   写 `rtrb` 无锁环 + 原子计数 → 每路一个工作线程（独占一条设备流）先按订阅者**逐通道拆分**
   （`dsp::split::split_active`：按帧 `step_by` 整段取，没人订阅的通道一次都不碰；10ch/2 路
   192k 实测 5 ms 块 6.5 µs → 0.8 µs），再用 `dsp::resampler` 重采样到（整数倍/同采样率走 12/32 抽头多相，
@@ -129,7 +133,7 @@ release 构建同样保留（不允许用编译开关剔除）。
   阈值是那两条常量（`RATE_TOLERANCE` / `EVENT_EPS`）。**面板与 HTTP 序列化的是同一份判定结果**，
   UI 只按 `level` 上色，禁止自己再算一套（1.3 单一数据源）。回调间隔在回调线程里量：每路一个
   `Instant` 起点 + 相对纳秒的原子写，不加锁、不分配、不进音频路径。
-- **输出链路**（`src-tauri/src/audio/playback.rs`，播放正确性只此一处）：源扇出（`fanout.rs`）→
+- **输出链路**（`src/audio/playback.rs`，播放正确性只此一处）：源扇出（`fanout.rs`）→
   48k 订阅环 → 每路工作线程用同一 [`Converter`] 重采样到设备采样率（含 48k→48k，因需调比例）→
   设备环；**设备回调是唯一主时钟**，回调里只取样、缺数据补静音（不在回调里写任何缓冲策略）。
   工作线程策略：预热到「目标水位 + 设备环」再开声；PI 伺服按 48k 环水位微调重采样比例限幅 **±3%**
@@ -200,7 +204,7 @@ release 构建同样保留（不允许用编译开关剔除）。
   界面也不再提供「未选择」。**远端是否接受裸输出设备 ID 按平台**（`devices::loopback_accepts_device_id`）：
   Windows = WASAPI 端点可以（`loopback:<端点>` 或裸端点 ID），Linux = **只认 `loopback` / `loopback:<Pulse sink>`**
   （填 ALSA 设备 ID 会拼出 `<id>.monitor` 这种无效 monitor，far 永远取不到）。
-- **网络（手机 ⇄ 电脑）**（`src-tauri/src/net/`，协议 / 卡片 / TLS 见 NETWORK.md §4.1、§4.1.11、
+- **网络（手机 ⇄ 电脑）**（`src/net/`，协议 / 卡片 / TLS 见 NETWORK.md §4.1、§4.1.11、
   §4.1.12）：一个 axum 服务绑 `0.0.0.0`，默认端口 **59123**（界面可改，持久化到
   `~/.purevox/settings.json`），路径 `/ws`（另有 `/health` 自检、`/ca-cert` 下载 CA、
   `/libopus-wasm.js` 给网页版、`/` 是网页版客户端）。两条音频能力共用一条连接：
@@ -229,9 +233,9 @@ release 构建同样保留（不允许用编译开关剔除）。
     C 编译链**）：不用浏览器内置 WebCodecs——`AudioEncoder` 只有 Chrome 94+ 才有，实测就有
     浏览器根本没有，于是在那儿麦克风与扬声器一起不可用。
   - **Opus 不引入 C 编译链（电脑端）**：`net/opus_sys.rs` 运行时动态加载——Windows 用
-    `LoadLibraryExW` + `GetProcAddress` 加载预编译 x64 `opus.dll`（`src-tauri/opus.dll`，
+    `LoadLibraryExW` + `GetProcAddress` 加载预编译 x64 `opus.dll`（`opus.dll`，
     随包分发；`tauri.conf.json` 的 resources 已登记；查找 `<exe 同目录>/opus.dll` →
-    仓库 `src-tauri/opus.dll`），Linux 用 `dlopen`/`dlsym` 加载系统 `libopus.so.0`
+    仓库 `opus.dll`），Linux 用 `dlopen`/`dlsym` 加载系统 `libopus.so.0`
     （Debian 包名 `libopus0`；缺失时网络音频降级为明确原因，其余功能正常）。
     注意 `opus_encoder_get_size` / `opus_decoder_get_size` 是**兼容桩恒返回 0**，
     一律用 `*_create`（libopus 内部分配）。**帧长不固定**：PC 发 10 ms（= 1 hop），
@@ -457,5 +461,5 @@ release 构建同样保留（不允许用编译开关剔除）。
 - **复现**：
   `curl -s http://127.0.0.1:47821/debug/latency | jq '.latency.value.columns[] | {column, measured_ms, measured_method, measured_resolution_ms, dominant, total_ms, complete}'`
   —— 需要**非周期**信号（说话 / 音乐 / 噪声）；静音与测试音下 `measured_ms` 为 `null` 是预期。
-- **单测**：`cargo test --manifest-path src-tauri/Cargo.toml engine::latency`（合成宽带信号，
+- **单测**：`cargo test engine::latency`（合成宽带信号，
   0 / 10 / 37 / 120 / 480 ms 全部落在 ±1.2 ms；静音与周期信号必须报错）。

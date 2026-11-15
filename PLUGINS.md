@@ -25,7 +25,9 @@
   Audio Gain / Noise Gate / Compressor / Limiter / Expander / Upward Compressor /
   Invert Polarity；参数默认值、范围、步进与 OBS 一致（`registry.rs` + `components/obs_dsp.rs`）。
   3 段 EQ 已被 **31 段均衡 `eq31`** 取代（`biquad` crate，ISO 1/3 倍频程 + 低切/高切 +
-  曲线 + 6+6 预设，`ui/eq.js`）；另有 **`agc`**（`dagc` crate，三个热参数）。
+  真实响应曲线 + 圆点手柄 + 精确 dB 输入 + 插槽 S1–S8 + 8 个预设，界面在
+  `ui/inspector.rs::eq_editor`，卡片缩略图在 `ui/widgets.rs::eq_mini_chart`）；
+  另有 **`agc`**（`dagc` crate，三个热参数）。
   两者都是处理行，曲线/参数走热参数，不重建会话。
   不包含 Noise Suppression（由 AI 降噪替代）、VST 2.x（需要 VST 宿主，未引入）、以及 Audio
   Monitor / Pan / Sync Offset（它们是 OBS 的源属性/路由；PureVox 的输出行承担监听）。

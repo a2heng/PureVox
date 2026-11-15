@@ -77,7 +77,7 @@
     仍走 `download-binaries`。
   - 跑门禁：`python3 tools/automation/check.py -Gate fmt|clippy|build|test|ui|version|bundle`，
     七道已实测全绿（92 个单测通过）。
-- **构建产物位置**（找东西时别找错盘）：Windows 走 `src-tauri/target/`（D 盘，
+- **构建产物位置**（找东西时别找错盘）：Windows 走 `target/`（D 盘，
   一次 `clippy --all-targets` 后 `debug/deps` 能到 15 GB、`debug/incremental` 11 GB，
   后者可随时删、零风险）；WSL 走 `/root/purevox-target/`。
   `cargo tauri build` 约 5 分钟编译 + 4 分钟打包，产物在 `target/release/bundle/nsis/`

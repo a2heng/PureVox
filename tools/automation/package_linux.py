@@ -37,7 +37,7 @@ import _utf8  # noqa: E402
 _utf8.force()
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src-tauri"
+SRC = ROOT
 DIST = ROOT / "dist"
 MODELS = ROOT / "models"
 # 与旧 Tauri 版一致：deb / AppImage 用 256 px 图标（桌面环境更常见）

@@ -27,14 +27,14 @@
   会抛 `FileNotFoundError`；且这类调用常挂在 `finally` 上，**成功也会炸**。
   平台收尾用系统自带的东西：Windows `taskkill /F /T /PID`、Linux `os.killpg`。
 - **许可证头**：每个源码文件（`.rs` / `.toml` / `.html` / `.js` / `.ts` / `.css` 等）顶部必须带 GPL-3.0 版权头 +
-  模型声明 + `SPDX-License-Identifier: GPL-3.0-or-later`，照抄 `src-tauri/src/main.rs` 顶部并按注释风格替换。
+  模型声明 + `SPDX-License-Identifier: GPL-3.0-or-later`，照抄 `src/main.rs` 顶部并按注释风格替换。
   JSON 无注释语法，豁免。
 - **UI 字符串（i18n，GPUI 版）**：中文字面量即 msgid，唯一字典
-  `src-tauri/src/ui/i18n.rs`（zh 恒等返回、en 查表、缺键回退中文）。上屏入口只有一个：
+  `src/ui/i18n.rs`（zh 恒等返回、en 查表、缺键回退中文）。上屏入口只有一个：
   `i18n::tr("中文 msgid")`。新增用户可见中文串必须**同一次提交**补 en 条目；漏了 en
   就是漏译。不翻译的边界：注释、调试日志（`debug::events` / `eprintln!`）、Rust 诊断文本
   （probe 的 `reason` 体等内部原因串）。注册表节点/参数名、模型表、提示音预设同样在界面侧
-  经 `i18n::tr` 翻译。调试面板（浏览器版）仍用 `src-tauri/ui/i18n.js`，只服务
+  经 `i18n::tr` 翻译。调试面板（浏览器版）仍用 `ui/i18n.js`，只服务
   `/debug/ui` 自己的静态页，不要与 GPUI 界面混用。
 - **文案风格**：用户可见文案用「对象 + 动词」（`删除节点` / `开始校准` / `安装更新`）；
   错误要写「发生了什么 + 怎么恢复」，不写裸 `failed`。界面语言切换入口未落地前，不要在
@@ -58,7 +58,7 @@
 - **分层边界**：`plan` 是图的数据模型；`engine` 只执行图；`audio` 管设备与实时线程；
   `ui` 只做展示与命令；`debug` 是可观测性（`/debug` 与日志同源）；`net` / `update` 是外围。
   低层不依赖 `ui`，业务状态不藏在元素树里。
-- **UI 模块化**：`src-tauri/src/ui/` 按职责拆分，新增界面代码放进对应文件，共用原语走
+- **UI 模块化**：`src/ui/` 按职责拆分，新增界面代码放进对应文件，共用原语走
   `ui/widgets.rs`；禁止继续把页面逻辑堆进单个 `mod.rs`。
   - `mod.rs`：外壳（顶栏 / 状态栏）、`Workspace` 状态、启动与轮询；
   - `canvas.rs`：节点卡片、端口、连线、拖拽/选中；

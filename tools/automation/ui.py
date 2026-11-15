@@ -67,7 +67,7 @@ DEFAULT_BINARY = "/usr/bin/purevox"
 WATCHER_NAME = "org.kde.StatusNotifierWatcher"
 STATE_PATH = os.path.join(tempfile.gettempdir(), "purevox-ui-state.json")
 
-# 安装方式 → 该认的产物后缀（与 src-tauri/src/update/mod.rs 的 ASSET_SUFFIXES 同一份约定；
+# 安装方式 → 该认的产物后缀（与 src/update/mod.rs 的 ASSET_SUFFIXES 同一份约定；
 # 对不上不会报任何错，只是自动更新静默失效，所以这里要断言）。
 KIND_SUFFIX = {
     "deb": ".deb",

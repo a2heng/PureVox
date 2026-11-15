@@ -34,7 +34,7 @@ import _utf8  # noqa: E402
 _utf8.force()
 
 ROOT = Path(__file__).resolve().parents[2]
-TAURI = ROOT / "src-tauri"
+CRATE = ROOT
 DIST = ROOT / "dist"
 NSI = ROOT / "tools" / "automation" / "nsis" / "purevox.nsi"
 
@@ -76,14 +76,14 @@ def main() -> int:
     if not args.no_build:
         print("== cargo build --release ==", flush=True)
         subprocess.run(
-            ["cargo", "build", "--release", "--manifest-path", str(TAURI / "Cargo.toml")],
+            ["cargo", "build", "--release", "--manifest-path", str(CRATE / "Cargo.toml")],
             check=True,
         )
 
-    exe = TAURI / "target" / "release" / "purevox.exe"
+    exe = CRATE / "target" / "release" / "purevox.exe"
     if not exe.is_file():
         raise SystemExit(f"找不到 {exe}（先跑 cargo build --release）")
-    opus = TAURI / "opus.dll"
+    opus = CRATE / "opus.dll"
     models = ROOT / "models"
     if not opus.is_file():
         raise SystemExit(f"找不到 {opus}（网络 Opus 运行时依赖）")

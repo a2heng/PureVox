@@ -61,8 +61,8 @@ except ImportError:  # 给出可执行的补救，而不是 ImportError 栈
     sys.exit("缺 Pillow。先装：pip install pillow（只本机用，CI 不需要）")
 
 REPO = Path(__file__).resolve().parents[2]
-ICONS = REPO / "src-tauri" / "icons"
-# Android 自适应图标**不进 src-tauri/icons/**：那里曾经放 cargo tauri icon 的产物，
+ICONS = REPO / "" / "icons"
+# Android 自适应图标**不进 icons/**：那里曾经放 cargo tauri icon 的产物，
 # 现已删除（见 AGENTS §2.5 现役引用清单）。Android 的图标归 res 管，脚本直接写过去。
 RES = REPO / "android" / "app" / "src" / "main" / "res"
 
@@ -375,7 +375,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="生成 PureVox 全部平台的图标产物")
     ap.add_argument("-Skip", default="", help="跳过分组，逗号分隔：" + "/".join(GROUPS))
     ap.add_argument("-Compare", action="store_true", help="只把生成的 P 与现有源图做形状比对，不写文件")
-    ap.add_argument("-Out", default="", help="输出根目录（默认 src-tauri/icons）")
+    ap.add_argument("-Out", default="", help="输出根目录（默认 icons）")
     args = ap.parse_args()
 
     skip = {s.strip() for s in args.Skip.split(",") if s.strip()}
@@ -424,7 +424,9 @@ def main() -> int:
         save_png(app(512), icons / "icon.png")
         write_ico(icons / "icon.ico",
                   [(s, png_bytes(app(s))) for s in ICO_SIZES])
-        print(f"[通用  ] {'/'.join(str(s) for s in BUNDLE_SIZES)} + 128x128@2x + icon.png + icon.ico")
+        # Linux 托盘：32×32 原始 RGBA（`tray_linux.rs` 用 include_bytes!，运行时不解码 PNG）
+        (icons / "tray.rgba").write_bytes(app(32).tobytes())
+        print(f"[通用  ] {'/'.join(str(s) for s in BUNDLE_SIZES)} + 128x128@2x + icon.png + icon.ico + tray.rgba")
 
     if "Store" not in skip:
         for s in STORE_SIZES:

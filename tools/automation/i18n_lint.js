@@ -24,7 +24,7 @@
 //   E4 占位符奇偶：EN 键与值 / TPL 中英模板的 {name} 集合不一致（对应旧版 test_i18n.py）；
 //   E5 TPL id 重复；
 //   W1 孤儿键：字典定义了但没有任何入口引用（仅告警）；
-//   W2 模板脱节：TPL 中文骨架的字面段在 src-tauri/src 里找不到（Rust 改拼串未同步，仅告警）。
+//   W2 模板脱节：TPL 中文骨架的字面段在 src 里找不到（Rust 改拼串未同步，仅告警）。
 // 豁免：注释；i18n.js（字典与模板表自身）；jsdebug.js（调试桥，输出走 ui_report = 调试日志）；
 // __pvDebug / console 调试行（结构性识别，跨行调用也覆盖）；STREAM_FIELDS 块内延迟标签
 // （渲染时经 labelOf → T() 翻译，只查缺键不查裸）。Rust 诊断文本（probe reason 体）按边界
@@ -36,7 +36,7 @@ const fs = require('fs')
 const path = require('path')
 
 const ROOT = path.resolve(__dirname, '..', '..')
-const UI_DIR = path.join(ROOT, 'src-tauri', 'ui')
+const UI_DIR = path.join(ROOT, '', 'ui')
 const CJK = /[\u4e00-\u9fff]/
 const PH = /\{(\w+)\}/g
 
@@ -348,7 +348,7 @@ for (const t of TPL) {
 }
 
 // ---------- 7. Rust 源（标签覆盖 E6 + 孤儿判定 + 模板骨架 W2） ----------
-const rsRoot = path.join(ROOT, 'src-tauri', 'src')
+const rsRoot = path.join(ROOT, '', 'src')
 /** @type {Map<string, string>} */
 const rustFiles = new Map()
 const walk = (d) => {
@@ -404,11 +404,11 @@ const dropDiagnostics = (src) => {
 }
 
 const labelSources = [
-  { file: 'src-tauri/src/engine/registry.rs', re: /label:\s*"([^"]+)"/g },
-  { file: 'src-tauri/src/cues.rs', re: /,\s*"([^"]*[\u4e00-\u9fff][^"]*)"\s*\)/g },
-  { file: 'src-tauri/src/infer/mod.rs', re: /,\s*"([^"]*[\u4e00-\u9fff][^"]*)"\s*\)/g },
-  { file: 'src-tauri/src/infer/tse.rs', re: /,\s*"([^"]*[\u4e00-\u9fff][^"]*)"\s*\)/g },
-  { file: 'src-tauri/src/infer/aec.rs', re: /,\s*"([^"]*[\u4e00-\u9fff][^"]*)"\s*\)/g },
+  { file: 'src/engine/registry.rs', re: /label:\s*"([^"]+)"/g },
+  { file: 'src/cues.rs', re: /,\s*"([^"]*[\u4e00-\u9fff][^"]*)"\s*\)/g },
+  { file: 'src/infer/mod.rs', re: /,\s*"([^"]*[\u4e00-\u9fff][^"]*)"\s*\)/g },
+  { file: 'src/infer/tse.rs', re: /,\s*"([^"]*[\u4e00-\u9fff][^"]*)"\s*\)/g },
+  { file: 'src/infer/aec.rs', re: /,\s*"([^"]*[\u4e00-\u9fff][^"]*)"\s*\)/g },
 ]
 for (const { file, re } of labelSources) {
   const raw = rustFiles.get(file)

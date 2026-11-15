@@ -24,7 +24,7 @@ import com.purevox.mic.Proto
 /**
  * 下行播放环（电脑 → 手机）：**整条链上唯一的缓冲**。
  *
- * 这是 `src-tauri/src/net/rt.rs` 的 `Playout` 的**逐行镜像**：阈值与策略必须与那边一致。
+ * 这是 `src/net/rt.rs` 的 `Playout` 的**逐行镜像**：阈值与策略必须与那边一致。
  *
  * ## 策略只有两条（极简）
  *

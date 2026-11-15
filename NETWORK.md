@@ -312,11 +312,11 @@ adb shell run-as com.purevox.mic.debug cat files/diag.json     # 只看最新一
 
 | 位置 | 职责 |
 | --- | --- |
-| `src-tauri/src/net/mod.rs` | TLS/WS 监听；**`TCP_NODELAY` 在这里** |
-| `src-tauri/src/net/server.rs` | 收发任务、帧头、`sync`/`offset`、`st` 解析 |
-| `src-tauri/src/net/hub.rs` | 入站环 + 推送式出站、全部统计量、`rx/tx_verdict` |
-| `src-tauri/src/net/rt.rs` | 帧头、`RING_MS`、电脑侧 `Playout` |
-| `src-tauri/src/audio/tick.rs` | 合成源 10 ms 高精度节拍 |
+| `src/net/mod.rs` | TLS/WS 监听；**`TCP_NODELAY` 在这里** |
+| `src/net/server.rs` | 收发任务、帧头、`sync`/`offset`、`st` 解析 |
+| `src/net/hub.rs` | 入站环 + 推送式出站、全部统计量、`rx/tx_verdict` |
+| `src/net/rt.rs` | 帧头、`RING_MS`、电脑侧 `Playout` |
+| `src/audio/tick.rs` | 合成源 10 ms 高精度节拍 |
 | `android/…/audio/Rt.kt` | 手机侧播放环（`rt.rs` 的逐行镜像） |
 | `android/…/audio/SpeakerDownlink.kt` | 解码 → 环 → AudioTrack |
 | `android/…/diag/DiagJson.kt` | 结构化诊断出口（落盘 + logcat） |

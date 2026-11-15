@@ -107,7 +107,7 @@ def _lower_timer() -> None:
 SR = 48000
 HOP = 480
 PROTO = 3
-HDR = 8  # 音频帧头：seq u32 + 发送方 µs u32（大端），见 src-tauri/src/net/rt.rs
+HDR = 8  # 音频帧头：seq u32 + 发送方 µs u32（大端），见 src/net/rt.rs
 TONE_HZ = 1000.0
 TONE_AMP = 0.1  # -20 dBFS
 TONE_THEORY = 2 * math.pi * TONE_HZ / SR * TONE_AMP
@@ -160,8 +160,8 @@ def default_exe(osn: str) -> Path | None:
         return Path(env)
     names = ["purevox.exe", "purevox"]
     dirs = [
-        REPO / "src-tauri" / "target" / "release",
-        REPO / "src-tauri" / "target" / "debug",
+        REPO / "" / "target" / "release",
+        REPO / "" / "target" / "debug",
         Path("/usr/bin"),
         Path("/usr/local/bin"),
     ]
@@ -187,7 +187,7 @@ def opus_candidates(osn: str) -> list[Path]:
     if env:
         out.append(Path(env))
     if osn == "windows":
-        for base in (REPO / "src-tauri", REPO / "server", Path.cwd()):
+        for base in (REPO / "", REPO / "server", Path.cwd()):
             out.append(base / "opus.dll")
         if (exe := default_exe(osn)) is not None:
             out.append(exe.parent / "opus.dll")

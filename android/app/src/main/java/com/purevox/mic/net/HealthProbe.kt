@@ -37,7 +37,7 @@ import java.util.concurrent.TimeUnit
  * `GET /health` 自检（`https://host:59123/health` —— 电脑端只监听 HTTPS）。
  *
  * 电脑端提供这个端点就是给人 / 手机看用的，**不需要**先建立 WebSocket
- * （见 `src-tauri/src/net/server.rs` 的 `health` 路由）。所以它独立于
+ * （见 `src/net/server.rs` 的 `health` 路由）。所以它独立于
  * [WsClient]：连不上 ws 时照样能自检，用来区分「地址写错了」和「服务没开」。
  */
 object HealthProbe {
