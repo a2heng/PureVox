@@ -907,6 +907,11 @@ fn title_bar(cx: &mut Context<Workspace>, window: &Window) -> AnyElement {
       cx.notify();
     },
   );
+  // 拖动要等真正移动才启动；在按钮上按下时 stop_propagation，不会误拖窗口。
+  let armed = Rc::new(Cell::new(false));
+  let arm_down = armed.clone();
+  let arm_up = armed.clone();
+  let arm_move = armed.clone();
   div()
     .id("title-bar")
     .flex()
@@ -917,10 +922,17 @@ fn title_bar(cx: &mut Context<Workspace>, window: &Window) -> AnyElement {
     .bg(rgb(t::PANEL))
     .border_b_1()
     .border_color(rgb(t::BORDER))
+    .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
+      arm_down.set(true);
+    })
+    .on_mouse_up(gpui_kit::MouseButton::Left, move |_, _, _| {
+      arm_up.set(false);
+    })
     .on_double_click(|_, window, _| window.zoom_window())
     .on_mouse_move(
-      cx.listener(|_this, e: &gpui_kit::MouseMoveEvent, window, _cx| {
-        if e.pressed_button == Some(gpui_kit::MouseButton::Left) {
+      cx.listener(move |_this, e: &gpui_kit::MouseMoveEvent, window, _cx| {
+        if arm_move.get() && e.pressed_button == Some(gpui_kit::MouseButton::Left) {
+          arm_move.set(false);
           window.start_window_move();
         }
       }),
