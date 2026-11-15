@@ -93,7 +93,9 @@ buffer=280 f (5.83 ms)
 | --- | --- |
 | `src/audio/out.rs` | **输出后端选择层**：定义 `Format` / `Sample`，按平台 re-export |
 | `src/audio/wasapi_out.rs` | Windows 输出：`probe()` 问格式+周期，`start()` 建流；回调线程 `run()` |
-| `src/audio/cpal_out.rs` | 非 Windows 输出（cpal），接口与上面一致 |
+| `src/audio/cpal_out.rs` | cpal 输出（Windows 以外；Linux 只用于 `alsa:` 硬件） |
+| `src/audio/linux_out.rs` | Linux 输出分派：`alsa:` → cpal，`pulse:<sink>` → pacat |
+| `src/audio/pulse_out_linux.rs` | 蓝牙 / 虚拟声卡输出：`pacat --playback` 写 F32 48k，阻塞写入提供设备节拍 |
 | `src/audio/playback.rs` | 播放工作线程：48k 环 + 伺服 + 转换器 + 设备环补水 |
 | `src/audio/capture.rs` | 采集（仍是 cpal）+ PI 时钟伺服；`CallbackStats` 已改 `pub(crate)` |
 | `src/audio/loopback_windows.rs` | AEC 回环；`resolve_device` / `read_format` 改 `pub(super)` 供输出复用；**两个探测测试**也在文件末尾 |
