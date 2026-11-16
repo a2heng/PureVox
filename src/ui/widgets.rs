@@ -259,8 +259,42 @@ pub(super) fn hint(text: impl Into<SharedString>) -> Div {
     .child(SharedString::from(i18n::tr(&text)))
 }
 
+/// 状态徽标：一个圆点 + 短词，颜色由 `level` 决定（ok / warn / bad / idle）。
+///
+/// 检查器顶部只放这一枚，代替过去「电平 / 延迟」两行裸数字；详细数值走下面的
+/// `field` 行，状态一眼可见，又不抢控件区。
+pub(super) fn status_chip(text: impl Into<SharedString>, level: &str) -> Div {
+  let text: SharedString = text.into();
+  let (fg, bg) = match level {
+    "ok" => (t::OK, (t::OK << 8) | 0x20),
+    "warn" => (t::AEC, (t::AEC << 8) | 0x20),
+    "bad" => (t::DANGER, (t::DANGER << 8) | 0x20),
+    _ => (t::MUTED, (t::MUTED << 8) | 0x18),
+  };
+  div()
+    .flex()
+    .items_center()
+    .gap_1()
+    .px(px(t::SPACE_1))
+    .py(px(1.))
+    .rounded(px(t::RADIUS_SM))
+    .bg(rgba(bg))
+    .child(div().size(px(6.)).rounded_full().bg(rgb(fg)))
+    .child(
+      div()
+        .text_size(px(t::TEXT_XS))
+        .text_color(rgb(fg))
+        .child(SharedString::from(i18n::tr(text.as_ref()))),
+    )
+}
+
 /// 一行「标签 → 值」。值右对齐并截断，长度变化时不推挤左列。
 pub(super) fn field(label: &str, value: String) -> Div {
+  field_color(label, value, t::TEXT)
+}
+
+/// 同 [`field`]，但值用指定颜色（异常计数 / 错误原因用）。
+pub(super) fn field_color(label: &str, value: String, color: u32) -> Div {
   div()
     .flex()
     .items_center()
@@ -277,7 +311,7 @@ pub(super) fn field(label: &str, value: String) -> Div {
         .flex_1()
         .text_right()
         .truncate()
-        .text_color(rgb(t::TEXT))
+        .text_color(rgb(color))
         .child(value),
     )
 }

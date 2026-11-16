@@ -648,16 +648,200 @@ impl Workspace {
       );
     }
 
-    list
-      .child(section("信息"))
-      // 源/输出的名称已经在标题和设备选择里，这里不再重复「类型」。
-      .when(n.kind == RowKind::Process, |el| {
-        el.child(field("类型", label))
+    // 状态徽标：流存在就按 stream 状态，否则按引擎 / 旁路状态；健康结论单独一行。
+    let stream = self.stream_for(&n, ci, ri);
+    let native = self.native_for(&n);
+    let health = stream.as_ref().and_then(|s| match &s.health {
+      crate::debug::Probe::Ok { value } => Some((value.level, value.text.clone())),
+      _ => None,
+    });
+    let (state_text, state_level, state_detail) = match &stream {
+      Some(s) => match &s.state {
+        crate::debug::Probe::Ok { .. } => ("运行中", "ok", String::new()),
+        crate::debug::Probe::Pending => ("预热中", "warn", "等待设备回调".to_string()),
+        crate::debug::Probe::Unavailable { reason } => ("不可用", "bad", reason.clone()),
+      },
+      None if n.kind == RowKind::Process => {
+        if !enabled {
+          ("已旁路", "idle", String::new())
+        } else if self.audio.is_running() {
+          ("运行中", "ok", String::new())
+        } else {
+          ("未启动", "idle", "引擎未运行".to_string())
+        }
+      }
+      None => (
+        "未启动",
+        "idle",
+        if self.audio.is_running() {
+          "这一行没有独立设备流".to_string()
+        } else {
+          "引擎未运行".to_string()
+        },
+      ),
+    };
+    let db = if peak > 1e-9 {
+      20.0 * peak.log10()
+    } else {
+      -120.0
+    };
+    let level_color = if peak >= 0.98 { t::DANGER } else { t::TEXT };
+    let mut info = div()
+      .flex()
+      .flex_col()
+      .gap_2()
+      .child(
+        div()
+          .flex()
+          .items_center()
+          .gap_2()
+          .child(status_chip(state_text, state_level))
+          .child(
+            div()
+              .flex_1()
+              .min_w_0()
+              .text_size(px(t::TEXT_XS))
+              .text_color(rgb(t::MUTED))
+              .truncate()
+              .child(state_detail),
+          ),
+      )
+      .when_some(health, |el, (level, text)| {
+        el.child(field_color(
+          "健康",
+          text,
+          if level == "ok" { t::OK } else { t::AEC },
+        ))
       })
-      .child(field("电平", format!("{peak:.3}")))
-      .child(field("延迟", latency))
-      .when(has_inputs, |el| el.child(conns))
-      .into_any_element()
+      .child(
+        div()
+          .flex()
+          .flex_col()
+          .gap_1()
+          .child(
+            div()
+              .flex()
+              .items_center()
+              .justify_between()
+              .child(
+                div()
+                  .text_size(px(t::TEXT_SM))
+                  .text_color(rgb(t::MUTED))
+                  .child(i18n::tr("电平").to_string()),
+              )
+              .child(
+                div()
+                  .text_size(px(t::TEXT_SM))
+                  .text_color(rgb(level_color))
+                  .child(format!("{db:.1} dBFS")),
+              ),
+          )
+          .child(meter_bar(peak, 24, 8.)),
+      )
+      .child(field("延迟", latency));
+
+    if let Some((host, native)) = &native {
+      info = info.child(section("设备")).child(field(
+        "设备格式",
+        format!(
+          "{host} · {} Hz · {} ch · {}",
+          native.sample_rate, native.channels, native.sample_format
+        ),
+      ));
+    }
+
+    if let Some(s) = &stream {
+      let fmt_text = if s.sample_format.contains('@') {
+        s.sample_format.clone()
+      } else {
+        format!(
+          "{} · {} ch · {} Hz",
+          s.sample_format, s.channels, s.sample_rate
+        )
+      };
+      info = info
+        .child(section("流"))
+        .child(field("设备", s.device_name.clone()))
+        .child(field("流格式", fmt_text));
+      if let crate::debug::Probe::Ok { value } = &s.denoise {
+        info = info.child(field("降噪", value.clone()));
+      }
+      if let crate::debug::Probe::Ok { value } = &s.inference_ms_avg {
+        let max = match &s.inference_ms_max {
+          crate::debug::Probe::Ok { value } => format!(" / 峰值 {value:.1} ms"),
+          _ => String::new(),
+        };
+        info = info.child(field("推理", format!("{value:.1} ms{max}")));
+      }
+      if let crate::debug::Probe::Ok { value: cf } = &s.callback_frames {
+        info = info.child(field(
+          "回调",
+          format!(
+            "{:.2} ms · {} 帧（间隔 {:.1} / 峰值 {:.1} ms）",
+            cf.last as f64 * 1000.0 / s.sample_rate.max(1) as f64,
+            cf.last,
+            cf.last_gap_ms,
+            cf.max_gap_ms
+          ),
+        ));
+      }
+      let dev_buf = match &s.device_buffer_ms {
+        crate::debug::Probe::Ok { value } => format!("{value:.1} ms"),
+        crate::debug::Probe::Pending => "采样中".into(),
+        crate::debug::Probe::Unavailable { .. } => "—".into(),
+      };
+      info = info.child(field(
+        "缓冲",
+        format!("{:.1} ms（源）· {dev_buf}（设备）", s.buffer_level_ms),
+      ));
+      info = info.child(field(
+        "时钟",
+        format!(
+          "{} → {}",
+          hz_text(&s.measured_input_rate),
+          hz_text(&s.measured_output_rate)
+        ),
+      ));
+      if !s.resampler.is_empty() {
+        info = info.child(field(
+          "重采样",
+          format!("{} · {:.1} ms", s.resampler, s.resampler_delay_ms),
+        ));
+      }
+      if let crate::debug::Probe::Ok { value } = &s.latency_ms {
+        info = info.child(field("流延迟", format!("{value:.1} ms")));
+      }
+      if let crate::debug::Probe::Ok { value } = &s.asrc_adjust_ppm {
+        info = info.child(field("ASRC", format!("{value:+.1} ppm")));
+      }
+      let anomaly = format!(
+        "欠载 {} · 过载 {} · 重同步 {} · 错误 {}",
+        per_s(&s.underrun_per_s),
+        per_s(&s.overrun_per_s),
+        per_s(&s.resync_per_s),
+        per_s(&s.stream_error_per_s)
+      );
+      let bad = rate_positive(&s.underrun_per_s)
+        || rate_positive(&s.overrun_per_s)
+        || rate_positive(&s.resync_per_s)
+        || rate_positive(&s.stream_error_per_s);
+      info = info.child(field_color(
+        "异常",
+        anomaly,
+        if bad { t::DANGER } else { t::TEXT },
+      ));
+      if let Some(src) = &s.source {
+        info = info.child(field("源", src.clone()));
+      }
+    } else if n.kind == RowKind::Process {
+      info = info.child(field("类型", label));
+    }
+
+    if has_inputs {
+      info = info.child(section("入线")).child(conns);
+    }
+
+    list.child(section("信息")).child(info).into_any_element()
   }
 
   /// 可视化节点：画板卡片已经显示频谱；这里只给大图，不再重复 VU。
@@ -1505,6 +1689,39 @@ impl Workspace {
     list
   }
 
+  /// 选中节点对应的设备流（只有真正打开设备的那几类节点才有）。
+  ///
+  /// 流 id 由 `engine::session` / `device_pool` 决定：池化输入输出用设备 id，
+  /// 回环 / AEC 的独立采集用 `c{col}r{row}`；不要在这里猜别的形式。
+  fn stream_for(&self, n: &RowSpec, ci: usize, ri: usize) -> Option<crate::debug::StreamBrief> {
+    let id = match (n.kind, n.ptype.as_str()) {
+      (RowKind::Input, "audio_input") => format!("input:{}", n.device.as_deref()?),
+      (RowKind::Input, "loopback") => format!("input:c{ci}r{ri}"),
+      (RowKind::Process, "echo_cancel") => format!("input:c{ci}r{ri}m"),
+      (RowKind::Output, _) => format!("output:{}", n.device.as_deref()?),
+      _ => return None,
+    };
+    self.hub.stream_brief(&id)
+  }
+
+  /// 节点绑定设备的枚举信息（原生格式 + host）；回环等不在枚举里的返回 None。
+  fn native_for(&self, n: &RowSpec) -> Option<(String, crate::devices::NativeFormat)> {
+    let id = n.device.as_deref()?;
+    let dir = if n.kind == RowKind::Output {
+      "output"
+    } else {
+      "input"
+    };
+    let d = self
+      .devices
+      .iter()
+      .find(|d| d.id == id && d.direction == dir)?;
+    match &d.native {
+      crate::debug::Probe::Ok { value } => Some((d.host.clone(), value.clone())),
+      _ => None,
+    }
+  }
+
   pub(super) fn latency_short(&self, col: usize) -> String {
     match &self.latency {
       crate::debug::Probe::Ok { value } => value
@@ -1521,6 +1738,27 @@ impl Workspace {
       crate::debug::Probe::Unavailable { reason } => reason.clone(),
     }
   }
+}
+
+/// 速率类 `Probe<f64>` → 检查器里的短文本。
+fn hz_text(p: &crate::debug::Probe<f64>) -> String {
+  match p {
+    crate::debug::Probe::Ok { value } => format!("{value:.0} Hz"),
+    crate::debug::Probe::Pending => "采样中".into(),
+    crate::debug::Probe::Unavailable { .. } => "—".into(),
+  }
+}
+
+fn per_s(p: &crate::debug::Probe<f64>) -> String {
+  match p {
+    crate::debug::Probe::Ok { value } => format!("{value:.2}/s"),
+    crate::debug::Probe::Pending => "采样中".into(),
+    crate::debug::Probe::Unavailable { .. } => "—".into(),
+  }
+}
+
+fn rate_positive(p: &crate::debug::Probe<f64>) -> bool {
+  matches!(p, crate::debug::Probe::Ok { value } if *value > 0.05)
 }
 
 /// 参数单位（只用于上屏；注册表里没有单位字段，按 key 归类）。

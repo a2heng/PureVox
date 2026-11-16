@@ -263,6 +263,71 @@ pub struct StreamInfo {
   pub spectrum_band_hz: [f32; 2],
 }
 
+/// 检查器用的轻量流摘要：不带波形 / 频谱大数组。
+///
+/// 右侧信息栏每次重绘只需要标量，直接 `clone` 整个 [`StreamInfo`] 会把 800 个
+/// float 一起复制；这里只搬展示用字段，重绘成本与流数量无关。
+#[derive(Clone, Debug)]
+pub struct StreamBrief {
+  pub device_name: String,
+  pub state: Probe<String>,
+  pub health: Probe<Health>,
+  pub sample_rate: u32,
+  pub channels: u32,
+  pub sample_format: String,
+  pub denoise: Probe<String>,
+  pub inference_ms_avg: Probe<f32>,
+  pub inference_ms_max: Probe<f32>,
+  pub measured_input_rate: Probe<f64>,
+  pub measured_output_rate: Probe<f64>,
+  pub resampler: String,
+  pub resampler_delay_ms: f64,
+  pub asrc_adjust_ppm: Probe<f64>,
+  pub callback_frames: Probe<crate::audio::capture::CallbackFrames>,
+  pub latency_ms: Probe<f32>,
+  pub buffer_level_ms: f32,
+  pub device_buffer_ms: Probe<f32>,
+  pub overruns: u64,
+  pub stream_errors: u64,
+  pub underrun_per_s: Probe<f64>,
+  pub overrun_per_s: Probe<f64>,
+  pub resync_per_s: Probe<f64>,
+  pub stream_error_per_s: Probe<f64>,
+  pub source: Option<String>,
+}
+
+impl StreamBrief {
+  fn from_info(s: &StreamInfo) -> Self {
+    Self {
+      device_name: s.device_name.clone(),
+      state: s.state.clone(),
+      health: s.health.clone(),
+      sample_rate: s.sample_rate,
+      channels: s.channels,
+      sample_format: s.sample_format.clone(),
+      denoise: s.denoise.clone(),
+      inference_ms_avg: s.inference_ms_avg.clone(),
+      inference_ms_max: s.inference_ms_max.clone(),
+      measured_input_rate: s.measured_input_rate.clone(),
+      measured_output_rate: s.measured_output_rate.clone(),
+      resampler: s.resampler.clone(),
+      resampler_delay_ms: s.resampler_delay_ms,
+      asrc_adjust_ppm: s.asrc_adjust_ppm.clone(),
+      callback_frames: s.callback_frames.clone(),
+      latency_ms: s.latency_ms.clone(),
+      buffer_level_ms: s.buffer_level_ms,
+      device_buffer_ms: s.device_buffer_ms.clone(),
+      overruns: s.overruns,
+      stream_errors: s.stream_errors,
+      underrun_per_s: s.underrun_per_s.clone(),
+      overrun_per_s: s.overrun_per_s.clone(),
+      resync_per_s: s.resync_per_s.clone(),
+      stream_error_per_s: s.stream_error_per_s.clone(),
+      source: s.source.clone(),
+    }
+  }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct AudioInfo {
   /// 兼容字段：全部列的人话概要（由 `engine_info` 派生，字段只增不改名）
@@ -596,6 +661,17 @@ impl DebugHub {
   /// 读不到 = 这路流还没发布（刚打开/刚重启），调用方必须写成「不可用 + 原因」。
   pub fn stream(&self, id: &str) -> Option<StreamInfo> {
     self.state.read().ok()?.streams.get(id).cloned()
+  }
+
+  /// 检查器用的轻量流摘要（标量，不带波形/频谱）。
+  pub fn stream_brief(&self, id: &str) -> Option<StreamBrief> {
+    self
+      .state
+      .read()
+      .ok()?
+      .streams
+      .get(id)
+      .map(StreamBrief::from_info)
   }
 
   /// 某一列当前峰值（线性）；没有这一列时返回 0。
