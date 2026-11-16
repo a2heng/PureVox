@@ -518,16 +518,28 @@ impl Workspace {
         }
       }
       RowKind::Process => match n.ptype.as_str() {
-        "denoise" => n
-          .params
-          .get("model")
-          .and_then(|m| {
-            crate::infer::denoise_models()
-              .iter()
-              .find(|(f, _)| *f == m)
-              .map(|(_, l)| i18n::tr(l).to_string())
-          })
-          .unwrap_or_default(),
+        "denoise" => {
+          let model = n
+            .params
+            .get("model")
+            .and_then(|m| {
+              crate::infer::denoise_models()
+                .iter()
+                .find(|(f, _)| *f == m)
+                .map(|(_, l)| i18n::tr(l).to_string())
+            })
+            .unwrap_or_default();
+          let depth = n
+            .params
+            .get("depth_db")
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(-60.0);
+          if model.is_empty() {
+            format!("{depth:.0} dB")
+          } else {
+            format!("{model} · {depth:.0} dB")
+          }
+        }
         "gain" => n
           .params
           .get("gain_db")

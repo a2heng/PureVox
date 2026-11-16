@@ -466,6 +466,7 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("降噪（小）", "Denoise (small)");
     m.insert("降噪（中）", "Denoise (medium)");
     m.insert("降噪（大）", "Denoise (large)");
+    m.insert("降噪深度", "Denoise depth");
     m.insert("柔和", "Soft");
     m.insert("清脆", "Crisp");
     m.insert("气泡", "Pop");

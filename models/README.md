@@ -8,19 +8,24 @@
 
 | 文件 | 版本（代数 @ epoch） | 接口（每 hop 10 ms / 48 kHz） | cache |
 |---|---|---|---|
-| `purevox_denoise.onnx`（小） | `purevox_denoise_202611d` @ **E27** | `spec_in (1,2,481) + cache_in` → `spec_out + cache_out` | 25,140 |
-| `purevox_denoise_medium.onnx`（中） | `purevox_denoise_202611e` @ **E87** | 同上（同一套谱接口） | 22,964 |
-| `purevox_denoise_large.onnx`（大） | `purevox_denoise_202611f` @ **E8** | 同上（同一套谱接口） | 31,860 |
+| `purevox_denoise.onnx`（小） | `purevox_denoise_202611d` @ **E110** | `spec_in (1,2,481) + cache_in + ctrl_in (1,2)` → `spec_out + cache_out` | 25,140 |
+| `purevox_denoise_medium.onnx`（中） | `purevox_denoise_202611e` @ **E35** | 同上（同一套谱接口 + 深度旋钮） | 22,964 |
+| `purevox_denoise_large.onnx`（大） | `purevox_denoise_202611f` @ **E128** | 同上（同一套谱接口 + 深度旋钮） | 31,860 |
 | `purevox_aec.onnx` | `purevox_aec_202610` @ **E381** | `mic_spec + far_spec + cache_in` → `mic_spec_out + cache_out` | 91,920 |
 | `purevox_tse.onnx` | `purevox_tse_202609c` @ **E205** | `mix_spec (1,2,481) + enr_tok (1,2,1001,180) + cache_in` → `spec_out + cache_out` | 513,216 |
 | `purevox_tse_ref_encoder.onnx` | `purevox_tse_202609c` @ **E205**（与主图同批） | `ref_spec (1,2,1001,481)` → `enr_tok (1,2,1001,180)`（每句一次，参考 10 s） | — |
 
-**版本号怎么读**：`model` 是 ONNX metadata 里的代数（`onnx.load('…').metadata_props`），epoch 对应
-训练侧 `7_output/<代>/checkpoints/checkpoint_epoch_NNN.tar`。降噪直接取训练侧 `onnx/` 的导出
-（小档 `denoise_202611d_0002/ep0027`，中档 `denoise_202611e_0010/ep0087`，
-大档 `denoise_202611f_0001/ep0008`）；AEC 的 epoch 按权重
-摘要比过训练侧 ONNX；TSE 是 2026-11-04 从 E205 的 checkpoint 现导出的（同一套训练脚本的 `export_onnx`）。
-换模型时先改这张表，再改文件（表是部署现状的唯一记录）。
+**版本号怎么读**：`model` 是 ONNX metadata 里的代数（`onnx.load('…').metadata_props`），
+epoch 记在这张表里。换模型时先改这张表，再改文件（表是部署现状的唯一记录）。
+
+- **`ctrl_in` 是部署旋钮（2026-11-16 起）**：`[floor_db, depth_gain]`，metadata `ctrl` /
+  `ctrl_default` 记着含义与默认值（`-60,1.0`）。应用侧每 hop 喂
+  `[降噪深度, 1.0]`；**缺这个输入 = 加载失败**（旧一代模型没有可调深度，不允许静默忽略滑块）。
+- **降噪深度（界面「降噪深度」滑块，-100 ~ -20 dB，默认 -60）**：模型内部
+  `mask_from_logit(u, A, s)` 把**已判为噪声**的 bin 钳到 `max(s·20log10σ(u), A)`。
+  也就是说它只改「压多深」，不改判决：实测同一权重下轻声/风逐位不变、纯噪严格跟着 A 走
+  （纯噪 −81/−59.5/−44.9/−35 dB 对应 A = 不夹/−60/−45/−35）。`depth_gain` 固定 1.0，不出现在界面。
+  拖动滑块是**热参数**：只写原子的 `ctrl_in` 值，不重建会话。
 
 - **`cache_in` 维度随模型变**：应用侧运行时用 `cache_dim()` 从 session 输入形状读，不写死；
   但**模型池按路径缓存 session**，所以**替换文件后必须重启应用**才生效。
@@ -31,28 +36,13 @@
   （202609c 线是 `enr_tok`，202610 线是 `keys`+`gb`，202611 线是 `enr_comp`），
   注册编码器必须**同名输出、形状逐个对上**，另比 metadata `model`；不配套直接报错（硬失败），
   不会退化成直通。
-- **降噪小档是 `202611d@E27`（2026-11-04 换）**：直接取训练侧
-  `7_output/denoise_202611d_0002/onnx/purevox_denoise_202611d_ep0027.onnx`（`--out-seq 2` 那轮的
-  导出产物，**该轮训练还在跑**，换最终 epoch 只换文件）。这一代把 cache 从 45,988 缩到 **25,140**、
-  文件 **7.50 MB → 0.89 MB**；实测单 hop（机上 1 线程 CPU，`ort_bench`）**0.88 → 0.28 ms**，
-  val 集 SI-SDR **+1.37 dB**（202610c@E88 同口径 +1.51 dB，属早期轮次，别当回退看）。
-  同目录 `*.onnx.data` 是导出残留（该 `.onnx` 自包含），**只拷 `.onnx`**。
-- **降噪中档是 `202611e@E87`（2026-11-05 加）**：取训练侧
-  `7_output/denoise_202611e_0010/onnx/purevox_denoise_202611e_ep0087.onnx`（`ep0087`，该轮仍在跑）。
-  202611e 是 202611d 的**宽通道版**（CH 内三层 48/64/80、瓶颈 DPGRNN 64；参数 0.081M → 0.127M，
-  MAC 2.13M → 3.37M），谱接口与 cache 形状不变，应用侧不用改代码：
-  文件 **0.89 MB → 1.00 MB**，单 hop（机上 1 线程 CPU）**0.28 → 0.30 ms**。
-  ⚠️ DNS5 val 上 SI-SDR **+0.38 dB**（小档同口径 +1.37 dB），是训练中版本、未经听感筛选 ——
-  界面给的是**选项**，默认仍走小档。
-  同目录 `*.onnx.data` 同样是导出残留，**只拷 `.onnx`**。
-- **降噪大档是 `202611f@E8`（2026-11-05 加）**：取训练侧
-  `7_output/denoise_202611f_0001/onnx/purevox_denoise_202611f_ep0008.onnx`（`ep0008`，该轮刚起步）。
-  202611f 是**新骨架**（CH `[24,48,96,96,64,48]`，通道峰 96 占两级；cTFA 时间门用逐通道 C·5），
-  谱接口不变、cache 略大（**31,860**）：文件 **1.10 MB**、参数 16.7 万，
-  单 hop（机上 1 线程 CPU，`ort_bench`）**0.51 ms**（p95 0.99）、RTF 0.051。
-  ⚠️ DNS5 val 上 SI-SDR **+0.54 dB**（小档 +1.37 / 中档 +0.38），**只练到 E8**、远未收敛，
-  界面给的是选项，默认仍走小档。
-  同目录 `*.onnx.data` 同样是导出残留，**只拷 `.onnx`**。
+- **降噪三档 2026-11-16 换代**：接口仍是同一套谱接口 + `ctrl_in`，只是容量不同；
+  界面下拉「小 / 中 / 大」，默认小档。
+  - **小档 `202611d@E110`**：cache **25,140**，文件 **0.88 MB**，
+    单线程单 hop（含图外 FFT）**0.375 ms / RTF 0.038**。
+  - **中档 `202611e@E35`**：cache **22,964**，文件 **0.99 MB**，**0.420 ms / RTF 0.042**。
+  - **大档 `202611f@E128`**：cache **31,860**，文件 **1.08 MB**，**0.469 ms / RTF 0.047**。
+
 - **TSE 是 `202609c@E205`（2026-11-04 更新）**：从训练侧
   `7_output/output_purevox_tse_202609c/checkpoints/checkpoint_epoch_205.tar` 用
   `legacy/202609/purevox_tse_202609c.py` 的 `export_onnx` / `export_ref_encoder` 导出

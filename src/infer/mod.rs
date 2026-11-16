@@ -132,6 +132,24 @@ pub(crate) fn check_spec(session: &Session, name: &str) -> Result<(), String> {
   Ok(())
 }
 
+/// 校验部署旋钮输入 `ctrl_in (1,2) = [floor_db, depth_gain]`（降噪深度）。
+///
+/// 2026-11-16 起随包的降噪模型都有这个输入；缺了就**硬失败**而不是静默忽略滑块
+/// （「滑块拖了没反应」正是 `UX.md`「失败不静默」要避免的那类问题）。
+pub(crate) fn check_ctrl(session: &Session) -> Result<(), String> {
+  let shape = input_shape(session, "ctrl_in").map_err(|_| {
+    "模型缺少 ctrl_in（降噪深度）。2026-11-16 起随包的降噪模型都有这个输入，\
+     旧一代模型不能再用（它没有可调深度）"
+      .to_string()
+  })?;
+  if shape != [1, 2] {
+    return Err(format!(
+      "模型 ctrl_in 的形状是 {shape:?}，期望 [1, 2]（[最深衰减 dB, 衰减倍率]）"
+    ));
+  }
+  Ok(())
+}
+
 /// 找**谱输入**：形状 `(1,2,481)` 的那个张量输入（名字随代变：`spec_in` / `mix_spec`）。
 ///
 /// TSE 这类「一代一个输入名」的线用它，别写死名字；必须**恰好一个**命中，否则报错。
