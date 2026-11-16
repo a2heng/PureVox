@@ -228,6 +228,18 @@ pub(crate) fn reopen_main_window(cx: &mut gpui_kit::App) {
   }
 }
 
+/// 把已有主窗口重新显示到前台。Windows 的窗口只是被 `SW_HIDE` 收进托盘，
+/// 必须显式 `ShowWindow`；其它平台窗口还在，`activate_window()` 就够。
+pub(crate) fn show_main_window(window: &mut gpui_kit::Window) {
+  #[cfg(windows)]
+  {
+    let _ = window;
+    tray::show_main();
+  }
+  #[cfg(not(windows))]
+  window.activate_window();
+}
+
 /// 把主窗口收进托盘（Linux 直接移除窗口，主视图仍由 `MAIN_VIEW` 持有）。
 pub(crate) fn hide_main_window(cx: &mut gpui_kit::App) -> bool {
   #[cfg(windows)]

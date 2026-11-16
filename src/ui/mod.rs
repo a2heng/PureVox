@@ -303,7 +303,8 @@ pub struct Workspace {
   inputs: std::collections::HashMap<String, Entity<gpui_kit::component::input::InputState>>,
   /// 正在拖的参数滑杆 key：只在第一次 Change 记一次撤销快照，松手清空。
   slider_drag: Option<String>,
-  /// 托盘要求显示窗口：下一次 render 把窗口拉到前台（Wayland 最小化后恢复）。
+  /// 托盘要求显示窗口：下一次 render 把窗口显示 / 拉到前台
+  /// （Windows 的窗口是 SW_HIDE，需 ShowWindow；Wayland 是激活）。
   show_window: bool,
   /// 标题栏关闭：置位后由 tick 移除窗口（不能在窗口事件处理里直接 remove）。
   hide_window: bool,
@@ -818,14 +819,23 @@ impl Workspace {
           // 窗口已经被移除（收进托盘）：defer 到本轮更新结束再重开，避免重入。
           cx.defer(crate::reopen_main_window);
         } else {
+          // Windows 的窗口只是 SW_HIDE，直接 ShowWindow，不等下一帧；Wayland 仍靠 render 激活。
+          #[cfg(windows)]
+          crate::tray::show_main();
           self.show_window = true;
         }
       }
       UiCommand::ToggleWindow => {
-        if cx.windows().is_empty() {
-          cx.defer(crate::reopen_main_window);
-        } else {
-          self.hide_window = true;
+        // Windows 的窗口只是 SW_HIDE，不能靠 windows() 是否为空判断显隐。
+        #[cfg(windows)]
+        crate::tray::toggle_main();
+        #[cfg(not(windows))]
+        {
+          if cx.windows().is_empty() {
+            cx.defer(crate::reopen_main_window);
+          } else {
+            self.hide_window = true;
+          }
         }
       }
       UiCommand::HideWindow => {
@@ -878,14 +888,14 @@ impl Workspace {
 
 // ── 绘制 ──────────────────────────────────────────────────────────────
 
-/// 自绘标题栏（Windows / Linux 共用外观与行为）：拖动、双击最大化、最小化 / 关闭。
+/// 自绘标题栏（Windows / Linux 共用外观与行为）：拖动、双击最大化、关闭。
 ///
 /// 平台差别只在系统集成方式：
 /// - Windows 用 `window_control_area` 把拖动 / 最大化交给系统（保留 Win11 贴靠布局），
 ///   关闭走系统 `WM_CLOSE`，仍由 `on_window_should_close` 收进托盘；
-/// - Linux 用 `start_window_move()`（Wayland / X11 只能这样），三个按钮都走点击回调。
+/// - Linux 用 `start_window_move()`（Wayland / X11 只能这样），按钮走点击回调。
 ///
-/// 最小化 / 关闭统一收进托盘，与托盘菜单同一条路径。
+/// 关闭收进托盘，与托盘菜单同一条路径；不设最小化按钮（也可从托盘收起）。
 fn title_bar(cx: &mut Context<Workspace>, window: &Window) -> AnyElement {
   // Linux 走服务端装饰时窗口管理器已经画了标题栏，再画一套就是两组按钮。
   #[cfg(target_os = "linux")]
@@ -903,7 +913,6 @@ fn title_bar(cx: &mut Context<Workspace>, window: &Window) -> AnyElement {
   }
   #[cfg(any(windows, target_os = "linux"))]
   {
-    let controls = window.window_controls();
     let max_icon = if window.is_maximized() {
       IconName::WindowRestore
     } else {
@@ -970,12 +979,7 @@ fn title_bar(cx: &mut Context<Workspace>, window: &Window) -> AnyElement {
           .flex()
           .items_center()
           .h_full()
-          .when(controls.minimize, |d| {
-            d.child(title_button(cx, TitleAction::Min, IconName::WindowMinimize))
-          })
-          .when(controls.maximize, |d| {
-            d.child(title_button(cx, TitleAction::Max, max_icon))
-          })
+          .child(title_button(cx, TitleAction::Max, max_icon))
           .child(title_button(cx, TitleAction::Close, IconName::WindowClose)),
       )
       .into_any_element()
@@ -984,19 +988,16 @@ fn title_bar(cx: &mut Context<Workspace>, window: &Window) -> AnyElement {
 
 #[derive(Clone, Copy)]
 enum TitleAction {
-  Min,
   Max,
   Close,
 }
 
 /// 标题栏按钮：和窗口同高，悬停变色；点击不触发拖动 / 双击。
 ///
-/// Windows 的最小化自己处理（系统的 `SW_MINIMIZE` 会进任务栏，这里统一收进托盘）；
-/// 最大化 / 关闭交给系统（`window_control_area`），才有 Win11 贴靠布局与正常的
-/// `WM_CLOSE` 路径。Linux 三个按钮都走点击回调。
+/// Windows 交给系统（`window_control_area`），才有 Win11 贴靠布局与正常的
+/// `WM_CLOSE` 路径。Linux 走点击回调。
 fn title_button(cx: &mut Context<Workspace>, action: TitleAction, icon: IconName) -> AnyElement {
   let (id, danger) = match action {
-    TitleAction::Min => ("tb-min", false),
     TitleAction::Max => ("tb-max", false),
     TitleAction::Close => ("tb-close", true),
   };
@@ -1024,27 +1025,27 @@ fn title_button(cx: &mut Context<Workspace>, action: TitleAction, icon: IconName
 
   #[cfg(windows)]
   {
-    let area = match action {
-      TitleAction::Max => Some(gpui_kit::WindowControlArea::Max),
-      TitleAction::Close => Some(gpui_kit::WindowControlArea::Close),
-      TitleAction::Min => None,
-    };
-    if let Some(area) = area {
-      return button.window_control_area(area).into_any_element();
-    }
+    // Windows 不需要点击回调（交给系统），只有 Linux 分支用 `cx`。
+    let _ = cx;
+    button
+      .window_control_area(match action {
+        TitleAction::Max => gpui_kit::WindowControlArea::Max,
+        TitleAction::Close => gpui_kit::WindowControlArea::Close,
+      })
+      .into_any_element()
   }
 
+  #[cfg(not(windows))]
   button
     .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
       cx.stop_propagation()
     })
     .on_click(cx.listener(move |this, _, window, cx| match action {
-      // 最小化 / 关闭都收进托盘：两条路在托盘菜单里都能找回来。
-      TitleAction::Min | TitleAction::Close => {
+      TitleAction::Max => window.zoom_window(),
+      TitleAction::Close => {
         this.hide_window = true;
         cx.notify();
       }
-      TitleAction::Max => window.zoom_window(),
     }))
     .into_any_element()
 }
@@ -1053,7 +1054,7 @@ impl Render for Workspace {
   fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     if self.show_window {
       self.show_window = false;
-      window.activate_window();
+      crate::show_main_window(window);
     }
     let dock = self.dock(window, cx);
     div()

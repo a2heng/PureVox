@@ -24,9 +24,9 @@ mod imp;
 #[path = "tray_other.rs"]
 mod imp;
 
-#[cfg(windows)]
-pub use imp::hide_main;
 /// 只有 Windows 的关闭回调需要它；Linux 的退出直接 `cx.quit()`。
 #[allow(unused_imports)]
 pub use imp::quitting;
+#[cfg(windows)]
+pub use imp::{hide_main, show_main, toggle_main};
 pub use imp::{set_running, spawn};

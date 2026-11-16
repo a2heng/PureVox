@@ -121,16 +121,25 @@ pub fn quitting() -> bool {
   QUITTING.load(Ordering::Relaxed)
 }
 
-fn toggle_main() {
+/// 把主窗口从托盘里显示出来（托盘左键 / `/debug/ui/show` 共用）。
+pub fn show_main() -> bool {
+  if MAIN_HWND.load(Ordering::Relaxed) == 0 {
+    return false;
+  }
+  let h = hwnd();
+  let _ = unsafe { ShowWindow(h, SW_SHOW) };
+  let _ = unsafe { SetForegroundWindow(h) };
+  true
+}
+
+pub fn toggle_main() {
   if MAIN_HWND.load(Ordering::Relaxed) == 0 {
     return;
   }
-  let h = hwnd();
-  if unsafe { IsWindowVisible(h) }.as_bool() {
-    let _ = unsafe { ShowWindow(h, SW_HIDE) };
+  if unsafe { IsWindowVisible(hwnd()) }.as_bool() {
+    let _ = unsafe { ShowWindow(hwnd(), SW_HIDE) };
   } else {
-    let _ = unsafe { ShowWindow(h, SW_SHOW) };
-    let _ = unsafe { SetForegroundWindow(h) };
+    show_main();
   }
 }
 

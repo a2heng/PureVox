@@ -44,9 +44,9 @@
 - 顶栏 `TOP_H` 52 px、状态栏 `STATUS_H` 28 px、右侧信息栏 `DOCK_W` 340 px / `DOCK_PAD` 12 px；
   选中 31 段 EQ 时信息栏用 `DOCK_W_EQ` 480 px（只有这一页加宽，其余节点不变）。
 - **标题栏 `TITLE_H` 34 px，Windows / Linux 统一自绘**：左边 `PureVox <版本>`（`TEXT_SM` / `MUTED`），
-  右边最小化 / 最大化（还原）/ 关闭三个方块按钮（宽 = 高，悬停 `CONTROL_HI`，关闭悬停 `DANGER`）。
-  最小化与关闭都收进托盘；Windows 的拖动与最大化交给系统（`window_control_area`，保留贴靠布局），
-  Linux 走 `start_window_move()`。禁用系统标题栏，两平台外观一致。
+  右边最大化（还原）/ 关闭两个方块按钮（宽 = 高，悬停 `CONTROL_HI`，关闭悬停 `DANGER`）。
+  关闭收进托盘；Windows 的拖动与最大化交给系统（`window_control_area`，保留贴靠布局），
+  Linux 走 `start_window_move()`。禁用系统标题栏，两平台外观一致，不设最小化按钮。
 - 不写死内容区高度：容器 `flex` + `min_h_0` + 只在真正溢出的区域滚动。
 
 ### 组件原语
