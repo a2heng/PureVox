@@ -9,7 +9,7 @@
 | 文件 | 版本（代数 @ epoch） | 接口（每 hop 10 ms / 48 kHz） | cache |
 |---|---|---|---|
 | `purevox_denoise.onnx`（小） | `purevox_denoise_202611d` @ **E110** | `spec_in (1,2,481) + cache_in + ctrl_in (1,2)` → `spec_out + cache_out` | 25,140 |
-| `purevox_denoise_medium.onnx`（中） | `purevox_denoise_202611e` @ **E35** | 同上（同一套谱接口 + 深度旋钮） | 22,964 |
+| `purevox_denoise_medium.onnx`（中） | `purevox_denoise_202611e` @ **E76** | 同上（同一套谱接口 + 深度旋钮） | 22,964 |
 | `purevox_denoise_large.onnx`（大） | `purevox_denoise_202611f` @ **E128** | 同上（同一套谱接口 + 深度旋钮） | 31,860 |
 | `purevox_aec.onnx` | `purevox_aec_202610` @ **E381** | `mic_spec + far_spec + cache_in` → `mic_spec_out + cache_out` | 91,920 |
 | `purevox_tse.onnx` | `purevox_tse_202609c` @ **E205** | `mix_spec (1,2,481) + enr_tok (1,2,1001,180) + cache_in` → `spec_out + cache_out` | 513,216 |
@@ -40,7 +40,7 @@ epoch 记在这张表里。换模型时先改这张表，再改文件（表是�
   界面下拉「小 / 中 / 大」，默认小档。
   - **小档 `202611d@E110`**：cache **25,140**，文件 **0.88 MB**，
     单线程单 hop（含图外 FFT）**0.375 ms / RTF 0.038**。
-  - **中档 `202611e@E35`**：cache **22,964**，文件 **0.99 MB**，**0.420 ms / RTF 0.042**。
+  - **中档 `202611e@E76`**：cache **22,964**，文件 **0.99 MB**，**0.429 ms / RTF 0.043**。
   - **大档 `202611f@E128`**：cache **31,860**，文件 **1.08 MB**，**0.469 ms / RTF 0.047**。
 
 - **TSE 是 `202609c@E205`（2026-11-04 更新）**：从训练侧

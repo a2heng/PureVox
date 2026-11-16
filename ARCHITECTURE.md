@@ -369,7 +369,7 @@ pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &st
 - **六个文件、名字里不带版本号**（2026-10-29 起；模型标识记在 ONNX metadata
   `model` 与 `models/README.md`）：`purevox_denoise.onnx`（降噪小档）、
   `purevox_denoise_medium.onnx`（降噪中档）、`purevox_denoise_large.onnx`（降噪大档；
-  三档 2026-11-16 换代：`202611d@E110` / `202611e@E35` / `202611f@E128`）、
+  三档 2026-11-16 换代：`202611d@E110` / `202611e@E76` / `202611f@E128`）、
   `purevox_aec.onnx`、`purevox_tse.onnx`、`purevox_tse_ref_encoder.onnx`（与 TSE 主图**成对**）。
   降噪三档**接口完全一致、只是容量不同**，界面下拉按「小 / 中 / 大」选，默认小档。
   ⇒ **换模型 = 换文件**，代码零改动；替换流程见 `models/README.md`。
