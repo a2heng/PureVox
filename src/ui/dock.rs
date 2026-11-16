@@ -833,6 +833,14 @@ impl Workspace {
             Ok(m) => m,
             Err(e) => format!("安装失败：{e}"),
           };
+          // Windows：安装器（NSIS）已经接管；它开头的 CheckIfAppIsRunning 会拦下
+          // 正在运行的 exe，所以必须停引擎并退出本进程，安装器随后按 /R 拉起新版。
+          // Linux：最终阶段是 Installed / Failed，进程继续跑，不打断用户会话。
+          if crate::update::status().phase == crate::update::Phase::Installing {
+            this.audio.stop();
+            cx.quit();
+            return;
+          }
           cx.notify();
         })),
       );
