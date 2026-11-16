@@ -498,6 +498,9 @@ impl Workspace {
   }
 
   pub(super) fn node_detail(&self, n: &RowSpec, label: &str) -> String {
+    if n.ptype == "tone" {
+      return crate::audio::tone::label_for(&crate::audio::tone::selected(&n.params));
+    }
     match n.kind {
       RowKind::Input | RowKind::Output => {
         let title = self.node_title(n);
@@ -698,7 +701,10 @@ impl Workspace {
       }
       "remote_mic" => device_name = Some("手机（网络麦克风）".into()),
       "app_capture" => device_name = Some("选择应用…".into()),
-      "tone" => {}
+      "tone" => {
+        params.insert("clips".into(), serde_json::json!(["sine"]).to_string());
+        params.insert("gap_ms".into(), "500".into());
+      }
       "denoise" => {
         if let Some((f, _)) = crate::infer::denoise_models().first() {
           params.insert("model".into(), (*f).to_string());

@@ -23,6 +23,12 @@ use std::path::Path;
 /// 读取 WAV → (单声道样本, 采样率)。支持 PCM16 与 float32（含 WAVE_FORMAT_EXTENSIBLE）。
 pub fn read_mono(path: &Path) -> Result<(Vec<f32>, u32), String> {
   let data = std::fs::read(path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+  read_mono_bytes(&data)
+}
+
+/// 从内存字节读 WAV → (单声道样本, 采样率)。随二进制嵌入的测试素材走这一份
+/// （与文件读取同一条解析，不写第二套）。
+pub fn read_mono_bytes(data: &[u8]) -> Result<(Vec<f32>, u32), String> {
   if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
     return Err("不是 WAV 文件（缺少 RIFF/WAVE 标识）".into());
   }

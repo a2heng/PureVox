@@ -22,4 +22,5 @@ pub mod bands;
 pub mod meter;
 pub mod resampler;
 pub mod servo;
+pub mod softclip;
 pub mod split;

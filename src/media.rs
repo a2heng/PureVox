@@ -168,7 +168,10 @@ fn safe_stem(raw: &str) -> String {
 }
 
 /// symphonia 解码整文件 → float32 单声道 48 kHz。
-fn decode_to_mono_48k(bytes: &[u8], orig_name: &str) -> Result<Vec<f32>, String> {
+///
+/// `pub(crate)`：除了媒体库导入，`infer::denoise` 的离线录音自检也走这一份
+/// （不许再写第二套解码；两端采样率 / 下混口径必须一致）。
+pub(crate) fn decode_to_mono_48k(bytes: &[u8], orig_name: &str) -> Result<Vec<f32>, String> {
   let mut hint = Hint::new();
   if let Some(ext) = Path::new(orig_name).extension().and_then(|e| e.to_str()) {
     hint.with_extension(ext);

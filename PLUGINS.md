@@ -21,6 +21,11 @@
   改它不重建会话（`persist_plan`）。测量值进 `VizHub`，界面 10 Hz 轮询 `viz_snapshot`，
   `/debug` 的 `viz` 段与 `GET /debug/viz` 是同一份。
 
+- **测试音（`tone`）**：默认是 1 kHz 正弦（-20 dBFS）；检查器里可**多选**随包的真实录音
+  素材（敲桌子 / 鼠标 / 键盘，`assets/test-audio/`），并用滑杆拖动「重复间隙」（`gap_ms`）。
+  素材是**单次最小瞬态**，运行期按间隙循环、多选相加；选择 / 间隙变化重建一次会话。
+  素材来源与重新生成方式见 `assets/test-audio/README.md`。
+
 - **OBS 音频滤镜（参考 `~/obs-studio/plugins/obs-filters`）**：已实现
   Audio Gain / Noise Gate / Compressor / Limiter / Expander / Upward Compressor /
   Invert Polarity；参数默认值、范围、步进与 OBS 一致（`registry.rs` + `components/obs_dsp.rs`）。

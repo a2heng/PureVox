@@ -591,6 +591,17 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("系统声音（回环）", "System audio (loopback)");
     m.insert("手机麦克风", "Phone microphone");
     m.insert("测试音", "Test tone");
+    m.insert("测试素材", "Test clips");
+    m.insert("敲桌子", "Table knock");
+    m.insert("鼠标", "Mouse");
+    m.insert("键盘", "Keyboard");
+    m.insert("重复间隙", "Repeat gap");
+    m.insert("1 kHz 正弦", "1 kHz sine");
+    m.insert("测试素材已更新", "Test clips updated");
+    m.insert(
+      "勾选多个素材会叠加播放；间隙是每次瞬态之间的静音。改完重建一次会话。",
+      "Checked clips play together; the gap is silence between transients. Changes rebuild the session.",
+    );
     m.insert("AI 降噪", "AI denoise");
     m.insert("回声消除 AEC", "Echo cancellation AEC");
     m.insert("31 段 EQ", "31-band EQ");

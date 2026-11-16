@@ -301,11 +301,13 @@ impl Mixer {
           for m in mixed.iter_mut() {
             m.fill(0.0);
           }
-          if let Ok(mut g) = i2.sources.lock() {
-            for s in g.iter_mut() {
-              s.pull(&mut mixed, dt);
-            }
+          // 锁中毒也要继续混音：音频线程里一次 panic 不该让输出永久静音
+          // （与 `fanout` / `net::hub::lock` 同一条纪律）。
+          let mut g = i2.sources.lock().unwrap_or_else(|e| e.into_inner());
+          for s in g.iter_mut() {
+            s.pull(&mut mixed, dt);
           }
+          drop(g);
           for (i, m) in mixed.iter().enumerate() {
             out2.push_channel(i, m);
           }

@@ -136,6 +136,134 @@ impl Denoise {
 mod tests {
   use super::*;
 
+  /// 从一段录音里截出**单个最小瞬态**，写进 `assets/test-audio/`（随包、git 追踪）。
+  ///
+  /// 生成的是“一次”素材（敲桌子 / 鼠标 / 键盘各一个），重复间隔由测试音节点在运行期
+  /// 用 `gap_ms` 控制，不在文件里烘焙。
+  ///
+  /// `PUREVOX_CLIP_SOURCE="C:/.../record.mp3" cargo test -- --ignored --nocapture make_test_clips`
+  #[test]
+  #[ignore = "生成随包测试素材，手动跑"]
+  fn make_test_clips() {
+    let Ok(path) = std::env::var("PUREVOX_CLIP_SOURCE") else {
+      return;
+    };
+    let bytes = std::fs::read(&path).expect("读录音");
+    let pcm = crate::media::decode_to_mono_48k(&bytes, &path).expect("解码");
+    // (文件名, 起, 止)：单次瞬态，含衰减尾巴；两端 3 ms 淡入淡出，避免截断爆音。
+    let cuts = [
+      ("knock.wav", 7.41, 7.64),
+      ("mouse.wav", 7.68, 7.77),
+      ("keyboard.wav", 12.20, 12.33),
+    ];
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/test-audio");
+    std::fs::create_dir_all(&dir).expect("建目录");
+    let rate = crate::audio::SAMPLE_RATE as f64;
+    for (name, s, e) in cuts {
+      let a = (s * rate) as usize;
+      let b = ((e * rate) as usize).min(pcm.len());
+      let mut clip = pcm[a..b].to_vec();
+      let fade = (0.003 * rate) as usize;
+      for i in 0..fade.min(clip.len() / 2) {
+        let g = i as f32 / fade as f32;
+        clip[i] *= g;
+        let n = clip.len() - 1 - i;
+        clip[n] *= g;
+      }
+      let peak = clip.iter().fold(0.0f32, |a, x| a.max(x.abs()));
+      let out = dir.join(name);
+      crate::wav::write_mono_16(&out, &clip, crate::audio::SAMPLE_RATE).expect("写 WAV");
+      println!(
+        "{}：{:.3} s，峰值 {:.1} dBFS → {}",
+        name,
+        clip.len() as f64 / rate,
+        20.0 * (peak.max(1e-9) as f64).log10(),
+        out.display()
+      );
+    }
+  }
+
+  /// 离线自检：把一段真实录音按引擎同一条 10 ms / 48 kHz 网格喂给降噪模型，
+  /// 逐段（敲桌子 / 鼠标 / 键盘）打印**输入 / 输出电平与衰减量**，三个尺寸档 × 三档输入电平。
+  ///
+  /// 用来回答「鼠标 / 键盘 / 敲桌子为什么没被压掉」：看的是**这一段的整体能量与峰值**，
+  /// 不是某一格的数字——瞬态噪声只要峰值漏过去，听感就是「没降噪」。
+  ///
+  /// 手动跑：
+  /// `PUREVOX_DENOISE_REC="C:/.../record.mp3" cargo test --release -- --ignored --nocapture denoise_on_recording`
+  #[test]
+  #[ignore = "要真实录音 + ONNX 推理，手动跑"]
+  fn denoise_on_recording() {
+    let Ok(path) = std::env::var("PUREVOX_DENOISE_REC") else {
+      return;
+    };
+    let bytes = std::fs::read(&path).expect("读录音");
+    let pcm = crate::media::decode_to_mono_48k(&bytes, &path).expect("解码");
+    let dur = pcm.len() as f64 / crate::audio::SAMPLE_RATE as f64;
+    let db = |v: f64| if v > 1e-9 { 20.0 * v.log10() } else { -120.0 };
+    let energy_db = |s: &[f32]| {
+      let sum: f64 = s.iter().map(|x| (*x as f64) * (*x as f64)).sum();
+      db((sum / s.len().max(1) as f64).sqrt())
+    };
+    let peak_db = |s: &[f32]| db(s.iter().fold(0.0f32, |a, x| a.max(x.abs())) as f64);
+    println!("录音 {path}：{dur:.2} s，{} hop", pcm.len() / HOP);
+
+    // 事件边界（用户标注）：敲桌子 7.4~7.6、鼠标 7.7~11.9、键盘 12.0~12.5、再敲桌子 12.7~12.9
+    let segs = [
+      ("敲桌子1", 7.30, 7.70),
+      ("鼠标", 7.70, 11.90),
+      ("键盘", 11.90, 12.60),
+      ("敲桌子2", 12.60, 13.20),
+    ];
+    let at = |s: f64, e: f64| {
+      let a = (s * crate::audio::SAMPLE_RATE as f64) as usize;
+      let b = ((e * crate::audio::SAMPLE_RATE as f64) as usize).min(pcm.len());
+      a..b
+    };
+    println!(
+      "\n{:<8} {:>5} {:<8} {:>8} {:>8} {:>7} {:>8} {:>8} {:>7}",
+      "模型", "前置", "段", "输入RMS", "输出RMS", "压", "输入峰值", "输出峰值", "压"
+    );
+    for (file, label) in crate::infer::denoise_models() {
+      let model = crate::infer::model_path(file).expect("模型");
+      for gain_db in [0.0f32, 12.0, 24.0] {
+        let g = 10f32.powf(gain_db / 20.0);
+        // 与引擎一致：节点前置增益 = 乘增益 **再软限幅到 [-1,1]**（0 dB 也过 soft clip），
+        // 模型拿到的一定是标准幅度内的样本。
+        let input: Vec<f32> = pcm
+          .iter()
+          .map(|x| crate::dsp::softclip::soft_clip(x * g))
+          .collect();
+        let mut dn = Denoise::load(&model).expect("加载");
+        let mut out = Vec::with_capacity(input.len());
+        let mut nonfinite = 0usize;
+        for ch in input.chunks(HOP) {
+          let mut hop = [0.0f32; HOP];
+          hop[..ch.len()].copy_from_slice(ch);
+          let y = dn.process(&hop, -60.0).expect("推理").to_vec();
+          if y.iter().any(|v| !v.is_finite()) {
+            nonfinite += 1;
+          }
+          out.extend_from_slice(&y);
+        }
+        for (name, s, e) in segs {
+          let r = at(s, e);
+          let (i, o) = (&input[r.clone()], &out[r]);
+          let (ir, or) = (energy_db(i), energy_db(o));
+          let (ip, op) = (peak_db(i), peak_db(o));
+          println!(
+            "{label:<8} {gain_db:>3.0}dB {name:<8} {ir:>8.1} {or:>8.1} {:>7.1} {ip:>8.1} {op:>8.1} {:>7.1}",
+            ir - or,
+            ip - op
+          );
+        }
+        if nonfinite > 0 {
+          println!("  ⚠ {label} @ +{gain_db:.0} dB：{nonfinite} hop 输出含 NaN/Inf");
+        }
+      }
+    }
+  }
+
   /// 降噪深度真的接到了模型 `ctrl_in`：同一段噪声，-60 dB 的输出必须明显低于 -20 dB。
   ///
   /// 手动跑：`cargo test --release -- --ignored --nocapture denoise_depth`。

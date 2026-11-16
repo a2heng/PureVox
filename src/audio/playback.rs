@@ -58,6 +58,16 @@ const CAP_MS: f64 = 300.0;
 pub(crate) const DEVICE_RING_MS: usize = 10;
 const POLL_PERIOD: Duration = Duration::from_millis(2);
 
+/// 输出设备回调停顿多久就判定流已死并**自动重新打开**。
+///
+/// 设备拔出 / 驱动重置 / 默认设备或共享格式变更后，WASAPI 的事件再也不会来：
+/// 回调计数停住、设备环填满、混音源被丢，听感就是「突然没声音，必须重启应用」。
+/// 输入侧有 `INPUT_STALL_REOPEN`（5 s）自愈，输出侧原先没有 —— 这里补上同一条纪律。
+/// 取 3 s：正常回调间隔是 2.7~10 ms，停 3 s 只可能是流死了，不是一次调度抖动。
+const STALL_REOPEN: Duration = Duration::from_secs(3);
+/// 自动重开失败后的退避上限。
+const REOPEN_BACKOFF_MAX: Duration = Duration::from_secs(30);
+
 /// 比例更新周期。
 const RATIO_PERIOD: Duration = Duration::from_millis(50);
 
@@ -101,7 +111,7 @@ pub fn spawn(
     .collect();
   let join = std::thread::Builder::new()
     .name(format!("playback-{short}"))
-    .spawn(move || run(hub, device_id, source, tag, stop2, tx))
+    .spawn(move || supervise(hub, device_id, source, tag, stop2, tx))
     .map_err(|e| format!("创建播放线程失败：{e}"))?;
   match rx.recv_timeout(OPEN_TIMEOUT) {
     Ok(Ok(())) => Ok(WorkerHandle::new(stop, join)),
@@ -116,7 +126,38 @@ pub fn spawn(
   }
 }
 
-fn run(
+/// 退避：1、2、4、8、16、30、30… 秒。
+fn reopen_backoff(failures: u32) -> Duration {
+  let secs = (1u64 << failures.saturating_sub(1).min(5)).min(REOPEN_BACKOFF_MAX.as_secs());
+  Duration::from_secs(secs.max(1))
+}
+
+/// 退避等待；返回 `false` = 期间收到停止。
+fn wait_or_stop(stop: &AtomicBool, dur: Duration) -> bool {
+  let deadline = Instant::now() + dur;
+  while !stop.load(Relaxed) {
+    let now = Instant::now();
+    if now >= deadline {
+      return true;
+    }
+    std::thread::sleep((deadline - now).min(Duration::from_millis(100)));
+  }
+  false
+}
+
+/// 一次播放尝试的结束方式。
+enum PlayEnd {
+  /// 收到停止。
+  Stopped,
+  /// 流失败。`opened` = 是否曾经成功打开过（决定是「启动失败」还是「运行中中断」）。
+  Failed { opened: bool, error: String },
+}
+
+/// 播放监督：**流死了就自己重开**，不把「突然没声音」留给用户重启应用。
+///
+/// 第一次打开的结果按 [`spawn`] 的契约回传（`Ok` = 已开始，`Err` = 打不开）；
+/// 之后的中断（设备拔出 / 驱动重置 / 共享格式变更）按 1→30 s 退避重试，直到停止。
+fn supervise(
   hub: SharedHub,
   device_id: String,
   source: Arc<MultiFanout>,
@@ -124,8 +165,53 @@ fn run(
   stop: Arc<AtomicBool>,
   tx: mpsc::Sender<Result<(), String>>,
 ) {
-  // 填设备环的线程同样要 MMCSS：回调是实时的，喂数据的不是实时的话低水位必欠载。
   let _rt = crate::audio::rt_guard::enter_audio_thread();
+  let mut first = true;
+  let mut failures: u32 = 0;
+  loop {
+    let open = if first { Some(tx.clone()) } else { None };
+    let was_first = first;
+    first = false;
+    match play(
+      hub.clone(),
+      device_id.clone(),
+      source.clone(),
+      tag.clone(),
+      stop.clone(),
+      open,
+    ) {
+      PlayEnd::Stopped => return,
+      // 第一次就开不起来：`play` 已经把原因发给 `spawn` 了
+      PlayEnd::Failed { opened: false, .. } if was_first => return,
+      PlayEnd::Failed { opened, error } => {
+        failures = failures.saturating_add(1);
+        let wait = reopen_backoff(failures);
+        crate::debug::events::log(
+          "error",
+          "audio",
+          format!(
+            "输出流{}（{}），{} s 后自动重新打开：{error}",
+            if opened { "中断" } else { "打不开" },
+            source.name(),
+            wait.as_secs()
+          ),
+        );
+        if !wait_or_stop(&stop, wait) {
+          return;
+        }
+      }
+    }
+  }
+}
+
+fn play(
+  hub: SharedHub,
+  device_id: String,
+  source: Arc<MultiFanout>,
+  tag: String,
+  stop: Arc<AtomicBool>,
+  open: Option<mpsc::Sender<Result<(), String>>>,
+) -> PlayEnd {
   let stats = Arc::new(CallbackStats::new());
   let primed = Arc::new(AtomicBool::new(false));
 
@@ -182,17 +268,26 @@ fn run(
   } = match setup {
     Ok(v) => v,
     Err(e) => {
-      let _ = tx.send(Err(e));
-      return;
+      if let Some(tx) = open.as_ref() {
+        let _ = tx.send(Err(e.clone()));
+      }
+      return PlayEnd::Failed {
+        opened: false,
+        error: e,
+      };
     }
   };
-  let _ = tx.send(Ok(()));
+  if let Some(tx) = open.as_ref() {
+    let _ = tx.send(Ok(()));
+  }
 
   let dev_ch = channels.max(1) as usize;
   let mut srcs = source.subscribe(&format!("output:{tag}"));
   if srcs.is_empty() {
-    let _ = tx.send(Err("输出源没有通道".into()));
-    return;
+    return PlayEnd::Failed {
+      opened: true,
+      error: "输出源没有通道".into(),
+    };
   }
   // 设备通道 → 源通道映射：混音输出本来就有设备通道数；源更少时把多余设备通道
   // 铺到源的最后一个通道（单声道源的兜底，正常情况下混音器已经铺好）。
@@ -204,8 +299,11 @@ fn run(
     match Converter::new(SAMPLE_RATE, dev_rate, HOP, true) {
       Ok(c) => convs.push(c),
       Err(e) => {
-        let _ = tx.send(Err(e));
-        return;
+        source.unsubscribe(&format!("output:{tag}"));
+        return PlayEnd::Failed {
+          opened: true,
+          error: e,
+        };
       }
     }
   }
@@ -243,7 +341,10 @@ fn run(
   let mut last_publish = Instant::now() - PUBLISH_PERIOD;
   let mut poll_tick = Tick::new(POLL_PERIOD);
 
-  while !stop.load(Relaxed) {
+  let end = 'play: loop {
+    if stop.load(Relaxed) {
+      break PlayEnd::Stopped;
+    }
     token.beat();
     // 封顶：丢最旧（逐通道；各通道独立，某个通道积压不该拖累别的）
     for s in srcs.iter_mut() {
@@ -344,8 +445,15 @@ fn run(
       let last_error = stats.last_error();
       let callbacks = stats.callbacks.load(Relaxed);
       let stalled_ms = stall.update(now, callbacks);
+      // 停够 3 s 就不是调度抖动，而是流已经死了（设备拔出 / 驱动重置 / 共享格式变更）：
+      // 报出来之后交给 `supervise` 重新打开。输入侧有同一条自愈纪律（5 s）。
+      let dead = stalled_ms >= STALL_REOPEN.as_millis();
       let state = if let Some(e) = &worker_error {
         Probe::unavailable(e.clone())
+      } else if dead {
+        Probe::unavailable(format!(
+          "设备回调已停止 {stalled_ms} ms（正在自动重新打开）"
+        ))
       } else if let Some(s) = stalled_state(stalled_ms, &last_error) {
         s
       } else if source.is_closed() {
@@ -410,11 +518,20 @@ fn run(
       };
       super::health::annotate(&mut st);
       hub.set_stream(st);
+      if dead {
+        break 'play PlayEnd::Failed {
+          opened: true,
+          error: format!("设备回调已停止 {stalled_ms} ms"),
+        };
+      }
     }
     poll_tick.wait();
-  }
+  };
 
   source.unsubscribe(&stream_id);
   drop(stream);
-  hub.remove_stream(&stream_id);
+  if matches!(end, PlayEnd::Stopped) {
+    hub.remove_stream(&stream_id);
+  }
+  end
 }

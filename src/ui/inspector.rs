@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use gpui_kit::component::Sizable as _;
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderScale, SliderState, SliderValue};
 use gpui_kit::{
@@ -320,6 +321,58 @@ impl Workspace {
       }
     }
 
+    // 测试音：随包素材多选（敲桌子 / 鼠标 / 键盘 / 正弦波）+ 重复间隙。
+    if n.ptype == "tone" {
+      let selected = crate::audio::tone::selected(&n.params);
+      list = list.child(section("测试素材"));
+      let mut clip_rows: Vec<(String, &'static str)> =
+        vec![(crate::audio::tone::SINE_ID.to_string(), "1 kHz 正弦")];
+      for c in crate::audio::tone::CLIPS {
+        clip_rows.push((c.id.to_string(), c.label));
+      }
+      for (cid, label) in clip_rows {
+        let on = selected.contains(&cid);
+        let cid2 = cid.clone();
+        list = list.child(
+          Checkbox::new(format!("clip:{id}:{cid}"))
+            .checked(on)
+            .label(i18n::tr(label).to_string())
+            .on_click(cx.listener(move |this, checked, _, cx| {
+              let mut cur = this
+                .plan
+                .node(id)
+                .map(|n| crate::audio::tone::selected(&n.params))
+                .unwrap_or_default();
+              if *checked {
+                if !cur.contains(&cid2) {
+                  cur.push(cid2.clone());
+                }
+              } else {
+                cur.retain(|s| *s != cid2);
+              }
+              this.snapshot();
+              if let Some(n) = this.plan.node_mut(id) {
+                n.params
+                  .insert("clips".into(), serde_json::json!(cur).to_string());
+              }
+              this.status = "测试素材已更新".into();
+              this.apply_structure(cx);
+            })),
+        );
+      }
+      let gap = n
+        .params
+        .get("gap_ms")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(crate::audio::tone::DEFAULT_GAP_MS as f64);
+      list = list
+        .child(section("重复间隙"))
+        .child(self.param_slider(id, "tone", "gap_ms", 50.0, 5000.0, 50.0, gap, window, cx))
+        .child(hint(
+          "勾选多个素材会叠加播放；间隙是每次瞬态之间的静音。改完重建一次会话。",
+        ));
+    }
+
     // 源头 / 出口：当前设备只在标题里显示一次，这里是唯一的**选择**入口。
     if crate::plan::input_ports(&n.ptype, n.channels) == 0 {
       match n.ptype.as_str() {
@@ -432,7 +485,9 @@ impl Workspace {
       }
     }
 
-    if crate::plan::output_ports(&n.ptype, n.channels) == 0 {
+    // 只有**物理输出**节点才选设备：`remote_speaker`（手机 / 客户端）也是「没有输出端口」，
+    // 但它是网络汇，右侧再列一遍扬声器既没有意义，也会让人以为声音会从本机设备出。
+    if n.ptype == "audio_output" {
       list = list.child(section("输出设备"));
       for d in self
         .devices

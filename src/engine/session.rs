@@ -989,12 +989,35 @@ fn build_column(
         }
       }
       RowKind::Input if r.ptype == "tone" => {
-        // 测试音源（全局共享线程），无需设备
-        row.label = "测试音（1kHz 测试用）".into();
+        // 测试音源（无需设备）：默认是全局共享的 1 kHz 正弦；勾了随包素材就为这一行
+        // 起一个素材播放线程（多选相加、按 gap_ms 重复）。素材线程的句柄进 `captures`，
+        // 会话停止时一并收掉。
         row.source = true;
-        row.input = vec![crate::audio::tone::shared().subscribe(&format!("col{idx}row{ri}"))];
-        row.input_channels = vec![0];
-        row.src_channels = 1;
+        let ids = crate::audio::tone::selected(&r.params);
+        if ids.is_empty() {
+          // 全部取消勾选 = 不产出（显式静音，不报错）
+          row.label = "测试音（未选择）".into();
+        } else if ids.len() == 1 && ids[0] == crate::audio::tone::SINE_ID {
+          row.label = "测试音（1kHz 测试用）".into();
+          row.input = vec![crate::audio::tone::shared().subscribe(&format!("col{idx}row{ri}"))];
+          row.input_channels = vec![0];
+          row.src_channels = 1;
+        } else {
+          match crate::audio::tone::spawn_clips(
+            &ids,
+            crate::audio::tone::gap_ms(&r.params),
+            &format!("c{idx}r{ri}"),
+          ) {
+            Ok((handle, fan)) => {
+              row.label = crate::audio::tone::label_for(&ids);
+              row.input = vec![fan.subscribe(&format!("col{idx}row{ri}"))];
+              row.input_channels = vec![0];
+              row.src_channels = 1;
+              captures.push(handle);
+            }
+            Err(e) => row.error = Some(e),
+          }
+        }
       }
       RowKind::Input if r.ptype == "remote_mic" => {
         // 网络麦克风：不需要虚拟声卡驱动，网络流直接进引擎（NETWORK.md §4.1）。
@@ -1354,13 +1377,20 @@ fn compute_pdc(rows: &mut [Row]) {
 }
 
 /// 节点输入微调（dB → 线性；热参数每 hop 读一次）。
+///
+/// **增益之后一律软限幅到 `[-1, 1]`，即使增益是 0 dB 也过一遍** —— 这就是「前置增益 =
+/// 增益 + 软 clip」。上一级（模型 / 增益 / EQ / 扇入求和）的输出可以超过 1.0，但进入本节点
+/// 处理之前一定被收回到计算机音频的标准幅度；输出节点同理，所以设备永远拿到 ≤ 0 dBFS
+/// 的样本。模型自己怎么放大是模型的选择，不在这里限制。
+///
+/// 软限幅的实现见 [`crate::dsp::softclip`]（有理拐点，每样本一次比较，不是硬削波）。
 fn apply_trim(r: &Row, buf: &mut [f32; HOP]) {
-  if let Some(g) = r.input_gain.as_ref() {
-    let g = g.linear();
-    if g != 1.0 {
-      for x in buf.iter_mut() {
-        *x *= g;
-      }
+  let g = r.input_gain.as_ref().map(|g| g.linear()).unwrap_or(1.0);
+  if g == 1.0 {
+    crate::dsp::softclip::soft_clip_in_place(buf);
+  } else {
+    for x in buf.iter_mut() {
+      *x = crate::dsp::softclip::soft_clip(*x * g);
     }
   }
 }
@@ -1529,6 +1559,8 @@ fn run_column(
               let (got, dropped) = take_hop(&mut aec.mic, &mut tmp);
               r.ring_dropped += dropped as u64;
               if got {
+                // 前置软 clip：进入 AEC 模型之前先收到 [-1, 1]（与 `apply_trim` 同一条纪律）
+                crate::dsp::softclip::soft_clip_in_place(&mut tmp);
                 if !probe_in_ok {
                   probe_in.copy_from_slice(&tmp);
                   probe_in_ok = true;

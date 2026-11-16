@@ -562,7 +562,8 @@ pub fn model_path(file: &str) -> Result<PathBuf, String> {
     let dir = exe.parent().unwrap_or(Path::new("."));
     candidates.push(dir.join("models").join(file));
     // target/debug/purevox.exe → 仓库根/models
-    if let Some(repo) = dir.ancestors().nth(3) {
+    // target/debug/purevox.exe → 仓库根/models（exe 的祖先：debug → target → 仓库根）
+    if let Some(repo) = dir.ancestors().nth(2) {
       candidates.push(repo.join("models").join(file));
     }
     candidates.push(dir.join("resources").join("models").join(file));
