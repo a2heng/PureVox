@@ -73,7 +73,7 @@ use audio::AudioManager;
 use debug::{DebugHub, SharedHub};
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::prelude::*;
-use gpui_kit::{Bounds, WindowBounds, WindowOptions, point, px, size};
+use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 
 /// 主窗口默认几何（第一次启动 / 还没记住几何时）。
 const DEFAULT_W: f32 = 1280.0;
@@ -93,7 +93,8 @@ fn native_scale() -> f32 {
 /// 主窗口的托盘句柄（窗口被移除后，重开窗口还要用它建菜单）。
 static UI_HUB: std::sync::OnceLock<SharedHub> = std::sync::OnceLock::new();
 
-/// 主窗口几何 / 标题栏选项。Linux 用客户端装饰 + 界面自绘标题栏（拖动 / 最大化 / 关闭）。
+/// 主窗口几何 / 标题栏选项。Windows 与 Linux 都不使用系统标题栏：
+/// 由 `ui::title_bar()` 自绘（拖动 / 最小化 / 最大化 / 关闭），两边行为一致。
 fn main_window_options(cx: &mut gpui_kit::App) -> WindowOptions {
   let settings = crate::config::load_settings();
   let scale = native_scale();
@@ -114,19 +115,27 @@ fn main_window_options(cx: &mut gpui_kit::App) -> WindowOptions {
       false,
     ),
   };
-  let mut options = gpui_kit::component::TitleBar::window_options();
+  let mut options = WindowOptions {
+    titlebar: Some(TitlebarOptions {
+      title: Some(format!("PureVox {}", version::VERSION).into()),
+      // 只有自绘标题栏的平台才隐藏系统标题栏；其他平台保持系统原样。
+      appears_transparent: cfg!(any(windows, target_os = "linux")),
+      traffic_light_position: None,
+    }),
+    // 拖动 / 双击最大化由标题栏自己接管，系统不要再处理一遍。
+    app_owns_titlebar_drag: cfg!(any(windows, target_os = "linux")),
+    ..Default::default()
+  };
   options.window_bounds = Some(if maximized {
     WindowBounds::Maximized(bounds)
   } else {
     WindowBounds::Windowed(bounds)
   });
   options.window_min_size = Some(size(px(900.), px(560.)));
-  if let Some(titlebar) = options.titlebar.as_mut() {
-    titlebar.title = Some(format!("PureVox {}", version::VERSION).into());
-  }
   #[cfg(target_os = "linux")]
   {
-    // Linux 没有系统标题栏（Wayland 默认客户端装饰）；由界面自绘 `title_bar()`。
+    // Linux 没有系统标题栏（Wayland 默认客户端装饰）；X11 无合成器时窗口管理器
+    // 仍可能给服务端装饰，`title_bar()` 会按实际装饰决定是否画按钮。
     options.window_decorations = Some(gpui_kit::WindowDecorations::Client);
   }
   options

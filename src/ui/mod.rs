@@ -28,7 +28,10 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::slider::SliderState;
-use gpui_kit::component::{IconName, InteractiveElementExt as _, Sizable as _};
+use gpui_kit::component::{IconName, Sizable as _};
+// `on_double_click` 只在 Linux 分支用（Windows 双击最大化交给系统）。
+#[cfg(not(windows))]
+use gpui_kit::component::InteractiveElementExt as _;
 use gpui_kit::{
   AnyElement, Context, Entity, FocusHandle, KeyBinding, Subscription, Window, div, prelude::*, px,
   rgb,
@@ -425,11 +428,13 @@ impl Workspace {
     });
     this.subs.push(capture);
     // 拖动窗口时不要每个像素都写盘；400 ms 节流，关闭时由 main 再无条件写一次。
-    let geom_sub = cx.observe_window_bounds(window, |this, window, _cx| {
+    let geom_sub = cx.observe_window_bounds(window, |this, window, cx| {
       if this.last_geom_save.elapsed() >= Duration::from_millis(400) {
         this.last_geom_save = Instant::now();
         let _ = crate::config::save_window_geom(crate::config::geom_from_window(window));
       }
+      // 最大化 / 还原后标题栏的按钮图标要跟着换。
+      cx.notify();
     });
     this.subs.push(geom_sub);
     cx.spawn(async move |weak, cx| {
@@ -873,98 +878,136 @@ impl Workspace {
 
 // ── 绘制 ──────────────────────────────────────────────────────────────
 
-/// 自绘标题栏（Linux 客户端装饰）：拖动、双击最大化、最小化 / 关闭都进托盘。
+/// 自绘标题栏（Windows / Linux 共用外观与行为）：拖动、双击最大化、最小化 / 关闭。
 ///
-/// Windows/macOS 用系统标题栏，这里返回空；Linux 由窗口管理器给服务端装饰时也返回空，
-/// 避免出现两套按钮。
+/// 平台差别只在系统集成方式：
+/// - Windows 用 `window_control_area` 把拖动 / 最大化交给系统（保留 Win11 贴靠布局），
+///   关闭走系统 `WM_CLOSE`，仍由 `on_window_should_close` 收进托盘；
+/// - Linux 用 `start_window_move()`（Wayland / X11 只能这样），三个按钮都走点击回调。
+///
+/// 最小化 / 关闭统一收进托盘，与托盘菜单同一条路径。
 fn title_bar(cx: &mut Context<Workspace>, window: &Window) -> AnyElement {
-  if !cfg!(target_os = "linux") {
-    return div().into_any_element();
-  }
+  // Linux 走服务端装饰时窗口管理器已经画了标题栏，再画一套就是两组按钮。
+  #[cfg(target_os = "linux")]
   if !matches!(
     window.window_decorations(),
     gpui_kit::Decorations::Client { .. }
   ) {
     return div().into_any_element();
   }
-  let max = title_button(
-    cx,
-    "tb-max",
-    IconName::WindowMaximize,
-    false,
-    |_, window, _| {
-      window.zoom_window();
-    },
-  );
-  let close = title_button(
-    cx,
-    "tb-close",
-    IconName::WindowClose,
-    true,
-    |this, _, cx| {
-      // 由 tick 执行隐藏，避免在窗口事件处理里移除自己。
-      this.hide_window = true;
-      cx.notify();
-    },
-  );
-  // 拖动要等真正移动才启动；在按钮上按下时 stop_propagation，不会误拖窗口。
-  let armed = Rc::new(Cell::new(false));
-  let arm_down = armed.clone();
-  let arm_up = armed.clone();
-  let arm_move = armed.clone();
-  div()
-    .id("title-bar")
-    .flex()
-    .items_center()
-    .justify_between()
-    .h(px(t::TITLE_H))
-    .pl(px(t::SPACE_3))
-    .bg(rgb(t::PANEL))
-    .border_b_1()
-    .border_color(rgb(t::BORDER))
-    .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
-      arm_down.set(true);
-    })
-    .on_mouse_up(gpui_kit::MouseButton::Left, move |_, _, _| {
-      arm_up.set(false);
-    })
-    .on_double_click(|_, window, _| window.zoom_window())
-    .on_mouse_move(
-      cx.listener(move |_this, e: &gpui_kit::MouseMoveEvent, window, _cx| {
-        if arm_move.get() && e.pressed_button == Some(gpui_kit::MouseButton::Left) {
-          arm_move.set(false);
-          window.start_window_move();
-        }
-      }),
-    )
-    .on_mouse_down(gpui_kit::MouseButton::Right, |e, window, _| {
-      window.show_window_menu(e.position)
-    })
-    .child(
-      div()
-        .text_size(px(t::TEXT_SM))
-        .text_color(rgb(t::MUTED))
-        .child(format!("PureVox {}", crate::version::VERSION)),
-    )
-    .child(div().flex().items_center().h_full().child(max).child(close))
-    .into_any_element()
+  // 其他平台仍用系统标题栏。
+  #[cfg(not(any(windows, target_os = "linux")))]
+  {
+    let _ = (cx, window);
+    return div().into_any_element();
+  }
+  #[cfg(any(windows, target_os = "linux"))]
+  {
+    let controls = window.window_controls();
+    let max_icon = if window.is_maximized() {
+      IconName::WindowRestore
+    } else {
+      IconName::WindowMaximize
+    };
+
+    let drag = div()
+      .id("title-bar-drag")
+      .flex()
+      .items_center()
+      .flex_1()
+      .h_full()
+      .pl(px(t::SPACE_3))
+      .child(
+        div()
+          .text_size(px(t::TEXT_SM))
+          .text_color(rgb(t::MUTED))
+          .child(format!("PureVox {}", crate::version::VERSION)),
+      );
+
+    #[cfg(windows)]
+    let drag = drag.window_control_area(gpui_kit::WindowControlArea::Drag);
+
+    #[cfg(not(windows))]
+    let drag = {
+      // 拖动要等真正移动才启动；在按钮上按下时 stop_propagation，不会误拖窗口。
+      let armed = Rc::new(Cell::new(false));
+      let arm_down = armed.clone();
+      let arm_up = armed.clone();
+      let arm_move = armed.clone();
+      drag
+        .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
+          arm_down.set(true);
+        })
+        .on_mouse_up(gpui_kit::MouseButton::Left, move |_, _, _| {
+          arm_up.set(false);
+        })
+        .on_double_click(|_, window, _| window.zoom_window())
+        .on_mouse_move(
+          cx.listener(move |_this, e: &gpui_kit::MouseMoveEvent, window, _cx| {
+            if arm_move.get() && e.pressed_button == Some(gpui_kit::MouseButton::Left) {
+              arm_move.set(false);
+              window.start_window_move();
+            }
+          }),
+        )
+        .on_mouse_down(gpui_kit::MouseButton::Right, |e, window, _| {
+          window.show_window_menu(e.position)
+        })
+    };
+
+    div()
+      .id("title-bar")
+      .flex()
+      .items_center()
+      .justify_between()
+      .h(px(t::TITLE_H))
+      .bg(rgb(t::PANEL))
+      .border_b_1()
+      .border_color(rgb(t::BORDER))
+      .child(drag)
+      .child(
+        div()
+          .flex()
+          .items_center()
+          .h_full()
+          .when(controls.minimize, |d| {
+            d.child(title_button(cx, TitleAction::Min, IconName::WindowMinimize))
+          })
+          .when(controls.maximize, |d| {
+            d.child(title_button(cx, TitleAction::Max, max_icon))
+          })
+          .child(title_button(cx, TitleAction::Close, IconName::WindowClose)),
+      )
+      .into_any_element()
+  }
+}
+
+#[derive(Clone, Copy)]
+enum TitleAction {
+  Min,
+  Max,
+  Close,
 }
 
 /// 标题栏按钮：和窗口同高，悬停变色；点击不触发拖动 / 双击。
-fn title_button(
-  cx: &mut Context<Workspace>,
-  id: &'static str,
-  icon: IconName,
-  danger: bool,
-  action: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
-) -> AnyElement {
-  div()
+///
+/// Windows 的最小化自己处理（系统的 `SW_MINIMIZE` 会进任务栏，这里统一收进托盘）；
+/// 最大化 / 关闭交给系统（`window_control_area`），才有 Win11 贴靠布局与正常的
+/// `WM_CLOSE` 路径。Linux 三个按钮都走点击回调。
+fn title_button(cx: &mut Context<Workspace>, action: TitleAction, icon: IconName) -> AnyElement {
+  let (id, danger) = match action {
+    TitleAction::Min => ("tb-min", false),
+    TitleAction::Max => ("tb-max", false),
+    TitleAction::Close => ("tb-close", true),
+  };
+  let button = div()
     .id(id)
     .flex()
     .items_center()
     .justify_center()
     .w(px(t::TITLE_H))
     .h_full()
+    .flex_shrink_0()
     .cursor_pointer()
     .hover(move |style| {
       style.bg(if danger {
@@ -973,15 +1016,36 @@ fn title_button(
         rgb(t::CONTROL_HI)
       })
     })
-    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-      cx.stop_propagation()
-    })
-    .on_click(cx.listener(move |this, _, window, cx| action(this, window, cx)))
     .child(
       gpui_kit::component::Icon::new(icon)
         .small()
         .text_color(rgb(t::TEXT)),
-    )
+    );
+
+  #[cfg(windows)]
+  {
+    let area = match action {
+      TitleAction::Max => Some(gpui_kit::WindowControlArea::Max),
+      TitleAction::Close => Some(gpui_kit::WindowControlArea::Close),
+      TitleAction::Min => None,
+    };
+    if let Some(area) = area {
+      return button.window_control_area(area).into_any_element();
+    }
+  }
+
+  button
+    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+      cx.stop_propagation()
+    })
+    .on_click(cx.listener(move |this, _, window, cx| match action {
+      // 最小化 / 关闭都收进托盘：两条路在托盘菜单里都能找回来。
+      TitleAction::Min | TitleAction::Close => {
+        this.hide_window = true;
+        cx.notify();
+      }
+      TitleAction::Max => window.zoom_window(),
+    }))
     .into_any_element()
 }
 
