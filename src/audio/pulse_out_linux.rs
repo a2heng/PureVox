@@ -52,6 +52,7 @@ pub fn probe(device_id: &str) -> Result<Format, String> {
     sample: Sample::F32,
     period_frames: PERIOD_FRAMES,
     low_latency: true,
+    engine_convert: false,
   })
 }
 

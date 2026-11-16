@@ -42,16 +42,21 @@ pub fn probe(device_id: &str) -> Result<Format, String> {
     .map_err(|e| format!("读取默认输出格式失败：{e}"))?;
   let cfg = supported.config();
   let sample = match supported.sample_format() {
-    SampleFormat::F32 => Sample::F32,
+    SampleFormat::U8 => Sample::U8,
+    SampleFormat::I8 => Sample::I8,
     SampleFormat::I16 => Sample::I16,
-    SampleFormat::I32 => Sample::I32,
     SampleFormat::U16 => Sample::U16,
+    SampleFormat::I24 => Sample::I24In32,
+    SampleFormat::U24 => Sample::U24,
+    SampleFormat::I32 => Sample::I32,
+    SampleFormat::U32 => Sample::U32,
+    SampleFormat::I64 => Sample::I64,
+    SampleFormat::U64 => Sample::U64,
+    SampleFormat::F32 => Sample::F32,
+    SampleFormat::F64 => Sample::F64,
     other => return Err(format!("不支持的采样格式 {other}")),
   };
-  let bits = match sample {
-    Sample::F32 | Sample::I32 => 32,
-    Sample::I16 | Sample::U16 => 16,
-  };
+  let bits = sample.container_bits();
   Ok(Format {
     rate: cfg.sample_rate,
     channels: cfg.channels,
@@ -59,6 +64,7 @@ pub fn probe(device_id: &str) -> Result<Format, String> {
     sample,
     period_frames: (cfg.sample_rate / 100).max(1),
     low_latency: false,
+    engine_convert: false,
   })
 }
 
@@ -76,10 +82,19 @@ pub fn start(
     buffer_size: cpal::BufferSize::Default,
   };
   let stream = match format.sample {
-    Sample::F32 => build_stream::<f32>(&dev, &cfg, cons, stats, primed),
+    Sample::U8 => build_stream::<u8>(&dev, &cfg, cons, stats, primed),
+    Sample::I8 => build_stream::<i8>(&dev, &cfg, cons, stats, primed),
     Sample::I16 => build_stream::<i16>(&dev, &cfg, cons, stats, primed),
-    Sample::I32 => build_stream::<i32>(&dev, &cfg, cons, stats, primed),
     Sample::U16 => build_stream::<u16>(&dev, &cfg, cons, stats, primed),
+    Sample::I24In32 => build_stream::<cpal::I24>(&dev, &cfg, cons, stats, primed),
+    Sample::U24 => build_stream::<cpal::U24>(&dev, &cfg, cons, stats, primed),
+    Sample::I32 => build_stream::<i32>(&dev, &cfg, cons, stats, primed),
+    Sample::U32 => build_stream::<u32>(&dev, &cfg, cons, stats, primed),
+    Sample::I64 => build_stream::<i64>(&dev, &cfg, cons, stats, primed),
+    Sample::U64 => build_stream::<u64>(&dev, &cfg, cons, stats, primed),
+    Sample::F32 => build_stream::<f32>(&dev, &cfg, cons, stats, primed),
+    Sample::F64 => build_stream::<f64>(&dev, &cfg, cons, stats, primed),
+    Sample::I24Packed => return Err("cpal 后端不会返回 3 字节紧凑 24-bit".into()),
   }?;
   stream.play().map_err(|e| format!("启动输出流失败：{e}"))?;
   Ok(Stream { _stream: stream })

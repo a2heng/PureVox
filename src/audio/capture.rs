@@ -323,10 +323,18 @@ fn run(
     let (prod, cons) =
       RingBuffer::<f32>::new((cfg.sample_rate as usize / 2 * ch).max(HOP * 4 * ch));
     let stream = match fmt {
-      SampleFormat::F32 => build_stream::<f32>(&dev, &cfg, prod, stats.clone()),
+      SampleFormat::U8 => build_stream::<u8>(&dev, &cfg, prod, stats.clone()),
+      SampleFormat::I8 => build_stream::<i8>(&dev, &cfg, prod, stats.clone()),
       SampleFormat::I16 => build_stream::<i16>(&dev, &cfg, prod, stats.clone()),
-      SampleFormat::I32 => build_stream::<i32>(&dev, &cfg, prod, stats.clone()),
       SampleFormat::U16 => build_stream::<u16>(&dev, &cfg, prod, stats.clone()),
+      SampleFormat::I24 => build_stream::<cpal::I24>(&dev, &cfg, prod, stats.clone()),
+      SampleFormat::U24 => build_stream::<cpal::U24>(&dev, &cfg, prod, stats.clone()),
+      SampleFormat::I32 => build_stream::<i32>(&dev, &cfg, prod, stats.clone()),
+      SampleFormat::U32 => build_stream::<u32>(&dev, &cfg, prod, stats.clone()),
+      SampleFormat::I64 => build_stream::<i64>(&dev, &cfg, prod, stats.clone()),
+      SampleFormat::U64 => build_stream::<u64>(&dev, &cfg, prod, stats.clone()),
+      SampleFormat::F32 => build_stream::<f32>(&dev, &cfg, prod, stats.clone()),
+      SampleFormat::F64 => build_stream::<f64>(&dev, &cfg, prod, stats.clone()),
       other => Err(format!("不支持的采样格式 {other}")),
     }?;
     stream.play().map_err(|e| format!("启动输入流失败：{e}"))?;
