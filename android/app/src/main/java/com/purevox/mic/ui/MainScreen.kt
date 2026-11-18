@@ -20,9 +20,13 @@
 package com.purevox.mic.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,6 +51,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.progressSemantics
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -78,16 +83,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -101,7 +114,6 @@ import androidx.compose.ui.window.DialogProperties
 import com.itos.coui.layout.Divider
 import com.itos.coui.layout.Group
 import com.itos.coui.layout.Item
-import com.itos.coui.slider.Slider
 import com.itos.coui.switch.Switch
 import com.itos.coui.theme.CouiColorScheme
 import com.itos.coui.theme.CouiTheme
@@ -109,6 +121,7 @@ import com.purevox.mic.MainActivity
 import com.purevox.mic.R
 import com.purevox.mic.audio.MicSources
 import com.purevox.mic.update.UpdateChecker
+import kotlin.math.roundToInt
 
 /** 右侧 hero 上方的品牌色：与旧 XML 的头图渐变一致（深蓝 → 亮一点的蓝）。 */
 private val HeroTop = Color(0xFF132C50)
@@ -207,7 +220,7 @@ private fun HomeScreen(activity: MainActivity) {
 
         Text(
             text = stringResource(R.string.footer_hint),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
             fontSize = 11.sp,
             lineHeight = 15.sp,
             color = scheme.onSurfaceVariant,
@@ -235,7 +248,7 @@ private fun Hero(activity: MainActivity) {
         Column(
             Modifier
                 .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(start = 20.dp, top = 10.dp, end = 14.dp, bottom = 18.dp),
+                .padding(start = 20.dp, top = 8.dp, end = 14.dp, bottom = 12.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // 字标是**品牌**，不进 i18n：P 的包围盒比大写高度高，往上挪 2dp 贴住基线
@@ -282,7 +295,7 @@ private fun Hero(activity: MainActivity) {
             }
 
             Row(
-                modifier = Modifier.padding(top = 12.dp),
+                modifier = Modifier.padding(top = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(Modifier.size(9.dp).clip(CircleShape).background(dotColor))
@@ -294,16 +307,6 @@ private fun Hero(activity: MainActivity) {
                     color = if (activity.ready) HeroReady else Color.White,
                 )
             }
-
-            Text(
-                text = activity.heroTargetText,
-                modifier = Modifier.padding(start = 18.dp, top = 3.dp),
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                color = HeroMuted,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
     }
 }
@@ -383,6 +386,94 @@ private fun PvOutlinedButton(
     }
 }
 
+/**
+ * 普通滑块：**外形像 COUI 胶囊滑条，但不带任何特效**。
+ *
+ * COUI 的 Slider 自带 spotlight / 形变 / 跟手动效，在当前 ROM 上有绘制 bug；
+ * 这里用 Canvas 画一条 16dp 胶囊轨道 + 白色圆环 thumb，自己处理拖动/点击，
+ * 不接任何 shader、光斑或动画。步长 / 语义仍完整（无障碍可调）。
+ */
+@Composable
+private fun PvSlider(
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scheme = CouiTheme.colorScheme
+    val span = valueRange.endInclusive - valueRange.start
+    val stepSize = if (steps > 0) span / (steps + 1) else 0f
+    fun snap(v: Float): Float {
+        val clamped = v.coerceIn(valueRange.start, valueRange.endInclusive)
+        return if (stepSize > 0f) {
+            (valueRange.start + ((clamped - valueRange.start) / stepSize).roundToInt() * stepSize)
+                .coerceIn(valueRange.start, valueRange.endInclusive)
+        } else {
+            clamped
+        }
+    }
+
+    val onValue by rememberUpdatedState(onValueChange)
+    Canvas(
+        modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .progressSemantics(value, valueRange, steps)
+            .semantics {
+                setProgress { target ->
+                    onValue(snap(target))
+                    true
+                }
+            }
+            .pointerInput(valueRange, steps) {
+                val pad = 12.dp.toPx()
+                val usable = (size.width - pad * 2).coerceAtLeast(1f)
+                fun update(x: Float) {
+                    val f = ((x - pad) / usable).coerceIn(0f, 1f)
+                    onValue(snap(valueRange.start + f * span))
+                }
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    update(down.position.x)
+                    drag(down.id) { change ->
+                        update(change.position.x)
+                        change.consume()
+                    }
+                }
+            },
+    ) {
+        val pad = 12.dp.toPx()
+        val usable = (size.width - pad * 2).coerceAtLeast(1f)
+        val fraction = ((value - valueRange.start) / span).coerceIn(0f, 1f)
+        val thumbX = pad + fraction * usable
+        val cy = size.height / 2f
+        val trackH = 16.dp.toPx()
+        val radius = trackH / 2f
+
+        drawRoundRect(
+            color = scheme.outlineVariant,
+            topLeft = Offset(pad, cy - radius),
+            size = Size(usable, trackH),
+            cornerRadius = CornerRadius(radius, radius),
+        )
+        drawRoundRect(
+            color = scheme.accent,
+            topLeft = Offset(pad, cy - radius),
+            size = Size((thumbX - pad).coerceAtLeast(0f), trackH),
+            cornerRadius = CornerRadius(radius, radius),
+        )
+        val thumbR = 11.dp.toPx()
+        drawCircle(color = Color.White, radius = thumbR, center = Offset(thumbX, cy))
+        drawCircle(
+            color = scheme.accent,
+            radius = thumbR,
+            center = Offset(thumbX, cy),
+            style = Stroke(width = 2.dp.toPx()),
+        )
+    }
+}
+
 /** 一行开关：整行可点（COUI 的 Item 提供行内留白与按压反馈）。 */
 @Composable
 private fun SwitchRow(
@@ -434,6 +525,7 @@ private fun TargetSection(activity: MainActivity, scheme: CouiColorScheme) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // IP 占**正好一半**：右边缘与下面两个按钮的中缝对齐
                 OutlinedTextField(
                     value = activity.hostInput,
                     onValueChange = { activity.hostInput = it },
@@ -445,39 +537,46 @@ private fun TargetSection(activity: MainActivity, scheme: CouiColorScheme) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                     colors = fieldColors,
                 )
-                OutlinedTextField(
-                    value = activity.portInput,
-                    onValueChange = { raw ->
-                        // 端口只收数字、最多 5 位；非法值在 readTarget() 里回退到默认端口
-                        activity.portInput = raw.filter { it in '0'..'9' }.take(5)
-                    },
-                    modifier = Modifier.width(96.dp),
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    placeholder = { Text(stringResource(R.string.hint_port), fontSize = 13.sp) },
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    colors = fieldColors,
-                )
-                // 扫码不是「一个不起眼的图标」：52dp 圆形按钮 + 强调色，和输入框同一行
-                Box(
-                    Modifier
-                        .size(52.dp)
-                        .clip(CircleShape)
-                        .background(scheme.accent.copy(alpha = 0.12f))
-                        .clickable { activity.startScan() },
-                    contentAlignment = Alignment.Center,
+                // 另外一半：端口 + 扫码（扫码与端口同一半，保持和按钮同一条中线）
+                Row(
+                    Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.QrCodeScanner,
-                        contentDescription = stringResource(R.string.btn_scan),
-                        tint = scheme.accent,
-                        modifier = Modifier.size(26.dp),
+                    OutlinedTextField(
+                        value = activity.portInput,
+                        onValueChange = { raw ->
+                            // 端口只收数字、最多 5 位；非法值在 readTarget() 里回退到默认端口
+                            activity.portInput = raw.filter { it in '0'..'9' }.take(5)
+                        },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        placeholder = { Text(stringResource(R.string.hint_port), fontSize = 13.sp) },
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        colors = fieldColors,
                     )
+                    // 扫码不是「一个不起眼的图标」：52dp 圆形按钮 + 强调色
+                    Box(
+                        Modifier
+                            .size(52.dp)
+                            .clip(CircleShape)
+                            .background(scheme.accent.copy(alpha = 0.12f))
+                            .clickable { activity.startScan() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.QrCodeScanner,
+                            contentDescription = stringResource(R.string.btn_scan),
+                            tint = scheme.accent,
+                            modifier = Modifier.size(26.dp),
+                        )
+                    }
                 }
             }
             Row(
-                Modifier.fillMaxWidth().padding(top = 10.dp),
+                Modifier.fillMaxWidth().padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 PvOutlinedButton(
@@ -497,62 +596,51 @@ private fun TargetSection(activity: MainActivity, scheme: CouiColorScheme) {
     }
 }
 
-/** 抖动缓冲：独立一张卡（不夹带麦克风 API）；数值放在标题行右侧。 */
+/**
+ * 抖动缓冲 + 麦克风 API：**合成一张卡**。
+ *
+ * 麦克风 API 只是一个标题行右侧的小按钮（`API · 默认`），不单独占一张卡 / 一行：
+ * 它属于「采集参数」，不是另一个功能块；点开仍是 COUI 选择器。
+ */
 @Composable
 private fun AudioSection(activity: MainActivity, scheme: CouiColorScheme) {
+    var pickerOpen by remember { mutableStateOf(false) }
     Group(
-        title = stringResource(R.string.section_buffer),
+        title = stringResource(R.string.buffer_title_value, activity.ringMs / 10, activity.ringMs),
         headerActions = {
-            Text(
-                text = stringResource(R.string.ring_value, activity.ringMs / 10, activity.ringMs),
-                fontSize = 12.sp,
-                color = scheme.onSurfaceVariant,
-            )
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(scheme.accent.copy(alpha = 0.12f))
+                    .clickable { pickerOpen = true }
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "API · " + MicSources.shortLabel(activity, activity.micSourceId),
+                    modifier = Modifier.widthIn(max = 100.dp),
+                    fontSize = 10.sp,
+                    color = scheme.accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Icon(
+                    imageVector = Icons.Filled.ChevronRight,
+                    contentDescription = stringResource(R.string.mic_source_label),
+                    tint = scheme.accent,
+                    modifier = Modifier.padding(start = 2.dp).size(14.dp),
+                )
+            }
         },
     ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-            Slider(
-                modifier = Modifier.fillMaxWidth(),
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+            PvSlider(
                 value = activity.ringMs.toFloat(),
                 onValueChange = { activity.setRingTarget(it.toInt()) },
                 valueRange = 10f..200f,
                 steps = 18,
             )
         }
-    }
-    MicSourceRow(activity, scheme)
-}
-
-/** 麦克风 API：独立一张卡；点开是居中选择器（不再用 M3 下拉菜单）。 */
-@Composable
-private fun MicSourceRow(activity: MainActivity, scheme: CouiColorScheme) {
-    var pickerOpen by remember { mutableStateOf(false) }
-    Group(title = stringResource(R.string.mic_source_label)) {
-        Item(
-            onClick = { pickerOpen = true },
-            title = {
-                Text(
-                    text = MicSources.label(activity, activity.micSourceId),
-                    fontSize = 16.sp,
-                    color = scheme.onSurface,
-                )
-            },
-            summary = {
-                Text(
-                    text = stringResource(R.string.mic_source_change),
-                    fontSize = 12.sp,
-                    color = scheme.onSurfaceVariant,
-                )
-            },
-            trailing = {
-                Icon(
-                    imageVector = Icons.Filled.ChevronRight,
-                    contentDescription = null,
-                    tint = scheme.onSurfaceVariant,
-                    modifier = Modifier.size(22.dp),
-                )
-            },
-        )
     }
     if (pickerOpen) MicSourcePicker(activity, scheme) { pickerOpen = false }
 }
@@ -597,6 +685,13 @@ private fun MicSourcePicker(activity: MainActivity, scheme: CouiColorScheme, onD
                         )
                     }
                 }
+                Text(
+                    text = stringResource(R.string.mic_source_hint),
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    color = scheme.onSurfaceVariant,
+                )
                 HorizontalDivider(color = scheme.outlineVariant)
                 Column(
                     Modifier
@@ -636,13 +731,6 @@ private fun MicSourcePicker(activity: MainActivity, scheme: CouiColorScheme, onD
                         }
                     }
                 }
-                Text(
-                    text = stringResource(R.string.mic_source_hint),
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
-                    color = scheme.onSurfaceVariant,
-                )
             }
         }
     }
@@ -696,7 +784,7 @@ private fun SettingsDialog(activity: MainActivity) {
                     Modifier
                         .weight(1f, fill = false)
                         .verticalScroll(rememberScrollState())
-                        .padding(bottom = 18.dp),
+                        .padding(bottom = 12.dp),
                 ) {
                     LanguageSection(activity)
                     KeepaliveSection(activity, scheme)

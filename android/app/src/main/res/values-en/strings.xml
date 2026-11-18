@@ -44,8 +44,7 @@
     <string name="section_update">Update</string>
     <string name="section_language">Language</string>
     <string name="section_target">Target</string>
-    <string name="section_buffer">Jitter buffer</string>
-    <string name="ring_value">%1$d frames (%2$d ms)</string>
+    <string name="buffer_title_value">Jitter buffer · %1$d frames (%2$d ms)</string>
     <string name="hero_target_auto">Looking for the computer…</string>
     <string name="footer_hint">Direct LAN · audio never leaves your network</string>
 
@@ -187,7 +186,6 @@
     <string name="sw_mic">Phone microphone → computer</string>
     <string name="sw_speaker">Computer audio → phone speaker</string>
     <string name="mic_source_label">Microphone API</string>
-    <string name="mic_source_change">Tap to change capture mode</string>
     <string name="mic_source_hint">Hidden / system-only APIs usually lack permission and fall back to MIC.</string>
     <string name="mic_src_mic">MIC (default, most common)</string>
     <string name="mic_src_voice_recognition">VOICE_RECOGNITION (speech recognition)</string>

@@ -63,4 +63,16 @@ object MicSources {
     fun find(id: Int): Source = ALL.firstOrNull { it.id == id } ?: ALL[0]
 
     fun label(context: Context, id: Int): String = context.getString(find(id).labelRes)
+
+    /**
+     * 紧凑名（`API` 小按钮上显示）：优先取括号里的中文/英文短名，
+     * `MIC（默认，最常用）` → `默认`；没有括号就用全名。只用于省高度，不改完整清单。
+     */
+    fun shortLabel(context: Context, id: Int): String {
+        val full = label(context, id)
+        val inside = full.substringAfter('（', "")
+            .substringBefore('）')
+            .ifEmpty { full.substringAfter('(', "").substringBefore(')') }
+        return inside.substringBefore('，').substringBefore(',').ifEmpty { full }
+    }
 }

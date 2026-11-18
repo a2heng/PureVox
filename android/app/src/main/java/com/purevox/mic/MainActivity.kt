@@ -170,7 +170,6 @@ class MainActivity : AppCompatActivity() {
     internal var logVersion by mutableIntStateOf(0)
 
     internal var connState by mutableStateOf("")
-    internal var heroTargetText by mutableStateOf("")
     internal var ready by mutableStateOf(false)
     internal var connecting by mutableStateOf(false)
     internal var lastErr by mutableStateOf("")
@@ -1309,11 +1308,6 @@ class MainActivity : AppCompatActivity() {
         val c = ws
         val enc = uplink
         val dec = downlink
-        heroTargetText = when {
-            host.isEmpty() -> getString(R.string.hero_target_auto)
-            port == Proto.PORT -> host
-            else -> "$host:$port"
-        }
         // 实时量全交给 RtStats（单一来源）：界面只渲染，不自己另算一套
         val net = rt.sample(
             nowMs = System.currentTimeMillis(),
@@ -1812,11 +1806,6 @@ class MainActivity : AppCompatActivity() {
         micOn = p.getBoolean("mic", false)
         spkOn = p.getBoolean("speaker", false)
         micSourceId = p.getInt("micSource", MicSources.ALL[0].id)
-        heroTargetText = when {
-            host.isEmpty() -> getString(R.string.hero_target_auto)
-            port == Proto.PORT -> host
-            else -> "$host:$port"
-        }
     }
 
     /** 只有「连接成功」才把目标写回偏好；失败 / 只是改了输入框都不落盘。 */
