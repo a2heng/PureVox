@@ -58,6 +58,8 @@
     <string name="section_update">更新</string>
     <string name="section_language">界面语言</string>
     <string name="section_target">连接目标</string>
+    <string name="section_buffer">抖动缓冲</string>
+    <string name="ring_value">%1$d 帧（%2$d ms）</string>
     <string name="hero_target_auto">自动发现电脑中…</string>
     <string name="footer_hint">局域网直连 · 音频不经服务器</string>
 
@@ -194,12 +196,12 @@
     <string name="err_download_dir">无法创建下载目录 %1$s</string>
 
     <!-- 抖动缓冲滑块（手动，10~200 ms） -->
-    <string name="ring_label">抖动缓冲 %1$d 帧（%2$d ms）</string>
 
     <!-- 功能开关 -->
     <string name="sw_mic">手机麦克风 → 电脑</string>
     <string name="sw_speaker">电脑音频 → 手机扬声器</string>
     <string name="mic_source_label">麦克风 API</string>
+    <string name="mic_source_change">点击切换采集方式</string>
     <string name="mic_source_hint">隐藏 / 系统专用 API 通常没有权限，会自动回退到 MIC。</string>
     <string name="mic_src_mic">MIC（默认，最常用）</string>
     <string name="mic_src_voice_recognition">VOICE_RECOGNITION（语音识别）</string>

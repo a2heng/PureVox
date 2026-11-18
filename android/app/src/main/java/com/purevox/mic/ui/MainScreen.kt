@@ -19,6 +19,7 @@
 
 package com.purevox.mic.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -26,6 +27,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -50,15 +52,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ColorScheme
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -81,6 +84,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -89,6 +93,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -303,6 +308,81 @@ private fun Hero(activity: MainActivity) {
     }
 }
 
+/**
+ * 统一的主操作 / 次操作按钮：**胶囊形、无阴影、48dp 高**。
+ *
+ * 全应用只从这里出按钮（连接目标 / 保活 / 更新 / 诊断），不再混用 M3 默认外观，
+ * 也不让某处退化成「很细的文字」。
+ */
+@Composable
+private fun PvButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    icon: ImageVector? = null,
+    height: Dp = 48.dp,
+    onClick: () -> Unit,
+) {
+    val scheme = CouiTheme.colorScheme
+    Button(
+        onClick = onClick,
+        modifier = modifier.height(height),
+        enabled = enabled,
+        shape = RoundedCornerShape(16.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = scheme.accent,
+            contentColor = scheme.onAccent,
+            disabledContainerColor = scheme.accent.copy(alpha = 0.12f),
+            disabledContentColor = scheme.onSurface.copy(alpha = 0.38f),
+        ),
+        elevation = ButtonDefaults.buttonElevation(
+            defaultElevation = 0.dp,
+            pressedElevation = 0.dp,
+        ),
+        contentPadding = PaddingValues(horizontal = 16.dp),
+    ) {
+        if (icon != null) {
+            Icon(icon, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(text = text, fontSize = 14.sp, maxLines = 1)
+    }
+}
+
+/** 统一的次操作按钮：可见描边，和 [PvButton] 同高同圆角。 */
+@Composable
+private fun PvOutlinedButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    icon: ImageVector? = null,
+    height: Dp = 48.dp,
+    onClick: () -> Unit,
+) {
+    val scheme = CouiTheme.colorScheme
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.height(height),
+        enabled = enabled,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(
+            1.dp,
+            if (enabled) scheme.outlineVariant else scheme.outlineVariant.copy(alpha = 0.5f),
+        ),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = scheme.onSurface,
+            disabledContentColor = scheme.onSurface.copy(alpha = 0.38f),
+        ),
+        contentPadding = PaddingValues(horizontal = 16.dp),
+    ) {
+        if (icon != null) {
+            Icon(icon, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(text = text, fontSize = 14.sp, maxLines = 1)
+    }
+}
+
 /** 一行开关：整行可点（COUI 的 Item 提供行内留白与按压反馈）。 */
 @Composable
 private fun SwitchRow(
@@ -333,7 +413,7 @@ private fun SwitchRow(
     )
 }
 
-/** 连接目标：两个输入框 + 扫码 + 发现 / 重连。 */
+/** 连接目标：两个输入框 + 扫码 + 两个全宽操作按钮。 */
 @Composable
 private fun TargetSection(activity: MainActivity, scheme: CouiColorScheme) {
     val fieldColors = OutlinedTextFieldDefaults.colors(
@@ -344,127 +424,224 @@ private fun TargetSection(activity: MainActivity, scheme: CouiColorScheme) {
         cursorColor = scheme.accent,
         focusedPlaceholderColor = scheme.onSurfaceVariant,
         unfocusedPlaceholderColor = scheme.onSurfaceVariant,
+        focusedContainerColor = scheme.background,
+        unfocusedContainerColor = scheme.background,
     )
     Group(title = stringResource(R.string.section_target)) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = activity.hostInput,
-                onValueChange = { activity.hostInput = it },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                placeholder = { Text(stringResource(R.string.hint_host), fontSize = 13.sp) },
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                colors = fieldColors,
-            )
-            OutlinedTextField(
-                value = activity.portInput,
-                onValueChange = { raw ->
-                    // 端口只收数字、最多 5 位；非法值在 readTarget() 里回退到默认端口
-                    activity.portInput = raw.filter { it in '0'..'9' }.take(5)
-                },
-                modifier = Modifier.width(92.dp),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                placeholder = { Text(stringResource(R.string.hint_port), fontSize = 13.sp) },
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                colors = fieldColors,
-            )
-            IconButton(onClick = { activity.startScan() }) {
-                Icon(
-                    imageVector = Icons.Filled.QrCodeScanner,
-                    contentDescription = stringResource(R.string.btn_scan),
-                    tint = scheme.onSurfaceVariant,
-                    modifier = Modifier.size(24.dp),
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = activity.hostInput,
+                    onValueChange = { activity.hostInput = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    placeholder = { Text(stringResource(R.string.hint_host), fontSize = 13.sp) },
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    colors = fieldColors,
                 )
+                OutlinedTextField(
+                    value = activity.portInput,
+                    onValueChange = { raw ->
+                        // 端口只收数字、最多 5 位；非法值在 readTarget() 里回退到默认端口
+                        activity.portInput = raw.filter { it in '0'..'9' }.take(5)
+                    },
+                    modifier = Modifier.width(96.dp),
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    placeholder = { Text(stringResource(R.string.hint_port), fontSize = 13.sp) },
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    colors = fieldColors,
+                )
+                // 扫码不是「一个不起眼的图标」：52dp 圆形按钮 + 强调色，和输入框同一行
+                Box(
+                    Modifier
+                        .size(52.dp)
+                        .clip(CircleShape)
+                        .background(scheme.accent.copy(alpha = 0.12f))
+                        .clickable { activity.startScan() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.QrCodeScanner,
+                        contentDescription = stringResource(R.string.btn_scan),
+                        tint = scheme.accent,
+                        modifier = Modifier.size(26.dp),
+                    )
+                }
             }
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(end = 8.dp),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            TextButton(onClick = { activity.rediscover() }) {
-                Text(stringResource(R.string.btn_rediscover), fontSize = 13.sp)
-            }
-            TextButton(onClick = { activity.reconnect() }) {
-                Text(stringResource(R.string.btn_reconnect), fontSize = 13.sp)
+            Row(
+                Modifier.fillMaxWidth().padding(top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                PvOutlinedButton(
+                    text = stringResource(R.string.btn_rediscover),
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Search,
+                    onClick = { activity.rediscover() },
+                )
+                PvButton(
+                    text = stringResource(R.string.btn_reconnect),
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Refresh,
+                    onClick = { activity.reconnect() },
+                )
             }
         }
     }
 }
 
-/** 抖动缓冲 + 麦克风 API：属性类参数，不折叠、不藏进设置。 */
+/** 抖动缓冲：独立一张卡（不夹带麦克风 API）；数值放在标题行右侧。 */
 @Composable
 private fun AudioSection(activity: MainActivity, scheme: CouiColorScheme) {
-    Group {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+    Group(
+        title = stringResource(R.string.section_buffer),
+        headerActions = {
             Text(
-                text = stringResource(R.string.ring_label, activity.ringMs / 10, activity.ringMs),
+                text = stringResource(R.string.ring_value, activity.ringMs / 10, activity.ringMs),
                 fontSize = 12.sp,
                 color = scheme.onSurfaceVariant,
             )
-            // 拖动即生效（不重建会话、不重连），并同步给电脑
+        },
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
             Slider(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                modifier = Modifier.fillMaxWidth(),
                 value = activity.ringMs.toFloat(),
                 onValueChange = { activity.setRingTarget(it.toInt()) },
                 valueRange = 10f..200f,
                 steps = 18,
             )
         }
-        Divider()
-        MicSourceRow(activity, scheme)
-        Text(
-            text = stringResource(R.string.mic_source_hint),
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            fontSize = 11.sp,
-            lineHeight = 15.sp,
-            color = scheme.onSurfaceVariant,
-        )
     }
+    MicSourceRow(activity, scheme)
 }
 
-/** 麦克风 API：一个可点的行，点开就是完整清单（选中立即生效，推流中会重启 uplink）。 */
+/** 麦克风 API：独立一张卡；点开是居中选择器（不再用 M3 下拉菜单）。 */
 @Composable
 private fun MicSourceRow(activity: MainActivity, scheme: CouiColorScheme) {
-    var menuOpen by remember { mutableStateOf(false) }
-    Box {
+    var pickerOpen by remember { mutableStateOf(false) }
+    Group(title = stringResource(R.string.mic_source_label)) {
         Item(
-            onClick = { menuOpen = true },
-            title = { Text(stringResource(R.string.mic_source_label), fontSize = 16.sp) },
+            onClick = { pickerOpen = true },
+            title = {
+                Text(
+                    text = MicSources.label(activity, activity.micSourceId),
+                    fontSize = 16.sp,
+                    color = scheme.onSurface,
+                )
+            },
+            summary = {
+                Text(
+                    text = stringResource(R.string.mic_source_change),
+                    fontSize = 12.sp,
+                    color = scheme.onSurfaceVariant,
+                )
+            },
             trailing = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = MicSources.label(activity, activity.micSourceId),
-                        modifier = Modifier.widthIn(max = 160.dp),
-                        fontSize = 13.sp,
-                        color = scheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Icon(
-                        imageVector = Icons.Filled.ExpandMore,
-                        contentDescription = null,
-                        tint = scheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 4.dp).size(20.dp),
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    tint = scheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp),
+                )
             },
         )
-        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-            MicSources.ALL.forEach { source ->
-                DropdownMenuItem(
-                    text = { Text(stringResource(source.labelRes), fontSize = 14.sp) },
-                    onClick = {
-                        menuOpen = false
-                        activity.selectMicSource(source.id)
-                    },
+    }
+    if (pickerOpen) MicSourcePicker(activity, scheme) { pickerOpen = false }
+}
+
+/** 麦克风 API 选择器：COUI 圆角卡片 + 选中勾。 */
+@Composable
+private fun MicSourcePicker(activity: MainActivity, scheme: CouiColorScheme, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(horizontal = 24.dp, vertical = 40.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(scheme.container),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 20.dp, top = 12.dp, end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.mic_source_label),
+                        modifier = Modifier.weight(1f),
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = scheme.onSurface,
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = stringResource(R.string.sheet_close),
+                            tint = scheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                HorizontalDivider(color = scheme.outlineVariant)
+                Column(
+                    Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    MicSources.ALL.forEachIndexed { index, source ->
+                        val selected = source.id == activity.micSourceId
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onDismiss()
+                                    activity.selectMicSource(source.id)
+                                }
+                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = stringResource(source.labelRes),
+                                modifier = Modifier.weight(1f),
+                                fontSize = 15.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (selected) scheme.accent else scheme.onSurface,
+                            )
+                            if (selected) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = null,
+                                    tint = scheme.accent,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                        if (index != MicSources.ALL.lastIndex) {
+                            Divider(startIndent = 20.dp, endIndent = 20.dp, color = scheme.outlineVariant)
+                        }
+                    }
+                }
+                Text(
+                    text = stringResource(R.string.mic_source_hint),
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    color = scheme.onSurfaceVariant,
                 )
             }
         }
@@ -608,20 +785,16 @@ private fun KeepaliveSection(activity: MainActivity, scheme: CouiColorScheme) {
                 Modifier.fillMaxWidth().padding(top = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedButton(
+                PvOutlinedButton(
+                    text = stringResource(R.string.btn_notif_settings),
+                    modifier = Modifier.weight(1f),
                     onClick = { activity.openNotifSettings() },
+                )
+                PvOutlinedButton(
+                    text = stringResource(R.string.btn_battery_settings),
                     modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(13.dp),
-                ) {
-                    Text(stringResource(R.string.btn_notif_settings), fontSize = 13.sp, maxLines = 1)
-                }
-                OutlinedButton(
                     onClick = { activity.requestIgnoreBattery() },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(13.dp),
-                ) {
-                    Text(stringResource(R.string.btn_battery_settings), fontSize = 13.sp, maxLines = 1)
-                }
+                )
             }
         }
     }
@@ -637,37 +810,29 @@ private fun UpdateSection(activity: MainActivity, scheme: CouiColorScheme) {
                 lineHeight = 18.sp,
                 color = scheme.onSurface,
             )
-            OutlinedButton(
-                onClick = { activity.checkUpdate() },
+            PvOutlinedButton(
+                text = stringResource(R.string.btn_check_update),
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                 enabled = !activity.updateBusy,
-                shape = RoundedCornerShape(13.dp),
-            ) {
-                Text(stringResource(R.string.btn_check_update), fontSize = 13.sp)
-            }
+                onClick = { activity.checkUpdate() },
+            )
             Row(
                 Modifier.fillMaxWidth().padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Button(
-                    onClick = { activity.downloadUpdate() },
+                PvOutlinedButton(
+                    text = stringResource(R.string.btn_download),
                     modifier = Modifier.weight(1f),
                     enabled = !activity.updateBusy && activity.updateRelease != null &&
                         activity.updateApk == null,
-                    shape = RoundedCornerShape(13.dp),
-                    colors = ButtonDefaults.buttonColors(),
-                ) {
-                    Text(stringResource(R.string.btn_download), fontSize = 13.sp)
-                }
-                Button(
-                    onClick = { activity.installUpdate() },
+                    onClick = { activity.downloadUpdate() },
+                )
+                PvButton(
+                    text = stringResource(R.string.btn_install),
                     modifier = Modifier.weight(1f),
                     enabled = !activity.updateBusy && activity.updateApk != null,
-                    shape = RoundedCornerShape(13.dp),
-                    colors = ButtonDefaults.buttonColors(),
-                ) {
-                    Text(stringResource(R.string.btn_install), fontSize = 13.sp)
-                }
+                    onClick = { activity.installUpdate() },
+                )
             }
         }
     }
@@ -705,15 +870,21 @@ private fun DiagSection(activity: MainActivity, scheme: CouiColorScheme) {
     Group(title = stringResource(R.string.diag_title)) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
             Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                TextButton(onClick = { activity.runHealthCheck() }) {
-                    Text(stringResource(R.string.btn_health), fontSize = 13.sp)
-                }
-                TextButton(onClick = { activity.copyDiag() }) {
-                    Text(stringResource(R.string.btn_copy_diag), fontSize = 13.sp)
-                }
+                PvOutlinedButton(
+                    text = stringResource(R.string.btn_health),
+                    modifier = Modifier.weight(1f),
+                    height = 40.dp,
+                    onClick = { activity.runHealthCheck() },
+                )
+                PvOutlinedButton(
+                    text = stringResource(R.string.btn_copy_diag),
+                    modifier = Modifier.weight(1f),
+                    height = 40.dp,
+                    onClick = { activity.copyDiag() },
+                )
             }
             DiagHeading(stringResource(R.string.diag_net))
             DiagBody(activity.diagNetText, scheme)
