@@ -20,7 +20,7 @@
 //! ```text
 //! 输入  spec_in  [1,2,481]  以 t·480 为中心、±480 的周期 Hann 分析谱
 //!       cache_in [1,D]      扁平流式缓存（首帧零起；D 由模型决定，如 15,668）
-//!       ctrl_in  [1,2]      部署旋钮 `[floor_db, depth_gain]`（降噪深度 / 衰减倍率）
+//!       ctrl_in  [1,2]      **可选**：11 系才有，`[floor_db, depth_gain]`
 //! 输出  spec_out [1,2,481]  增强谱（图内只做 mask）
 //!       cache_out[1,D]
 //! ```
@@ -28,9 +28,9 @@
 //! 波形↔谱、OLA 与滞后 1 hop 全在 [`crate::infer::spec`]（三类模型共用一份 DSP），
 //! 本文件只做会话 + 每行缓存。缓存维度从模型输入读，不写死。
 //!
-//! **降噪深度**（2026-11-16 起）：`ctrl_in[0]` = 掩码最深衰减（dB，`-100..-20`），
-//! `ctrl_in[1]` = 衰减倍率（默认 1）。模型内部对「已判为噪声」的 bin 钳 `max(att_dB, floor_db)`，
-//! 所以它只改压制深度、不改判决；应用侧每 hop 从热参数单元格读当前值（滑块实时生效，不重建会话）。
+//! **没有降噪深度旋钮**（2026-11-18 起）：带 `ctrl_in` 的 11 系固定喂
+//! `[-240, 1.0]`（训练时的「不夹」= 裸 sigmoid，也就是最深）；202605a/b 没有这个输入，
+//! 训练时本身就是这个行为。⇒ 五档降噪**只是换模型**，不再有参数差异。
 
 use std::path::Path;
 
@@ -39,10 +39,15 @@ use ort::value::TensorRef;
 use crate::audio::HOP;
 use crate::infer::spec::{BINS, SPEC_LEN, SpecStream};
 
+/// 训练时的「不夹」下限（legacy 202611 的 `MASK_FLOOR_OFF`）：等价于裸 sigmoid。
+const CTRL_FLOOR_OFF_DB: f32 = -240.0;
+
 pub struct Denoise {
   /// 从模型池借来的会话（Drop 归还；同一模型多行/多次重建不重复加载）
   model: crate::infer::LeasedSession,
   dim: usize,
+  /// 模型是否带 `ctrl_in`（11 系有，202605a/b 没有）。
+  ctrl: bool,
   cache: Vec<f32>,
   stft: SpecStream,
   spec_out: [f32; SPEC_LEN],
@@ -53,10 +58,11 @@ impl Denoise {
     let model = crate::infer::checkout(path)?;
     let dim = crate::infer::cache_dim(&model.lock(), "cache_in")?;
     crate::infer::check_spec(&model.lock(), "spec_in")?;
-    crate::infer::check_ctrl(&model.lock())?;
+    let ctrl = crate::infer::ctrl_present(&model.lock())?;
     Ok(Denoise {
       model,
       dim,
+      ctrl,
       cache: vec![0.0; dim],
       stft: SpecStream::new(),
       spec_out: [0.0; SPEC_LEN],
@@ -71,20 +77,19 @@ impl Denoise {
 
   /// 处理一个 480 样本 hop，返回增强后的 hop（借用内部缓冲，**滞后 1 hop**）。
   ///
-  /// `depth_db` = 降噪深度（掩码最深衰减 dB，`-100..-20`）。调用方每 hop 从热参数单元格读，
-  /// 滑块拖动时下一 hop 就是新值。
-  ///
   /// **零分配**：谱 / cache / ctrl 都是借用张量，输出拷回预分配缓冲。
-  pub fn process(&mut self, hop: &[f32], depth_db: f32) -> Result<&[f32], String> {
+  pub fn process(&mut self, hop: &[f32]) -> Result<&[f32], String> {
     debug_assert_eq!(hop.len(), HOP);
     let Self {
       model,
       dim,
+      ctrl,
       cache,
       stft,
       spec_out,
     } = self;
     let dim = *dim;
+    let ctrl = *ctrl;
     let mut guard = model.lock();
     let session = &mut *guard;
 
@@ -94,14 +99,22 @@ impl Denoise {
         .map_err(|e| format!("构造 spec_in 失败：{e}"))?;
       let cache_in = TensorRef::from_array_view(([1i64, dim as i64], cache.as_slice()))
         .map_err(|e| format!("构造 cache_in 失败：{e}"))?;
-      let ctrl = [depth_db, 1.0_f32];
-      let ctrl_in = TensorRef::from_array_view(([1i64, 2], ctrl.as_slice()))
-        .map_err(|e| format!("构造 ctrl_in 失败：{e}"))?;
-      session.run(ort::inputs![
-        "spec_in" => spec_in,
-        "cache_in" => cache_in,
-        "ctrl_in" => ctrl_in,
-      ])
+      if ctrl {
+        // 固定「拉满」：不夹（训练期行为），不再暴露滑块。
+        let ctrl = [CTRL_FLOOR_OFF_DB, 1.0_f32];
+        let ctrl_in = TensorRef::from_array_view(([1i64, 2], ctrl.as_slice()))
+          .map_err(|e| format!("构造 ctrl_in 失败：{e}"))?;
+        session.run(ort::inputs![
+          "spec_in" => spec_in,
+          "cache_in" => cache_in,
+          "ctrl_in" => ctrl_in,
+        ])
+      } else {
+        session.run(ort::inputs![
+          "spec_in" => spec_in,
+          "cache_in" => cache_in,
+        ])
+      }
     };
     let outputs = match run {
       Ok(o) => o,
@@ -184,7 +197,7 @@ mod tests {
   }
 
   /// 离线自检：把一段真实录音按引擎同一条 10 ms / 48 kHz 网格喂给降噪模型，
-  /// 逐段（敲桌子 / 鼠标 / 键盘）打印**输入 / 输出电平与衰减量**，三个尺寸档 × 三档输入电平。
+  /// 逐段（敲桌子 / 鼠标 / 键盘）打印**输入 / 输出电平与衰减量**，五档模型 × 三档输入电平。
   ///
   /// 用来回答「鼠标 / 键盘 / 敲桌子为什么没被压掉」：看的是**这一段的整体能量与峰值**，
   /// 不是某一格的数字——瞬态噪声只要峰值漏过去，听感就是「没降噪」。
@@ -240,7 +253,7 @@ mod tests {
         for ch in input.chunks(HOP) {
           let mut hop = [0.0f32; HOP];
           hop[..ch.len()].copy_from_slice(ch);
-          let y = dn.process(&hop, -60.0).expect("推理").to_vec();
+          let y = dn.process(&hop).expect("推理").to_vec();
           if y.iter().any(|v| !v.is_finite()) {
             nonfinite += 1;
           }
@@ -262,38 +275,5 @@ mod tests {
         }
       }
     }
-  }
-
-  /// 降噪深度真的接到了模型 `ctrl_in`：同一段噪声，-60 dB 的输出必须明显低于 -20 dB。
-  ///
-  /// 手动跑：`cargo test --release -- --ignored --nocapture denoise_depth`。
-  /// 这条测试是「ONNX 输入名 / 形状 / ctrl 语义」的整链自检 —— 名字写错或把深度塞错位置
-  /// 都会在这里露出来（否则只能靠耳朵发现「滑块没反应」）。
-  #[test]
-  #[ignore = "加载 ONNX 跑真实推理，手动跑"]
-  fn depth_controls_attenuation() {
-    let path = crate::infer::model_path(crate::infer::MODEL_DENOISE).expect("模型文件");
-    // 确定性伪随机噪声（不引依赖）：同一段信号喂两个深度，只比输出能量。
-    let mut seed = 0x1234_5678u32;
-    let mut noise = Vec::with_capacity(HOP * 200);
-    while noise.len() < HOP * 200 {
-      seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-      noise.push((seed >> 8) as f32 / (1u32 << 24) as f32 * 0.2 - 0.1);
-    }
-    let energy = |depth: f32| {
-      let mut d = Denoise::load(&path).expect("加载降噪模型");
-      let mut sum = 0.0f64;
-      for hop in noise.chunks(HOP) {
-        let out = d.process(hop, depth).expect("推理");
-        sum += out.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>();
-      }
-      sum
-    };
-    let (shallow, deep) = (energy(-20.0), energy(-60.0));
-    println!("depth -20 dB: {shallow:.3}；-60 dB: {deep:.3}");
-    assert!(
-      deep < shallow * 0.5,
-      "降噪深度没生效：-60 dB 的输出（{deep:.3}）没有明显低于 -20 dB（{shallow:.3}）"
-    );
   }
 }

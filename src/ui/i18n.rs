@@ -466,7 +466,16 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("降噪（小）", "Denoise (small)");
     m.insert("降噪（中）", "Denoise (medium)");
     m.insert("降噪（大）", "Denoise (large)");
-    m.insert("降噪深度", "Denoise depth");
+    m.insert("降噪（5A）", "Denoise (5A)");
+    m.insert("降噪（5B）", "Denoise (5B)");
+    m.insert("端口已放行", "port allowed");
+    m.insert("未看到放行规则", "no allow rule seen");
+    m.insert("需要 root 才能确认", "needs root to confirm");
+    m.insert("Linux 防火墙", "Linux firewall");
+    m.insert(
+      "服务在运行，但还没有手机连上。一直连不上的话：确认手机与电脑在同一 Wi-Fi；确认电脑防火墙放行本机网络端口（Linux 常见 ufw / firewalld，Windows 首次监听会弹窗）；部分公司 / 公共 Wi-Fi 禁止设备互访。",
+      "The service is running but no phone has connected yet. If it never connects: make sure the phone and PC are on the same Wi-Fi; make sure the PC firewall allows the network port (commonly ufw / firewalld on Linux; Windows prompts on first listen); some corporate/public Wi-Fi blocks device-to-device traffic.",
+    );
     m.insert("柔和", "Soft");
     m.insert("清脆", "Crisp");
     m.insert("气泡", "Pop");

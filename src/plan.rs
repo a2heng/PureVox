@@ -391,6 +391,11 @@ impl Plan {
           r.input_gain_db = format!("{:.1}", a + b);
           changed = true;
         }
+        // 降噪深度旋钮已于 2026-11-18 取消（模型固定「拉满」）：旧计划里的
+        // `depth_db` 不再有入口，直接清掉，避免留下永远读不到的死参数。
+        if r.ptype == "denoise" && r.params.remove("depth_db").is_some() {
+          changed = true;
+        }
         // 网络麦克风的 AEC 已解耦为独立节点（2026-11-12）。旧计划里残留的
         // `aec` / 远端参数没有第二条入口，直接清掉；要消回声就把 AEC 节点接在这条支路上。
         if r.ptype == "remote_mic" {
@@ -854,6 +859,25 @@ mod tests {
     assert!(!node.params.contains_key("aec"));
     assert!(!node.params.contains_key("far_device"));
     assert!(!node.params.contains_key("mic_gain_db"));
+  }
+
+  #[test]
+  fn normalize_strips_removed_denoise_depth() {
+    let mut row = RowSpec {
+      kind: RowKind::Process,
+      ptype: "denoise".into(),
+      ..Default::default()
+    };
+    row.params.insert("depth_db".into(), "-60".into());
+    let mut plan = Plan {
+      v: VERSION,
+      columns: vec![ColumnSpec {
+        rows: vec![row],
+        enabled: true,
+      }],
+    };
+    assert!(plan.normalize(), "删掉死参数要标 changed");
+    assert!(!plan.columns[0].rows[0].params.contains_key("depth_db"));
   }
 
   /// 端口 = 通道：多通道 DSP 节点的输入/输出端口数都跟着 `channels` 走。

@@ -870,66 +870,6 @@ mod tests {
     m.stop();
   }
 
-  /// 降噪深度（`depth_db`）必须是**热参数**：它只写模型的 `ctrl_in`，不该重建会话
-  /// （重建 = 关掉全部设备重开，ALSA 排他下几百毫秒起步）。
-  /// 范围由注册表说了算：界面滑杆 -100 ~ -20、默认 -60（模型 `ctrl_default` 同值）。
-  #[test]
-  fn denoise_depth_is_hot_and_range_checked() {
-    use crate::plan::{ColumnSpec, RowKind, RowSpec};
-    assert!(
-      crate::engine::registry::is_hot("denoise", "depth_db"),
-      "降噪深度必须走热参数（否则每拖一格都重建会话）"
-    );
-    let (lo, hi, def) = crate::engine::registry::number_spec("denoise", "depth_db")
-      .expect("denoise 的 depth_db 必须是数值参数");
-    assert_eq!((lo, hi, def), (-100.0, -20.0, -60.0));
-
-    let row = |kind, ptype: &str| RowSpec {
-      kind,
-      ptype: ptype.into(),
-      enabled: true,
-      ..Default::default()
-    };
-    let m = mgr();
-    m.apply_plan(Plan {
-      v: 0,
-      columns: vec![ColumnSpec {
-        enabled: true,
-        rows: vec![
-          row(RowKind::Input, "tone"),
-          row(RowKind::Process, "denoise"),
-          row(RowKind::Output, "audio_output"),
-        ],
-      }],
-    })
-    .expect("写计划");
-    m.set_row_param(0, 1, "depth_db", "-80")
-      .expect("降噪深度是热参数");
-    assert_eq!(
-      m.plan().columns[0].rows[1]
-        .params
-        .get("depth_db")
-        .map(|s| s.as_str()),
-      Some("-80"),
-      "热参数要落进计划"
-    );
-    assert!(
-      m.set_row_param(0, 1, "depth_db", "-150").is_err(),
-      "越界拒绝"
-    );
-    assert!(
-      m.set_row_param(0, 1, "depth_db", "abc").is_err(),
-      "非数字拒绝"
-    );
-
-    // 运行中的会话也必须登记这个单元格（`create_stage` 建 Stage 时登记）：
-    // 没登记的话界面拖动会得到「没有登记热参数」，滑块静默失效。
-    m.start().expect("启动会话");
-    m.set_row_param(0, 1, "depth_db", "-70")
-      .expect("运行中改降噪深度必须落到单元格（不重建会话）");
-    m.stop();
-  }
-
   /// 「盘前调整」（每个节点的输入微调）必须是**热参数**：
   /// 它只是乘一个倍数，不该重建会话，更不能被 `is_hot` 门挡住后**静默不生效**。
   #[test]

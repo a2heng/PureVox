@@ -132,22 +132,32 @@ pub(crate) fn check_spec(session: &Session, name: &str) -> Result<(), String> {
   Ok(())
 }
 
-/// 校验部署旋钮输入 `ctrl_in (1,2) = [floor_db, depth_gain]`（降噪深度）。
+/// 降噪模型是否带部署旋钮输入 `ctrl_in (1,2) = [floor_db, depth_gain]`。
 ///
-/// 2026-11-16 起随包的降噪模型都有这个输入；缺了就**硬失败**而不是静默忽略滑块
-/// （「滑块拖了没反应」正是 `UX.md`「失败不静默」要避免的那类问题）。
-pub(crate) fn check_ctrl(session: &Session) -> Result<(), String> {
-  let shape = input_shape(session, "ctrl_in").map_err(|_| {
-    "模型缺少 ctrl_in（降噪深度）。2026-11-16 起随包的降噪模型都有这个输入，\
-     旧一代模型不能再用（它没有可调深度）"
-      .to_string()
-  })?;
+/// **2026-11-18 起不再是硬要求**：11 系（小/中/大）带这个输入，202605a/b 不带。
+/// 界面已经没有深度滑块，带旋钮的模型由 [`crate::infer::denoise`] 固定喂「拉满」
+/// （-240 dB = 训练时的裸 sigmoid，不夹）；不带旋钮的模型直接跳过。
+/// 形状不对仍然硬失败——那说明模型文件坏了，不能静默跑出垃圾。
+pub(crate) fn ctrl_present(session: &Session) -> Result<bool, String> {
+  let Some(shape) = session
+    .inputs()
+    .iter()
+    .find(|i| i.name() == "ctrl_in")
+    .map(|i| match i.dtype() {
+      ort::value::ValueType::Tensor { shape, .. } => {
+        shape.iter().map(|&d| d.max(0) as usize).collect::<Vec<_>>()
+      }
+      _ => Vec::new(),
+    })
+  else {
+    return Ok(false);
+  };
   if shape != [1, 2] {
     return Err(format!(
       "模型 ctrl_in 的形状是 {shape:?}，期望 [1, 2]（[最深衰减 dB, 衰减倍率]）"
     ));
   }
-  Ok(())
+  Ok(true)
 }
 
 /// 找**谱输入**：形状 `(1,2,481)` 的那个张量输入（名字随代变：`spec_in` / `mix_spec`）。
@@ -510,13 +520,21 @@ pub const MODEL_DENOISE_M: &str = "purevox_denoise_medium.onnx";
 /// 大尺寸降噪模型（新骨架，通道峰 96 占两级；同一套谱接口）。
 pub const MODEL_DENOISE_L: &str = "purevox_denoise_large.onnx";
 
+/// 降噪 202605a（2026-05 ulunas M；无 `ctrl_in`）。
+pub const MODEL_DENOISE_5A: &str = "purevox_denoise_5a.onnx";
+
+/// 降噪 202605b（2026-05 ulunas L；无 `ctrl_in`）。
+pub const MODEL_DENOISE_5B: &str = "purevox_denoise_5b.onnx";
+
 /// 可选降噪模型 (文件名, 界面名)，供界面下拉（ARCHITECTURE.md §7）。
-/// 界面名只是**尺寸档位**，不重复版本号：真正的标识在 ONNX metadata `model`。
+/// 界面名只是**档位**，不重复版本号：真正的标识在 ONNX metadata `model`。
 pub fn denoise_models() -> &'static [(&'static str, &'static str)] {
   &[
     (MODEL_DENOISE, "降噪（小）"),
     (MODEL_DENOISE_M, "降噪（中）"),
     (MODEL_DENOISE_L, "降噪（大）"),
+    (MODEL_DENOISE_5A, "降噪（5A）"),
+    (MODEL_DENOISE_5B, "降噪（5B）"),
   ]
 }
 

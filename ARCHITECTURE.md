@@ -160,7 +160,7 @@ pub struct RowSpec {
   纯函数，不做 I/O。
 - 校验：环、端口越界、来源没有输出、同端口重复、未接输入的启用节点（非致命提示）。
 - **变更语义**：结构变更（增删节点/连线、换设备、换型号）→ **整会话重建**；
-  热参数（增益 / 音量 / 降噪深度等，见 `registry::is_hot`）→ 写 `(node_id, key)` 原子单元格，
+  热参数（增益 / 音量等，见 `registry::is_hot`）→ 写 `(node_id, key)` 原子单元格，
   下一 hop 生效，不重建。非热参数 → 重建。
 - 媒体行（音效板 / 播放器）按 `node_id` 注册槽位；网络输入/输出按节点类型接入。
 
@@ -359,25 +359,26 @@ mic/far 仍各自持有采集路径；面板还没把 `mix_sources` 画出来（
 
 ```rust
 // 每类处理行一组「可选模型」(文件名, 界面名)：界面下拉直接渲染，标签只写档位、不写版本号
-pub fn denoise_models() -> &'static [(&'static str, &'static str)];  // 小 / 中 / 大
+pub fn denoise_models() -> &'static [(&'static str, &'static str)];  // 小 / 中 / 大 / 5A / 5B
 pub fn aec_models()     -> &'static [(&'static str, &'static str)];
 pub fn tse_models()     -> &'static [(&'static str, &'static str)];
 // 计划里存的文件名 → 列表里的模型；不在列表里就回落到第一个并记一条事件日志
 pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &str) -> &'static str;
 ```
 
-- **六个文件、名字里不带版本号**（2026-10-29 起；模型标识记在 ONNX metadata
+- **八个文件、名字里不带版本号**（2026-10-29 起；模型标识记在 ONNX metadata
   `model` 与 `models/README.md`）：`purevox_denoise.onnx`（降噪小档）、
   `purevox_denoise_medium.onnx`（降噪中档）、`purevox_denoise_large.onnx`（降噪大档；
   三档 2026-11-16 换代：`202611d@E110` / `202611e@E76` / `202611f@E128`）、
+  `purevox_denoise_5a.onnx`（5A，`202605a@E389`）、
+  `purevox_denoise_5b.onnx`（5B，`202605b@E227`）、
   `purevox_aec.onnx`、`purevox_tse.onnx`、`purevox_tse_ref_encoder.onnx`（与 TSE 主图**成对**）。
-  降噪三档**接口完全一致、只是容量不同**，界面下拉按「小 / 中 / 大」选，默认小档。
+  降噪五档**都只是换模型**，界面下拉按「小 / 中 / 大 / 5A / 5B」选，默认小档。
   ⇒ **换模型 = 换文件**，代码零改动；替换流程见 `models/README.md`。
-- **降噪的 `ctrl_in (1,2)`（2026-11-16 起）**：`[floor_db, depth_gain]` —— 界面「降噪深度」
-  滑块（-100 ~ -20 dB，默认 -60）喂 `floor_db`，`depth_gain` 固定 1.0。它是**热参数**
-  （`registry::is_hot("denoise","depth_db")`），拖动滑块只写原子单元格、下一 hop 进模型，
-  **不重建会话**。缺这个输入按**加载失败**处理（不静默忽略滑块）。
-  语义：只钳「已判为噪声」的 bin（`max(att_dB, floor_db)`），不改判决。
+- **降噪 `ctrl_in (1,2)`（2026-11-18 起不再出现在界面）**：11 系（小/中/大）图里仍有
+  `[floor_db, depth_gain]`，应用侧固定喂 `[-240, 1.0]`（训练期 `MASK_FLOOR_OFF` = 裸 sigmoid
+  = 最深）；202605a/b（5A/5B）没有这个输入。五档只靠 `model` 切换，旧计划里的 `depth_db`
+  在 `Plan::normalize` 里清掉。语义：只钳「已判为噪声」的 bin，不改判决。
 - **谱接口**（2026-10-29 换代）：图内只有网络，输入/输出都是 `(1,2,481)` 复数谱 + `cache_in`，
   傅里叶/OLA 在图外（`infer/spec.rs`，三类模型共用）。旧的 `*_hop [1,480]` 波形契约已废除；
   模型文件接错会在加载时报「不是谱接口」，不会静默跑出没效果。
@@ -494,7 +495,7 @@ hop 的互相关测处理链延时，并把各段缓冲水位 / 设备回调周�
 | 调试面板 + HTTP 调试接口 | ✅ 已实现（含 `ui` 前端自报、`column` 列概要） | 补行状态、模型字段 |
 | **Stage / Pipeline / 注册表** | ✅ 已实现 | §3.4 / 3.5 |
 | **分组工作线程 + 节点环** | ✅ 已实现（Session V2：组件独立、DAG 拓扑执行） | §3.3、`SESSION-V2.md` §3 |
-| **配置 + SessionPlan** | ✅ 列/行/设备/型号持久化 + **行级热参数下发**（`set_row_param` + `HotGain`：增益 / 音量 / 降噪深度，2026-10-18 起，深度 2026-11-16 加）；AEC 行内参数（近端/远端增益、直通、远端延时）仍是重建 | §5 |
+| **配置 + SessionPlan** | ✅ 列/行/设备/型号持久化 + **行级热参数下发**（`set_row_param` + `HotGain`：增益 / 音量，2026-10-18 起）；AEC 行内参数（近端/远端增益、直通、远端延时）仍是重建 | §5 |
 | **列 UI（增删列、加/拖行、两端固定）** | ◑ 已实现（增删列、加/删/上下移行、两端固定）；**列头启用开关待做**（`ColumnSpec.enabled`，停用=保留配置、放掉设备引用，见 §6.5）、拖动待做 | §3.1 / §6.5 |
 | **设备接管（多路共用设备 + 软件混音）** | ✅ 已实现（2026-10-19）：`audio/device_pool.rs` 按 `(设备, 角色)` 只开一次 + 引用计数 + 跨重建存活；`audio/mixer.rs` 每源一路可调比例重采样 + 水位伺服后相加；行级/列头开关 = 订阅与引用的挂摘。**待做**：回环与 AEC 行的采集池化、面板逐源展示 | §6.5 |
 | **模型注册表 + 型号选择** | ◑ 降噪/TSE 型号下拉已接入；统一 `ModelDesc` 注册表待做 | §7 |

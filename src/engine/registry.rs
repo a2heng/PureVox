@@ -84,7 +84,6 @@ pub struct NodeSpec {
 ///
 /// 判据是「与模型无关 + 每 hop 读一次的标量」，`HotGain` 是唯一实现（`engine/hot.rs`）：
 /// - `gain` 行的 `gain_db`、`loopback` 行的 `volume_db` —— 纯乘一个倍数，改完下一 hop 就是新值；
-/// - `denoise` 行的 `depth_db`（降噪深度）—— 直接进模型 `ctrl_in[0]`，改完下一 hop 就是新值；
 /// - **模型 / 设备 / 参考音频 / 音效列表 / 远端设备**都不是：它们决定会话怎么搭、模型怎么加载，
 ///   必须走 `apply_plan` 重建（界面照这个函数选路径，故判定只有这一处）。
 ///
@@ -99,8 +98,6 @@ pub fn is_hot(ptype: &str, key: &str) -> bool {
       | ("agc", "speed")
       | ("agc", "floor_db")
       | ("eq31", "settings")
-      // 降噪深度：只改模型 ctrl_in，不换模型、不重建链路
-      | ("denoise", "depth_db")
       // 每个节点都有的「输入微调」（`input_gain_db` 是计划字段，不在 params 里）：
       // 它只乘一次倍数，改完下一 hop 就该生效。**没有它，界面滑杆会静默不生效**
       // （2026-11-12 用户实测：盘前增益「没有实时生效，或者根本没生效」）。
@@ -228,28 +225,13 @@ static SPECS: &[NodeSpec] = &[
     ptype: "denoise",
     label: "降噪",
     kind: NodeKind::Process,
-    params: &[
-      ParamSpec {
-        key: "model",
-        label: "模型",
-        kind: ParamKind::Text {
-          default: crate::infer::MODEL_DENOISE,
-        },
+    params: &[ParamSpec {
+      key: "model",
+      label: "模型",
+      kind: ParamKind::Text {
+        default: crate::infer::MODEL_DENOISE,
       },
-      // 部署旋钮：掩码最深衰减（dB，越小压得越深）。模型 `ctrl_in[0]`。
-      // 它只钳「已判为噪声」的 bin（实测纯噪严格跟着走、轻声/风逐位不变），
-      // 所以是安全的方向旋钮，不是灵敏度。
-      ParamSpec {
-        key: "depth_db",
-        label: "降噪深度",
-        kind: ParamKind::Number {
-          lo: -100.0,
-          hi: -20.0,
-          default: -60.0,
-          step: 1.0,
-        },
-      },
-    ],
+    }],
   },
   NodeSpec {
     ptype: "gain",
@@ -779,15 +761,8 @@ pub fn create_stage(
         Some(ParamValue::Text(t)) => crate::infer::known_model(crate::infer::denoise_models(), t),
         _ => crate::infer::MODEL_DENOISE,
       };
-      let num = |k: &str, d: f64| match params.get(k) {
-        Some(ParamValue::Number(n)) => *n,
-        Some(ParamValue::Text(t)) => t.trim().parse().unwrap_or(d),
-        _ => d,
-      };
-      // 降噪深度是热参数：单元格交给会话登记，界面滑杆改它 = 写单元格，不重建会话
-      let depth = hot.gain("depth_db", num("depth_db", -60.0));
       Ok(Box::new(super::components::denoise::DenoiseStage::load(
-        model, depth,
+        model,
       )?))
     }
     "noise_gate" | "compressor" | "limiter" | "expander" | "upward_compressor" | "eq3"

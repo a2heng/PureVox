@@ -532,15 +532,10 @@ impl Workspace {
                 .map(|(_, l)| i18n::tr(l).to_string())
             })
             .unwrap_or_default();
-          let depth = n
-            .params
-            .get("depth_db")
-            .and_then(|v| v.parse::<f32>().ok())
-            .unwrap_or(-60.0);
           if model.is_empty() {
-            format!("{depth:.0} dB")
+            i18n::tr("降噪").to_string()
           } else {
-            format!("{model} · {depth:.0} dB")
+            model
           }
         }
         "gain" => n
