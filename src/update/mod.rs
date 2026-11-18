@@ -15,11 +15,16 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! 更新检查（桌面）：查本仓库 GitHub Releases 的 `latest`，有新版本就下载安装包。
+//! 更新检查（桌面）：查本仓库 GitHub Releases，取**桌面通道**最新版，有新版本就下载安装包。
 //!
-//! **唯一数据源 = GitHub Releases API**（`repos/{owner}/{repo}/releases/latest`），
+//! **唯一数据源 = GitHub Releases API**（`repos/{owner}/{repo}/releases`），
 //! 产物由 `release.yml` 在打 tag 时挂上去，两端靠**文件名后缀**匹配（不靠版本号，
 //! 因为版本号只有年月日、同日多次发布会重复，见 `version.rs`）。
+//!
+//! **不能再用 `/releases/latest`**（2026-11-18 修）：桌面和安卓是两条独立发布通道，
+//! `/latest` 返回「全仓库最新」—— 安卓一发版，桌面更新检查就会把 `android-v*` 当成新版，
+//! Linux 上实测报「无法识别的版本号：android-v2026.11.18.0632」。现在拉一页 release
+//! 列表，只筛 **`v*` 且不是 `android-v*`** 的桌面 release，再按时间戳取最大。
 //!
 //! **比较依据 = tag 的完整时间戳**（`v2026.10.12.1430`），不是显示版本号
 //! `26.10.12`（`yy.M.d`）：同日发两次时显示版本相同，靠时分才能分出新旧。
@@ -40,8 +45,12 @@ use crate::version;
 pub const REPO: &str = "a2heng/PureVox";
 
 /// GitHub API 端点（拼自 [`REPO`]，避免两处写死仓库名）。
-fn api_latest() -> String {
-  format!("https://api.github.com/repos/{REPO}/releases/latest")
+///
+/// **必须是 release 列表**：`/releases/latest` 会给「全仓库最新」，安卓发版后桌面端就会
+/// 把 `android-v*` 当成新版（2026-11-18 实测）。列表端点一次 30 条，按时间倒序；
+/// 自己筛桌面通道，和手机端 `UpdateChecker` 的筛选规则对称。
+fn api_releases() -> String {
+  format!("https://api.github.com/repos/{REPO}/releases?per_page=30")
 }
 
 /// 状态机阶段。字符串直接进 JSON（`/debug` 的 `update.phase` 与界面同源）。
@@ -200,6 +209,17 @@ fn tag_to_stamp(tag: &str) -> Option<String> {
   version::parse_stamp(t).map(|_| t.to_string())
 }
 
+/// 从 release 列表里挑**桌面通道**最新的一条：`v*`、不是 `android-v*`、时间戳合法。
+///
+/// 按时间戳取最大而不是直接拿数组第一条：API 虽按创建时间倒序返回，但 `published_at`
+/// 可能被手动改过 / 草稿转正式的时间不同；按 tag 里的完整时间戳比较才是唯一全序。
+fn pick_desktop_release(rels: Vec<Release>) -> Option<(Release, String)> {
+  rels
+    .into_iter()
+    .filter_map(|r| tag_to_stamp(&r.tag_name).map(|stamp| (r, stamp)))
+    .max_by_key(|(_, stamp)| version::parse_stamp(stamp))
+}
+
 /// `2026.10.08.1430` → `26.10.8`（界面显示版本，与 `version.py` 的映射同款）。
 /// 段按整数取值再拼，故 `08` 打成 `8`——必须与 CI 产出的包版本逐字相同。
 fn stamp_to_version(stamp: &str) -> String {
@@ -245,15 +265,15 @@ pub async fn check() -> Result<Status, String> {
       return Err(e);
     }
   };
-  let rel = match client
-    .get(api_latest())
+  let rels = match client
+    .get(api_releases())
     .header("Accept", "application/vnd.github+json")
     .header("User-Agent", "PureVox-Desktop")
     .send()
     .await
   {
     Ok(r) => match r.error_for_status() {
-      Ok(r) => match r.json::<Release>().await {
+      Ok(r) => match r.json::<Vec<Release>>().await {
         Ok(v) => v,
         Err(e) => {
           let msg = format!("解析 GitHub 返回失败：{e}");
@@ -274,13 +294,10 @@ pub async fn check() -> Result<Status, String> {
     }
   };
 
-  let latest_stamp = match tag_to_stamp(&rel.tag_name) {
-    Some(s) => s,
-    None => {
-      let msg = format!("无法识别的版本号：{}", rel.tag_name);
-      fail(msg.clone());
-      return Err(msg);
-    }
+  let Some((rel, latest_stamp)) = pick_desktop_release(rels) else {
+    let msg = "还没有桌面版 release（只认 v*，不认 android-v*）".to_string();
+    fail(msg.clone());
+    return Err(msg);
   };
   let asset = pick_asset_with(&rel.assets, imp::asset_suffixes());
 
@@ -644,6 +661,48 @@ mod tests {
       browser_download_url: format!("https://example.invalid/{name}"),
       size: 1024,
     }
+  }
+
+  fn release(tag: &str) -> Release {
+    Release {
+      tag_name: tag.into(),
+      body: String::new(),
+      html_url: format!("https://example.invalid/{tag}"),
+      published_at: String::new(),
+      assets: vec![],
+    }
+  }
+
+  /// 桌面更新检查**绝不能**把安卓 release 当成新版：`/releases/latest` 曾直接返回
+  /// `android-v2026.11.18.0632`，Linux 上表现为「无法识别的版本号」。
+  #[test]
+  fn pick_desktop_release_ignores_android_channel() {
+    let rels = vec![
+      release("android-v2026.11.18.0632"), // 全仓库最新，但不是桌面
+      release("v2026.11.16.0641"),
+      release("v2026.11.15.1451"),
+    ];
+    let (rel, stamp) = pick_desktop_release(rels).expect("应挑到桌面 release");
+    assert_eq!(rel.tag_name, "v2026.11.16.0641");
+    assert_eq!(stamp, "2026.11.16.0641");
+  }
+
+  /// 同日两次发版按标签里的时分取新；列表顺序不可信。
+  #[test]
+  fn pick_desktop_release_uses_full_timestamp() {
+    let rels = vec![
+      release("v2026.11.16.0900"),
+      release("v2026.11.16.1200"),
+      release("v2026.11.15.2359"),
+    ];
+    let (rel, _) = pick_desktop_release(rels).expect("应有桌面 release");
+    assert_eq!(rel.tag_name, "v2026.11.16.1200");
+  }
+
+  #[test]
+  fn pick_desktop_release_none_when_only_android() {
+    let rels = vec![release("android-v2026.11.18.0632")];
+    assert!(pick_desktop_release(rels).is_none());
   }
 
   #[test]

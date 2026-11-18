@@ -96,8 +96,10 @@ tag 的 `HHmm` 区分；显示版本 `yy.M.d` 可以重复，但 tag 必须唯�
 
 ## 4. 更新检查（两条链，各自只认自己的 tag）
 
-- **桌面**：`src/update/mod.rs` 请求 GitHub `releases/latest`，只接受 `v*`
-  （`tag_to_stamp` 会拒绝 `android-v*`）；`ASSET_SUFFIXES` 按平台匹配安装包。
+- **桌面**：`src/update/mod.rs` 拉一页 release 列表，只筛桌面通道（`v*` 且不是
+  `android-v*`），按 tag 时间戳取最新；`ASSET_SUFFIXES` 按平台匹配安装包。
+  **不能**用 `/releases/latest`：安卓一发版它就会返回 `android-v*`，Linux 上实测报
+  「无法识别的版本号：android-v2026.11.18.0632」（2026-11-18 修）。
 - **安卓**：`UpdateChecker` 拉一页 release 列表，只筛 `android-v*`，取 `versionCode`
   最大的那条，再取 `*.apk` 资产。**不能**用 `/releases/latest`：桌面的新 release 会排在
   前面，手机就会看到一个装不了/不该装的「新版本」。
