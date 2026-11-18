@@ -271,7 +271,7 @@ release 构建同样保留（不允许用编译开关剔除）。
     （环水位/欠载/掩盖/晚到/单向延迟/**自己实测的音频时钟 ppm**）。结论进 `/debug` 的
     `net` 段与手机「诊断 → 音频」，判定只在 Rust 一侧算（`hub.rs` 的 `rx_verdict`/`tx_verdict`）。
 - **Android 客户端（`android/`，APK）**：与上面两件音频能力对同一个 WebSocket 的另一端，
-  单 Activity + **Jetpack Compose**（COUI-Kit，ColorOS 17 风格；`minSdk 31`），
+  单 Activity + **Jetpack Compose**（本地 COUI 风格组件 `ui/PvTheme.kt`；`minSdk 24`），
   主人页是连接 / 功能 / 抖动缓冲 / 麦克风 API，设置是居中浮层（语言 / 后台保活 / 更新 /
   诊断 / 关于），
   底部「诊断」分**网络**（RTT 窗口/抖动/真实速率/质量结论）与**音频**（上/下行电平条、

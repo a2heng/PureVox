@@ -56,14 +56,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ColorScheme
@@ -94,7 +86,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -111,12 +102,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.itos.coui.layout.Divider
-import com.itos.coui.layout.Group
-import com.itos.coui.layout.Item
-import com.itos.coui.switch.Switch
-import com.itos.coui.theme.CouiColorScheme
-import com.itos.coui.theme.CouiTheme
 import com.purevox.mic.MainActivity
 import com.purevox.mic.R
 import com.purevox.mic.audio.MicSources
@@ -132,18 +117,18 @@ private val HeroMuted = Color(0xFFB9D2F5)
 private val HeroReady = Color(0xFFC7F7DA)
 
 /**
- * 界面根：COUI 主题 + Material 配色桥接。
+ * 界面根：本地 PvTheme + Material 配色桥接。
  *
- * 为什么还要包一层 [MaterialTheme]：COUI 没有输入框 / 按钮，这两类直接用 Material 3；
- * 把 COUI 的色板映射进 Material 的 `colorScheme`，才不会出现 M3 默认的紫色。
+ * 为什么还要包一层 [MaterialTheme]：输入框 / 按钮直接用 Material 3；
+ * 把本地色板映射进 Material 的 `colorScheme`，才不会出现 M3 默认的紫色。
  */
 @Composable
 internal fun PureVoxApp(activity: MainActivity) {
     // 订阅 2 Hz 的状态刷新：updateStatus() 末尾会 uiTick++，Compose 根跟着重算一遍
     activity.uiTick
 
-    CouiTheme(darkTheme = isSystemInDarkTheme()) {
-        val scheme = CouiTheme.colorScheme
+    ProvidePvTheme(darkTheme = isSystemInDarkTheme()) {
+        val scheme = pvColors
         MaterialTheme(colorScheme = scheme.toMaterialColorScheme()) {
             Box(Modifier.fillMaxSize().background(scheme.background)) {
                 HomeScreen(activity)
@@ -153,10 +138,10 @@ internal fun PureVoxApp(activity: MainActivity) {
     }
 }
 
-/** COUI 色板 → Material 3 色板；只映射实际用到的角色，不引入 coui-material3 初始化。 */
+/** 本地色板 → Material 3 色板；只映射实际用到的角色。 */
 @Composable
-private fun CouiColorScheme.toMaterialColorScheme(): ColorScheme {
-    val dark = CouiTheme.isDark
+private fun PvColorScheme.toMaterialColorScheme(): ColorScheme {
+    val dark = isSystemInDarkTheme()
     val base = if (dark) darkColorScheme() else lightColorScheme()
     return base.copy(
         primary = accent,
@@ -182,7 +167,7 @@ private fun CouiColorScheme.toMaterialColorScheme(): ColorScheme {
 
 @Composable
 private fun HomeScreen(activity: MainActivity) {
-    val scheme = CouiTheme.colorScheme
+    val scheme = pvColors
     Column(
         Modifier
             .fillMaxSize()
@@ -192,21 +177,21 @@ private fun HomeScreen(activity: MainActivity) {
         Hero(activity)
 
         // 三个开关 = 三个「现在要不要发生」，整行可点，不是只有开关本体
-        Group {
+        PvGroup {
             SwitchRow(
                 text = stringResource(R.string.sw_connect),
                 checked = activity.connectOn,
                 enabled = !activity.connecting,
                 onCheckedChange = { activity.setConnect(it) },
             )
-            Divider()
+            PvDivider()
             SwitchRow(
                 text = stringResource(R.string.sw_mic),
                 checked = activity.micOn,
                 enabled = activity.ready,
                 onCheckedChange = { activity.setMic(it) },
             )
-            Divider()
+            PvDivider()
             SwitchRow(
                 text = stringResource(R.string.sw_speaker),
                 checked = activity.spkOn,
@@ -286,7 +271,7 @@ private fun Hero(activity: MainActivity) {
                         .background(Color.White.copy(alpha = 0.14f)),
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.Settings,
+                        painter = painterResource(R.drawable.ic_settings),
                         contentDescription = stringResource(R.string.btn_settings),
                         tint = Color.White,
                         modifier = Modifier.size(21.dp),
@@ -322,11 +307,11 @@ private fun PvButton(
     text: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    icon: ImageVector? = null,
+    icon: Int? = null,
     height: Dp = 48.dp,
     onClick: () -> Unit,
 ) {
-    val scheme = CouiTheme.colorScheme
+    val scheme = pvColors
     Button(
         onClick = onClick,
         modifier = modifier.height(height),
@@ -345,7 +330,7 @@ private fun PvButton(
         contentPadding = PaddingValues(horizontal = 16.dp),
     ) {
         if (icon != null) {
-            Icon(icon, null, modifier = Modifier.size(18.dp))
+            Icon(painterResource(icon), null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
         }
         Text(text = text, fontSize = 14.sp, maxLines = 1)
@@ -358,11 +343,11 @@ private fun PvOutlinedButton(
     text: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    icon: ImageVector? = null,
+    icon: Int? = null,
     height: Dp = 48.dp,
     onClick: () -> Unit,
 ) {
-    val scheme = CouiTheme.colorScheme
+    val scheme = pvColors
     OutlinedButton(
         onClick = onClick,
         modifier = modifier.height(height),
@@ -379,7 +364,7 @@ private fun PvOutlinedButton(
         contentPadding = PaddingValues(horizontal = 16.dp),
     ) {
         if (icon != null) {
-            Icon(icon, null, modifier = Modifier.size(18.dp))
+            Icon(painterResource(icon), null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
         }
         Text(text = text, fontSize = 14.sp, maxLines = 1)
@@ -401,7 +386,7 @@ private fun PvSlider(
     onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val scheme = CouiTheme.colorScheme
+    val scheme = pvColors
     val span = valueRange.endInclusive - valueRange.start
     val stepSize = if (steps > 0) span / (steps + 1) else 0f
     fun snap(v: Float): Float {
@@ -474,7 +459,7 @@ private fun PvSlider(
     }
 }
 
-/** 一行开关：整行可点（COUI 的 Item 提供行内留白与按压反馈）。 */
+/** 一行开关：整行可点（本地 PvItem 提供行内留白；开关本身不再接第二份点击）。 */
 @Composable
 private fun SwitchRow(
     text: String,
@@ -482,8 +467,8 @@ private fun SwitchRow(
     enabled: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
-    val scheme = CouiTheme.colorScheme
-    Item(
+    val scheme = pvColors
+    PvItem(
         onClick = { if (enabled) onCheckedChange(!checked) },
         enabled = enabled,
         // 禁用不只是「点不动」：文字跟着变淡，才知道是状态不允许（未就绪 / 正在连接）
@@ -495,9 +480,9 @@ private fun SwitchRow(
             )
         },
         trailing = {
-            Switch(
+            PvSwitch(
                 checked = checked,
-                onCheckedChange = { if (enabled) onCheckedChange(it) },
+                onCheckedChange = null,
                 enabled = enabled,
             )
         },
@@ -506,7 +491,7 @@ private fun SwitchRow(
 
 /** 连接目标：两个输入框 + 扫码 + 两个全宽操作按钮。 */
 @Composable
-private fun TargetSection(activity: MainActivity, scheme: CouiColorScheme) {
+private fun TargetSection(activity: MainActivity, scheme: PvColorScheme) {
     val fieldColors = OutlinedTextFieldDefaults.colors(
         focusedBorderColor = scheme.accent,
         unfocusedBorderColor = scheme.outlineVariant,
@@ -518,7 +503,7 @@ private fun TargetSection(activity: MainActivity, scheme: CouiColorScheme) {
         focusedContainerColor = scheme.background,
         unfocusedContainerColor = scheme.background,
     )
-    Group(title = stringResource(R.string.section_target)) {
+    PvGroup(title = stringResource(R.string.section_target)) {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Row(
                 Modifier.fillMaxWidth(),
@@ -567,7 +552,7 @@ private fun TargetSection(activity: MainActivity, scheme: CouiColorScheme) {
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.QrCodeScanner,
+                            painter = painterResource(R.drawable.ic_scan),
                             contentDescription = stringResource(R.string.btn_scan),
                             tint = scheme.accent,
                             modifier = Modifier.size(26.dp),
@@ -582,13 +567,13 @@ private fun TargetSection(activity: MainActivity, scheme: CouiColorScheme) {
                 PvOutlinedButton(
                     text = stringResource(R.string.btn_rediscover),
                     modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Search,
+                    icon = R.drawable.ic_notif_search,
                     onClick = { activity.rediscover() },
                 )
                 PvButton(
                     text = stringResource(R.string.btn_reconnect),
                     modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Refresh,
+                    icon = R.drawable.ic_notif_refresh,
                     onClick = { activity.reconnect() },
                 )
             }
@@ -600,12 +585,12 @@ private fun TargetSection(activity: MainActivity, scheme: CouiColorScheme) {
  * 抖动缓冲 + 麦克风 API：**合成一张卡**。
  *
  * 麦克风 API 只是一个标题行右侧的小按钮（`API · 默认`），不单独占一张卡 / 一行：
- * 它属于「采集参数」，不是另一个功能块；点开仍是 COUI 选择器。
+ * 它属于「采集参数」，不是另一个功能块；点开仍是本地选择器。
  */
 @Composable
-private fun AudioSection(activity: MainActivity, scheme: CouiColorScheme) {
+private fun AudioSection(activity: MainActivity, scheme: PvColorScheme) {
     var pickerOpen by remember { mutableStateOf(false) }
-    Group(
+    PvGroup(
         title = stringResource(R.string.buffer_title_value, activity.ringMs / 10, activity.ringMs),
         headerActions = {
             Row(
@@ -625,7 +610,7 @@ private fun AudioSection(activity: MainActivity, scheme: CouiColorScheme) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 Icon(
-                    imageVector = Icons.Filled.ChevronRight,
+                    painter = painterResource(R.drawable.ic_chevron_right),
                     contentDescription = stringResource(R.string.mic_source_label),
                     tint = scheme.accent,
                     modifier = Modifier.padding(start = 2.dp).size(14.dp),
@@ -645,9 +630,9 @@ private fun AudioSection(activity: MainActivity, scheme: CouiColorScheme) {
     if (pickerOpen) MicSourcePicker(activity, scheme) { pickerOpen = false }
 }
 
-/** 麦克风 API 选择器：COUI 圆角卡片 + 选中勾。 */
+/** 麦克风 API 选择器：本地圆角卡片 + 选中勾。 */
 @Composable
-private fun MicSourcePicker(activity: MainActivity, scheme: CouiColorScheme, onDismiss: () -> Unit) {
+private fun MicSourcePicker(activity: MainActivity, scheme: PvColorScheme, onDismiss: () -> Unit) {
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -679,7 +664,7 @@ private fun MicSourcePicker(activity: MainActivity, scheme: CouiColorScheme, onD
                     )
                     IconButton(onClick = onDismiss) {
                         Icon(
-                            imageVector = Icons.Filled.Close,
+                            painter = painterResource(R.drawable.ic_close),
                             contentDescription = stringResource(R.string.sheet_close),
                             tint = scheme.onSurfaceVariant,
                         )
@@ -719,7 +704,7 @@ private fun MicSourcePicker(activity: MainActivity, scheme: CouiColorScheme, onD
                             )
                             if (selected) {
                                 Icon(
-                                    imageVector = Icons.Filled.Check,
+                                    painter = painterResource(R.drawable.ic_check),
                                     contentDescription = null,
                                     tint = scheme.accent,
                                     modifier = Modifier.size(20.dp),
@@ -727,7 +712,7 @@ private fun MicSourcePicker(activity: MainActivity, scheme: CouiColorScheme, onD
                             }
                         }
                         if (index != MicSources.ALL.lastIndex) {
-                            Divider(startIndent = 20.dp, endIndent = 20.dp, color = scheme.outlineVariant)
+                            PvDivider(startIndent = 20.dp, endIndent = 20.dp, color = scheme.outlineVariant)
                         }
                     }
                 }
@@ -740,7 +725,7 @@ private fun MicSourcePicker(activity: MainActivity, scheme: CouiColorScheme, onD
 
 @Composable
 private fun SettingsDialog(activity: MainActivity) {
-    val scheme = CouiTheme.colorScheme
+    val scheme = pvColors
     Dialog(
         onDismissRequest = { activity.closeSettings() },
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -773,7 +758,7 @@ private fun SettingsDialog(activity: MainActivity) {
                     )
                     IconButton(onClick = { activity.closeSettings() }) {
                         Icon(
-                            imageVector = Icons.Filled.Close,
+                            painter = painterResource(R.drawable.ic_close),
                             contentDescription = stringResource(R.string.sheet_close),
                             tint = scheme.onSurfaceVariant,
                         )
@@ -800,14 +785,14 @@ private fun SettingsDialog(activity: MainActivity) {
 /** 界面语言：跟随系统 / 中文 / English（选完立即切换并重建 Activity）。 */
 @Composable
 private fun LanguageSection(activity: MainActivity) {
-    val scheme = CouiTheme.colorScheme
+    val scheme = pvColors
     val current = activity.currentLanguageTag()
     val options = listOf(
         "" to stringResource(R.string.lang_system),
         "zh" to stringResource(R.string.lang_zh),
         "en" to stringResource(R.string.lang_en),
     )
-    Group(title = stringResource(R.string.section_language)) {
+    PvGroup(title = stringResource(R.string.section_language)) {
         Row(
             Modifier.fillMaxWidth().padding(12.dp).clip(RoundedCornerShape(12.dp))
                 .background(scheme.background),
@@ -836,8 +821,8 @@ private fun LanguageSection(activity: MainActivity) {
 }
 
 @Composable
-private fun KeepaliveSection(activity: MainActivity, scheme: CouiColorScheme) {
-    Group(title = stringResource(R.string.section_keepalive)) {
+private fun KeepaliveSection(activity: MainActivity, scheme: PvColorScheme) {
+    PvGroup(title = stringResource(R.string.section_keepalive)) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
             Text(
                 text = stringResource(R.string.keepalive_desc),
@@ -889,8 +874,8 @@ private fun KeepaliveSection(activity: MainActivity, scheme: CouiColorScheme) {
 }
 
 @Composable
-private fun UpdateSection(activity: MainActivity, scheme: CouiColorScheme) {
-    Group(title = stringResource(R.string.section_update)) {
+private fun UpdateSection(activity: MainActivity, scheme: PvColorScheme) {
+    PvGroup(title = stringResource(R.string.section_update)) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
             Text(
                 text = activity.updateText,
@@ -927,8 +912,8 @@ private fun UpdateSection(activity: MainActivity, scheme: CouiColorScheme) {
 }
 
 @Composable
-private fun AboutSection(activity: MainActivity, scheme: CouiColorScheme) {
-    Group(title = stringResource(R.string.section_about)) {
+private fun AboutSection(activity: MainActivity, scheme: PvColorScheme) {
+    PvGroup(title = stringResource(R.string.section_about)) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
             Text(
                 text = stringResource(
@@ -952,10 +937,10 @@ private fun AboutSection(activity: MainActivity, scheme: CouiColorScheme) {
 
 /** 诊断：常显（出错时用户不必再点开一次），读数与日志都能一键复制。 */
 @Composable
-private fun DiagSection(activity: MainActivity, scheme: CouiColorScheme) {
+private fun DiagSection(activity: MainActivity, scheme: PvColorScheme) {
     // 日志是普通集合：读一次追加计数，日志文本才会跟着新行重组
     @Suppress("UNUSED_VARIABLE") val logTick = activity.logVersion
-    Group(title = stringResource(R.string.diag_title)) {
+    PvGroup(title = stringResource(R.string.diag_title)) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
             Row(
                 Modifier.fillMaxWidth().padding(top = 4.dp),
@@ -1024,12 +1009,12 @@ private fun DiagHeading(text: String) {
         modifier = Modifier.padding(top = 10.dp),
         fontSize = 12.sp,
         fontWeight = FontWeight.Medium,
-        color = CouiTheme.colorScheme.onSurfaceVariant,
+        color = pvColors.onSurfaceVariant,
     )
 }
 
 @Composable
-private fun DiagBody(text: String, scheme: CouiColorScheme) {
+private fun DiagBody(text: String, scheme: PvColorScheme) {
     Text(
         text = text,
         modifier = Modifier.padding(top = 4.dp),
@@ -1042,7 +1027,7 @@ private fun DiagBody(text: String, scheme: CouiColorScheme) {
 
 /** 一条电平 / 缓冲：标签 + 进度条 + 右对齐读数（列宽固定，数值变长也不跳）。 */
 @Composable
-private fun LevelRow(label: String, percent: Int, value: String, scheme: CouiColorScheme) {
+private fun LevelRow(label: String, percent: Int, value: String, scheme: PvColorScheme) {
     Row(
         Modifier.fillMaxWidth().padding(top = 5.dp),
         verticalAlignment = Alignment.CenterVertically,

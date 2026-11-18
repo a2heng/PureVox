@@ -31,14 +31,10 @@
       主主题：**edge-to-edge**。状态栏透明、内容画到状态栏后面（头图的品牌渐变延伸上去），
       所以状态栏图标固定为浅色；导航栏图标由代码按日夜切换（`MainActivity.applyEdgeToEdge`）。
     -->
-    <style name="Theme.PureVox" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Theme.PureVox" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="colorPrimary">@color/pv_blue</item>
-        <item name="colorOnPrimary">@color/pv_on_blue</item>
         <!-- 中性灰白三档（底 / 卡片 / 描边）：层次靠明度差，不靠阴影叠卡片 -->
         <item name="android:colorBackground">@color/pv_bg</item>
-        <item name="colorSurface">@color/pv_surface</item>
-        <item name="colorSurfaceVariant">@color/pv_surface_alt</item>
-        <item name="colorOutlineVariant">@color/pv_outline</item>
         <!-- edge-to-edge：两条系统栏都透明，背景由头图 / 页面自己铺 -->
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>

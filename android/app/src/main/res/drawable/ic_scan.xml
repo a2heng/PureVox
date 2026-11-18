@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  The built-in AI models are NOT covered by the GPL; they are the
+  property of a2heng and may only be used with PureVox under
+  authorization.  See MODEL-LICENSE.md for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+
+  「扫描」按钮图标：取景框四角 + 中间二维码方块（不收 F 角，24dp 网格内手绘，
+  保持与其它 tab 图标同一条 1.8~2px 描边；上色由 ImageButton 的 tint 决定）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- 四角取景框 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M3,3h6v2H5v4H3V3zM15,3h6v6h-2V5h-4V3zM3,15h2v4h4v2H3v-6zM19,15h2v6h-6v-2h4v-4z" />
+
+    <!-- 二维码的三个定位块 + 一个数据块 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M7,7h4v4H7zM13,7h4v4h-4zM7,13h4v4H7zM14,14h3v3h-3z" />
+</vector>

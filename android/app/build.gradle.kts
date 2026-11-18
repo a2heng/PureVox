@@ -99,9 +99,9 @@ android {
 
     defaultConfig {
         applicationId = "com.purevox.mic"
-        // COUI-Kit（ColorOS 17 风格组件）要求 API 31+；README 的 Android 8.0+
-        // 随这次 UI 改造一起抬到 Android 12+（发布说明里要写明）。
-        minSdk = 31
+        // COUI 风格组件已改为本地实现（`ui/PvTheme.kt`），不再依赖只支持 API 31 的
+        // 第三方库；最低系统回到 Compose 支持的范围，和改造前一致（Android 7.0）。
+        minSdk = 24
         targetSdk = 37
         // versionCode 必须**单调递增**才能让应用内更新检查判出新旧，故取 `yyMMddHHmm ÷ 10`
         // （如 261008143，10 分钟粒度、Int32 内）。由 CI 传入（`-PpvVersionCode=`，见
@@ -145,8 +145,11 @@ android {
 
     buildTypes {
         release {
-            // 反射/无：全是系统 API + OkHttp，混淆收益低，保持可读可审计
-            isMinifyEnabled = false
+            // 体积：Compose 的 class 体积很大（不混淆时 release 接近 30 MB），
+            // 且本项目没有任何需要靠「保持类名」才能工作的反射路径。R8 + 资源压缩
+            // 只删未引用代码/资源；保留规则见 proguard-rules.pro。
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -221,7 +224,6 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.appcompat:appcompat:1.8.0")
-    implementation("com.google.android.material:material:1.14.0")
     // 明文 ws:// —— 没有 TLS 依赖，也没有证书信任绕过（新版协议就是明文 + usesCleartextTraffic）
     implementation("com.squareup.okhttp3:okhttp:5.5.1")
     // 二维码扫描（「扫描」按钮）：自带相机预览与解码界面，纯 Java、不引 NDK。
@@ -234,6 +236,4 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
-    implementation("io.github.itoseo:coui:0.0.1-alpha11")
 }

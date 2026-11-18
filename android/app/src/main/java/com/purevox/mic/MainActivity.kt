@@ -72,7 +72,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 唯一的界面与编排者（单 Activity；界面是 Compose + COUI-Kit）。
+ * 唯一的界面与编排者（单 Activity；界面是 Compose + 本地 COUI 风格组件）。
  *
  * 它负责把三条独立能力接上电脑端的同一个 WebSocket：
  * 1. 手机麦克风 → 电脑（[MicUplink]）
