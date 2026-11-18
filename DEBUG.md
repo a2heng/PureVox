@@ -271,7 +271,9 @@ release 构建同样保留（不允许用编译开关剔除）。
     （环水位/欠载/掩盖/晚到/单向延迟/**自己实测的音频时钟 ppm**）。结论进 `/debug` 的
     `net` 段与手机「诊断 → 音频」，判定只在 Rust 一侧算（`hub.rs` 的 `rx_verdict`/`tx_verdict`）。
 - **Android 客户端（`android/`，APK）**：与上面两件音频能力对同一个 WebSocket 的另一端，
-  单 Activity + Material3 **卡片式**布局（连接 / 功能 / 后台保活 / 更新），
+  单 Activity + **Jetpack Compose**（COUI-Kit，ColorOS 17 风格；`minSdk 31`），
+  主人页是连接 / 功能 / 抖动缓冲 / 麦克风 API，设置是居中浮层（语言 / 后台保活 / 更新 /
+  诊断 / 关于），
   底部「诊断」分**网络**（RTT 窗口/抖动/真实速率/质量结论）与**音频**（上/下行电平条、
   缓冲水位、欠载/丢包/解码掩盖）两块 + 日志，**默认收起**、标题行点击展开（状态面板不消失，
   只是不再一上来占满屏），「复制诊断」一键把整块塞剪贴板（报问题不必截图）；
@@ -304,13 +306,22 @@ release 构建同样保留（不允许用编译开关剔除）。
     的低延迟快通路（mono/普通缓冲作为回退），音频线程 `THREAD_PRIORITY_URGENT_AUDIO`；
     欠载补静音、硬顶丢最旧。网页版是先行实验田，安卓照搬同一策略，别各自发明一套。
   - **会话保活**（`service/CaptureService.kt`）：只要「已连接」「正在推流」「连接中」**或界面在前台**
-    就把常驻通知挂着（前台服务类型 `microphone|dataSync`，只报在用的那个），通知带「停止推流 / 断开连接」
-    两个按钮 —— 按钮发**广播**回界面（`MainActivity` 的 `notifReceiver`），服务不认识协议。
+    就把常驻通知挂着（前台服务类型 `microphone|dataSync`，只报在用的那个）。
+    **通知本身没有文字，只有一行四个等宽图标**：连接状态（链环 / 放大镜 / 断链）、
+    麦克风（斜线 = 关）、扬声器（斜线 = 关）、重新连接（刷新）。
+    标准 `addAction` 在 Android 7+ 只画文字、忽略图标，四个中文标签会被挤在一起；
+    所以用自定义 RemoteViews（`res/layout/notif_controls.xml`）。
+    按钮发广播给 `ControlReceiver`，再转给界面（`MainActivity.handleControl`），服务不认识协议。
+    同一套动作与状态也用于**快捷设置磁贴**（`control/*Tile.kt`）和**4×1 桌面小组件**
+    （`ControlWidgetProvider`）；状态源只有 `Control.publish` 一份，三个出口不会互相打脸。
     **为什么宽到「界面在前台就挂」**：2026-10-18 用户实测 ——「撤掉通知之后系统很快就把进程掐了」；
     而**后台里起前台服务会被系统拒绝**（`ForegroundServiceStartNotAllowedException`），
     那一次失败没有第二次机会，等于整个会话都在裸奔。所以：进入前台（`onStart`/`onResume`）就补挂，
     **挂不上不许静默** —— 原因写进「后台保活」卡片与「复制诊断」（`CaptureService.lastError`），
     界面上一眼看出「通知没挂上」还是「会话正常结束」。
+    Android 13+ **用户随时可以划掉前台服务通知**（`NO_CLEAR` 拦不住，平台行为）：
+    通知带 `deleteIntent` → 服务收到 `ACTION_REPOST` 立刻补挂；界面每 5 秒再看一次
+    `NotificationManager.activeNotifications` 兜底。**不要**指望 `setOngoing(true)` 能防清理。
     另有「忽略电池优化」入口（`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`）。
     **通知权限（Android 13+ `POST_NOTIFICATIONS`）是保活的前提，必须可见可修**：声明 + 首启申请
     （`requestPermissions`）、拒过一次再求一次（`maybeRequestNotifPermission`，靠

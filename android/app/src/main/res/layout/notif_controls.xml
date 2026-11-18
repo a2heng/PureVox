@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+
+  PureVox is licensed under the GNU General Public License v3.0 or
+  later (GPL-3.0-or-later).  See LICENSE for details.
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  The built-in AI models are NOT covered by the GPL; they are the
+  property of a2heng and may only be used with PureVox under
+  authorization.  See MODEL-LICENSE.md for details.
+
+  SPDX-License-Identifier: GPL-3.0-or-later
+-->
+<!--
+  常驻通知的控制条：**一行四个图标按钮**，没有任何文字。
+
+  为什么不用 NotificationCompat.addAction：Android 7 起标准通知只画 action 的**文字**，
+  图标被忽略；四个中文字标签在窄屏上互相挤（用户看到的「压缩」）。自定义 RemoteViews
+  是唯一能保证「四个等宽图标、固定一行、状态即图标」的做法。
+
+  底色固定深蓝 + 白色图标：自定义视图拿不到 SystemUI 的主题色，只有自带底色才能在
+  亮色/暗色通知卡上都保持对比度。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="48dp"
+    android:layout_marginTop="4dp"
+    android:background="@drawable/bg_notif_controls"
+    android:orientation="horizontal"
+    android:paddingHorizontal="8dp">
+
+    <!-- 连接状态（点按打开界面，不在这里断开/重连） -->
+    <ImageButton
+        android:id="@+id/notifConn"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_notif_link" />
+
+    <!-- 麦克风：有斜线 = 关闭，无斜线 = 打开 -->
+    <ImageButton
+        android:id="@+id/notifMic"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_notif_mic" />
+
+    <!-- 扬声器：有斜线 = 关闭，无斜线 = 打开 -->
+    <ImageButton
+        android:id="@+id/notifSpk"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_notif_spk" />
+
+    <!-- 重新连接（刷新）：先拆掉已打开的流，再从当前目标重连 -->
+    <ImageButton
+        android:id="@+id/notifReconnect"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_notif_refresh" />
+</LinearLayout>

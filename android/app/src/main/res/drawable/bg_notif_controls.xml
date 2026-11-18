@@ -17,19 +17,9 @@
 
   SPDX-License-Identifier: GPL-3.0-or-later
 -->
-<!--
-  头图底：品牌蓝渐变，**只圆下沿**。
-  edge-to-edge 之后它铺到状态栏后面，上沿没有圆角（有的话会被状态栏裁出一道缺口）；
-  左右贴屏幕边，下沿 24 dp 圆角把卡片衬出来。日夜两套颜色在 values / values-night 里。
--->
+<!-- 通知控制条的固定深蓝底：不依赖 SystemUI 主题，白图标在亮/暗通知卡上都清楚。 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <gradient
-        android:angle="315"
-        android:endColor="@color/pv_header"
-        android:startColor="@color/pv_header_light"
-        android:type="linear" />
-    <corners
-        android:bottomLeftRadius="24dp"
-        android:bottomRightRadius="24dp" />
+    <solid android:color="#132C50" />
+    <corners android:radius="14dp" />
 </shape>

@@ -19,4 +19,6 @@
 // AGP 9.5.x 配 Gradle 9.9.1 + JDK 25（gradle/wrapper/gradle-wrapper.properties 里钉住）。
 plugins {
     id("com.android.application") version "9.5.1" apply false
+    // Compose 编译器：版本必须跟 AGP 9.5.1 内置的 Kotlin 一致（2.4.x）
+    id("org.jetbrains.kotlin.plugin.compose") version "2.4.21" apply false
 }

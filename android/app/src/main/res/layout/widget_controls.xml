@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PureVox — AI 麦克风降噪工具
+  Copyright (C) 2024-2026 a2heng <752848283@qq.com>
+  SPDX-License-Identifier: GPL-3.0-or-later
+
+  桌面小组件：与通知控制条同一行四个图标（连接状态 / 麦克风 / 扬声器 / 重新连接）。
+  高度撑满小组件，图标等宽；点按发 ControlReceiver 广播，界面不在时明确提示先打开应用。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_notif_controls"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingHorizontal="8dp">
+
+    <ImageButton
+        android:id="@+id/notifConn"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_notif_link" />
+
+    <ImageButton
+        android:id="@+id/notifMic"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_notif_mic" />
+
+    <ImageButton
+        android:id="@+id/notifSpk"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_notif_spk" />
+
+    <ImageButton
+        android:id="@+id/notifReconnect"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_notif_refresh" />
+</LinearLayout>

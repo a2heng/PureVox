@@ -97,6 +97,69 @@
             android:foregroundServiceType="microphone|dataSync" />
 
         <!--
+          快捷设置磁贴：四个独立的小卡片（连接状态 / 麦克风 / 扬声器 / 重新连接）。
+          系统绑定它们需要 exported=true + BIND_QUICK_SETTINGS_TILE 权限；
+          点击只发广播（ControlReceiver），界面仍是唯一编排者。
+        -->
+        <service
+            android:name=".control.StatusTile"
+            android:exported="true"
+            android:icon="@drawable/ic_notif_link"
+            android:label="@string/tile_status"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".control.MicTile"
+            android:exported="true"
+            android:icon="@drawable/ic_notif_mic"
+            android:label="@string/tile_mic"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".control.SpkTile"
+            android:exported="true"
+            android:icon="@drawable/ic_notif_spk"
+            android:label="@string/tile_spk"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <service
+            android:name=".control.ReconnectTile"
+            android:exported="true"
+            android:icon="@drawable/ic_notif_refresh"
+            android:label="@string/tile_reconnect"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- 通知 / 磁贴 / 小组件按钮 → 界面（同一个入口；界面不在时明确提示先打开应用） -->
+        <receiver
+            android:name=".control.ControlReceiver"
+            android:exported="false" />
+
+        <!-- 桌面小组件：4×1 控制条（与通知栏同一套图标与动作） -->
+        <receiver
+            android:name=".control.ControlWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/control_widget_info" />
+        </receiver>
+
+        <!--
           界面语言的持久化（AppCompat per-app locale）：`setApplicationLocales` 的选择
           由这个只带 meta-data 的服务存进 AppCompat 自己的偏好里，下次启动仍然生效。
           `enabled=false` 是官方要求 —— 它不承载任何组件，只提供 meta-data。

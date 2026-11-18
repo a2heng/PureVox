@@ -243,18 +243,28 @@
     <!-- 前台服务通知 -->
     <string name="notif_channel_name">麦克风推流</string>
     <string name="notif_channel_desc">保持麦克风在后台可用</string>
-    <string name="notif_starting">正在启动麦克风…</string>
-    <string name="notif_default">正在推流</string>
-    <!-- 通知正文只留一行状态：文案一长系统就把三个按钮折叠进「展开」，
-         而保活本来就由通知**存在**这件事表达，不需要再写一遍 -->
-    <string name="notif_connected">已连接电脑</string>
-    <string name="notif_idle">待连接</string>
-    <!-- 通知栏三个按钮：麦克风 / 扬声器 / 重新连接（标签随当前状态变） -->
+    <!-- 通知里**没有文字**，只有一行四个图标：连接状态 / 麦克风 / 扬声器 / 重新连接。
+         下面三条只给状态按钮做无障碍描述，不显示。 -->
+    <string name="notif_conn_on">已连接</string>
+    <string name="notif_conn_wait">正在查找或连接</string>
+    <string name="notif_conn_off">未连接</string>
+    <!-- 按钮图标的无障碍描述（点击动作随当前状态变） -->
     <string name="notif_action_mic_on">开麦克风</string>
     <string name="notif_action_mic_off">关麦克风</string>
     <string name="notif_action_spk_on">开扬声器</string>
     <string name="notif_action_spk_off">关扬声器</string>
     <string name="notif_action_reconnect">重新连接</string>
+
+    <!-- 快捷设置磁贴 / 桌面小组件（与通知栏同一组动作） -->
+    <string name="tile_status">PureVox 连接</string>
+    <string name="tile_mic">PureVox 麦克风</string>
+    <string name="tile_spk">PureVox 扬声器</string>
+    <string name="tile_reconnect">PureVox 重连</string>
+    <string name="tile_on">开</string>
+    <string name="tile_off">关</string>
+    <string name="tile_offline">未连接</string>
+    <string name="tile_connecting">连接中</string>
+    <string name="control_open_app">PureVox 未运行，请先打开应用</string>
 
     <!-- 更新 -->
     <string name="btn_check_update">检查更新</string>

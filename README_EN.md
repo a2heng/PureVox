@@ -75,7 +75,7 @@ Installers: NSIS on Windows, deb / AppImage on Linux (`python tools/automation/p
 | Linux | `nvidia-smi` or `amdgpu` sysfs (optional) | GPU readouts in the debug panel; absent → hidden, audio unaffected |
 | Linux | `.desktop` entry (shipped in packages) | **Global hotkeys** need a desktop app id: start from the app grid, not a terminal (the UI says so) |
 | Linux | `pkexec` (deb/rpm self-update) | Graphical prompt, then the package manager installs |
-| Android | Android 8.0+ (API 26) | The web client needs no install — just open the desktop URL |
+| Android | Android 12+ (API 31) | The web client needs no install — just open the desktop URL |
 
 **Build time**
 

@@ -73,7 +73,7 @@ cargo clippy --all-targets -- -D warnings
 | Linux | `nvidia-smi` 或 `amdgpu` sysfs（可选） | 调试面板的 GPU 读数；没有就不显示，不影响音频 |
 | Linux | 桌面项（`.desktop`，安装包自带） | **全局热键**需要桌面应用标识：从应用菜单/图标启动才有，终端直跑会被门户拒绝（界面会说明） |
 | Linux | `pkexec`（deb/rpm 更新时） | 图形授权后交给包管理器安装 |
-| Android | Android 8.0+（API 26） | 网页版客户端无需安装，浏览器打开电脑地址即可 |
+| Android | Android 12+（API 31） | 网页版客户端无需安装，浏览器打开电脑地址即可 |
 
 **构建期**
 

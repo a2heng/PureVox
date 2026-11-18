@@ -33,9 +33,12 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import com.purevox.mic.MainActivity
 import com.purevox.mic.R
+import com.purevox.mic.control.Control
+import com.purevox.mic.control.ControlViews
 
 /**
  * 会话前台服务（**保活**）。
@@ -48,11 +51,15 @@ import com.purevox.mic.R
  * 就常驻通知。2026-10-18 用户实测结论：**撤掉通知之后系统很快就把进程掐了** ——
  * 界面开着就得把通知挂着，别等「连上了再挂」（后台里起前台服务会被系统拒绝，
  * 那一次的失败要等到界面在前台时补挂，见 [MainActivity.onResume]）。
- * 通知里的两个按钮（[BROADCAST_NOTIF_STOP] / [BROADCAST_NOTIF_DISCONNECT]）由界面
- * （[MainActivity]）接收并处理 —— 服务本身不认识协议，**界面是唯一的编排者**。
+ * 通知里的按钮（连接状态 / 麦克风 / 扬声器 / 重新连接）由界面（[MainActivity]）接收并处理 ——
+ * 服务本身不认识协议，**界面是唯一的编排者**。
  *
  * 前台服务类型：麦克风在用时 `microphone|dataSync`，只是保活连接时 `dataSync`。
  * 哪个在用就报哪个（Android 14 起按实际用途校验，不能超报）。
+ *
+ * **通知里没有文字，只有一行四个图标**（`res/layout/notif_controls.xml`）。
+ * 标准 `addAction` 在 Android 7+ 只画文字、忽略图标，四个中文标签在窄屏会被压缩；
+ * 自定义 RemoteViews 是唯一能保证「等宽、固定一行、状态即图标」的做法。
  */
 class CaptureService : Service() {
 
@@ -63,27 +70,19 @@ class CaptureService : Service() {
         const val ACTION_UPDATE = "com.purevox.mic.action.UPDATE"
         const val ACTION_STOP = "com.purevox.mic.action.STOP"
 
-        /**
-         * 通知按钮发回界面的广播（**不是**服务自己的 action）：界面是唯一的编排者。
-         *
-         * 三个按钮各管一件事，且都是「切换 / 刷新」而不是「单向关闭」：
-         * - [BROADCAST_NOTIF_MIC]      开/关麦克风（= 界面上那个开关）
-         * - [BROADCAST_NOTIF_SPK]      开/关扬声器（= 界面上那个开关）
-         * - [BROADCAST_NOTIF_RECONNECT] 重新连接：**先把已经打开的流全部拆掉再重连**
-         *   （等价于手动关掉再打开，用来复位卡住的采集/播放）
-         */
-        const val BROADCAST_NOTIF_MIC = "com.purevox.mic.notif.MIC"
-        const val BROADCAST_NOTIF_SPK = "com.purevox.mic.notif.SPK"
-        const val BROADCAST_NOTIF_RECONNECT = "com.purevox.mic.notif.RECONNECT"
+        /** 通知被用户划掉后由 `deleteIntent` 拉起：用最近一次状态立刻重挂。 */
+        const val ACTION_REPOST = "com.purevox.mic.action.REPOST"
 
-        /** 通知正文（由界面刷新，用来显示已推包数 / 采集格式 / 保活状态）。 */
-        const val EXTRA_TEXT = "text"
-
-        /** 本条通知是否包含 `microphone` 前台服务类型（也决定按钮标签「开/关麦克风」）。 */
+        /** 本条通知是否包含 `microphone` 前台服务类型（也决定按钮图标「麦克风开/关」）。 */
         const val EXTRA_MIC = "mic"
 
-        /** 扬声器是否在放（决定按钮标签「开/关扬声器」；不影响前台服务类型）。 */
+        /** 扬声器是否在放（决定按钮图标「扬声器开/关」；不影响前台服务类型）。 */
         const val EXTRA_SPK = "spk"
+
+        /**
+         * 当前连接状态（决定通知里状态按钮的图标，取值见 [Control.CONN_OFFLINE] 等）。
+         */
+        const val EXTRA_CONN = "conn"
 
         /** 当前是否真的有音频在跑（mic 或 speaker）；只有这时才持 WakeLock。
          *  仅仅「连着/界面在前台」不需要 CPU 常亮 —— 通知挂着即可。 */
@@ -127,11 +126,11 @@ class CaptureService : Service() {
         /** Wi-Fi 高性能锁：关掉省电模式（它会攒包，实测 RTT 5→55 ms、抖动 25 ms）。 */
         private const val WIFI_LOCK_TAG = "PureVoxMic:WifiHighPerf"
 
-        fun start(ctx: Context, text: String, mic: Boolean, audio: Boolean, spk: Boolean = false) =
-            deliver(ctx, ACTION_START, text, mic, audio, spk)
+        fun start(ctx: Context, mic: Boolean, audio: Boolean, spk: Boolean = false, conn: Int) =
+            deliver(ctx, ACTION_START, mic, audio, spk, conn)
 
-        fun update(ctx: Context, text: String, mic: Boolean, audio: Boolean, spk: Boolean = false) =
-            deliver(ctx, ACTION_UPDATE, text, mic, audio, spk)
+        fun update(ctx: Context, mic: Boolean, audio: Boolean, spk: Boolean = false, conn: Int) =
+            deliver(ctx, ACTION_UPDATE, mic, audio, spk, conn)
 
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, CaptureService::class.java))
@@ -140,17 +139,17 @@ class CaptureService : Service() {
         private fun deliver(
             ctx: Context,
             action: String,
-            text: String,
             mic: Boolean,
             audio: Boolean,
             spk: Boolean,
+            conn: Int,
         ) {
             val intent = Intent(ctx, CaptureService::class.java).apply {
                 this.action = action
-                putExtra(EXTRA_TEXT, text)
                 putExtra(EXTRA_MIC, mic)
                 putExtra(EXTRA_AUDIO, audio)
                 putExtra(EXTRA_SPK, spk)
+                putExtra(EXTRA_CONN, conn)
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -177,9 +176,13 @@ class CaptureService : Service() {
     @Volatile
     private var micActive = false
 
-    /** 扬声器是否在放（只影响通知按钮标签，不改变前台服务类型）。 */
+    /** 扬声器是否在放（只影响通知按钮图标，不改变前台服务类型）。 */
     @Volatile
     private var spkActive = false
+
+    /** 连接状态（只影响通知里状态按钮的图标）。 */
+    @Volatile
+    private var connActive = Control.CONN_OFFLINE
 
     /** 当前是否真的有音频流（决定持不持 WakeLock）。 */
     @Volatile
@@ -195,12 +198,18 @@ class CaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START, ACTION_UPDATE -> {
-                val text = intent.getStringExtra(EXTRA_TEXT) ?: getString(R.string.notif_default)
                 micActive = intent.getBooleanExtra(EXTRA_MIC, false)
                 spkActive = intent.getBooleanExtra(EXTRA_SPK, false)
+                connActive = intent.getIntExtra(EXTRA_CONN, Control.CONN_OFFLINE)
                 audioActive = intent.getBooleanExtra(EXTRA_AUDIO, micActive)
                 if (audioActive) acquireWakeLock() else releaseWakeLock()
-                startForegroundCompat(text, micActive)
+                startForegroundCompat(micActive)
+            }
+            ACTION_REPOST -> {
+                // 用户划掉了常驻通知（Android 13+ 允许，NO_CLEAR 拦不住）。
+                // 不重新挂 = 系统随时可以掐进程，所以用最近一次状态立刻补挂。
+                Log.i(TAG, "常驻通知被划掉，补挂")
+                startForegroundCompat(micActive)
             }
             ACTION_STOP -> {
                 releaseWakeLock()
@@ -222,8 +231,8 @@ class CaptureService : Service() {
 
     @Suppress("DEPRECATION")
     @SuppressLint("NewApi") // type != 0 只在 SDK >= Q 时成立，lint 看不到分支
-    private fun startForegroundCompat(text: String, mic: Boolean) {
-        val notification = buildNotification(text, mic, spkActive)
+    private fun startForegroundCompat(mic: Boolean) {
+        val notification = buildNotification(mic, spkActive, connActive)
         val type = when {
             Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> 0   // 走两参重载
             mic -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
@@ -272,45 +281,48 @@ class CaptureService : Service() {
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(text: String, mic: Boolean, spk: Boolean): Notification {
-        val launch = packageManager.getLaunchIntentForPackage(packageName)
-        val contentPi = launch?.let {
-            PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE)
-        }
+    /**
+     * 常驻通知：**没有文字，只有一行四个图标**（连接状态 / 麦克风 / 扬声器 / 重新连接）。
+     *
+     * 状态全部由图标表达：
+     * - 连接状态：链环 = 已连接，放大镜 = 查找/连接中，断链 = 未连接（点按打开界面）；
+     * - 麦克风 / 扬声器：有斜线 = 关，无斜线 = 开；
+     * - 重新连接：刷新箭头（先拆旧流再重连，见 [Control.ACTION_RECONNECT]）。
+     *
+     * 图标与点击动作由 [ControlViews] 统一构建（桌面小组件用同一份）。
+     * 每次状态变化都重建整条通知（`setOnlyAlertOnce` 保证不响铃、不闪）。
+     */
+    private fun buildNotification(mic: Boolean, spk: Boolean, conn: Int): Notification {
+        val contentPi = Control.open(this)
+        val row = ControlViews.build(this, R.layout.notif_controls, contentPi, conn, mic, spk)
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(text)
             .setSmallIcon(R.drawable.ic_stat_mic)
             .setContentIntent(contentPi)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setShowWhen(false)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            // 三个按钮：麦克风 / 扬声器 / 重新连接。标签跟着**当前状态**变（开→显示「关」），
-            // 所以通知每次 update 都要重建（`setOnlyAlertOnce` 保证不响铃、不闪）。
-            .addAction(
-                0,
-                getString(if (mic) R.string.notif_action_mic_off else R.string.notif_action_mic_on),
-                broadcast(BROADCAST_NOTIF_MIC, 1),
-            )
-            .addAction(
-                0,
-                getString(if (spk) R.string.notif_action_spk_off else R.string.notif_action_spk_on),
-                broadcast(BROADCAST_NOTIF_SPK, 2),
-            )
-            .addAction(
-                0,
-                getString(R.string.notif_action_reconnect),
-                broadcast(BROADCAST_NOTIF_RECONNECT, 3),
-            )
+            .setCustomContentView(row)
+            .setCustomBigContentView(row)
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setDeleteIntent(repostIntent())
             .build()
     }
 
-    /** 通知按钮 → 广播（限本应用 `setPackage`，接收端是 MainActivity 的动态接收器）。 */
-    private fun broadcast(action: String, requestCode: Int): PendingIntent {
-        val intent = Intent(action).setPackage(packageName)
-        return PendingIntent.getBroadcast(this, requestCode, intent, PendingIntent.FLAG_IMMUTABLE)
-    }
+    /**
+     * 通知被划掉时的回调。
+     *
+     * 用 `getService` 而不是广播：接收端就是本服务，不依赖界面还活着；服务已经在跑，
+     * 收到 [ACTION_REPOST] 后 `startForeground` 一次就能把通知挂回去。
+     */
+    private fun repostIntent(): PendingIntent = PendingIntent.getService(
+        this,
+        4,
+        Intent(this, CaptureService::class.java).setAction(ACTION_REPOST),
+        PendingIntent.FLAG_IMMUTABLE,
+    )
 
     private fun acquireWakeLock() {
         if (wakeLock == null) {

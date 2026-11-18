@@ -26,6 +26,8 @@
 
 plugins {
     id("com.android.application")
+    // AGP 9 内置 Kotlin；Compose 只需再应用编译器插件
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 // ── release 签名 ──────────────────────────────────────────────────────────────
@@ -97,7 +99,9 @@ android {
 
     defaultConfig {
         applicationId = "com.purevox.mic"
-        minSdk = 24
+        // COUI-Kit（ColorOS 17 风格组件）要求 API 31+；README 的 Android 8.0+
+        // 随这次 UI 改造一起抬到 Android 12+（发布说明里要写明）。
+        minSdk = 31
         targetSdk = 37
         // versionCode 必须**单调递增**才能让应用内更新检查判出新旧，故取 `yyMMddHHmm ÷ 10`
         // （如 261008143，10 分钟粒度、Int32 内）。由 CI 传入（`-PpvVersionCode=`，见
@@ -209,6 +213,7 @@ android {
     }
 
     buildFeatures {
+        compose = true
         buildConfig = false
     }
 }
@@ -222,4 +227,13 @@ dependencies {
     // 二维码扫描（「扫描」按钮）：自带相机预览与解码界面，纯 Java、不引 NDK。
     // 只用来把电脑端卡片的二维码内容（`https://<ip>:<端口>/`）读进地址栏。
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
+    // ── 界面：Jetpack Compose + COUI-Kit（ColorOS 17 风格） ───────────────────
+    implementation(platform("androidx.compose:compose-bom-alpha:2026.08.01"))
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("io.github.itoseo:coui:0.0.1-alpha11")
 }

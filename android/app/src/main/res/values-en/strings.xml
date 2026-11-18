@@ -229,15 +229,24 @@
     <!-- Foreground service notification -->
     <string name="notif_channel_name">Microphone streaming</string>
     <string name="notif_channel_desc">Keep the microphone available in the background</string>
-    <string name="notif_starting">Starting microphone…</string>
-    <string name="notif_default">Streaming</string>
-    <string name="notif_connected">Connected to computer</string>
-    <string name="notif_idle">Waiting for connection</string>
+    <string name="notif_conn_on">Connected</string>
+    <string name="notif_conn_wait">Finding or connecting</string>
+    <string name="notif_conn_off">Not connected</string>
     <string name="notif_action_mic_on">Mic on</string>
     <string name="notif_action_mic_off">Mic off</string>
     <string name="notif_action_spk_on">Speaker on</string>
     <string name="notif_action_spk_off">Speaker off</string>
     <string name="notif_action_reconnect">Reconnect</string>
+
+    <string name="tile_status">PureVox link</string>
+    <string name="tile_mic">PureVox mic</string>
+    <string name="tile_spk">PureVox speaker</string>
+    <string name="tile_reconnect">PureVox reconnect</string>
+    <string name="tile_on">On</string>
+    <string name="tile_off">Off</string>
+    <string name="tile_offline">Not connected</string>
+    <string name="tile_connecting">Connecting</string>
+    <string name="control_open_app">PureVox is not running — open the app first</string>
 
     <!-- Update -->
     <string name="btn_check_update">Check for updates</string>

@@ -21,19 +21,13 @@ package com.purevox.mic
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Dialog
 import android.app.NotificationManager
-import android.content.res.Configuration
-import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -43,43 +37,33 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
-import android.view.Gravity
-import android.view.View
-import android.view.WindowManager
-import android.widget.Button
-import android.widget.EditText
-import android.widget.ImageButton
-import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
-import android.widget.ArrayAdapter
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.SwitchCompat
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.core.os.LocaleListCompat
-import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.google.android.material.button.MaterialButtonToggleGroup
-import com.google.android.material.materialswitch.MaterialSwitch
-import com.google.android.material.progressindicator.LinearProgressIndicator
-import com.google.android.material.slider.Slider
-import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.purevox.mic.audio.MicSources
 import com.purevox.mic.audio.MicUplink
 import com.purevox.mic.audio.OpusSupport
 import com.purevox.mic.audio.SpeakerDownlink
+import com.purevox.mic.control.Control
 import com.purevox.mic.diag.DiagJson
 import com.purevox.mic.diag.RtStats
 import com.purevox.mic.net.Discovery
 import com.purevox.mic.net.HealthProbe
 import com.purevox.mic.net.WsClient
 import com.purevox.mic.service.CaptureService
+import com.purevox.mic.ui.PureVoxApp
 import com.purevox.mic.update.UpdateChecker
 import com.purevox.mic.update.UpdateDownloader
 import com.purevox.mic.update.UpdateInstaller
@@ -88,7 +72,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 唯一的界面与编排者（单 Activity，Material 风格）。
+ * 唯一的界面与编排者（单 Activity；界面是 Compose + COUI-Kit）。
  *
  * 它负责把三条独立能力接上电脑端的同一个 WebSocket：
  * 1. 手机麦克风 → 电脑（[MicUplink]）
@@ -96,20 +80,23 @@ import org.json.JSONObject
  * 3. 远程输入：IME 已组合文本（`text`）+ 手机实体键（`key`）。电脑端**默认关闭**，
  *    没开开关时电脑会回 `err`，本界面把 `err` 原文显示出来，不静默丢弃。
  *
- * 界面按一页式分组（头图 / 连接 / 功能 / 诊断），设置收进头图右上角圆点按钮的
- * 弹出层（`sheet_settings.xml`）—— 保活 / 更新 / 关于不常看，不占一整页。
+ * 界面全部在 `ui/MainScreen.kt`，本类只留编排与状态：一页式分组（头图 / 连接 / 功能 /
+ * 诊断），设置收进头图右上角按钮的居中浮层 —— 保活 / 更新 / 关于不常看，不占一整页。
+ *
+ * **界面状态是 Compose state**（`micOn` / `spkOn` / `ringMs` / `hostInput` …），
+ * 不再持有任何 View 引用：业务逻辑与视图层只通过这里的字段 + 方法通信。
  *
  * 纪律：
  * - **收到 `ready` 之前不推流、不播放**（[applyState] 里 `ready` 是必要条件）。
- * - 状态区（在诊断区里，默认收起）分两块：**网络**（RTT 窗口 / 抖动 / 真实速率 / 结论）
+ * - 状态区（在设置浮层里，常显）分两块：**网络**（RTT 窗口 / 抖动 / 真实速率 / 结论）
  *   与**音频**（上/下行电平条、缓冲水位条、欠载 / 丢包 / 解码掩盖），再加几行累计读数；
  *   2 Hz 刷新。失败项显示「不可用 + 原因」，实时量没有样本时写「采样中…」——
  *   **绝不显示伪造的 0**。整块诊断可一键复制到剪贴板（[copyDiag]）。
  * - 所有 OkHttp 回调都切回主线程再动 UI。
  *
  * 会话保活：只要「已连接」或「正在推流」就由 [CaptureService] 常驻一条前台通知
- * （[syncSessionService]），通知里的「停止 / 断开」按钮经广播回到这里处理
- * （[notifReceiver]）—— 服务不认识协议，编排只此一处。
+ * （[syncSessionService]），通知 / 磁贴 / 小组件的按钮经 [handleControl] 回到这里处理
+ * —— 服务不认识协议，编排只此一处。
  */
 class MainActivity : AppCompatActivity() {
 
@@ -120,6 +107,16 @@ class MainActivity : AppCompatActivity() {
         private const val DEFAULT_HOST = ""
         private const val MAX_LOG_LINES = 80
         private const val STATUS_INTERVAL_MS = 500L
+
+        /**
+         * 当前界面实例（通知 / 磁贴 / 小组件按钮的落点）。
+         *
+         * 控制面发的是广播（[ControlReceiver]），不是直接持有界面：界面不在时接收端会
+         * 明确提示「先打开应用」，而不是静默丢掉一次点击。
+         */
+        @Volatile
+        var current: MainActivity? = null
+            private set
 
         /**
          * 「补挂通知」的最小间隔。
@@ -154,14 +151,48 @@ class MainActivity : AppCompatActivity() {
      */
     private var port = Proto.PORT
     /** 选中的麦克风采集 API（`MediaRecorder.AudioSource`，见 [MicSources]）。 */
-    private var micSourceId: Int = MicSources.ALL[0].id
-    /** 连接状态（上屏 + 进诊断 JSON）。初始值在 [onCreate] 里按当前语言取。 */
-    private var connState = ""
-    private var connecting = false
-    private var lastErr = ""
+    internal var micSourceId by mutableIntStateOf(MicSources.ALL[0].id)
     private var opusDetail = ""
-    /** 自检结论（上屏）。初始值在 [onCreate] 里按当前语言取。 */
-    private var healthText = ""
+
+    // 界面状态（Compose）：只保留「要显示 / 要交互」的值，不再有 View 引用
+    internal var hostInput by mutableStateOf(DEFAULT_HOST)
+    internal var portInput by mutableStateOf(Proto.PORT.toString())
+    /** 连接开关的位置 = 连没连上（与 `ws != null || connecting` 同步，见 [updateButtons]）。 */
+    internal var connectOn by mutableStateOf(false)
+    internal var micOn by mutableStateOf(false)
+    internal var spkOn by mutableStateOf(false)
+    /** 抖动缓冲深度（ms）；Compose 的 Slider 直接读写它。 */
+    internal var ringMs by mutableIntStateOf(50)
+    internal var settingsOpen by mutableStateOf(false)
+    /** 2 Hz 状态刷新计数：Compose 根读它，普通字段（日志等）也能跟着重组。 */
+    internal var uiTick by mutableIntStateOf(0)
+    /** 日志追加计数（每次 [log] +1）；日志行本身是普通集合，不逐条生成 state。 */
+    internal var logVersion by mutableIntStateOf(0)
+
+    internal var connState by mutableStateOf("")
+    internal var heroTargetText by mutableStateOf("")
+    internal var ready by mutableStateOf(false)
+    internal var connecting by mutableStateOf(false)
+    internal var lastErr by mutableStateOf("")
+    internal var healthText by mutableStateOf("")
+
+    // 设置层里的读数：算成字符串/百分比存下来，Compose 直接渲染（设置层关着也照样更新）
+    internal var keepaliveText by mutableStateOf("")
+    internal var notifPermText by mutableStateOf("")
+    internal var batteryText by mutableStateOf("")
+    internal var updateText by mutableStateOf("")
+    internal var updateBusy by mutableStateOf(false)
+    internal var updateRelease by mutableStateOf<UpdateChecker.ReleaseInfo?>(null)
+    internal var updateApk by mutableStateOf<File?>(null)
+    internal var diagNetText by mutableStateOf("")
+    internal var diagAudioText by mutableStateOf("")
+    internal var diagStatusText by mutableStateOf("")
+    internal var upPercent by mutableIntStateOf(0)
+    internal var downPercent by mutableIntStateOf(0)
+    internal var bufferPercent by mutableIntStateOf(0)
+    internal var upValueText by mutableStateOf("")
+    internal var downValueText by mutableStateOf("")
+    internal var bufferValueText by mutableStateOf("")
 
     /**
      * 诊断读数的时间序列（RTT 窗口 / 速率 / 结论）。**连接重建时换一个新的**，
@@ -169,9 +200,6 @@ class MainActivity : AppCompatActivity() {
      * 结论文字要按当前语言取，所以它拿着 Activity 的 resources。
      */
     private var rt = RtStats(this)
-
-    @Volatile
-    private var ready = false
 
     @Volatile
     private var speakerOn = false
@@ -184,6 +212,9 @@ class MainActivity : AppCompatActivity() {
     private var svcMic = false
     /** 通知服务当前是否真的有音频流（决定 WakeLock）。 */
     private var svcAudio = false
+    /** 通知里扬声器 / 连接状态图标的最近一次下发值（变了才重发通知）。 */
+    private var svcSpk = false
+    private var svcConn = Control.CONN_OFFLINE
 
     /**
      * 界面是否在前台（onStart→onStop）。
@@ -196,10 +227,7 @@ class MainActivity : AppCompatActivity() {
     /** 上次「补挂通知」的尝试时刻（`elapsedRealtime`），避免每 500 ms 重发一次通知。 */
     private var lastNotifTry = 0L
 
-    // 应用内更新状态（手动检查、手动下载、手动安装）
-    private var updateRelease: UpdateChecker.ReleaseInfo? = null
-    private var updateApk: File? = null
-    private var updateBusy = false
+    /** 更新状态的提示行（版本行 + 检查/下载进度），与 [updateText] 拼接后上屏。 */
     private var updateMsg = ""
 
     /** 局域网自动发现。发现到就自动填地址并连上；找不到才让用户手动填。 */
@@ -213,105 +241,132 @@ class MainActivity : AppCompatActivity() {
     /** 等本地网络权限回来后是否要自动继续连接。 */
     private var pendingLocalNetConnect = false
 
-    // 界面控件
-    private lateinit var etHost: EditText
-    /** 电脑端口（默认 59123、可改）。与 [etHost] 分开两格，见 `readTarget`。 */
-    private lateinit var etPort: EditText
-    /** 打开相机扫二维码填地址（`zxing-android-embedded` 自带扫描界面）。 */
-    private lateinit var btnScan: ImageButton
-    // 连接做成开关：滑块位置 = 连没连上（不用读文字判状态）
-    private lateinit var swConnect: MaterialSwitch
-    private lateinit var btnMenu: ImageButton
-    /** 程序改开关状态时抑制监听器，避免「setChecked → 回调 → connect」自激。 */
-    private var suppressConnectToggle = false
-    private lateinit var btnRediscover: Button
-    private lateinit var btnReconnect: Button
-    private lateinit var swMic: SwitchCompat
-    private lateinit var spMicSource: MaterialAutoCompleteTextView
-    private lateinit var tvHeroStatus: TextView
-    /** 头图里的颜色点：连接状态一变就换色（比只改文字更快看懂）。 */
-    private lateinit var vHeroDot: View
-    /** 头图里的目标地址（连到哪 / 正在自动发现）。 */
-    private lateinit var tvHeroTarget: TextView
-    private lateinit var swSpeaker: SwitchCompat
-    private lateinit var slRing: Slider
-    private lateinit var tvRing: TextView
-    /** 程序改滑块时抑制监听器，避免「setValue → 回调 → 再发 settarget」自激。 */
-    private var suppressRing = false
-
-    /**
-     * 设置弹出层（`sheet_settings.xml`）。关掉后把引用置空，tick 不再碰它。
-     *
-     * **诊断的视图也在这里**：它们只在设置层打开时存在，所以一律是可空引用，
-     * 刷新（2 Hz）与复制诊断必须能在「没有视图」的情况下工作 —— 读数先算成字符串，
-     * 视图在就顺带写进去。
-     */
-    private var sheet: Dialog? = null
-    private var shKeepalive: TextView? = null
-    private var shNotifPerm: TextView? = null
-    private var shBattery: TextView? = null
-    private var shUpdate: TextView? = null
-    private var shCheck: Button? = null
-    private var shDownload: Button? = null
-    private var shInstall: Button? = null
-    private var shAbout: TextView? = null
-
-    private var shDiag: LinearLayout? = null
-    private var shNet: TextView? = null
-    private var shAudio: TextView? = null
-    private var shStatusRow: TextView? = null
-    private var shHealth: TextView? = null
-    private var shErr: TextView? = null
-    private var shUpBar: LinearProgressIndicator? = null
-    private var shDownBar: LinearProgressIndicator? = null
-    private var shBufferBar: LinearProgressIndicator? = null
-    private var shUpValue: TextView? = null
-    private var shDownValue: TextView? = null
-    private var shBufferValue: TextView? = null
-    private var shLog: TextView? = null
-    private var shHealthBtn: Button? = null
-    private var shCopyDiag: Button? = null
-
-    // 保活 / 更新 / 诊断字符串：设置层可能没开，复制诊断时仍要带上（不依赖视图存在）。
-    private var keepaliveText = ""
-    private var notifPermText = ""
-    private var batteryText = ""
-    private var updateText = ""
-    private var diagNetText = ""
-    private var diagAudioText = ""
-    private var diagStatusText = ""
-
     /** 日志行（最近 [MAX_LOG_LINES] 条）。视图不在时也要能复制 / 落盘。 */
     private val logLines = ArrayDeque<String>()
 
     /**
-     * 通知栏按钮的接收端（前台服务发的是**广播**，不是服务调用）。注册在整个 Activity
-     * 生命周期（`onCreate`→`onDestroy`），**不是** `onStart`→`onStop` —— 否则用户退到后台
-     * 时按钮就失效了，而那恰恰是最需要它们的时刻。
+     * 控制面（通知 / 快捷设置磁贴 / 桌面小组件）的动作入口。
+     *
+     * 三个出口都是**切换 / 刷新**，与界面上那个开关完全等价（同一个入口）：
+     * - [Control.ACTION_MIC] / [Control.ACTION_SPK] 切换开关；
+     * - [Control.ACTION_RECONNECT] 先拆掉已打开的流再重连。
      */
-    private val notifReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            when (intent?.action) {
-                // 三个按钮都是**切换 / 刷新**：与界面上那个开关完全等价（同一个入口）
-                CaptureService.BROADCAST_NOTIF_MIC -> {
-                    log("通知栏：麦克风 → ${if (swMic.isChecked) "关" else "开"}")
-                    swMic.isChecked = !swMic.isChecked
-                    applyState()
-                    updateStatus()
-                }
-                CaptureService.BROADCAST_NOTIF_SPK -> {
-                    log("通知栏：扬声器 → ${if (swSpeaker.isChecked) "关" else "开"}")
-                    swSpeaker.isChecked = !swSpeaker.isChecked
-                    applyState()
-                    updateStatus()
-                }
-                CaptureService.BROADCAST_NOTIF_RECONNECT -> {
-                    log("通知栏：重新连接（先拆掉已打开的流再重连）")
-                    reconnect()
-                }
+    internal fun handleControl(action: String) {
+        when (action) {
+            Control.ACTION_MIC -> {
+                log("控制面：麦克风 → ${if (micOn) "关" else "开"}")
+                setMic(!micOn)
+            }
+            Control.ACTION_SPK -> {
+                log("控制面：扬声器 → ${if (spkOn) "关" else "开"}")
+                setSpeaker(!spkOn)
+            }
+            Control.ACTION_RECONNECT -> {
+                log("控制面：重新连接（先拆掉已打开的流再重连）")
+                reconnect()
             }
         }
     }
+
+    // ---------------------------------------------------------------- 界面动作
+    //
+    // Compose 只调这些方法，自己不碰网络 / 音频 / 服务；所有状态变化在 MainActivity
+    // 这一层收口，通知栏 / 磁贴 / 小组件走的也是同一批入口。
+
+    /** 连接开关：打开 = 用户明确选定目标（mDNS 不再覆盖），关闭 = 主动断开。 */
+    internal fun setConnect(checked: Boolean) {
+        if (checked) {
+            if (ws == null && !connecting) {
+                manualTarget = true
+                connect()
+            }
+        } else if (ws != null || connecting) {
+            disconnect()
+        }
+    }
+
+    internal fun setMic(on: Boolean) {
+        if (micOn == on) return
+        micOn = on
+        applyState()
+        updateStatus()
+    }
+
+    internal fun setSpeaker(on: Boolean) {
+        if (spkOn == on) return
+        spkOn = on
+        applyState()
+        updateStatus()
+    }
+
+    /**
+     * 抖动缓冲：**拖一下就生效**（不重建会话、不重连），并同步给电脑。
+     *
+     * 只在整数毫秒真的变了才发：Compose 的 Slider 在拖动中每帧回调，
+     * 不去重的话每个像素都会往电脑发一条 `settarget`。
+     */
+    internal fun setRingTarget(ms: Int) {
+        val v = ms.coerceIn(10, 200)
+        if (v == ringMs) return
+        ringMs = v
+        downlink?.setTargetMs(v.toDouble())
+        ws?.sendText(Proto.setTarget(v))
+        log("抖动缓冲 → $v ms")
+    }
+
+    /** 换麦克风采集 API：立即记住；**正在推流时立即换源**，关闭状态下次开启生效。 */
+    internal fun selectMicSource(id: Int) {
+        if (id == micSourceId) return
+        micSourceId = id
+        savePrefs()
+        log("麦克风 API：${MicSources.label(this, id)}")
+        if (micOn && uplink != null) {
+            uplink?.stop()
+            uplink = null
+            applyState()
+        }
+    }
+
+    /** 打开设置浮层：先刷新一遍读数，打开即是最新（之后 2 Hz 的 ticker 继续刷）。 */
+    internal fun openSettings() {
+        updateKeepalive()
+        refreshBattery()
+        renderUpdate()
+        updateStatus()
+        settingsOpen = true
+    }
+
+    internal fun closeSettings() {
+        settingsOpen = false
+    }
+
+    /** 当前 per-app 语言（`""` = 跟随系统）。 */
+    internal fun currentLanguageTag(): String =
+        AppCompatDelegate.getApplicationLocales().toLanguageTags().let {
+            when {
+                it.startsWith("zh") -> "zh"
+                it.startsWith("en") -> "en"
+                else -> ""
+            }
+        }
+
+    /**
+     * 切换界面语言。AppCompat 会重建 Activity，所以先把浮层关掉，
+     * 免得旧 Activity 的窗口留到重建之后。
+     */
+    internal fun setLanguage(tag: String) {
+        settingsOpen = false
+        AppCompatDelegate.setApplicationLocales(
+            if (tag.isEmpty()) {
+                LocaleListCompat.getEmptyLocaleList()
+            } else {
+                LocaleListCompat.forLanguageTags(tag)
+            },
+        )
+    }
+
+    /** 日志快照（设置层每次重组读一次）。 */
+    internal fun logSnapshot(): String = logLines.joinToString("\n")
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -375,10 +430,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        current = this
         applyEdgeToEdge()
-        bindViews()
-        restorePrefs()
 
         // 连接状态 / 自检结论的初始值按当前语言取（切换语言会重建 Activity，走这里重新取）
         connState = getString(R.string.msg_not_connected)
@@ -387,37 +440,9 @@ class MainActivity : AppCompatActivity() {
         // 一行说明「现在在用什么 + 为什么不碰系统 codec」，不是探测结果而是编解码器的身份
         opusDetail = OpusSupport.describe(this)
 
-        swConnect.setOnCheckedChangeListener { _, checked ->
-            if (suppressConnectToggle) return@setOnCheckedChangeListener
-            if (checked && ws == null && !connecting) {
-                // 用户手动打开连接 = 目标由用户选定，后续 mDNS 不再改它。
-                manualTarget = true
-                connect()
-            } else if (!checked) {
-                disconnect()
-            }
-        }
-
-        // 抖动缓冲滑块：**拖一下就生效**（不重建会话、不重连），并同步给电脑
-        slRing.addOnChangeListener { _, value, fromUser ->
-            val ms = value.toInt()
-            tvRing.text = getString(R.string.ring_label, ms / 10, ms)
-            if (fromUser && !suppressRing) {
-                downlink?.setTargetMs(ms.toDouble())
-                ws?.sendText(Proto.setTarget(ms))
-                log("抖动缓冲 → $ms ms")
-            }
-        }
-        tvRing.text = getString(
-            R.string.ring_label,
-            slRing.value.toInt() / 10,
-            slRing.value.toInt(),
-        )
-
-        // 换 Wi-Fi / 刚才没搜到 → 重新发现（停掉再 discover，不复用旧监听）
-        btnRediscover.setOnClickListener { rediscover() }
-        // 只是掉线、服务还在 → 只重连 WebSocket，不必重新发现（那要等好几秒）
-        btnReconnect.setOnClickListener { reconnect() }
+        // 偏好要在第一次组合之前读好：Compose 的首帧就直接显示上次的目标与开关
+        restorePrefs()
+        setContent { PureVoxApp(this) }
 
         // 三条路并存，谁先成谁上（NETWORK.md §4.1.1）：
         //
@@ -437,44 +462,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             startDiscovery()
         }
-
-        swMic.setOnCheckedChangeListener { _, _ ->
-            applyState()
-            updateStatus()
-        }
-        swSpeaker.setOnCheckedChangeListener { _, _ ->
-            applyState()
-            updateStatus()
-        }
-
-        spMicSource.setOnItemClickListener { _, _, position, _ ->
-            val id = MicSources.ALL.getOrNull(position)?.id ?: return@setOnItemClickListener
-            if (id == micSourceId) return@setOnItemClickListener
-            micSourceId = id
-            savePrefs()
-            log("麦克风 API：${MicSources.label(this, id)}")
-            // 正在推流时立即换源；关闭状态下只记住，下次开启生效。
-            if (swMic.isChecked && uplink != null) {
-                uplink?.stop()
-                uplink = null
-                applyState()
-            }
-        }
-
-        // 设置：头图右上角圆点 → 底部弹出层（语言 / 保活 / 更新 / 诊断 / 关于）
-        btnMenu.setOnClickListener { showSettings() }
-
-        // 通知栏按钮（前台服务发广播回来）
-        ContextCompat.registerReceiver(
-            this,
-            notifReceiver,
-            IntentFilter().apply {
-                addAction(CaptureService.BROADCAST_NOTIF_MIC)
-                addAction(CaptureService.BROADCAST_NOTIF_SPK)
-                addAction(CaptureService.BROADCAST_NOTIF_RECONNECT)
-            },
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
 
         requestPermissions()
         refreshBattery()
@@ -513,16 +500,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (current === this) current = null
         ui.removeCallbacks(ticker)
         // 发现监听必须停：`NsdManager` 的监听会一直占着（耗电），且下次启动重复注册会抛
         // `IllegalArgumentException`
         discovery?.stop()
         discovery = null
-        try {
-            unregisterReceiver(notifReceiver)
-        } catch (e: IllegalArgumentException) {
-            Log.w(TAG, "接收器已注销", e)
-        }
         teardown()
         super.onDestroy()
     }
@@ -571,7 +554,7 @@ class MainActivity : AppCompatActivity() {
      * - 同时更新 `host` / `port` 字段（`savePrefs` 也调它）。
      */
     private fun readTarget(): String {
-        val raw = etHost.text.toString().trim()
+        val raw = hostInput.trim()
         if (raw.isEmpty()) return ""
         val norm = normalizeTarget(raw)
         val explicitRaw = explicitPortRaw(norm)
@@ -579,7 +562,7 @@ class MainActivity : AppCompatActivity() {
         if (explicitRaw != null && explicit == null) {
             showErr(getString(R.string.msg_port_invalid, explicitRaw))
         }
-        val typed = etPort.text.toString().trim().toIntOrNull()?.takeIf { it in 1..65535 }
+        val typed = portInput.trim().toIntOrNull()?.takeIf { it in 1..65535 }
         val p = explicit ?: typed ?: Proto.PORT
         val h = if (explicitRaw != null) {
             // 地址里带了端口：host 只取冒号前那一段（IPv6 保留方括号）
@@ -594,8 +577,8 @@ class MainActivity : AppCompatActivity() {
         }
         if (h.isEmpty()) return ""
         // 回填：粘贴完整网址 / 端口非法时，界面立刻显示真正会用的值
-        etHost.setText(h)
-        etPort.setText(p.toString())
+        hostInput = h
+        portInput = p.toString()
         host = h
         port = p
         return if (p == Proto.PORT) h else "$h:$p"
@@ -613,7 +596,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** 点「扫描」：先确认相机权限，再打开扫码界面。 */
-    private fun startScan() {
+    internal fun startScan() {
         val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
         if (granted) launchScan() else cameraPermLauncher.launch(Manifest.permission.CAMERA)
@@ -653,8 +636,8 @@ class MainActivity : AppCompatActivity() {
         // 扫码是用户明确选定目标：停掉自动发现，别让缓存里的旧端口记录再改输入框。
         discovery?.stop()
         discovery = null
-        etHost.setText(h)
-        etPort.setText((explicit ?: p).toString())
+        hostInput = h
+        portInput = (explicit ?: p).toString()
         // 扫码是用户明确选择：立即保存，不等连接成功（连接失败也保留这次结果）。
         saveTarget(h, explicit ?: p)
         log("扫码：${h}:${explicit ?: p} → 自动连接")
@@ -699,12 +682,15 @@ class MainActivity : AppCompatActivity() {
      * 「重新发现」按钮走这里：先 `stop()` 再 `start()`。**不复用旧监听** —— `NsdManager`
      * 的监听一旦注册就绑定了当时的网络状态，换了 Wi-Fi 之后它不会自己跟上，必须重来。
      */
-    private fun rediscover() {
+    internal fun rediscover() {
         manualTarget = false
+        // 「重新发现」也是复位：当前会话要么已经断了，要么换网了，旧目标没有继续占着的理由。
+        resetSession()
         startDiscovery()
         connState = getString(R.string.msg_discovering)
         updateStatus()
         log(getString(R.string.msg_discovering))
+        applyState()
     }
 
     private fun startDiscovery() {
@@ -751,8 +737,8 @@ class MainActivity : AppCompatActivity() {
                     // 真实端口。否则旧尝试会先超时 8 s，用户看到的就是「明明发现了却连不上」。
                     if (connecting) disconnect()
                     // 端口必须一起带上：电脑端端口可编辑，mDNS 报的是真实端口。
-                    etHost.setText(h)
-                    etPort.setText((if (p > 0) p else Proto.PORT).toString())
+                    hostInput = h
+                    portInput = (if (p > 0) p else Proto.PORT).toString()
                     // 发现只是「帮你填好」，不锁输入框 / 扫描按钮。
                     connState = getString(R.string.msg_found, name, h, p)
                     updateStatus()
@@ -779,21 +765,43 @@ class MainActivity : AppCompatActivity() {
         d.start()
     }
 
-    /** 只重连 WebSocket，不重新发现（服务还在时用这个，快得多）。 */
-    private fun reconnect() {
+    /**
+     * 重新连接（界面按钮 / 通知栏刷新按钮）。
+     *
+     * **语义是复位，不是「再发一次 connect」**：先把 WebSocket 和已经打开的上下行全部拆掉，
+     * 再按当前目标重连。旧实现只在 `ws` 上 `disconnect()`、连 `ready/connecting` 都不清，
+     * 而且 `found == false` 时直接转去 `rediscover()` —— 那时界面已经显示「查找中」，旧会话
+     * 却还挂着；mDNS 回调看到 `ws != null && ready` 会拒绝接管，状态就**永远卡在「查找」**，
+     * 用户再点一次（此时 `found` 已置 true）才动。这就是「偶尔死掉、再点就好」的根因。
+     *
+     * 没有目标（从没配对过、界面上也没地址）才退回自动发现 —— 那是唯一需要 mDNS 的情况。
+     */
+    internal fun reconnect() {
         val target = readTarget()
+        resetSession()
         if (target.isEmpty()) {
-            showErr(getString(R.string.msg_no_target))
-            return
-        }
-        // 发现结果已经失效（例如换了 Wi-Fi）时，重连多半会失败，直接退回重新发现
-        if (!found) {
             rediscover()
             return
         }
-        ws?.disconnect()
-        ws = null
         connect()
+    }
+
+    /**
+     * 拆掉当前会话：WebSocket + 麦克风上行 + 扬声器下行，并清掉 `ready` / `connecting`。
+     *
+     * 不动前台通知服务：下一步通常立刻 `connect()`，`connecting = true` 会让保活继续挂着；
+     * 先停服务再在后台重启会被 Android 12+ 拒绝（整个会话就裸奔了）。
+     */
+    private fun resetSession() {
+        val c = ws
+        ws = null
+        connecting = false
+        ready = false
+        c?.disconnect()
+        uplink?.stop()
+        uplink = null
+        downlink?.stop()
+        downlink = null
     }
 
     // ---------------------------------------------------------------- 连接
@@ -820,7 +828,8 @@ class MainActivity : AppCompatActivity() {
         val client = WsClient(h, p, wsListener, this)
         ws = client
         client.connect()
-        updateButtons()
+        // 立刻对账一次：停掉旧流（如果还有），并把通知切到「连接中」。
+        applyState()
         updateStatus()
         log("连接 ${Proto.wsUrl(host, port)}")
     }
@@ -937,7 +946,7 @@ class MainActivity : AppCompatActivity() {
         updateButtons()
     }
 
-    private fun runHealthCheck() {
+    internal fun runHealthCheck() {
         val target = readTarget()
         if (target.isNotEmpty()) host = target
         healthText = getString(R.string.health_checking)
@@ -970,10 +979,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyStateInner() {
-        val wantMic = swMic.isChecked && ready && hasMicPermission()
+        val wantMic = micOn && ready && hasMicPermission()
         if (wantMic && uplink == null) {
             if (!startUplink()) {
-                swMic.isChecked = false
+                micOn = false
                 updateButtons()
             }
         } else if (!wantMic && uplink != null) {
@@ -982,7 +991,7 @@ class MainActivity : AppCompatActivity() {
             log("麦克风上行已停止")
         }
 
-        speakerOn = swSpeaker.isChecked && ready
+        speakerOn = spkOn && ready
         if (speakerOn && downlink == null) {
             // 单向延迟要用电脑算出的时钟偏移（`sync`/`offset`，还没测出来时返回 null）
             val d = SpeakerDownlink(this, clockOffsetUs = { ws?.clockOffsetUs })
@@ -992,7 +1001,7 @@ class MainActivity : AppCompatActivity() {
                 log("电脑音频播放已开启（解码 ${d.decoderName}）")
             } else {
                 speakerOn = false
-                swSpeaker.isChecked = false
+                spkOn = false
                 showErr(d.lastError ?: getString(R.string.err_downlink_start))
             }
         } else if (!speakerOn && downlink != null) {
@@ -1021,6 +1030,10 @@ class MainActivity : AppCompatActivity() {
     private fun syncSessionService(force: Boolean = false) {
         val mic = uplink != null
         val audio = mic || downlink != null
+        val spk = speakerOn
+        val conn = notificationConn()
+        // 同一份状态发给磁贴 / 小组件（与通知图标同源）；只在变化时刷新。
+        Control.publish(this, conn, mic, spk)
         val keep = ready || mic || connecting || visible
         if (!keep) {
             if (svcRunning) {
@@ -1028,20 +1041,32 @@ class MainActivity : AppCompatActivity() {
                 svcRunning = false
                 svcMic = false
                 svcAudio = false
+                svcSpk = false
+                svcConn = Control.CONN_OFFLINE
             }
             return
         }
-        if (!force && svcRunning && svcMic == mic && svcAudio == audio) return
+        // 图标状态（连接 / 麦克风 / 扬声器）变一个就要重发：只比 mic/audio 会让
+        // 「连上了」「开了扬声器」停在旧图标上（用户看到的通知与实际状态不一致）。
+        if (!force && svcRunning && svcMic == mic && svcAudio == audio &&
+            svcSpk == spk && svcConn == conn
+        ) {
+            return
+        }
         svcRunning = true
         svcMic = mic
         svcAudio = audio
-        val text = when {
-            mic -> getString(R.string.notif_default)
-            ready -> getString(R.string.notif_connected)
-            else -> getString(R.string.notif_idle)
-        }
-        CaptureService.update(this, text, mic, audio, spk = speakerOn)
+        svcSpk = spk
+        svcConn = conn
+        CaptureService.update(this, mic, audio, spk = spk, conn = conn)
         updateKeepalive()
+    }
+
+    /** 当前连接状态 → 通知 / 磁贴 / 小组件共用的图标状态。 */
+    private fun notificationConn(): Int = when {
+        ready -> Control.CONN_ONLINE
+        connecting -> Control.CONN_CONNECTING
+        else -> Control.CONN_OFFLINE
     }
 
     /**
@@ -1056,7 +1081,15 @@ class MainActivity : AppCompatActivity() {
      */
     private fun updateKeepalive() {
         val want = ready || svcMic || uplink != null || connecting || visible
-        if (want && !CaptureService.foreground) {
+        // Android 13+ 允许用户划掉前台服务通知（NO_CLEAR 挡不住），而本应用的保活
+        // 恰恰依赖「通知在」。所以这里不只看 CaptureService.foreground（那只表示
+        // startForeground 成功过），还要看通知**此刻是否真的还在通知栏**：
+        // 被划掉 / 被系统撤掉 → 5 秒内补挂。权限被关时不反复重试（设置卡片会说原因）。
+        val nm = getSystemService(NotificationManager::class.java)
+        val shown = CaptureService.foreground &&
+            (!nm.areNotificationsEnabled() ||
+                nm.activeNotifications.any { it.id == CaptureService.NOTIFICATION_ID })
+        if (want && !shown) {
             val now = SystemClock.elapsedRealtime()
             if (now - lastNotifTry >= NOTIF_RETRY_MS) {
                 lastNotifTry = now
@@ -1072,8 +1105,6 @@ class MainActivity : AppCompatActivity() {
         }
         keepaliveText = s
         notifPermText = getString(notifPermissionText())
-        shKeepalive?.text = keepaliveText
-        shNotifPerm?.text = notifPermText
     }
 
     /** 通知权限 / 通知渠道的**可读**结论：调不到就直说，不假装正常。 */
@@ -1097,7 +1128,7 @@ class MainActivity : AppCompatActivity() {
      * （再调 [requestPermissions] 也静默返回），此时唯一的路就是设置页 ——
      * 用户报告「没看到通知权限弹窗」（2026-10-18）正是这种情况。
      */
-    private fun openNotifSettings() {
+    internal fun openNotifSettings() {
         val nm = getSystemService(NotificationManager::class.java)
         if (nm.areNotificationsEnabled()) {
             // 权限在，但渠道可能被单独关掉 —— 直接进本应用的渠道页
@@ -1124,14 +1155,16 @@ class MainActivity : AppCompatActivity() {
     private fun startUplink(): Boolean {
         CaptureService.start(
             this,
-            getString(R.string.notif_starting),
             mic = true,
             audio = true,
             spk = speakerOn,
+            conn = notificationConn(),
         )
         svcRunning = true
         svcMic = true
         svcAudio = true
+        svcSpk = speakerOn
+        svcConn = notificationConn()
         val u = MicUplink(
             context = this,
             onPacket = { pkt, tsUs -> ws?.sendAudio(pkt, pkt.size, tsUs) },
@@ -1174,165 +1207,13 @@ class MainActivity : AppCompatActivity() {
         connecting = false
     }
 
-    // ---------------------------------------------------------------- 远程输入
-
-    /**
-     * 打开设置：**居中浮现的卡片**（不是底部弹层）。
-     *
-     * 视图在**每次打开时**重新绑定：弹窗关掉即销毁，常驻引用会让 tick 在关闭后继续写
-     * 已经不在树上的 View。进出场动画由窗口的 `PvDialogAnimation` 提供（缩放 + 淡入）。
-     */
-    private fun showSettings() {
-        if (sheet != null) return
-        val dlg = Dialog(this, R.style.Theme_PureVox_Dialog)
-        val content = layoutInflater.inflate(R.layout.dialog_settings, null)
-        dlg.setContentView(content)
-        dlg.setCanceledOnTouchOutside(true)
-
-        shKeepalive = content.findViewById(R.id.tvKeepalive)
-        shNotifPerm = content.findViewById(R.id.tvNotifPerm)
-        shBattery = content.findViewById(R.id.tvBattery)
-        shUpdate = content.findViewById(R.id.tvUpdate)
-        shCheck = content.findViewById(R.id.btnCheckUpdate)
-        shDownload = content.findViewById(R.id.btnDownload)
-        shInstall = content.findViewById(R.id.btnInstall)
-        shAbout = content.findViewById(R.id.tvAbout)
-
-        shDiag = content.findViewById(R.id.llDiag)
-        shNet = content.findViewById(R.id.tvNet)
-        shAudio = content.findViewById(R.id.tvAudio)
-        shStatusRow = content.findViewById(R.id.tvStatus)
-        shHealth = content.findViewById(R.id.tvHealth)
-        shErr = content.findViewById(R.id.tvErr)
-        shUpBar = content.findViewById(R.id.pbUpLevel)
-        shDownBar = content.findViewById(R.id.pbDownLevel)
-        shBufferBar = content.findViewById(R.id.pbBuffer)
-        shUpValue = content.findViewById(R.id.tvUpLevel)
-        shDownValue = content.findViewById(R.id.tvDownLevel)
-        shBufferValue = content.findViewById(R.id.tvBuffer)
-        shLog = content.findViewById(R.id.tvLog)
-        shHealthBtn = content.findViewById(R.id.btnHealth)
-        shCopyDiag = content.findViewById(R.id.btnCopyDiag)
-
-        shCheck?.setOnClickListener { checkUpdate() }
-        shDownload?.setOnClickListener { downloadUpdate() }
-        shInstall?.setOnClickListener { installUpdate() }
-        content.findViewById<Button>(R.id.btnNotifSettings).setOnClickListener {
-            openNotifSettings()
-        }
-        content.findViewById<Button>(R.id.btnBattery).setOnClickListener {
-            requestIgnoreBattery()
-        }
-        content.findViewById<View>(R.id.btnSheetClose).setOnClickListener { dlg.dismiss() }
-
-        // 诊断常显、放在设置最下面；两个按钮直接可用
-        shHealthBtn?.setOnClickListener { runHealthCheck() }
-        // 「复制诊断」：把整块诊断（含日志）塞进剪贴板 —— 出错时不必让人截图
-        shCopyDiag?.setOnClickListener { copyDiag() }
-
-        bindLanguagePicker(content, dlg)
-
-        shAbout?.text = getString(
-            R.string.about_version,
-            UpdateChecker.installedName(this),
-            UpdateChecker.installedCode(this).toString(),
-        )
-
-        dlg.setOnDismissListener {
-            sheet = null
-            shKeepalive = null
-            shNotifPerm = null
-            shBattery = null
-            shUpdate = null
-            shCheck = null
-            shDownload = null
-            shInstall = null
-            shAbout = null
-            shDiag = null
-            shNet = null
-            shAudio = null
-            shStatusRow = null
-            shHealth = null
-            shErr = null
-            shUpBar = null
-            shDownBar = null
-            shBufferBar = null
-            shUpValue = null
-            shDownValue = null
-            shBufferValue = null
-            shLog = null
-            shHealthBtn = null
-            shCopyDiag = null
-        }
-        sheet = dlg
-        // 先填一次，再显示；之后 tick 会继续刷新
-        updateKeepalive()
-        refreshBattery()
-        renderUpdate()
-        updateStatus()
-        shLog?.text = logLines.joinToString("\n")
-        updateButtons()
-        dlg.show()
-
-        // 尺寸在 show() 之后定：太早设会被窗口的默认值覆盖。
-        // 宽度 = min(屏幕宽, 560dp)，卡片本身由布局里的 16dp padding 收进来。
-        dlg.window?.let { w ->
-            w.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            w.setDimAmount(0.48f)
-            w.setGravity(Gravity.CENTER)
-            val maxWidth = (560 * resources.displayMetrics.density).toInt()
-            val width = minOf(resources.displayMetrics.widthPixels, maxWidth)
-            w.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT)
-        }
-        // 窗口尺寸是 show() 之后才定的，量一次会把焦点滚到中间；固定回顶部
-        dlg.findViewById<View>(R.id.svSheet)?.post {
-            (dlg.findViewById<View>(R.id.svSheet) as? android.widget.ScrollView)?.scrollTo(0, 0)
-        }
-    }
-
-    /**
-     * 界面语言：跟随系统 / 中文 / English（分段按钮）。
-     *
-     * 用 AppCompat 的 per-app locale（`AppCompatDelegate.setApplicationLocales`）。
-     * 「跟随系统」= 空 LocaleList。选择由 AppCompat 自己持久化（manifest 里声明了
-     * `AppLocalesMetadataHolderService` + `autoStoreLocales`），下次启动仍然生效。
-     *
-     * 切换语言会让 Activity 重建（系统就是这么实现它的），所以这里只需设置一次，
-     * 不用手动刷新任何文案 —— 也就不会出现「一半中文一半英文」的中间态。
-     */
-    private fun bindLanguagePicker(content: View, dlg: Dialog) {
-        val tg = content.findViewById<MaterialButtonToggleGroup>(R.id.tgLanguage) ?: return
-        val current = AppCompatDelegate.getApplicationLocales().toLanguageTags()
-        val checked = when {
-            current.startsWith("zh") -> R.id.btnLangZh
-            current.startsWith("en") -> R.id.btnLangEn
-            else -> R.id.btnLangSystem
-        }
-        tg.check(checked)
-        tg.addOnButtonCheckedListener { _, id, isChecked ->
-            if (!isChecked || id == checked) return@addOnButtonCheckedListener
-            val tag = when (id) {
-                R.id.btnLangZh -> "zh"
-                R.id.btnLangEn -> "en"
-                else -> ""
-            }
-            dlg.dismiss()
-            AppCompatDelegate.setApplicationLocales(
-                if (tag.isEmpty()) {
-                    LocaleListCompat.getEmptyLocaleList()
-                } else {
-                    LocaleListCompat.forLanguageTags(tag)
-                },
-            )
-        }
-    }
-
     /**
      * edge-to-edge：头图铺到状态栏后面（品牌渐变就是状态栏底色），
-     * 页面底部让出导航栏；输入法弹出时底部让位，让输入框不被挡住。
+     * 页面底部让出导航栏；输入法弹出时底部让位。
      *
-     * 状态栏图标固定浅色（头图是深蓝）；导航栏图标跟随日夜。
-     * 只在这里读一次基准 padding，重复的 inset 回调不会越垫越高。
+     * inset 由 Compose 的 `WindowInsets` 消费（`ui/MainScreen.kt`）—— 这里只负责
+     * 让内容画进系统栏区域，并把两条系统栏的图标颜色定成与背景对比够的样子：
+     * 状态栏固定浅色（头图是深蓝），导航栏跟随日夜。
      */
     private fun applyEdgeToEdge() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -1341,28 +1222,6 @@ class MainActivity : AppCompatActivity() {
             isAppearanceLightNavigationBars = !isNightMode()
         }
         window.isNavigationBarContrastEnforced = false
-
-        val hero = findViewById<View>(R.id.hero)
-        val content = findViewById<View>(R.id.pageContent)
-        val heroTop = hero.paddingTop
-        val contentBottom = content.paddingBottom
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.root)) { _, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-            hero.setPadding(
-                hero.paddingLeft,
-                heroTop + bars.top,
-                hero.paddingRight,
-                hero.paddingBottom,
-            )
-            content.setPadding(
-                content.paddingLeft,
-                content.paddingTop,
-                content.paddingRight,
-                contentBottom + maxOf(bars.bottom, ime.bottom),
-            )
-            insets
-        }
     }
 
     private fun isNightMode(): Boolean =
@@ -1432,45 +1291,25 @@ class MainActivity : AppCompatActivity() {
 
     // ---------------------------------------------------------------- 状态显示
 
+    /**
+     * 开关位置的对账：连着（或正在连）就在「开」的位置，其余按下发给 Compose 的
+     * `enabled` 规则（连接中锁连接开关、未 ready 锁两个音频开关）。
+     */
     private fun updateButtons() {
-        val online = ready
-        // 开关 = 状态显示：连着（或正在连）就在「开」的位置
-        suppressConnectToggle = true
-        swConnect.isChecked = ws != null || connecting
-        suppressConnectToggle = false
-        swConnect.isEnabled = !connecting
-        swMic.isEnabled = online
-        swSpeaker.isEnabled = online
-        shCheck?.isEnabled = !updateBusy
-        shDownload?.isEnabled = !updateBusy && updateRelease != null && updateApk == null
-        shInstall?.isEnabled = !updateBusy && updateApk != null
+        connectOn = ws != null || connecting
     }
 
     /**
      * 诊断刷新：网络统计 + 音频电平/缓冲条 + 固定读数行（行数固定，数值变长也不跳）。
      *
-     * 读数**先算成字符串**再写视图：诊断现在在设置层里（`sheet_settings.xml`），
-     * 层没打开时那几个 View 根本不存在，但复制诊断 / 落盘 JSON 仍要拿到这一拍的读数。
+     * 读数**先算成字符串 / 百分比**再上屏：设置浮层关着时 Compose 不组合诊断区，
+     * 但复制诊断与落盘 JSON 仍要拿到这一拍的读数。
      */
     private fun updateStatus() {
         val c = ws
         val enc = uplink
         val dec = downlink
-        tvHeroStatus.text = connState
-        tvHeroStatus.setTextColor(
-            if (ready) 0xFFC7F7DA.toInt() else 0xFFFFFFFF.toInt(),
-        )
-        vHeroDot.backgroundTintList = ColorStateList.valueOf(
-            ContextCompat.getColor(
-                this,
-                when {
-                    ready -> R.color.pv_dot_on
-                    connecting || c != null -> R.color.pv_dot_wait
-                    else -> R.color.pv_dot_off
-                },
-            ),
-        )
-        tvHeroTarget.text = when {
+        heroTargetText = when {
             host.isEmpty() -> getString(R.string.hero_target_auto)
             port == Proto.PORT -> host
             else -> "$host:$port"
@@ -1516,11 +1355,11 @@ class MainActivity : AppCompatActivity() {
         // ---- 音频：电平/缓冲用条，数值仍等宽写在右侧
         val upLevel = enc?.level ?: 0f
         val downPeak = dec?.peak ?: 0f
-        val upPercent = rt.levelPercent(upLevel)
-        val downPercent = rt.levelPercent(downPeak)
+        upPercent = rt.levelPercent(upLevel)
+        downPercent = rt.levelPercent(downPeak)
 
         val bufferedMs = dec?.levelMs?.toInt() ?: 0
-        val bufferPercent = (bufferedMs * 100 / BUFFER_FULL_MS).coerceIn(0, 100)
+        bufferPercent = (bufferedMs * 100 / BUFFER_FULL_MS).coerceIn(0, 100)
 
         val a = rt.audioVerdict(net, dec != null)
         diagAudioText = buildString {
@@ -1609,24 +1448,18 @@ class MainActivity : AppCompatActivity() {
         line.append(row(getString(R.string.status_opus), opusDetail))
         diagStatusText = line.toString()
 
-        // ---- 视图（设置层打开时才有）
-        shNet?.text = diagNetText
-        shAudio?.text = diagAudioText
-        shStatusRow?.text = diagStatusText
-        shUpBar?.progress = upPercent
-        shUpValue?.text = if (enc == null) getString(R.string.diag_off) else dbfs(upLevel)
-        shDownBar?.progress = downPercent
-        shDownValue?.text = if (dec == null) getString(R.string.diag_off) else dbfs(downPeak)
-        shBufferBar?.progress = bufferPercent
-        shBufferValue?.text = if (dec == null) getString(R.string.diag_off) else "$bufferedMs ms"
-        shHealth?.text = getString(R.string.status_health) + healthText
-        shErr?.text = lastErr
-        shErr?.visibility = if (lastErr.isEmpty()) View.GONE else View.VISIBLE
+        // ---- 上屏值（Compose 直接渲染；设置浮层关着也照样更新）
+        upValueText = if (enc == null) getString(R.string.diag_off) else dbfs(upLevel)
+        downValueText = if (dec == null) getString(R.string.diag_off) else dbfs(downPeak)
+        bufferValueText = if (dec == null) getString(R.string.diag_off) else "$bufferedMs ms"
 
         // ---- 结构化诊断（DEBUG.md §1.4）：同一份读数同时落盘 + 打 logcat，
         // 脚本/AI 不必截图、不必点界面（`adb logcat -s PureVoxDiag:I` / `run-as ... cat files/diag.json`）
         val diagIssue = DiagJson.publish(this, diagJson(net, q, a), System.currentTimeMillis())
         if (diagIssue != null) log(diagIssue)
+
+        // Compose 根读它：普通字段（日志快照等）也跟着这一拍刷新
+        uiTick++
     }
 
     /**
@@ -1742,19 +1575,13 @@ class MainActivity : AppCompatActivity() {
     /**
      * 应用环深度（来自 `ready` / `target`）：环、滑块、读数一起改。
      *
-     * 抑制监听器是关键：`Slider.setValue` 会触发 `OnChangeListener`，不抑制就会
-     * 「setValue → 回调 → 发 settarget → 电脑再广播 → setValue」自激。
+     * 关键是**不走 [setRingTarget]**：电脑广播回来的目标只改本地状态，不能再发回电脑，
+     * 否则「电脑改 → 手机回声 settarget → 电脑再广播」会自激。
      */
     private fun applyRingTarget(ms: Int) {
         if (ms <= 0) return
         downlink?.setTargetMs(ms.toDouble())
-        suppressRing = true
-        try {
-            slRing.value = ms.toFloat().coerceIn(slRing.valueFrom, slRing.valueTo)
-        } finally {
-            suppressRing = false
-        }
-        tvRing.text = getString(R.string.ring_label, ms / 10, ms)
+        ringMs = ms.coerceIn(10, 200)
     }
 
     /**
@@ -1794,10 +1621,10 @@ class MainActivity : AppCompatActivity() {
                 .format(java.util.Date())
             logLines.addLast("[$t] $msg")
             while (logLines.size > MAX_LOG_LINES) logLines.removeFirst()
-            // 设置层没打开时没有视图：缓冲区照样记，打开时一次性铺上。
-            shLog?.text = logLines.joinToString("\n")
-            // **不要**在这里 scrollTo：日志区在一屏可滚的内容里，每来一行就把正文顶一下
+            // 日志先记进内存，诊断区打开时再铺上。
+            // **不要**在这里滚动日志：日志区在一屏可滚的内容里，每来一行就把正文顶一下
             // 看起来就是「整块在闪」。保留最近 MAX_LOG_LINES 行、不动视口即可。
+            logVersion++
         }
     }
 
@@ -1810,7 +1637,7 @@ class MainActivity : AppCompatActivity() {
      * 也免得「日志只留在设备上、退一下就没了」。诊断在设置层里，层关着也能复制
      * （读数与日志都有内存副本，见 [diagNetText] / [logLines]）。
      */
-    private fun copyDiag() {
+    internal fun copyDiag() {
         val text = buildString {
             append(getString(R.string.diag_net)).append('\n')
             append(diagNetText)
@@ -1840,7 +1667,6 @@ class MainActivity : AppCompatActivity() {
         batteryText = getString(
             if (isIgnoringBattery()) R.string.battery_ignored else R.string.battery_not_ignored,
         )
-        shBattery?.text = batteryText
     }
 
     /**
@@ -1849,7 +1675,7 @@ class MainActivity : AppCompatActivity() {
      * 需要 `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` 权限（manifest 已声明）。
      */
     @SuppressLint("BatteryLife")
-    private fun requestIgnoreBattery() {
+    internal fun requestIgnoreBattery() {
         if (isIgnoringBattery()) {
             refreshBattery()
             return
@@ -1881,10 +1707,9 @@ class MainActivity : AppCompatActivity() {
             UpdateChecker.installedCode(this).toString(),
         )
         updateText = if (updateMsg.isEmpty()) base else "$base\n$updateMsg"
-        shUpdate?.text = updateText
     }
 
-    private fun checkUpdate() {
+    internal fun checkUpdate() {
         if (updateBusy) return
         updateBusy = true
         updateMsg = getString(R.string.update_checking)
@@ -1919,7 +1744,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun downloadUpdate() {
+    internal fun downloadUpdate() {
         val rel = updateRelease ?: return
         if (updateBusy) return
         updateBusy = true
@@ -1952,7 +1777,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun installUpdate() {
+    internal fun installUpdate() {
         val apk = updateApk ?: return
         if (!apk.exists()) {
             updateMsg = getString(R.string.update_failed, getString(R.string.err_apk_missing))
@@ -1974,47 +1799,24 @@ class MainActivity : AppCompatActivity() {
         renderUpdate()
     }
 
-    // ---------------------------------------------------------------- 偏好 & 绑定
+    // ---------------------------------------------------------------- 偏好
 
-    private fun bindViews() {
-        etHost = findViewById(R.id.etHost)
-        etPort = findViewById(R.id.etPort)
-        btnScan = findViewById(R.id.btnScan)
-        btnScan.setOnClickListener { startScan() }
-        swConnect = findViewById(R.id.swConnect)
-        btnMenu = findViewById(R.id.btnMenu)
-        btnRediscover = findViewById(R.id.btnRediscover)
-        btnReconnect = findViewById(R.id.btnReconnect)
-        swMic = findViewById(R.id.swMic)
-        spMicSource = findViewById(R.id.spMicSource)
-        tvHeroStatus = findViewById(R.id.tvHeroStatus)
-        vHeroDot = findViewById(R.id.vHeroDot)
-        tvHeroTarget = findViewById(R.id.tvHeroTarget)
-        swSpeaker = findViewById(R.id.swSpeaker)
-        slRing = findViewById(R.id.slRing)
-        tvRing = findViewById(R.id.tvRing)
-    }
-
+    /** 首帧之前读偏好：Compose 直接拿 `hostInput` / `portInput` / `micOn` / `spkOn` 渲染。 */
     private fun restorePrefs() {
         val p = getSharedPreferences(PREFS, MODE_PRIVATE)
         host = p.getString("host", DEFAULT_HOST) ?: DEFAULT_HOST
         port = p.getInt("port", Proto.PORT)
         // 两个框各自回填：端口单独一格，用户随时能改（不再拼成一个字符串）
-        etHost.setText(host)
-        etPort.setText(port.toString())
-        swMic.isChecked = p.getBoolean("mic", false)
-        swSpeaker.isChecked = p.getBoolean("speaker", false)
+        hostInput = host
+        portInput = port.toString()
+        micOn = p.getBoolean("mic", false)
+        spkOn = p.getBoolean("speaker", false)
         micSourceId = p.getInt("micSource", MicSources.ALL[0].id)
-        fillMicSources()
-    }
-
-    /** 麦克风 API 下拉：按 [MicSources.ALL] 的顺序（常用在上）填充，选中上次的选择。 */
-    private fun fillMicSources() {
-        val labels = MicSources.ALL.map { getString(it.labelRes) }
-        spMicSource.setAdapter(
-            ArrayAdapter(this, android.R.layout.simple_list_item_1, labels),
-        )
-        spMicSource.setText(MicSources.label(this, micSourceId), false)
+        heroTargetText = when {
+            host.isEmpty() -> getString(R.string.hero_target_auto)
+            port == Proto.PORT -> host
+            else -> "$host:$port"
+        }
     }
 
     /** 只有「连接成功」才把目标写回偏好；失败 / 只是改了输入框都不落盘。 */
@@ -2022,8 +1824,8 @@ class MainActivity : AppCompatActivity() {
         if (h.isEmpty() || p !in 1..65535) return
         host = h
         port = p
-        etHost.setText(h)
-        etPort.setText(p.toString())
+        hostInput = h
+        portInput = p.toString()
         saveTarget(h, p)
     }
 
@@ -2039,8 +1841,8 @@ class MainActivity : AppCompatActivity() {
     private fun savePrefs() {
         // 目标地址只在连接成功 / 扫码时写；这里只存与连接目标无关的开关。
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putBoolean("mic", swMic.isChecked)
-            .putBoolean("speaker", swSpeaker.isChecked)
+            .putBoolean("mic", micOn)
+            .putBoolean("speaker", spkOn)
             .putInt("micSource", micSourceId)
             .apply()
     }
