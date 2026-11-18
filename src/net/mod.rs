@@ -29,6 +29,7 @@ pub mod addrs;
 /// 网络回环测试（只 `cfg(test)` 编译，不进产物）。
 #[cfg(test)]
 mod diag;
+pub mod firewall;
 pub mod hub;
 #[cfg(test)]
 mod loopback;

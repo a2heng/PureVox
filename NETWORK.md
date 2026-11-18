@@ -511,6 +511,23 @@ python tools/automation/net_loopback.py --mode roundtrip --seconds 10 --json rt.
 **端口固定但可编辑**：默认 `59123`（`proto::PORT`），界面可改并**持久化到
 `~/.purevox/settings.json`**。改完走「重启服务」生效。
 
+**Linux 防火墙（只提示，不代执行）**：服务绑 `0.0.0.0`，但 ufw / firewalld 默认丢入站，
+本机 `https://127.0.0.1:59123` 能开、手机连不上。网络卡片在没有客户端时显示
+`net::firewall` 的探测结果：识别 ufw（`/etc/ufw/ufw.conf`）或 firewalld
+（`systemctl is-active`），并从世界可读的配置里尽量判断端口有没有放行；规则文件
+（`/etc/ufw/user.rules`，通常 `0640 root`）读不到就写「需要 root 才能确认」，不猜、不读规则正文。
+下面给**两行可复制命令**（一行放行、一行回退，按实际防火墙类型生成），由用户自己执行：
+
+```bash
+sudo ufw allow 59123/tcp
+sudo ufw delete allow 59123/tcp
+# firewalld：
+sudo firewall-cmd --permanent --add-port=59123/tcp && sudo firewall-cmd --reload
+sudo firewall-cmd --permanent --remove-port=59123/tcp && sudo firewall-cmd --reload
+```
+
+**不提权、不执行命令、不读/上报规则内容**（隐私边界）；Windows 首次监听由系统弹放行框。
+
 **子网枚举**：列出全部**非回环**（`127.`）**非链路本地**（`169.254.`）IPv4，
 带网卡名与全名。**只按地址段过滤，不按网卡类型** —— USB 共享、蓝牙共享、Wi-Fi 热点
 共享、有线、VPN、虚拟网卡全都是能直连的可用网卡，按 `IF_TYPE` 过滤反而会把有用的滤掉；

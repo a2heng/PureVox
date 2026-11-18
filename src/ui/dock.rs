@@ -319,6 +319,50 @@ impl Workspace {
         ))),
     );
     // ── 第四行：紧凑的网卡选择卡片（一行一个网卡，不再铺 IPv6）──────────
+    if st.clients == 0 {
+      list = list.child(hint(i18n::tr(
+        "服务在运行，但还没有手机连上。一直连不上的话：确认手机与电脑在同一 Wi-Fi；确认电脑防火墙放行本机网络端口（Linux 常见 ufw / firewalld，Windows 首次监听会弹窗）；部分公司 / 公共 Wi-Fi 禁止设备互访。",
+      )));
+      if let Some(fw) = crate::net::firewall::status(port) {
+        let state = i18n::tr(match fw.allowed {
+          Some(true) => "端口已放行",
+          Some(false) => "未看到放行规则",
+          None => "需要 root 才能确认",
+        });
+        list = list.child(hint(format!(
+          "{} {} · {} {port} · {state}",
+          i18n::tr("Linux 防火墙"),
+          fw.kind.name(),
+          i18n::tr("端口"),
+        )));
+        let (open, revert) = crate::net::firewall::commands(fw.kind, port);
+        for (id, cmd) in [("net-fw-open", open), ("net-fw-revert", revert)] {
+          let copy = cmd.clone();
+          list = list.child(
+            div()
+              .flex()
+              .items_center()
+              .gap_1()
+              .min_w(px(0.))
+              .child(
+                div()
+                  .flex_1()
+                  .min_w(px(0.))
+                  .text_size(px(t::TEXT_XS))
+                  .text_color(rgb(t::MUTED))
+                  .child(cmd),
+              )
+              .child(
+                quiet_button(cx, id, "复制").on_click(cx.listener(move |this, _, _, cx| {
+                  cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
+                  this.status = format!("已复制：{copy}");
+                  cx.notify();
+                })),
+              ),
+          );
+        }
+      }
+    }
     if self.net_ifaces.len() > 1 {
       let mut row = div().flex().flex_wrap().gap_1().w_full();
       for i in self.net_ifaces.clone() {
@@ -424,9 +468,6 @@ impl Workspace {
         "手机端的抖动缓冲（10–200 ms）：越大越抗网络抖动，但延迟越高；默认 50 ms。",
       ))
       .child(self.net_ring_slider(window, cx));
-    if st.clients == 0 {
-      list = list.child(hint("扫码 / 打开地址后，这里会显示客户端与速率。"));
-    }
     list.into_any_element()
   }
 
