@@ -41,7 +41,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zbus::{OwnedObjectPath, OwnedVariant, Variant};
 
 use crate::debug::SharedHub;
 
@@ -143,7 +143,7 @@ async fn run(bindings: Vec<super::Resolved>, hub: SharedHub, stop: Arc<AtomicBoo
       }
       msg = activated.next() => {
         let Some(msg) = msg else { break };
-        let Ok((sid, id, _, _)) = msg.body().deserialize::<(String, String, u64, HashMap<String, OwnedValue>)>() else {
+        let Ok((sid, id, _, _)) = msg.body().deserialize::<(String, String, u64, HashMap<String, OwnedVariant>)>() else {
           continue;
         };
         if sid != want { continue; }
@@ -171,9 +171,9 @@ async fn open_session(
   );
   // 先订阅再调用：`handle_token` 决定请求对象路径，先挂上监听才不会漏掉 Response。
   let mut rx = request_stream(conn, &token).await?;
-  let mut opts: HashMap<&str, Value<'_>> = HashMap::new();
-  opts.insert("handle_token", Value::from(token.as_str()));
-  opts.insert("session_handle_token", Value::from(token.as_str()));
+  let mut opts: HashMap<&str, Variant<'_>> = HashMap::new();
+  opts.insert("handle_token", Variant::from(token.as_str()));
+  opts.insert("session_handle_token", Variant::from(token.as_str()));
   let handle: OwnedObjectPath = proxy
     .call("CreateSession", &(opts,))
     .await
@@ -207,15 +207,15 @@ async fn bind(
   let mut rx = request_stream(conn, &token).await?;
 
   // (id, {description, preferred_trigger})
-  let mut shortcuts: Vec<(String, HashMap<String, Value<'_>>)> = Vec::new();
+  let mut shortcuts: Vec<(String, HashMap<String, Variant<'_>>)> = Vec::new();
   let mut meta: Pending<'_> = HashMap::new();
   for (i, (spec, _bits, _vk, cb)) in bindings.iter().enumerate() {
     let id = format!("hotkey{i}");
-    let mut opt: HashMap<String, Value<'_>> = HashMap::new();
-    opt.insert("description".into(), Value::from(spec.as_str()));
+    let mut opt: HashMap<String, Variant<'_>> = HashMap::new();
+    opt.insert("description".into(), Variant::from(spec.as_str()));
     match trigger_of(spec) {
       Some(t) => {
-        opt.insert("preferred_trigger".into(), Value::from(t));
+        opt.insert("preferred_trigger".into(), Variant::from(t));
       }
       None => {
         hub.push_ui(
@@ -232,8 +232,8 @@ async fn bind(
     return Ok(HashMap::new());
   }
 
-  let mut opts: HashMap<String, Value<'_>> = HashMap::new();
-  opts.insert("handle_token".into(), Value::from(token.as_str()));
+  let mut opts: HashMap<String, Variant<'_>> = HashMap::new();
+  opts.insert("handle_token".into(), Variant::from(token.as_str()));
   let handle: OwnedObjectPath = proxy
     .call("BindShortcuts", &(session, &shortcuts, "", opts))
     .await
@@ -245,9 +245,9 @@ async fn bind(
 
   // 以门户返回的列表为准：没返回的键就是没绑上（被占用 / 用户删掉了）。
   let mut bound: Bound = HashMap::new();
-  let list: Vec<(String, HashMap<String, OwnedValue>)> = results
+  let list: Vec<(String, HashMap<String, OwnedVariant>)> = results
     .get("shortcuts")
-    .and_then(|v| Vec::<(String, HashMap<String, OwnedValue>)>::try_from(v.clone()).ok())
+    .and_then(|v| Vec::<(String, HashMap<String, OwnedVariant>)>::try_from(v.clone()).ok())
     .unwrap_or_default();
   for (id, props) in list {
     let Some((spec, cb)) = meta.get(&id) else {
@@ -292,7 +292,7 @@ async fn wait_response(
   rx: &mut zbus::proxy::SignalStream<'static>,
   timeout: Duration,
   handle: &OwnedObjectPath,
-) -> Result<(u32, HashMap<String, OwnedValue>), String> {
+) -> Result<(u32, HashMap<String, OwnedVariant>), String> {
   let wait = async {
     while let Some(msg) = rx.next().await {
       // 只认我们这次请求的对象（同一连接可能同时有别的请求）
@@ -301,7 +301,7 @@ async fn wait_response(
       }
       if let Ok((code, results)) = msg
         .body()
-        .deserialize::<(u32, HashMap<String, OwnedValue>)>()
+        .deserialize::<(u32, HashMap<String, OwnedVariant>)>()
       {
         return Ok((code, results));
       }

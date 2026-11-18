@@ -186,6 +186,9 @@ tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
 # 也要走 rtkit 的 D-Bus —— 两处都靠 zbus。它本来就在依赖树里（Linux 托盘 ksni 用的），
 # 这里只是把 blocking API 直接拿来用，不引入新的 C 编译链。
 zbus = "6"
+# zbus 6 删掉了 `blocking` 模块；rtkit 申请必须当场拿到结果（音频线程不能 async），
+# 用 pollster 驱动一次 future。它本来就在依赖树里（rfd 的 xdg-portal 后端）。
+pollster = "1"
 
 [dev-dependencies]
 # 网络回循测试的 WebSocket 客户端（不进产物）

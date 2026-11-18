@@ -102,31 +102,30 @@ fn rtkit_realtime() -> Result<(), &'static str> {
     bus().ok_or("实时优先级未授予：rtkit 不可用（sch_guard: 需 rtkit-daemon 或 RLIMIT_RTPRIO）")?;
   let tid = unsafe { libc::syscall(libc::SYS_gettid) } as u64;
   let prio = max_priority().clamp(1, 20);
-  conn
-    .call_method(
-      Some("org.freedesktop.RealtimeKit1"),
-      "/org/freedesktop/RealtimeKit1",
-      Some("org.freedesktop.RealtimeKit1"),
-      "MakeThreadRealtime",
-      &(tid, prio),
-    )
-    .map(|_| ())
-    .map_err(|e| {
-      // 具体原因进事件日志（`last_error` 只能放 `&'static str`，留摘要）
-      crate::debug::events::log(
-        "warn",
-        "rt",
-        format!("rtkit 拒绝 tid={tid} prio={prio}：{e}"),
-      );
-      "实时优先级未授予：rtkit 拒绝了请求（音频线程按普通优先级运行）"
-    })
+  pollster::block_on(conn.call_method(
+    Some("org.freedesktop.RealtimeKit1"),
+    "/org/freedesktop/RealtimeKit1",
+    Some("org.freedesktop.RealtimeKit1"),
+    "MakeThreadRealtime",
+    &(tid, prio),
+  ))
+  .map(|_| ())
+  .map_err(|e| {
+    // 具体原因进事件日志（`last_error` 只能放 `&'static str`，留摘要）
+    crate::debug::events::log(
+      "warn",
+      "rt",
+      format!("rtkit 拒绝 tid={tid} prio={prio}：{e}"),
+    );
+    "实时优先级未授予：rtkit 拒绝了请求（音频线程按普通优先级运行）"
+  })
 }
 
 /// 系统总线连接（进程内复用；rtkit 是系统服务）。
-fn bus() -> Option<&'static zbus::blocking::Connection> {
-  static BUS: OnceLock<Option<zbus::blocking::Connection>> = OnceLock::new();
+fn bus() -> Option<&'static zbus::Connection> {
+  static BUS: OnceLock<Option<zbus::Connection>> = OnceLock::new();
   BUS
-    .get_or_init(|| zbus::blocking::Connection::system().ok())
+    .get_or_init(|| pollster::block_on(zbus::Connection::system()).ok())
     .as_ref()
 }
 
@@ -136,13 +135,13 @@ fn max_priority() -> u32 {
   *MAX.get_or_init(|| {
     bus()
       .and_then(|c| {
-        c.call_method(
+        pollster::block_on(c.call_method(
           Some("org.freedesktop.RealtimeKit1"),
           "/org/freedesktop/RealtimeKit1",
           Some("org.freedesktop.DBus.Properties"),
           "Get",
           &("org.freedesktop.RealtimeKit1", "MaxRealtimePriority"),
-        )
+        ))
         .ok()
       })
       .and_then(|m| m.body().deserialize::<u32>().ok())

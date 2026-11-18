@@ -5576,6 +5576,7 @@ dependencies = [
  "mdns-sd",
  "ort",
  "png 0.18.1",
+ "pollster 1.0.2",
  "qrcode",
  "raw-window-handle",
  "rcgen",
