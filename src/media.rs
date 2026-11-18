@@ -28,14 +28,15 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 
-use symphonia::core::audio::{AudioBufferRef, Signal, SignalSpec};
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::conv::FromSample;
+use symphonia::core::audio::conv::FromSample;
+use symphonia::core::audio::{Audio, AudioSpec, GenericAudioBufferRef};
+use symphonia::core::codecs::CodecParameters;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 use symphonia::default::{get_codecs, get_probe};
 
 use crate::config;
@@ -181,28 +182,33 @@ pub(crate) fn decode_to_mono_48k(bytes: &[u8], orig_name: &str) -> Result<Vec<f3
     Default::default(),
   );
   let probed = get_probe()
-    .format(
+    .probe(
       &hint,
       mss,
-      &FormatOptions::default(),
-      &MetadataOptions::default(),
+      FormatOptions::default(),
+      MetadataOptions::default(),
     )
     .map_err(|e| format!("无法识别的音频格式：{e}"))?;
-  let mut format = probed.format;
-  let track = match format.default_track() {
+  let mut format = probed;
+  let track = match format.default_track(TrackType::Audio) {
     Some(t) => t,
     None => return Err("文件里没有音频轨".into()),
   };
   let track_id = track.id;
+  let params = match &track.codec_params {
+    Some(CodecParameters::Audio(p)) => p,
+    _ => return Err("文件里没有音频轨".into()),
+  };
   let mut decoder = get_codecs()
-    .make(&track.codec_params, &DecoderOptions::default())
+    .make_audio_decoder(params, &AudioDecoderOptions::default())
     .map_err(|e| format!("不支持的音频编码：{e}"))?;
 
   let mut mono: Vec<f32> = Vec::new();
   let mut native_rate = 0u32;
   loop {
     let packet = match format.next_packet() {
-      Ok(p) => p,
+      Ok(Some(p)) => p,
+      Ok(None) => break,
       Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
       Err(SymphoniaError::ResetRequired) => {
         decoder.reset();
@@ -216,7 +222,7 @@ pub(crate) fn decode_to_mono_48k(bytes: &[u8], orig_name: &str) -> Result<Vec<f3
         break;
       }
     };
-    if packet.track_id() != track_id {
+    if packet.track_id != track_id {
       continue;
     }
     let decoded = match decoder.decode(&packet) {
@@ -232,9 +238,9 @@ pub(crate) fn decode_to_mono_48k(bytes: &[u8], orig_name: &str) -> Result<Vec<f3
         break;
       }
     };
-    let spec: SignalSpec = *decoded.spec();
+    let spec: AudioSpec = decoded.spec().clone();
     if native_rate == 0 {
-      native_rate = spec.rate;
+      native_rate = spec.rate();
     }
     buffer_to_mono_f32(&decoded, &mut mono);
   }
@@ -252,17 +258,19 @@ pub(crate) fn decode_to_mono_48k(bytes: &[u8], orig_name: &str) -> Result<Vec<f3
 }
 
 /// 把一路解码结果下混为单声道 f32 追加到 `out`（通道数从 spec 读）。
-fn buffer_to_mono_f32(buf: &AudioBufferRef, out: &mut Vec<f32>) {
+fn buffer_to_mono_f32(buf: &GenericAudioBufferRef, out: &mut Vec<f32>) {
   macro_rules! downmix {
     ($b:expr) => {{
       let b = $b;
-      let n = b.spec().channels.count().max(1);
+      let n = b.spec().channels().count().max(1);
       let frames = b.frames();
       let base = out.len();
       out.resize(base + frames, 0.0);
       for c in 0..n {
-        for (i, &s) in b.chan(c).iter().enumerate() {
-          out[base + i] += f32::from_sample(s);
+        if let Some(plane) = b.plane(c) {
+          for (i, &s) in plane.iter().enumerate() {
+            out[base + i] += f32::from_sample(s);
+          }
         }
       }
       let inv = 1.0 / n as f32;
@@ -272,16 +280,16 @@ fn buffer_to_mono_f32(buf: &AudioBufferRef, out: &mut Vec<f32>) {
     }};
   }
   match buf {
-    AudioBufferRef::U8(b) => downmix!(b),
-    AudioBufferRef::U16(b) => downmix!(b),
-    AudioBufferRef::U24(b) => downmix!(b),
-    AudioBufferRef::S24(b) => downmix!(b),
-    AudioBufferRef::U32(b) => downmix!(b),
-    AudioBufferRef::S8(b) => downmix!(b),
-    AudioBufferRef::S16(b) => downmix!(b),
-    AudioBufferRef::S32(b) => downmix!(b),
-    AudioBufferRef::F32(b) => downmix!(b),
-    AudioBufferRef::F64(b) => downmix!(b),
+    GenericAudioBufferRef::U8(b) => downmix!(b),
+    GenericAudioBufferRef::U16(b) => downmix!(b),
+    GenericAudioBufferRef::U24(b) => downmix!(b),
+    GenericAudioBufferRef::S24(b) => downmix!(b),
+    GenericAudioBufferRef::U32(b) => downmix!(b),
+    GenericAudioBufferRef::S8(b) => downmix!(b),
+    GenericAudioBufferRef::S16(b) => downmix!(b),
+    GenericAudioBufferRef::S32(b) => downmix!(b),
+    GenericAudioBufferRef::F32(b) => downmix!(b),
+    GenericAudioBufferRef::F64(b) => downmix!(b),
   }
 }
 

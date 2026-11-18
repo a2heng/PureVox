@@ -338,7 +338,7 @@ mod inner {
       }
       .write(&mut wire);
       wire[8..8 + n].copy_from_slice(&pkt[..n]);
-      s.send(Message::Binary(wire[..8 + n].to_vec()))
+      s.send(Message::Binary(wire[..8 + n].to_vec().into()))
         .await
         .expect("发送二进制");
       tokio::time::sleep(Duration::from_millis(10)).await;

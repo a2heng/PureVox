@@ -56,11 +56,11 @@ unimplemented = "deny"
 
 [dependencies]
 # 界面：GPUI Kit（GPUI + 组件库，纯 Rust，无 WebView / IPC）
-gpui-kit = "0.9.1"
+gpui-kit = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 调试接口：系统 CPU / 内存
-sysinfo = "0.39"
+sysinfo = "0.40"
 # 音频设备枚举与采集（单一实现路径）
 cpal = "0.18"
 # 重采样（引擎唯一重采样实现）
@@ -90,7 +90,7 @@ dagc = "0.1"
 # 注意 symphonia 的 feature 分两类：**容器**（format）与**解码器**（codec），缺一不可：
 #   `wav` = 容器（只开 `pcm` 只有 PCM 解码器、没有 RIFF 读取器，wav 直接打不开），
 #   `ogg` = vorbis 的容器，`isomp4` = m4a / AAC-in-MP4 的容器。
-symphonia = { version = "0.5", default-features = false, features = [
+symphonia = { version = "0.6", default-features = false, features = [
   # 容器
   "wav",
   "ogg",
@@ -106,12 +106,12 @@ symphonia = { version = "0.5", default-features = false, features = [
 # 编码成一个 JSON 字符串比逐字节数组小一个量级（随 tauri 进入依赖树，无需新增下载）
 base64 = "0.23"
 # 调试截屏（Windows PrintWindow / Linux snapshot）落 PNG：只用到编码
-png = "0.17"
+png = "0.18"
 # 网络卡片二维码：纯 Rust 生成矩阵，自己用 `png` 编码成图片（不引入图片/渲染依赖）
 qrcode = { version = "0.14", default-features = false }
 # 媒体节点「选择音频文件…」：系统原生文件对话框（Windows 用 IFileOpenDialog，
 # Linux 走 xdg-portal；不引入 GTK/async-std）
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "pollster"] }
 # ONNX 推理（onnxruntime 绑定；构建时下载 onnxruntime 并把 dll 复制到产物旁）
 # rc.15 起 `Session::builder` 要显式传 `Environment`（`infer::ort_env`），已跟进。
 # 升级前后都比过：同一模型 rc.13 / rc.15 都是 ~5.7 ms/hop（`cargo run --example ort_bench`，
@@ -129,7 +129,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pemfile = { version = "2", default-features = false, features = ["std"] }
 hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio"] }
-mdns-sd = "0.21"
+mdns-sd = "0.22"
 
 [target.'cfg(windows)'.build-dependencies]
 # 只用来把 icons/icon.ico 编进 exe（GPUI 的 Windows 窗口图标按资源 ID 1 取）。
@@ -137,7 +137,7 @@ tauri-winres = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 # 系统托盘：tray-icon + muda（Tauri 同源）。只在 Windows 编；Linux 的托盘另走平台实现。
-tray-icon = { version = "0.25", default-features = false }
+tray-icon = { version = "0.26", default-features = false }
 # 托盘图标从仓库里的 PNG 解码成 RGBA（不依赖 exe 资源段）。
 image = { version = "0.25", default-features = false, features = ["png"] }
 # 从 GPUI 窗口拿原生 HWND（显隐 / 最小化到托盘）。
@@ -181,12 +181,12 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 # 托盘：ksni（纯 D-Bus StatusNotifierItem，不引 GTK）；没有显示/隐藏窗口能力，
 # 只提供启停引擎与退出（Linux 桌面没有统一的「隐藏到托盘」协议）。
-tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
 # 全局热键：XDG 桌面门户 `org.freedesktop.portal.GlobalShortcuts`（D-Bus）；实时优先级
 # 也要走 rtkit 的 D-Bus —— 两处都靠 zbus。它本来就在依赖树里（Linux 托盘 ksni 用的），
 # 这里只是把 blocking API 直接拿来用，不引入新的 C 编译链。
-zbus = "5"
+zbus = "6"
 
 [dev-dependencies]
 # 网络回循测试的 WebSocket 客户端（不进产物）
-tokio-tungstenite = "0.24"
+tokio-tungstenite = "0.30"

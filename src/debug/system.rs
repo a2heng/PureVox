@@ -126,8 +126,14 @@ pub fn spawn_sampler(hub: SharedHub) {
     .name("debug-sampler".into())
     .spawn(move || {
       let token = super::threads::ThreadToken::new("debug-sampler");
-      let mut sys = System::new();
-      let pid = sysinfo::get_current_pid();
+      let mut sys = match System::new() {
+        Ok(s) => s,
+        Err(e) => {
+          crate::debug::events::log("error", "debug", format!("系统信息初始化失败：{e}"));
+          return;
+        }
+      };
+      let pid = sysinfo::get_current_pid().ok();
       let mut gpu = GpuSampler::new();
       let mut first = true;
       let mut tick: u64 = 0;
@@ -135,7 +141,7 @@ pub fn spawn_sampler(hub: SharedHub) {
         token.beat();
         sys.refresh_cpu_usage();
         sys.refresh_memory();
-        if let Ok(pid) = pid {
+        if let Some(pid) = pid {
           sys.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
             true,
@@ -143,14 +149,13 @@ pub fn spawn_sampler(hub: SharedHub) {
           );
         }
         let cores = sys.cpus().len();
-        let proc_ = pid.ok().and_then(|p| sys.process(p));
+        let proc_ = pid.and_then(|p| sys.process(p));
 
         // CPU 占用是差分值，第一轮没有基准
-        let cpu = match (first, proc_, pid) {
-          (true, _, _) => Probe::Pending,
-          (_, _, Err(e)) => Probe::unavailable(format!("无法取得本进程 PID：{e}")),
-          (_, None, _) => Probe::unavailable("无法读取本进程信息"),
-          (_, Some(p), _) => Probe::ok(CpuInfo {
+        let cpu = match (first, proc_) {
+          (true, _) => Probe::Pending,
+          (_, None) => Probe::unavailable("无法读取本进程信息"),
+          (_, Some(p)) => Probe::ok(CpuInfo {
             system_pct: sys.global_cpu_usage(),
             process_pct: p.cpu_usage() / cores.max(1) as f32,
             logical_cores: cores,
