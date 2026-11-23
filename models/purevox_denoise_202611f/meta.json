@@ -1,0 +1,454 @@
+{
+  "model": "purevox_denoise_202611f",
+  "stft": {
+    "n_fft": 960,
+    "hop": 480,
+    "win": 960,
+    "fs": 48000,
+    "center": true,
+    "pad_mode": "constant"
+  },
+  "erb": {
+    "low": 160,
+    "high": 80,
+    "f_comp": 240,
+    "n_freq": 481,
+    "w_shape": [
+      80,
+      321
+    ],
+    "w_avg_shape": [
+      80,
+      321
+    ],
+    "w_up_shape": [
+      321,
+      80
+    ]
+  },
+  "cache": {
+    "total": 32308,
+    "enc": [
+      {
+        "offset": 0,
+        "shape": [
+          24,
+          2,
+          240
+        ]
+      },
+      {
+        "offset": 11520,
+        "shape": [
+          48,
+          1,
+          120
+        ]
+      },
+      {
+        "offset": 17280,
+        "shape": [
+          96,
+          1,
+          60
+        ]
+      },
+      {
+        "offset": 23040,
+        "shape": null
+      },
+      {
+        "offset": 23040,
+        "shape": null
+      },
+      {
+        "offset": 23040,
+        "shape": null
+      }
+    ],
+    "dec": [
+      {
+        "offset": 23040,
+        "shape": null
+      },
+      {
+        "offset": 23040,
+        "shape": null
+      },
+      {
+        "offset": 23040,
+        "shape": null
+      },
+      {
+        "offset": 23040,
+        "shape": [
+          48,
+          1,
+          30
+        ]
+      },
+      {
+        "offset": 24480,
+        "shape": [
+          24,
+          1,
+          60
+        ]
+      },
+      {
+        "offset": 25920,
+        "shape": [
+          1,
+          2,
+          120
+        ]
+      }
+    ],
+    "tfa": [
+      {
+        "offset": 26160,
+        "shape": [
+          24,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 26256,
+        "shape": [
+          48,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 26448,
+        "shape": [
+          96,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 26832,
+        "shape": [
+          96,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 27216,
+        "shape": [
+          64,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 27472,
+        "shape": [
+          48,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 27664,
+        "shape": [
+          64,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 27920,
+        "shape": [
+          96,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 28304,
+        "shape": [
+          96,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 28688,
+        "shape": [
+          48,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 28880,
+        "shape": [
+          24,
+          4,
+          1
+        ]
+      },
+      {
+        "offset": 28976,
+        "shape": [
+          1,
+          4,
+          1
+        ]
+      }
+    ],
+    "inter": [
+      {
+        "offset": 28980,
+        "shape": [
+          1,
+          30,
+          32
+        ]
+      },
+      {
+        "offset": 29940,
+        "shape": [
+          1,
+          30,
+          32
+        ]
+      },
+      {
+        "offset": 30900,
+        "shape": [
+          1,
+          30,
+          32
+        ]
+      }
+    ],
+    "hold": [],
+    "mem": [
+      {
+        "offset": 31860,
+        "shape": [
+          2,
+          1,
+          128
+        ]
+      },
+      {
+        "offset": 32116,
+        "shape": [
+          1,
+          6,
+          32
+        ]
+      }
+    ]
+  },
+  "arch": {
+    "enc_ch": [
+      24,
+      48,
+      96,
+      96,
+      64,
+      48
+    ],
+    "dec_ch": [
+      64,
+      96,
+      96,
+      48,
+      24,
+      1
+    ],
+    "enc_out_w": [
+      120,
+      60,
+      30,
+      30,
+      30,
+      30
+    ],
+    "tfa_kt": 5,
+    "tfa_frames": 4,
+    "intra_kf": 5,
+    "bn_eps": 1e-05,
+    "dp_hid": 32,
+    "n_dp": 3,
+    "mem_layers": 2,
+    "mem_hid": 128,
+    "mem_fhid": 64,
+    "mem_bands": 6,
+    "mem_bhid": 32,
+    "mem_slots": 64,
+    "mem_dim": 64
+  },
+  "mask": {
+    "floor_db": null,
+    "depth_gain": 1.0
+  },
+  "enc": [
+    {
+      "in_ch": 1,
+      "out_ch": 24,
+      "kt": 3,
+      "kf": 3,
+      "stride": 2,
+      "in_width": 240,
+      "out_width": 120,
+      "pad_w": 1,
+      "pad_t": 0,
+      "use_deconv": false,
+      "tfa": true
+    },
+    {
+      "in_ch": 24,
+      "out_ch": 48,
+      "kt": 2,
+      "kf": 3,
+      "stride": 2,
+      "in_width": 120,
+      "out_width": 60,
+      "pad_w": 1,
+      "pad_t": 0,
+      "use_deconv": false,
+      "tfa": true
+    },
+    {
+      "in_ch": 48,
+      "out_ch": 96,
+      "kt": 2,
+      "kf": 3,
+      "stride": 2,
+      "in_width": 60,
+      "out_width": 30,
+      "pad_w": 1,
+      "pad_t": 0,
+      "use_deconv": false,
+      "tfa": true
+    },
+    {
+      "in_ch": 96,
+      "out_ch": 96,
+      "kt": 1,
+      "kf": 5,
+      "stride": 1,
+      "in_width": 30,
+      "out_width": 30,
+      "pad_w": 2,
+      "pad_t": 0,
+      "use_deconv": false,
+      "tfa": true
+    },
+    {
+      "in_ch": 96,
+      "out_ch": 64,
+      "kt": 1,
+      "kf": 5,
+      "stride": 1,
+      "in_width": 30,
+      "out_width": 30,
+      "pad_w": 2,
+      "pad_t": 0,
+      "use_deconv": false,
+      "tfa": true
+    },
+    {
+      "in_ch": 64,
+      "out_ch": 48,
+      "kt": 1,
+      "kf": 5,
+      "stride": 1,
+      "in_width": 30,
+      "out_width": 30,
+      "pad_w": 2,
+      "pad_t": 0,
+      "use_deconv": false,
+      "tfa": true
+    }
+  ],
+  "dec": [
+    {
+      "in_ch": 48,
+      "out_ch": 64,
+      "kt": 1,
+      "kf": 5,
+      "stride": 1,
+      "in_width": 30,
+      "out_width": 30,
+      "pad_w": 2,
+      "pad_t": 0,
+      "use_deconv": true,
+      "tfa": true
+    },
+    {
+      "in_ch": 64,
+      "out_ch": 96,
+      "kt": 1,
+      "kf": 5,
+      "stride": 1,
+      "in_width": 30,
+      "out_width": 30,
+      "pad_w": 2,
+      "pad_t": 0,
+      "use_deconv": true,
+      "tfa": true
+    },
+    {
+      "in_ch": 96,
+      "out_ch": 96,
+      "kt": 1,
+      "kf": 5,
+      "stride": 1,
+      "in_width": 30,
+      "out_width": 30,
+      "pad_w": 2,
+      "pad_t": 0,
+      "use_deconv": true,
+      "tfa": true
+    },
+    {
+      "in_ch": 96,
+      "out_ch": 48,
+      "kt": 2,
+      "kf": 2,
+      "stride": 2,
+      "in_width": 30,
+      "out_width": 60,
+      "pad_w": 0,
+      "pad_t": 1,
+      "use_deconv": true,
+      "tfa": true
+    },
+    {
+      "in_ch": 48,
+      "out_ch": 24,
+      "kt": 2,
+      "kf": 2,
+      "stride": 2,
+      "in_width": 60,
+      "out_width": 120,
+      "pad_w": 0,
+      "pad_t": 1,
+      "use_deconv": true,
+      "tfa": true
+    },
+    {
+      "in_ch": 24,
+      "out_ch": 1,
+      "kt": 3,
+      "kf": 2,
+      "stride": 2,
+      "in_width": 120,
+      "out_width": 240,
+      "pad_w": 0,
+      "pad_t": 2,
+      "use_deconv": true,
+      "tfa": false
+    }
+  ]
+}
