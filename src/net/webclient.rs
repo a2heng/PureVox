@@ -41,6 +41,7 @@ pub const PAGE: &str = r##"<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#101418">
+<link rel="icon" href="data:,">
 <title>PureVox</title>
 <style>
 :root{--bg:#101418;--fg:#e8edf2;--mut:#93a1b0;--ok:#3ddc84;--warn:#ffb454;--err:#ff5f56;--line:#26313d}
@@ -253,7 +254,7 @@ function worklet() {
   // Windows 的 10 ms 定时器实际按 15.6 ms 触发，包成串到达，20 ms 的「按包起播」
   // 会周期性断 2~6 ms（1 kHz 测试音实测 8 秒内 8 次，能量从 99.9% 掉到 93.8%）。
   class S extends AudioWorkletProcessor{
-    // 下行播放环：**唯一的缓冲**，与 `audio/Rt.kt` / `net/rt.rs` 逐字同一套规则：
+    // 下行播放环：**唯一的缓冲**，与 audio/Rt.kt / net/rt.rs 逐字同一套规则：
     // 深度固定 20 ms，运行期只有「超了丢一格」和「空了补一格」，**不重采样、不伺服**。
     constructor(){
       super();
@@ -489,8 +490,10 @@ async function probeCaps() {
   return caps;
 }
 
+/** 「有 / 无」：状态行与能力上报共用（`probeCaps().then` 里也要用）。 */
+const yn = (b) => b ? '有' : '无';
+
 function capsText() {
-  const yn = (b) => b ? '有' : '无';
   return '本浏览器：' +
     (caps.secure ? '安全上下文' : '非安全上下文（麦克风一定用不了）') + ' / ' +
     '麦克风接口' + yn(caps.mic) + ' / ' +
@@ -522,3 +525,34 @@ probeCaps().then((c) => {
 </script>
 </html>
 "##;
+
+#[cfg(test)]
+mod tests {
+  use super::PAGE;
+
+  /// 内联 worklet 是一段 JS **模板字符串**（反引号包裹）：里面再出现反引号会提前把字符串
+  /// 结束掉，整页 `<script>` 变成语法错误 —— 2026-11-23 issue #13 就是注释里写了
+  /// `` `audio/Rt.kt` ``，浏览器控制台报 `Uncaught SyntaxError: Unexpected identifier`，
+  /// 页面只剩骨架、连按钮都没反应。这里直接拦住这类回归。
+  #[test]
+  fn worklet_模板字符串里不能出现反引号() {
+    const HEAD: &str = "const src = `";
+    let start = PAGE.find(HEAD).expect("页面里找不到内联 worklet");
+    let rest = &PAGE[start + HEAD.len()..];
+    let end = rest.find("`;").expect("worklet 模板字符串没有结束");
+    assert!(
+      !rest[..end].contains('`'),
+      "worklet 模板字符串里出现了反引号，会把整页 <script> 打断"
+    );
+  }
+
+  /// 站点图标用 `data:` 内联：否则每个客户端都会请求一次 `/favicon.ico` 得到 404，
+  /// 控制台永远挂一条红色错误，掩盖真正的问题。
+  #[test]
+  fn 页面不额外请求站点图标() {
+    assert!(
+      PAGE.contains(r#"<link rel="icon" href="data:,">"#),
+      "页面必须用 data: 内联图标，避免 /favicon.ico 404"
+    );
+  }
+}

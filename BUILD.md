@@ -97,5 +97,8 @@ Linux 托盘（ksni，无 GTK）提供「显示窗口 / 启停引擎 / 退出」
 - 降噪是纯 Rust 推理（`purevox_denoise_rust`）：**dev 构建不优化是 ~60 ms/hop**（预算 10 ms），
   表现就是持续爆音/撕裂，别当成 OLA 问题查。`Cargo.toml` 已给该 crate 单独 `opt-level = 3`，不要删。
 - 改完界面直接跑旧二进制是没用的（GPUI 原生，没有前端热更新）；重新 `cargo build`。
+- 网页版客户端内联在 `src/net/webclient.rs`：其中 AudioWorklet 源码是**反引号模板字符串**，
+  里面**不能再出现反引号**（注释里写 `` `foo.rs` `` 也不行），否则整页 `<script>` 语法错误、
+  页面只剩骨架（issue #13）。改完跑 `cargo test --bin purevox net::webclient` 兜底。
 - 模型目录：开发态用 `PUREVOX_MODEL_DIR` 指向仓库 `models/`；打包后放 exe 同级 `models/`。
 - 调试接口固定 `47821`，隔离实例用 `PUREVOX_DEBUG_PORT` 改端口。
