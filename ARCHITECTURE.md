@@ -1,6 +1,6 @@
 # ARCHITECTURE — 分层、节点图、Stage、会话与设备
 
-> 从原设计文档拆出（§0~§3、§5~§10）。节点清单/插件见 `PLUGINS.md`；
+> 从原设计文档拆出（§0～§3、§5～§10）。节点清单/插件见 `PLUGINS.md`；
 > 网络链路见 `NETWORK.md`；可视化/界面见 `UI.md`；交互见 `UX.md`；更新见 `RELEASE.md`。
 
 ## 0. 设计取向
@@ -358,8 +358,8 @@ mic/far 仍各自持有采集路径；面板还没把 `mix_sources` 画出来（
 ## 7. 模型生命周期
 
 ```rust
-// 每类处理行一组「可选模型」(文件名, 界面名)：界面下拉直接渲染，标签只写档位、不写版本号
-pub fn denoise_models() -> &'static [(&'static str, &'static str)];  // 四款，标签即模型名
+// 每类处理行一组「可选模型」(目录/文件名, 界面名)：界面下拉直接渲染，标签即完整模型名
+pub fn denoise_models() -> &'static [(&'static str, &'static str)];  // 四款，标签即目录名
 pub fn aec_models()     -> &'static [(&'static str, &'static str)];
 pub fn tse_models()     -> &'static [(&'static str, &'static str)];
 // 计划里存的文件名 → 列表里的模型；不在列表里就回落到第一个并记一条事件日志
@@ -368,8 +368,8 @@ pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &st
 
 - **降噪 = 四个目录**（`models/<模型名>/`：`meta.json` + `weights.safetensors`），由
   `purevox_denoise_rust`（BSD-3-Clause，<https://github.com/a2heng/purevox_denoise_rust>）
-  在进程内推理，**不再经过 ONNX Runtime**。目录名就是模型名，界面下拉直接显示：
-  `purevox_denoise_202605a` / `202605b` / `202611d` / `202611f`，默认第一款。
+  在进程内推理，**不再经过 ONNX Runtime**。目录名就是模型名，界面下拉一行一个、直接显示：
+  `purevox_denoise_202605a` / `..._202605b` / `..._202611d` / `..._202611f`，默认第一款。
   ⇒ **换模型 = 换目录**，代码零改动；替换流程见 `models/README.md`。
 - **AEC / TSE 仍是 ONNX**（保留所有权利）：`purevox_aec.onnx`、`purevox_tse.onnx`、
   `purevox_tse_ref_encoder.onnx`（与 TSE 主图**成对**）。

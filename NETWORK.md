@@ -146,7 +146,7 @@ adb shell run-as com.purevox.mic.debug cat files/diag.json     # 只看最新一
 
 - **现象**：手机 `rtt 57 ms`、`rtt_jitter 17 ms`、`max_gap 154 ms`，`trims 9.5/s` 与
   `underruns 3.9/s` **同时**存在（既冲爆又饿死）。
-- **根因**：每 10 ms 一个 ~40 字节小包，Nagle 要等前一个包被 ACK 才放行 → 攒成 40~60 ms 一批；
+- **根因**：每 10 ms 一个 ～40 字节小包，Nagle 要等前一个包被 ACK 才放行 → 攒成 40～60 ms 一批；
   一批 2~4 个包同时到 → 环冲爆（丢格 = 咔），空档又饿死（PLC = 糊）。
 - **修法**：`net/mod.rs` accept 时 `tcp.set_nodelay(true)`。
 - **为什么是这里**：手机端（OkHttp）一直开着，是**服务端漏掉的那一半**；这是链路问题不是缓冲问题，
@@ -155,7 +155,7 @@ adb shell run-as com.purevox.mic.debug cat files/diag.json     # 只看最新一
 
 #### 3.3.2 用 `std::thread::sleep(10ms)` 造节拍（Windows 上根本不是 10 ms）
 
-- **现象**：`tx_packets_per_s` 偏到 102~105，每 50 ms 冒出 5~7 包（应恰好 5）；
+- **现象**：`tx_packets_per_s` 偏到 102～105，每 50 ms 冒出 5～7 包（应恰好 5）；
   更隐蔽的是引擎自己报「节拍超时 1431，最大迟到 94.7 ms」，源侧发包间隔出现
   **0.001 ms（两拍连发）+ 89 ms（空档）**。
 - **根因不在 Tauri，也不在 Rust**：`std::thread::sleep` 在 Windows 上落到 `Sleep()`，
@@ -210,7 +210,7 @@ adb shell run-as com.purevox.mic.debug cat files/diag.json     # 只看最新一
 #### 3.3.3b 整进程被冻住（不是我们的锁，也不是网络）
 
 - **现象**：稳态下仍会每隔几秒到十几秒出现一次「突然爆增丢包」，频率不固定（1 s ~ 8 s 一次）；
-  同一时刻 `src_max_gap_ms` 与 `tx_max_gap_ms` 出现**同量级**空档（~30~55 ms），然后补发两包。
+  同一时刻 `src_max_gap_ms` 与 `tx_max_gap_ms` 出现**同量级**空档（～30～55 ms），然后补发两包。
 - **怎么确认是「整个进程」而不是某把锁**：`debug/stall.rs` 的看门狗什么都不干、每 10 ms 醒一次，
   它看到的超时只可能来自进程/系统层面。实测（2026-10-27）：
   - 机器同时在编译（高 CPU 占用）时：45 s 内 **6 次**，最坏 29.2 ms；
@@ -276,7 +276,7 @@ adb shell run-as com.purevox.mic.debug cat files/diag.json     # 只看最新一
 4. **环水位**：`level_ms` 稳在 20。长期 0 → §3.3.4；长期 30 → 溢出在裁格（回第 1 步）。
 5. **四个每秒速率**：`trims` 有 → 突发到达；`underruns` 有 → 到达空档；
    `late` 有 → 环真空了才收到（多为上面两条的结果）；`gap_over_ring` 有 → 这些拍一定听得出。
-6. **`rtt`**：局域网应 1~10 ms。稳定的 40~60 ms → 先疑 Nagle（§3.3.1）；
+6. **`rtt`**：局域网应 1～10 ms。稳定的 40～60 ms → 先疑 Nagle（§3.3.1）；
    忽高忽低且 `max_gap` 上百 ms → 疑 Wi-Fi 省电/拥塞（§3.3.7）。
 7. **`clock_ppm`**：±几百 ppm 是测量噪声；上下跳几万说明播放头采样被别的量带跑了。
 
@@ -409,13 +409,13 @@ adb shell run-as com.purevox.mic.debug cat files/diag.json     # 只看最新一
 | --- | --- | --- |
 | 引擎 hop 对齐 | 0~10 | 10 ms 网格 |
 | Opus 编码 | 0.2~1 | `net/diag.rs::encode_cost_per_hop` 实测 |
-| 局域网往返/单向 | 1~3 | 实测 RTT 1~2 ms |
+| 局域网往返/单向 | 1～3 | 实测 RTT 1～2 ms |
 | 手机播放环 | **20** | 本设计（`D`） |
 | AudioTrack 底层 | 20 | 申请值；实际由 `getBufferSizeInFrames` 回报 |
 | 硬件 / 扬声器 | 5~15 | 设备 |
 | **合计** | **≈ 50~70** | 旧设计是 50(服务端队列)+50(手机环)+40(底层) ≈ 150+ |
 
-上行（手机 → 电脑）同理：采集 10 + 编码 ~0.5 + 网络 1~3 + 入站环 20 + 引擎/模型 1~2 → **≈ 35 ms**。
+上行（手机 → 电脑）同理：采集 10 + 编码 ～0.5 + 网络 1～3 + 入站环 20 + 引擎/模型 1～2 → **≈ 35 ms**。
 
 #### 4.1.6 看清延迟（测量是设计的一部分）
 
