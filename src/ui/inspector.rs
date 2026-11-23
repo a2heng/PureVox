@@ -195,14 +195,14 @@ impl Workspace {
             .unwrap_or(&cur)
             .to_string()
         };
-        let (pos, dur) = self
+        let (pos, dur, playing) = self
           .pos(id)
           .and_then(|(ci, ri)| crate::engine::media::hub().slot(ci, ri))
           .map(|s| {
             let st = s.status();
-            (st.pos, st.dur)
+            (st.pos, st.dur, st.playing)
           })
-          .unwrap_or((0.0, 0.0));
+          .unwrap_or((0.0, 0.0, false));
         let resume = n
           .params
           .get("resume_sec")
@@ -254,59 +254,6 @@ impl Workspace {
             )
             .child(self.player_progress_slider(id, dur, shown_pos, window, cx)),
         );
-        list = list.child(
-          div()
-            .flex()
-            .gap_1()
-            .child(
-              quiet_button(cx, format!("pplay:{id}"), "播放").on_click(cx.listener(
-                move |this, _, _, cx| {
-                  if let Some((ci, ri)) = this.pos(id)
-                    && let Some(s) = crate::engine::media::hub().slot(ci, ri)
-                  {
-                    s.send(crate::engine::media::MediaCmd::PlayerPlay);
-                    this.status = "播放器：播放".into();
-                  }
-                  cx.notify();
-                },
-              )),
-            )
-            .child(
-              quiet_button(cx, format!("ppause:{id}"), "暂停").on_click(cx.listener(
-                move |this, _, _, cx| {
-                  if let Some((ci, ri)) = this.pos(id)
-                    && let Some(s) = crate::engine::media::hub().slot(ci, ri)
-                  {
-                    s.send(crate::engine::media::MediaCmd::PlayerPause);
-                    this.status = "播放器：暂停".into();
-                  }
-                  cx.notify();
-                },
-              )),
-            ),
-        );
-        // 音量条放在播放按钮下面（整行一个音量，拖动实时、松手落盘）。
-        list = list.child(
-          div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-              div()
-                .w(px(28.))
-                .text_size(px(t::TEXT_XS))
-                .text_color(rgb(t::MUTED))
-                .child(i18n::tr("音量").to_string()),
-            )
-            .child(self.player_volume_slider(id, vol, window, cx))
-            .child(
-              div()
-                .w(px(46.))
-                .text_size(px(t::TEXT_XS))
-                .text_color(rgb(t::MUTED))
-                .child(format!("{vol:+.1} dB")),
-            ),
-        );
         // 播放 / 暂停热键：全局生效（窗口在后台也行），录制完立即重注册。
         let hk = n.params.get("hotkey").cloned().unwrap_or_default();
         let recording = matches!(self.recording, Some(RecordTarget::Player { node }) if node == id);
@@ -340,7 +287,61 @@ impl Workspace {
               .into_any_element(),
           );
         }
-        list = list.child(hotkey_row(i18n::tr("播放 / 暂停"), &hk, recording, actions));
+        // 一行控制：左边一个动态按钮（在播 = 暂停，暂停/未播 = 播放），右边是键位 + 录制/清除。
+        let mut controls = div()
+          .flex()
+          .items_center()
+          .gap_2()
+          .child(
+            quiet_button(
+              cx,
+              format!("ptoggle:{id}"),
+              if playing { "暂停" } else { "播放" },
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+              if let Some((ci, ri)) = this.pos(id)
+                && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+              {
+                let now = s.status().playing;
+                s.send(crate::engine::media::MediaCmd::PlayerToggle);
+                this.status = if now {
+                  "播放器：暂停"
+                } else {
+                  "播放器：播放"
+                }
+                .into();
+              }
+              cx.notify();
+            })),
+          )
+          .child(div().flex_1().min_w_0())
+          .child(key_chip(&hk, recording));
+        for a in actions {
+          controls = controls.child(a);
+        }
+        list = list.child(controls);
+        // 音量条放在播放按钮下面（整行一个音量，拖动实时、松手落盘）。
+        list = list.child(
+          div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+              div()
+                .w(px(28.))
+                .text_size(px(t::TEXT_XS))
+                .text_color(rgb(t::MUTED))
+                .child(i18n::tr("音量").to_string()),
+            )
+            .child(self.player_volume_slider(id, vol, window, cx))
+            .child(
+              div()
+                .w(px(46.))
+                .text_size(px(t::TEXT_XS))
+                .text_color(rgb(t::MUTED))
+                .child(format!("{vol:+.1} dB")),
+            ),
+        );
       } else {
         let pads: Vec<serde_json::Value> = n
           .params
