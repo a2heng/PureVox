@@ -9,9 +9,10 @@
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# The built-in AI models are NOT covered by the GPL; they are the
-# property of a2heng and may only be used with PureVox under
-# authorization.  See MODEL-LICENSE.md for details.
+# The bundled speech-denoising models (purevox_denoise_*) are distributed
+# under the BSD-3-Clause license together with the purevox_denoise_rust
+# inference library.  The remaining models (AEC, TSE) are NOT covered by
+# the GPL.  See MODEL-LICENSE.md for details.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -23,6 +24,10 @@ authors = ["a2heng"]
 license = "GPL-3.0-or-later"
 edition = "2024"
 rust-version = "1.95"
+
+[dependencies.purevox_denoise_rust]
+git = "https://github.com/a2heng/purevox_denoise_rust"
+rev = "34764375a9e9e01781f0d45e4c6b59b246d42a84"
 
 [features]
 # 需要真实声卡的测量（时钟 ppm）：默认不编译，手动 `cargo test --features hw-tests`

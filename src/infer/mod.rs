@@ -507,34 +507,29 @@ pub fn preload_all() {
     .ok();
 }
 
-/// 小尺寸降噪模型（`models/` 下的文件名，界面「降噪（小）」）。
+/// 降噪模型（`models/` 下的一个**目录**，界面直接显示原始模型名）。
 ///
-/// **2026-10-29 起文件名不带版本号**：应用侧代码只认这些固定名字，
-/// 换模型 = 换文件（模型标识记在 ONNX metadata `model` 与 `models/README.md`）。
-/// 谱接口见 [`spec`]。
-pub const MODEL_DENOISE: &str = "purevox_denoise.onnx";
+/// 2026-11-23 起降噪不再走 ONNX，改由开源库 `purevox_denoise_rust` 在进程内推理
+/// （BSD-3-Clause；模型与库同仓分发）。目录里是 `meta.json + weights.safetensors`，
+/// 谱接口仍是 `spec_in (2,481) + cache_in` → `spec_out + cache_out`。
+pub const MODEL_DENOISE: &str = "purevox_denoise_202605a";
 
-/// 中尺寸降噪模型（宽通道版，与 [`MODEL_DENOISE`] 同一套谱接口，只是容量更大）。
-pub const MODEL_DENOISE_M: &str = "purevox_denoise_medium.onnx";
+/// 降噪 202605b（同一族，前端更宽）。
+pub const MODEL_DENOISE_B: &str = "purevox_denoise_202605b";
 
-/// 大尺寸降噪模型（新骨架，通道峰 96 占两级；同一套谱接口）。
-pub const MODEL_DENOISE_L: &str = "purevox_denoise_large.onnx";
+/// 降噪 202611d（FIR 门 + 2 层双路径 GRU + 瓶颈记忆）。
+pub const MODEL_DENOISE_D: &str = "purevox_denoise_202611d";
 
-/// 降噪 202605a（2026-05 ulunas M；无 `ctrl_in`）。
-pub const MODEL_DENOISE_5A: &str = "purevox_denoise_5a.onnx";
+/// 降噪 202611f（同 d，更宽通道 + 3 层双路径 GRU）。
+pub const MODEL_DENOISE_F: &str = "purevox_denoise_202611f";
 
-/// 降噪 202605b（2026-05 ulunas L；无 `ctrl_in`）。
-pub const MODEL_DENOISE_5B: &str = "purevox_denoise_5b.onnx";
-
-/// 可选降噪模型 (文件名, 界面名)，供界面下拉（ARCHITECTURE.md §7）。
-/// 界面名只是**档位**，不重复版本号：真正的标识在 ONNX metadata `model`。
+/// 可选降噪模型（目录名, 界面名）。**界面上就是原始模型名**，不再有"小/中/大"档位别名。
 pub fn denoise_models() -> &'static [(&'static str, &'static str)] {
   &[
-    (MODEL_DENOISE, "降噪（小）"),
-    (MODEL_DENOISE_M, "降噪（中）"),
-    (MODEL_DENOISE_L, "降噪（大）"),
-    (MODEL_DENOISE_5A, "降噪（5A）"),
-    (MODEL_DENOISE_5B, "降噪（5B）"),
+    (MODEL_DENOISE, "purevox_denoise_202605a"),
+    (MODEL_DENOISE_B, "purevox_denoise_202605b"),
+    (MODEL_DENOISE_D, "purevox_denoise_202611d"),
+    (MODEL_DENOISE_F, "purevox_denoise_202611f"),
   ]
 }
 
@@ -587,7 +582,8 @@ pub fn model_path(file: &str) -> Result<PathBuf, String> {
     candidates.push(dir.join("resources").join("models").join(file));
   }
   for c in candidates {
-    if c.is_file() {
+    // 降噪模型是目录（meta.json + weights.safetensors），其它模型仍是单个 .onnx 文件。
+    if c.is_file() || c.is_dir() {
       return Ok(c);
     }
     tried.push(c.display().to_string());
@@ -634,12 +630,8 @@ mod tests {
   #[test]
   #[ignore = "真要加载 ONNX + 读 RSS，手动跑"]
   fn memory_release_probe() {
-    let files = [
-      MODEL_DENOISE,
-      tse::MODEL_TSE,
-      tse::MODEL_TSE_REF,
-      aec::MODEL_AEC,
-    ];
+    // 降噪已改为进程内纯 Rust（不经过 ORT 会话池），这里只测仍走 ORT 的两类。
+    let files = [tse::MODEL_TSE, tse::MODEL_TSE_REF, aec::MODEL_AEC];
     let base = rss_kb();
     for f in files {
       let path = model_path(f).expect(f);
@@ -661,13 +653,13 @@ mod tests {
     );
 
     // 模拟一次**重建**：旧行还攥着自己在用的那份，新会话只能再加载一份 → 两两并存。
-    retain_models(&[MODEL_DENOISE.to_string()]);
-    let dn = model_path(MODEL_DENOISE).expect("denoise");
-    let old_row = checkout(&dn).expect("denoise");
-    let new_row = checkout(&dn).expect("denoise"); // 池子空 ⇒ 从磁盘再加载一份
+    retain_models(&[aec::MODEL_AEC.to_string()]);
+    let dn = model_path(aec::MODEL_AEC).expect("aec");
+    let old_row = checkout(&dn).expect("aec");
+    let new_row = checkout(&dn).expect("aec"); // 池子空 ⇒ 从磁盘再加载一份
     drop(old_row); // 旧会话（旧行 stop 之后才会归还）
     let dual = rss_kb();
-    let n = retain_models(&[MODEL_DENOISE.to_string()]);
+    let n = retain_models(&[aec::MODEL_AEC.to_string()]);
     let one = rss_kb();
     println!(
       "  重建瞬间（新旧两份并存）{dual} KB → 回收 {n} 个重复副本 {one} KB（-{} KB）",

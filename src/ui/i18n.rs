@@ -463,11 +463,6 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("音效", "Sound");
     m.insert("曲目", "Track");
     m.insert("续播位置", "Resume at");
-    m.insert("降噪（小）", "Denoise (small)");
-    m.insert("降噪（中）", "Denoise (medium)");
-    m.insert("降噪（大）", "Denoise (large)");
-    m.insert("降噪（5A）", "Denoise (5A)");
-    m.insert("降噪（5B）", "Denoise (5B)");
     m.insert("端口已放行", "port allowed");
     m.insert("未看到放行规则", "no allow rule seen");
     m.insert("需要 root 才能确认", "needs root to confirm");

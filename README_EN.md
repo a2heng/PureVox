@@ -9,8 +9,9 @@ A1/A2. It is not a VoiceMeeter clone; AI processing and low latency come first.
 
 ## Features
 
-- **AI denoise**: ONNX streaming model on a 10 ms grid (48 kHz / 480 samples), single-threaded,
-  measured ~0.3 ms per hop (denoise small 0.28 / medium 0.30 / large 0.51).
+- **AI denoise**: four models (`purevox_denoise_202605a / 202605b / 202611d / 202611f`) running
+  in-process through the pure-Rust [`purevox_denoise_rust`](https://github.com/a2heng/purevox_denoise_rust)
+  library — no ONNX Runtime. 10 ms grid (48 kHz / 480 samples), 0.25–0.62 ms per hop single-threaded.
 - **Target speaker extraction (TSE)**: record a 10 s reference and keep only that voice.
 - **Echo cancellation (AEC)**: remove speaker sound picked up by the microphone (calls, streaming,
   speakerphone), with delay calibration and level matching.

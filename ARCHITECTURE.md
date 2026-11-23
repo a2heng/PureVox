@@ -359,26 +359,22 @@ mic/far 仍各自持有采集路径；面板还没把 `mix_sources` 画出来（
 
 ```rust
 // 每类处理行一组「可选模型」(文件名, 界面名)：界面下拉直接渲染，标签只写档位、不写版本号
-pub fn denoise_models() -> &'static [(&'static str, &'static str)];  // 小 / 中 / 大 / 5A / 5B
+pub fn denoise_models() -> &'static [(&'static str, &'static str)];  // 四款，标签即模型名
 pub fn aec_models()     -> &'static [(&'static str, &'static str)];
 pub fn tse_models()     -> &'static [(&'static str, &'static str)];
 // 计划里存的文件名 → 列表里的模型；不在列表里就回落到第一个并记一条事件日志
 pub fn known_model(list: &'static [(&'static str, &'static str)], requested: &str) -> &'static str;
 ```
 
-- **八个文件、名字里不带版本号**（2026-10-29 起；模型标识记在 ONNX metadata
-  `model` 与 `models/README.md`）：`purevox_denoise.onnx`（降噪小档）、
-  `purevox_denoise_medium.onnx`（降噪中档）、`purevox_denoise_large.onnx`（降噪大档；
-  三档 2026-11-16 换代：`202611d@E110` / `202611e@E76` / `202611f@E128`）、
-  `purevox_denoise_5a.onnx`（5A，`202605a@E389`）、
-  `purevox_denoise_5b.onnx`（5B，`202605b@E227`）、
-  `purevox_aec.onnx`、`purevox_tse.onnx`、`purevox_tse_ref_encoder.onnx`（与 TSE 主图**成对**）。
-  降噪五档**都只是换模型**，界面下拉按「小 / 中 / 大 / 5A / 5B」选，默认小档。
-  ⇒ **换模型 = 换文件**，代码零改动；替换流程见 `models/README.md`。
-- **降噪 `ctrl_in (1,2)`（2026-11-18 起不再出现在界面）**：11 系（小/中/大）图里仍有
-  `[floor_db, depth_gain]`，应用侧固定喂 `[-240, 1.0]`（训练期 `MASK_FLOOR_OFF` = 裸 sigmoid
-  = 最深）；202605a/b（5A/5B）没有这个输入。五档只靠 `model` 切换，旧计划里的 `depth_db`
-  在 `Plan::normalize` 里清掉。语义：只钳「已判为噪声」的 bin，不改判决。
+- **降噪 = 四个目录**（`models/<模型名>/`：`meta.json` + `weights.safetensors`），由
+  `purevox_denoise_rust`（BSD-3-Clause，<https://github.com/a2heng/purevox_denoise_rust>）
+  在进程内推理，**不再经过 ONNX Runtime**。目录名就是模型名，界面下拉直接显示：
+  `purevox_denoise_202605a` / `202605b` / `202611d` / `202611f`，默认第一款。
+  ⇒ **换模型 = 换目录**，代码零改动；替换流程见 `models/README.md`。
+- **AEC / TSE 仍是 ONNX**（保留所有权利）：`purevox_aec.onnx`、`purevox_tse.onnx`、
+  `purevox_tse_ref_encoder.onnx`（与 TSE 主图**成对**）。
+- **降噪没有运行期旋钮**：四个模型就是四档，换目录即换档；旧计划里的 `depth_db` 在
+  `Plan::normalize` 里清掉。
 - **谱接口**（2026-10-29 换代）：图内只有网络，输入/输出都是 `(1,2,481)` 复数谱 + `cache_in`，
   傅里叶/OLA 在图外（`infer/spec.rs`，三类模型共用）。旧的 `*_hop [1,480]` 波形契约已废除；
   模型文件接错会在加载时报「不是谱接口」，不会静默跑出没效果。

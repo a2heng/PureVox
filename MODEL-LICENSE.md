@@ -1,62 +1,47 @@
-# PureVox 内置 AI 模型授权声明
+# PureVox 内置模型授权声明
 
 **Copyright (C) 2024-2026 a2heng <752848283@qq.com>**
 
-PureVox 的源代码采用 **GNU General Public License v3.0 or later (GPL-3.0)** 开源，
-但**内置 AI 模型及其权重不随 GPL 授权**。
+PureVox 的源代码采用 **GNU General Public License v3.0 or later (GPL-3.0)** 开源。
+内置模型分两类：
 
-## 一、适用模型
+1. **降噪模型（四款）—— BSD-3-Clause**：与开源推理库
+   [`purevox_denoise_rust`](https://github.com/a2heng/purevox_denoise_rust) 同仓分发，
+   允许任意使用、修改、再分发（保留版权声明与免责声明即可）。
+2. **AEC / TSE 模型 —— 保留所有权利**：不随 GPL 授权，只能随 PureVox 使用。
 
-**现行版本：**
+## 一、降噪模型（BSD-3-Clause）
 
-- `purevox_denoise.onnx`（降噪模型·小档，2026-10-29 起文件名不带版本号）
-- `purevox_denoise_medium.onnx`（降噪模型·中档，2026-11-05 加；与小档同一套谱接口）
-- `purevox_denoise_large.onnx`（降噪模型·大档，2026-11-05 加；同一套谱接口）
-- `purevox_denoise_5a.onnx`（降噪模型·5A，2026-11-18 加；2026-05 ulunas M）
-- `purevox_denoise_5b.onnx`（降噪模型·5B，2026-11-18 加；2026-05 ulunas L）
-- `purevox_aec.onnx`（AEC 回声消除模型）
-- `purevox_tse.onnx`（TSE 目标说话人提取模型）
+应用用的是下面**四款**，目录名即模型名（`models/<名字>/`，内含
+`meta.json + weights.safetensors`），由 `purevox_denoise_rust` 在进程内直接推理
+（不经 ONNX Runtime）：
+
+| 模型名 | 说明 |
+|---|---|
+| `purevox_denoise_202605a` | 组卷积编码器 + 时/频注意力（60+35 ERB 带） |
+| `purevox_denoise_202605b` | 同族，前端更宽（100+41 ERB 带） |
+| `purevox_denoise_202611d` | h-swish 块 + FIR 门 + 2 层双路径 GRU + 瓶颈记忆（160+80 带） |
+| `purevox_denoise_202611f` | 同 d，更宽通道 + 3 层双路径 GRU |
+
+授权：**BSD 3-Clause**（与库代码相同；见 `purevox_denoise_rust` 仓库的 `LICENSE`）。
+四个模型都在同一仓库里以 `models/<名字>/` 分发，版权归 a2heng。
+
+## 二、AEC / TSE 模型（保留所有权利）
+
+以下模型**不在** BSD/GPL 授权范围内，仅允许随 PureVox 一起使用，不得单独提取、
+再分发或用于其它产品：
+
+- `purevox_aec.onnx`（回声消除）
+- `purevox_tse.onnx`（目标说话人提取）
 - `purevox_tse_ref_encoder.onnx`（TSE 注册编码器，与 `purevox_tse.onnx` 成对）
 
-**历史版本**（已随历史发布分发、现已从仓库移除，同样适用本声明）：
+## 三、历史版本
 
-- `v9_fft2048_band256_epoch_261.onnx`（降噪模型）
-- `aec9_ep0544.onnx`（AEC 回声消除模型）
-- `purevox_aec_202609_cpx_*.onnx`（AEC 回声消除模型，2026-10-18 被 202610 取代）
-- `tse15_stream_ep_0673.onnx`（TSE 目标说话人提取模型）
-- `purevox_denoise_202609_*.onnx` / `purevox_aec_202610_*.onnx` / `purevox_tse_202609c_*.onnx`
-  （带版本号/epoch 的旧文件名，2026-10-29 换成不带版本号的固定名）
-- `purevox_tse_202609c_ref_encoder.onnx`（TSE 参考编码器，旧契约；2026-10-26~10-29 曾由 Rust 内固定 DSP 代替）
-- 及上述各模型的更早迭代版本
+早期随发布分发过的降噪/回声消除/目标说话人模型（带 `_epoch_`、`_5a/_5b`、
+`medium/large` 等旧文件名）同样适用本节声明：**降噪旧版按 BSD-3-Clause 看待**
+（与对应的 `purevox_denoise_2026xx` 模型同一批权重），AEC/TSE 旧版保留所有权利。
 
-以上模型归 a2heng 所有，是本项目的更新版本，**不适用于**作者的 MIT 开源模型仓库：
+## 四、第三方组件
 
-- <https://github.com/a2heng/lightweight-denoise-48k>（MIT，可自由使用）
-- <https://github.com/a2heng/lightweight-aec-48k>（MIT，可自由使用）
-
-## 二、授权范围
-
-在未获得作者另行书面授权的情况下：
-
-- 允许：随 PureVox 正常安装、运行、使用；
-- **禁止：将模型或其权重提取出来，用于其它任何项目 / 软件 / 训练 / 再分发**；
-- 禁止：以任何形式将模型用于闭源或开源商业产品的核心功能；
-- 禁止：移除、隐匿本声明及模型的版权信息。
-
-## 三、申请授权
-
-如需将模型用于其它用途（包括但不限于：集成到其它项目、商业产品、模型蒸馏与训练），
-请联系作者获取授权：
-
-- GitHub: <https://a2heng.github.io/>
-- 哔哩哔哩: <https://space.bilibili.com/10850943>
-- 邮箱: <752848283@qq.com>
-
-## 四、免责声明
-
-除适用法律强制规定外，PureVox 及内置模型按"原样"提供，不附带任何明示或默示保证。
-任何因使用本软件或模型而产生的直接或间接损失，作者均不承担责任（除非另行书面约定）。
-
----
-
-最后更新: 2026-09-01
+`purevox_denoise_rust` 及其依赖（`realfft` / `rustfft` / `safetensors` / `serde` /
+`hound`）的许可见 `LICENSE-THIRD-PARTY.txt`。

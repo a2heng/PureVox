@@ -61,7 +61,7 @@
 - **10 ms hop 网格**：`hop = SAMPLE_RATE / 100`（48 kHz 下 480 样本，FFT/OLA 窗 2×hop = 960）。
   所有数据面按 10 ms 整数倍前进，不引入 1024/2048 等错位块。**可视化频谱**用 4800 点
   （100 ms）分析窗只为频率分辨率，不进信号路径（见 `UI.md`）。
-- **模型**：`models/*.onnx` 为内置模型文件（降噪五档，见 `models/README.md`），不随 GPL 授权（`MODEL-LICENSE.md`），
+- **模型**：降噪四款在 `models/<模型名>/`（`purevox_denoise_202605a/202605b/202611d/202611f`，BSD-3-Clause，由 `purevox_denoise_rust` 进程内推理）；AEC/TSE 仍是 `models/*.onnx`（保留所有权利）。见 `models/README.md` / `MODEL-LICENSE.md`，
   禁止提取用于其他项目。
 - **节点图模型**：会话 = 节点 + 连线（`SESSION-V2.md`）。节点是节点、线是线：断线只删线；
   删除节点是唯一会删点的操作。执行单位是弱连通分量（一个分组一个线程），组内拓扑顺序。

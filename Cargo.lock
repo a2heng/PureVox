@@ -3034,6 +3034,8 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -3102,6 +3104,12 @@ name = "hmac-sha256"
 version = "1.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad320b3b96fb2a455a0726d16efe0a5afdbd34b71dea5bc53b05ea057714d4e"
+
+[[package]]
+name = "hound"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
 name = "html5ever"
@@ -5577,6 +5585,7 @@ dependencies = [
  "ort",
  "png 0.18.1",
  "pollster 1.0.2",
+ "purevox_denoise_rust",
  "qrcode",
  "raw-window-handle",
  "rcgen",
@@ -5599,6 +5608,20 @@ dependencies = [
  "windows 0.62.2",
  "windows-core 0.62.2",
  "zbus 6.3.0",
+]
+
+[[package]]
+name = "purevox_denoise_rust"
+version = "0.1.0"
+source = "git+https://github.com/a2heng/purevox_denoise_rust?rev=34764375a9e9e01781f0d45e4c6b59b246d42a84#34764375a9e9e01781f0d45e4c6b59b246d42a84"
+dependencies = [
+ "hound",
+ "realfft",
+ "rustfft",
+ "safetensors",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -6473,6 +6496,19 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safetensors"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79b079b829cb27a1c3c374341345ed2e8b2c0c839034522cee576c140bd7f846"
+dependencies = [
+ "hashbrown 0.16.1",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "same-file"

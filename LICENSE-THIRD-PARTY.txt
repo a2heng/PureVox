@@ -131,6 +131,53 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ==========================================================================
+purevox_denoise_rust（降噪推理库）
+==========================================================================
+
+许可证: BSD 3-Clause License
+网站: https://github.com/a2heng/purevox_denoise_rust
+用途: 降噪模型的进程内推理（不再经 ONNX Runtime）。四款降噪模型
+      purevox_denoise_202605a / 202605b / 202611d / 202611f 与库同仓、
+      采用同一 BSD-3-Clause 许可（见 MODEL-LICENSE.md）。
+
+它所依赖的 crate（均为宽松许可，逐项见各自仓库）：
+  realfft / rustfft   MIT OR Apache-2.0
+  safetensors         Apache-2.0
+  serde / serde_json  MIT OR Apache-2.0
+  hound               Apache-2.0
+  thiserror           MIT OR Apache-2.0
+
+BSD 3-Clause License
+
+Copyright (c) 2026, a2heng
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+==========================================================================
 ONNX Runtime
 ==========================================================================
 
