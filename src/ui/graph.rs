@@ -362,6 +362,53 @@ impl Workspace {
     cx.notify();
   }
 
+  /// 播放器定位：拖动进度条 = 同时设置播放位置与断点续播（`resume_sec`）。
+  pub(super) fn set_player_seek(
+    &mut self,
+    node: u32,
+    sec: f64,
+    persist: bool,
+    cx: &mut Context<Self>,
+  ) {
+    let sec = sec.max(0.0);
+    if let Some(n) = self.plan.node_mut(node) {
+      n.params.insert("resume_sec".into(), format!("{sec:.2}"));
+    }
+    if let Some((ci, ri)) = self.pos(node)
+      && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+    {
+      s.send(crate::engine::media::MediaCmd::PlayerSeek(sec));
+    }
+    if persist {
+      let _ = self.audio.persist_plan(self.plan.clone());
+    }
+    self.status = format!("播放位置 {sec:.1} s");
+    cx.notify();
+  }
+
+  /// 播放器音量（±10 dB）：拖动实时改在播音量，松手落盘。
+  pub(super) fn set_player_volume(
+    &mut self,
+    node: u32,
+    db: f64,
+    persist: bool,
+    cx: &mut Context<Self>,
+  ) {
+    if let Some(n) = self.plan.node_mut(node) {
+      n.params.insert("volume_db".into(), format!("{db:.1}"));
+    }
+    if let Some((ci, ri)) = self.pos(node)
+      && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+    {
+      s.send(crate::engine::media::MediaCmd::Volume { index: None, db });
+    }
+    if persist {
+      let _ = self.audio.persist_plan(self.plan.clone());
+    }
+    self.status = format!("播放器音量 = {db:+.1} dB");
+    cx.notify();
+  }
+
   /// 单个音效的音量（±10 dB）：拖动实时改在播声部 + 计划 JSON，松手才落盘。
   ///
   /// 与 [`MediaCmd::Volume`] 同一路径；不重建会话。

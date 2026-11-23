@@ -268,6 +268,8 @@ pub struct Workspace {
   net_qr: Option<std::path::PathBuf>,
   net_qr_url: String,
   net_last: Instant,
+  /// 播放器续播位置回写节流（播放中每 2 s 把实际位置写进 `resume_sec`）
+  resume_last: Instant,
   /// AEC 校准结论（只取这一份，不拉整份调试快照）
   calib_report: crate::debug::Probe<crate::engine::calib::CalibReport>,
   /// 已回填过的校准报告 `created_ms`（避免每秒重复回填/重建）
@@ -396,6 +398,7 @@ impl Workspace {
       net_qr: None,
       net_qr_url: String::new(),
       net_last: Instant::now() - Duration::from_secs(2),
+      resume_last: Instant::now() - Duration::from_secs(2),
       calib_report,
       last_calib,
       pending_apply: None,
@@ -540,6 +543,39 @@ impl Workspace {
       self.devices = crate::devices::cached().devices;
       self.latency = self.hub.latency_report();
       dirty = true;
+    }
+    // 播放器断点续播：运行中每 2 s 把**实际播放位置**写回 `resume_sec`（不重建、不进撤销）。
+    // 这样「继续播放」不依赖用户手动拖进度条：暂停 / 关机 / 热键停止后都能接着放。
+    if running && self.resume_last.elapsed() >= Duration::from_secs(2) {
+      self.resume_last = Instant::now();
+      let mut updates: Vec<(u32, String)> = Vec::new();
+      for c in &self.plan.columns {
+        for r in &c.rows {
+          if r.ptype != "player" || !r.enabled {
+            continue;
+          }
+          if let Some((ci, ri)) = self.pos(r.id)
+            && let Some(slot) = crate::engine::media::hub().slot(ci, ri)
+          {
+            let st = slot.status();
+            if st.dur > 0.0 {
+              let text = format!("{:.2}", st.pos.clamp(0.0, st.dur));
+              if r.params.get("resume_sec") != Some(&text) {
+                updates.push((r.id, text));
+              }
+            }
+          }
+        }
+      }
+      if !updates.is_empty() {
+        for (id, text) in updates {
+          if let Some(n) = self.plan.node_mut(id) {
+            n.params.insert("resume_sec".into(), text);
+          }
+        }
+        crate::config::save_plan_debounced(self.plan.clone());
+        dirty = true;
+      }
     }
     // 网络卡片常驻在右侧：1 s 刷一次统计；二维码只在地址变化时重新生成。
     if self.net_last.elapsed() >= Duration::from_secs(1) {

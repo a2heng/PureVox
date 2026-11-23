@@ -562,6 +562,8 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("音效已启用", "Pad enabled");
     m.insert("音效已关闭", "Pad disabled");
     m.insert("音量", "Volume");
+    m.insert("拖动定位，同时记住续播", "Drag to seek; the resume point is saved too");
+    m.insert("启动引擎后可拖动", "Start the engine to seek");
     m.insert("（已关闭）", " (off)");
     m.insert("播放/暂停热键：", "Play/pause hotkey: ");
     m.insert("按下播放/暂停热键…（Esc 取消）", "Press the play/pause hotkey… (Esc to cancel)");

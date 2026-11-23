@@ -24,6 +24,12 @@ use crate::engine::components::eq31::{CENTER_HZ, response_db};
 use crate::engine::hot::EqSettings;
 use crate::plan::{RowKind, RowSpec};
 
+/// 秒 → `m:ss`（进度条旁的时间文字；超过一小时也只显示分钟数）。
+fn fmt_time(sec: f64) -> String {
+  let s = sec.max(0.0) as u64;
+  format!("{}:{:02}", s / 60, s % 60)
+}
+
 /// EQ 画图的边距：左侧 dB 轴宽、顶部频率刻度高、底部数值行高。
 const EQ_AXIS_W: f32 = 28.0;
 const EQ_TOP: f32 = 20.0;
@@ -189,7 +195,66 @@ impl Workspace {
             .unwrap_or(&cur)
             .to_string()
         };
-        list = list.child(field("当前曲目", shown)).child(
+        let (pos, dur) = self
+          .pos(id)
+          .and_then(|(ci, ri)| crate::engine::media::hub().slot(ci, ri))
+          .map(|s| {
+            let st = s.status();
+            (st.pos, st.dur)
+          })
+          .unwrap_or((0.0, 0.0));
+        let resume = n
+          .params
+          .get("resume_sec")
+          .and_then(|v| v.parse::<f64>().ok())
+          .unwrap_or(0.0);
+        let shown_pos = if dur > 0.0 { pos } else { resume };
+        let vol = n
+          .params
+          .get("volume_db")
+          .and_then(|v| v.parse::<f64>().ok())
+          .unwrap_or(0.0);
+        list = list.child(field("当前曲目", shown));
+        // **进度 = 续播**：同一个滑块，拖动即定位并写入 `resume_sec`（不再单独一条参数）。
+        list = list.child(
+          div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+              div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                  div()
+                    .text_size(px(t::TEXT_XS))
+                    .text_color(rgb(t::MUTED))
+                    .child(format!(
+                      "{} / {}",
+                      fmt_time(shown_pos),
+                      if dur > 0.0 {
+                        fmt_time(dur)
+                      } else {
+                        "--:--".to_string()
+                      }
+                    )),
+                )
+                .child(
+                  div()
+                    .text_size(px(t::TEXT_XS))
+                    .text_color(rgb(t::MUTED))
+                    .child(if dur > 0.0 {
+                      i18n::tr("拖动定位，同时记住续播").to_string()
+                    } else {
+                      i18n::tr("启动引擎后可拖动").to_string()
+                    }),
+                ),
+            )
+            .child(self.player_progress_slider(id, dur, shown_pos, window, cx)),
+        );
+        list = list.child(
           div()
             .flex()
             .gap_1()
@@ -218,6 +283,28 @@ impl Workspace {
                   cx.notify();
                 },
               )),
+            ),
+        );
+        // 音量条放在播放按钮下面（整行一个音量，拖动实时、松手落盘）。
+        list = list.child(
+          div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+              div()
+                .w(px(28.))
+                .text_size(px(t::TEXT_XS))
+                .text_color(rgb(t::MUTED))
+                .child(i18n::tr("音量").to_string()),
+            )
+            .child(self.player_volume_slider(id, vol, window, cx))
+            .child(
+              div()
+                .w(px(46.))
+                .text_size(px(t::TEXT_XS))
+                .text_color(rgb(t::MUTED))
+                .child(format!("{vol:+.1} dB")),
             ),
         );
         // 播放 / 暂停热键：全局生效（窗口在后台也行），录制完立即重注册。
@@ -666,6 +753,9 @@ impl Workspace {
         .child(self.params_editor(id, window, cx))
         .child(self.viz_editor(id, cx));
     } else if n.kind != RowKind::Output
+      // 媒体节点（音效板 / 播放器）的参数全部由上面的专属面板接管：
+      // 文件、每个音效的开关/音量/热键、播放器进度/音量/热键，不再有通用参数块。
+      && !matches!(n.ptype.as_str(), "soundpad" | "player")
       && crate::engine::registry::get_spec(&n.ptype)
         .map(|s| !s.params.is_empty())
         .unwrap_or(false)
@@ -1720,6 +1810,129 @@ impl Workspace {
             SliderEvent::Release(SliderValue::Single(v)) => {
               this.slider_drag = None;
               this.set_pad_volume(node, index, *v as f64, true, cx);
+            }
+            _ => {}
+          },
+        );
+        self.subs.push(sub);
+        self.sliders.insert(skey, state.clone());
+        state
+      }
+    };
+    let current = state.read(cx).value().end();
+    if (current - value as f32).abs() > 0.01 {
+      state.update(cx, |state, cx| state.set_value(value as f32, window, cx));
+    }
+    div()
+      .flex_1()
+      .min_w_0()
+      .child(
+        Slider::new(&state)
+          .horizontal()
+          .bg(rgb(t::ACCENT))
+          .text_color(rgb(t::TEXT)),
+      )
+      .into_any_element()
+  }
+
+  /// 播放器进度条：**进度展示 + 定位 + 断点续播二合一**。
+  ///
+  /// 拖动时实时 `PlayerSeek`（听感立刻跟手），同时把秒数写进节点参数 `resume_sec`；
+  /// 松手才落盘。滑杆状态按「时长」分键，换曲/换文件后最大值自动跟着变。
+  pub(super) fn player_progress_slider(
+    &mut self,
+    node: u32,
+    dur: f64,
+    pos: f64,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    let disabled = dur <= 0.0;
+    let skey = (node, format!("playerpos:{:.1}", dur.max(0.0)));
+    let drag_key = format!("playerpos:{node}");
+    let state = match self.sliders.get(&skey) {
+      Some(s) => s.clone(),
+      None => {
+        let state = cx.new(|_| {
+          SliderState::new()
+            .min(0.0)
+            .max(dur.max(1.0) as f32)
+            .step(0.1)
+            .scale(SliderScale::Linear)
+            .default_value(pos as f32)
+        });
+        let dk = drag_key.clone();
+        let sub = cx.subscribe(
+          &state,
+          move |this: &mut Workspace, _state, event: &SliderEvent, cx| match event {
+            SliderEvent::Change(SliderValue::Single(v)) => {
+              this.slider_drag = Some(dk.clone());
+              this.set_player_seek(node, *v as f64, false, cx);
+            }
+            SliderEvent::Release(SliderValue::Single(v)) => {
+              this.slider_drag = None;
+              this.set_player_seek(node, *v as f64, true, cx);
+            }
+            _ => {}
+          },
+        );
+        self.subs.push(sub);
+        self.sliders.insert(skey, state.clone());
+        state
+      }
+    };
+    // 播放推进时让滑块跟着走；用户拖动期间不要抢位置。
+    if !disabled && self.slider_drag.as_deref() != Some(&drag_key) {
+      let cur = state.read(cx).value().end();
+      if (cur - pos as f32).abs() > 0.2 {
+        state.update(cx, |state, cx| state.set_value(pos as f32, window, cx));
+      }
+    }
+    div()
+      .flex_1()
+      .min_w_0()
+      .child(
+        Slider::new(&state)
+          .horizontal()
+          .disabled(disabled)
+          .bg(rgb(t::ACCENT))
+          .text_color(rgb(t::TEXT)),
+      )
+      .into_any_element()
+  }
+
+  /// 播放器音量（±10 dB）：拖动实时改在播音量，松手落盘；不重建会话。
+  pub(super) fn player_volume_slider(
+    &mut self,
+    node: u32,
+    value: f64,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    let skey = (node, "playervol".to_string());
+    let drag_key = format!("playervol:{node}");
+    let state = match self.sliders.get(&skey) {
+      Some(s) => s.clone(),
+      None => {
+        let state = cx.new(|_| {
+          SliderState::new()
+            .min(-10.0)
+            .max(10.0)
+            .step(1.0)
+            .scale(SliderScale::Linear)
+            .default_value(value as f32)
+        });
+        let dk = drag_key.clone();
+        let sub = cx.subscribe(
+          &state,
+          move |this: &mut Workspace, _state, event: &SliderEvent, cx| match event {
+            SliderEvent::Change(SliderValue::Single(v)) => {
+              this.slider_drag = Some(dk.clone());
+              this.set_player_volume(node, *v as f64, false, cx);
+            }
+            SliderEvent::Release(SliderValue::Single(v)) => {
+              this.slider_drag = None;
+              this.set_player_volume(node, *v as f64, true, cx);
             }
             _ => {}
           },
