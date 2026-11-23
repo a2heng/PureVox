@@ -41,6 +41,8 @@ pub enum MediaCmd {
   PlayerPause,
   /// 播放器：播放/暂停切换（全局热键用；暂停中续播、播放中暂停）
   PlayerToggle,
+  /// 播放器：换曲（库内路径；位置归零、缓冲清空、直接开播）
+  PlayerLoad(String),
   /// 音效板：单个音效的开关（关掉 = 点播与热键都不触发，在播声部淡出）
   PadEnabled { index: usize, on: bool },
   /// 播放器：定位到 `sec` 秒

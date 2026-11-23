@@ -146,6 +146,12 @@ pub struct AppSettings {
   /// 运行期不做任何自动调整（`ARCHITECTURE.md` §4.1.4）。缺省 = 20 ms。
   #[serde(default = "d_net_ring_ms")]
   pub net_ring_ms: u32,
+
+  /// 删掉「音效板 / 播放器」节点时保留的参数（按节点类型），下次添加同类节点时原样恢复。
+  /// **只保留这两个媒体类型**：它们的内容（音效列表 / 曲目列表）是用户整理的资产，
+  /// 删节点只是从画板拿掉，不该把列表清空；库文件也不删。
+  #[serde(default)]
+  pub media_stash: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 }
 
 fn d_net_ring_ms() -> u32 {
@@ -236,6 +242,7 @@ impl Default for AppSettings {
       net_port: d_net_port(),
       net_ip: String::new(),
       net_ring_ms: d_net_ring_ms(),
+      media_stash: std::collections::BTreeMap::new(),
       window: None,
     }
   }

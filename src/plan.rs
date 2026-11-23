@@ -484,23 +484,54 @@ impl Plan {
     changed
   }
 
-  /// 按「到源节点的最长路径」分列排版；只改 x/y，不改连线。
+  /// 一键整理：**分层排布**（只改 x/y，不改连线）。
+  ///
+  /// 行号取两个约束的较大值：
+  /// 1. 到源节点的最长路径（上游永远在上方，输入在第一行）；
+  /// 2. 离汇点的距离（`最大高度 − 到汇点最长路径`）——**直连输出的源会被压到输出上一行**，
+  ///    否则它会待在首行、拉出一条跨半个画板的长对角线。
+  ///
+  /// 行内排序：先按到源节点的深度（靠近下游的放左，主链在首列），再按计划顺序；
+  /// 于是「麦克风→降噪→输出」是一条竖线，辅助源在右边汇聚。
+  /// **没有任何连线的孤立点**固定第一列、图底下依次加行（不撑宽首行）。
   pub fn layout_by_depth(&mut self) {
     let ids: Vec<u32> = self.nodes().map(|n| n.id).collect();
-    let mut depth: HashMap<u32, usize> = HashMap::new();
+    let plan_idx: HashMap<u32, usize> = ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for n in self.nodes() {
+      for e in &n.inputs {
+        children.entry(e.from).or_default().push(n.id);
+      }
+    }
+    // 孤立点：没有入线，也没有下游。
+    let isolated: HashSet<u32> = ids
+      .iter()
+      .copied()
+      .filter(|id| {
+        !children.contains_key(id) && self.node(*id).map(|n| n.inputs.is_empty()).unwrap_or(false)
+      })
+      .collect();
+    // 到源节点的最长路径
+    let mut ds: HashMap<u32, usize> = HashMap::new();
     for _ in 0..ids.len() {
       let mut changed = false;
       for id in &ids {
-        let Some(n) = self.node(*id) else { continue };
-        let d = n
-          .inputs
-          .iter()
-          .filter_map(|e| depth.get(&e.from).copied())
-          .max()
-          .map(|x| x + 1)
+        if isolated.contains(id) {
+          continue;
+        }
+        let d = self
+          .node(*id)
+          .map(|n| {
+            n.inputs
+              .iter()
+              .filter_map(|e| ds.get(&e.from).copied())
+              .max()
+              .map(|x| x + 1)
+              .unwrap_or(0)
+          })
           .unwrap_or(0);
-        if depth.get(id).copied() != Some(d) {
-          depth.insert(*id, d);
+        if ds.get(id).copied() != Some(d) {
+          ds.insert(*id, d);
           changed = true;
         }
       }
@@ -508,31 +539,96 @@ impl Plan {
         break;
       }
     }
-    let mut per: HashMap<usize, usize> = HashMap::new();
-    // 每一层的高度取该层最高的卡片（可视化卡片更高），层与层之间留 44 px 走线。
-    let max_d = depth.values().copied().max().unwrap_or(0);
-    let mut depth_h = vec![0.0f32; max_d + 1];
-    for n in self.nodes() {
-      let d = depth.get(&n.id).copied().unwrap_or(0);
-      let h = node_size(n.kind, &n.ptype, n.channels).1;
-      depth_h[d] = depth_h[d].max(h);
-    }
-    let mut depth_y = vec![0.0f32; max_d + 1];
-    let mut y = 64.0;
-    for d in 0..=max_d {
-      depth_y[d] = y;
-      y += depth_h[d] + 44.0;
-    }
-    for id in ids {
-      let d = depth.get(&id).copied().unwrap_or(0);
-      let row = per.entry(d).or_insert(0);
-      if let Some(n) = self.node_mut(id) {
-        // 端子在上/下 => 信号自上而下流：深度走 y，分支走 x。
-        // 卡片 200 宽：留 32 px 横向走线；纵向按每层最高卡片算，可视化不会被下一层压住。
-        n.x = 48.0 + *row as f32 * 232.0;
-        n.y = depth_y[d];
+    // 到汇点的最长路径
+    let mut hs: HashMap<u32, usize> = HashMap::new();
+    for _ in 0..=ids.len() {
+      let mut changed = false;
+      for id in &ids {
+        if isolated.contains(id) {
+          continue;
+        }
+        let d = children
+          .get(id)
+          .map(|cs| {
+            cs.iter()
+              .filter_map(|c| hs.get(c).copied())
+              .max()
+              .map(|x| x + 1)
+              .unwrap_or(0)
+          })
+          .unwrap_or(0);
+        if hs.get(id).copied() != Some(d) {
+          hs.insert(*id, d);
+          changed = true;
+        }
       }
-      *row += 1;
+      if !changed {
+        break;
+      }
+    }
+    let max_h = hs
+      .iter()
+      .filter(|(id, _)| !isolated.contains(id))
+      .map(|(_, v)| *v)
+      .max()
+      .unwrap_or(0);
+    let row_of = |id: u32| {
+      let top = ds.get(&id).copied().unwrap_or(0);
+      let bottom = max_h.saturating_sub(hs.get(&id).copied().unwrap_or(0));
+      top.max(bottom)
+    };
+    let mut rows: std::collections::BTreeMap<usize, Vec<u32>> = std::collections::BTreeMap::new();
+    for id in &ids {
+      if isolated.contains(id) {
+        continue;
+      }
+      rows.entry(row_of(*id)).or_default().push(*id);
+    }
+    // 行高：本行最高卡片（可视化更高），行间留 44 px 走线。
+    let mut row_h = vec![0.0f32; max_h + 1];
+    for n in self.nodes() {
+      if isolated.contains(&n.id) {
+        continue;
+      }
+      let r = row_of(n.id);
+      row_h[r] = row_h[r].max(node_size(n.kind, &n.ptype, n.channels).1);
+    }
+    let mut row_y = vec![0.0f32; max_h + 1];
+    let mut y = 32.0;
+    for r in 0..=max_h {
+      row_y[r] = y;
+      y += row_h[r] + 44.0;
+    }
+    for (r, mut list) in rows {
+      // 靠近下游的（ds 大）先放 → 主链占首列，辅助源向右汇聚。
+      list.sort_by(|a, b| {
+        ds.get(b)
+          .copied()
+          .unwrap_or(0)
+          .cmp(&ds.get(a).copied().unwrap_or(0))
+          .then(plan_idx.get(a).cmp(&plan_idx.get(b)))
+      });
+      for (col, id) in list.into_iter().enumerate() {
+        if let Some(n) = self.node_mut(id) {
+          n.x = 24.0 + col as f32 * 232.0;
+          n.y = row_y[r];
+        }
+      }
+    }
+    // 孤立点：第一列、图底下依次加行。
+    if !isolated.is_empty() {
+      let mut y = row_y[max_h] + row_h[max_h] + 44.0;
+      for id in ids.iter().copied().filter(|i| isolated.contains(i)) {
+        let hh = self
+          .node(id)
+          .map(|n| node_size(n.kind, &n.ptype, n.channels).1)
+          .unwrap_or(54.0);
+        if let Some(n) = self.node_mut(id) {
+          n.x = 24.0;
+          n.y = y;
+        }
+        y += hh + 44.0;
+      }
     }
   }
 
@@ -916,6 +1012,64 @@ mod tests {
     let bindings = player_hotkeys(&plan, crate::debug::DebugHub::new());
     assert_eq!(bindings.len(), 1, "只注册启用且绑定了键位的播放器");
     assert_eq!(bindings[0].0, "Ctrl+Alt+P");
+  }
+
+  #[test]
+  fn layout_anchors_short_chains_just_above_sink() {
+    let mk = |id: u32, ptype: &str, from: Vec<u32>| RowSpec {
+      kind: match ptype {
+        "audio_output" => RowKind::Output,
+        "remote_mic" | "audio_input" | "app_capture" => RowKind::Input,
+        _ => RowKind::Process,
+      },
+      ptype: ptype.into(),
+      id,
+      inputs: from
+        .into_iter()
+        .map(|f| PortInput {
+          from: f,
+          from_port: 0,
+          to_port: 0,
+        })
+        .collect(),
+      ..Default::default()
+    };
+    let mut plan = Plan {
+      v: VERSION,
+      columns: vec![ColumnSpec {
+        rows: vec![
+          mk(6, "remote_mic", vec![]),
+          mk(8, "audio_input", vec![]),
+          mk(9, "app_capture", vec![]),
+          mk(10, "soundpad", vec![]),
+          mk(2, "denoise", vec![6, 8, 9]),
+          mk(4, "audio_output", vec![2, 10]),
+        ],
+        enabled: true,
+      }],
+    };
+    plan.layout_by_depth();
+    {
+      let x = |id| plan.node(id).unwrap().x;
+      let y = |id| plan.node(id).unwrap().y;
+      // 输入：手机 / 麦克风 / 应用 在第一行；直连输出的音效板落到输出上一行。
+      assert_eq!(y(6), y(8));
+      assert_eq!(y(8), y(9));
+      assert_eq!(y(10), y(2), "音效板与降噪同一行（输出上一行）");
+      assert!(y(2) > y(6), "降噪必须在输入下一行");
+      assert!(y(4) > y(2), "输出必须在降噪下一行");
+      // 降噪在首列（和第一个输入同 x）→ 主链竖直；辅助源在右边。
+      assert_eq!(x(2), x(6));
+      assert!(x(10) > x(2));
+    }
+    // 孤立点：第一列、图底下另起一行。
+    plan.columns[0].rows.push(mk(12, "gain", vec![]));
+    plan.layout_by_depth();
+    assert_eq!(plan.node(12).unwrap().x, 24.0);
+    assert!(
+      plan.node(12).unwrap().y > 260.0,
+      "孤立点应在图下方，而不是塞进首行"
+    );
   }
 
   #[test]

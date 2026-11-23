@@ -266,6 +266,10 @@ impl PlayerStage {
         MediaCmd::PlayerPlay => self.paused = false,
         MediaCmd::PlayerPause => self.paused = true,
         MediaCmd::PlayerToggle => self.paused = !self.paused,
+        MediaCmd::PlayerLoad(p) => {
+          self.set_path(&p);
+          self.paused = false;
+        }
         MediaCmd::PlayerSeek(sec) => {
           self.pos = (sec.max(0.0) * SAMPLE_RATE as f64) as u64;
           *self.shared.seek.lock().unwrap() = Some(sec.max(0.0));

@@ -564,6 +564,18 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("音量", "Volume");
     m.insert("拖动定位，同时记住续播", "Drag to seek; the resume point is saved too");
     m.insert("启动引擎后可拖动", "Start the engine to seek");
+    m.insert(
+      "曲目（单选；删除会同时删库文件）",
+      "Tracks (single-select; deleting also removes the library file)",
+    );
+    m.insert(
+      "已移除播放器节点（曲目保留，重新添加可恢复）",
+      "Player node removed (tracks kept; add the node again to restore)",
+    );
+    m.insert(
+      "已移除音效板节点（音效保留，重新添加可恢复）",
+      "Soundpad node removed (pads kept; add the node again to restore)",
+    );
     m.insert("（已关闭）", " (off)");
     m.insert("播放/暂停热键：", "Play/pause hotkey: ");
     m.insert("按下播放/暂停热键…（Esc 取消）", "Press the play/pause hotkey… (Esc to cancel)");

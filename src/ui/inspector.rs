@@ -215,6 +215,61 @@ impl Workspace {
           .and_then(|v| v.parse::<f64>().ok())
           .unwrap_or(0.0);
         list = list.child(field("当前曲目", shown));
+        // 多条曲目（单选）：点一条立刻换曲；删除同时删媒体库文件。
+        let fname = |p: &str| {
+          std::path::Path::new(p)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(p)
+            .to_string()
+        };
+        let mut tracks: Vec<(String, String)> = n
+          .params
+          .get("tracks")
+          .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(s).ok())
+          .unwrap_or_default()
+          .iter()
+          .filter_map(|t| {
+            let p = t.get("path").and_then(|v| v.as_str())?.to_string();
+            let name = t
+              .get("name")
+              .and_then(|v| v.as_str())
+              .map(|s| s.to_string())
+              .unwrap_or_else(|| fname(&p));
+            Some((name, p))
+          })
+          .collect();
+        if tracks.is_empty() && !cur.is_empty() {
+          tracks.push((fname(&cur), cur.clone()));
+        }
+        if tracks.len() > 1 {
+          list = list.child(hint("曲目（单选；删除会同时删库文件）"));
+          for (i, (name, p)) in tracks.iter().enumerate() {
+            let on = *p == cur;
+            let p2 = p.clone();
+            list = list.child(
+              div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                  choice_button(cx, format!("trk:{id}:{i}"), name.clone(), on).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                      this.set_player_track(id, p2.clone(), cx);
+                    }),
+                  ),
+                )
+                .child(div().flex_1())
+                .child(
+                  danger_button(cx, format!("trkdel:{id}:{i}"), "删除").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                      this.remove_track(id, i, cx);
+                    },
+                  )),
+                ),
+            );
+          }
+        }
         // **进度 = 续播**：同一个滑块，拖动即定位并写入 `resume_sec`（不再单独一条参数）。
         list = list.child(
           div()

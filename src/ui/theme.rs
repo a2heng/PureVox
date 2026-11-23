@@ -47,7 +47,7 @@ pub const CARD_TITLE_MAX: f32 = 11.0;
 /// 标题最小字号：长类型名（含翻译）可以缩到这么小，保证不把首行的增益挤掉。
 pub const CARD_TITLE_MIN: f32 = 6.0;
 /// 卡片内边距（左右）。
-pub const CARD_PAD: f32 = 6.0;
+pub const CARD_PAD: f32 = 4.0;
 /// 卡片首行跳过开关的宽度（与 `mini_switch` 同值）。
 pub const CARD_SWITCH_W: f32 = 24.0;
 /// 卡片首行右侧处理前增益的固定宽度。

@@ -362,6 +362,86 @@ impl Workspace {
     cx.notify();
   }
 
+  /// 播放器换曲（单选）：写 `path`、续播归零，运行中发 `PlayerLoad` 直接切，不重建会话。
+  pub(super) fn set_player_track(&mut self, node: u32, path: String, cx: &mut Context<Self>) {
+    if let Some(n) = self.plan.node_mut(node) {
+      n.params.insert("path".into(), path.clone());
+      n.params.insert("resume_sec".into(), "0.00".into());
+    }
+    if let Some((ci, ri)) = self.pos(node)
+      && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+    {
+      s.send(crate::engine::media::MediaCmd::PlayerLoad(path.clone()));
+    }
+    let _ = self.audio.persist_plan(self.plan.clone());
+    let name = std::path::Path::new(&path)
+      .file_name()
+      .and_then(|s| s.to_str())
+      .unwrap_or("曲目");
+    self.status = format!("播放器：切换到 {name}");
+    cx.notify();
+  }
+
+  /// 删除播放器的一条曲目（**同步删媒体库文件**；仍被音效板/其它曲目引用则保留）。
+  pub(super) fn remove_track(&mut self, node: u32, index: usize, cx: &mut Context<Self>) {
+    let Some(n) = self.plan.node(node) else {
+      return;
+    };
+    let mut tracks: Vec<serde_json::Value> = n
+      .params
+      .get("tracks")
+      .and_then(|s| serde_json::from_str(s).ok())
+      .unwrap_or_default();
+    if index >= tracks.len() {
+      return;
+    }
+    let removed = tracks[index]
+      .get("path")
+      .and_then(|v| v.as_str())
+      .unwrap_or("")
+      .to_string();
+    let current = n.params.get("path").cloned().unwrap_or_default();
+    self.snapshot();
+    tracks.remove(index);
+    let next = if current == removed {
+      tracks
+        .first()
+        .and_then(|t| t.get("path").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string()
+    } else {
+      current
+    };
+    if let Some(n) = self.plan.node_mut(node) {
+      n.params.insert(
+        "tracks".into(),
+        serde_json::Value::Array(tracks).to_string(),
+      );
+      n.params.insert("path".into(), next.clone());
+      n.params.insert("resume_sec".into(), "0.00".into());
+    }
+    let still_used = self.plan_media_paths().contains(&removed);
+    let file_removed = if removed.is_empty() || still_used {
+      false
+    } else {
+      crate::media::discard(&removed).is_ok()
+    };
+    if let Some((ci, ri)) = self.pos(node)
+      && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+    {
+      s.send(crate::engine::media::MediaCmd::PlayerLoad(next));
+    }
+    let _ = self.audio.persist_plan(self.plan.clone());
+    self.status = if file_removed {
+      "已删除曲目与媒体库文件".into()
+    } else if still_used {
+      "已删除曲目（库文件仍被引用，保留）".into()
+    } else {
+      "已删除曲目".into()
+    };
+    cx.notify();
+  }
+
   /// 播放器定位：拖动进度条 = 同时设置播放位置与断点续播（`resume_sec`）。
   pub(super) fn set_player_seek(
     &mut self,
@@ -515,6 +595,15 @@ impl Workspace {
             {
               out.push(p.clone());
             }
+            if let Some(raw) = r.params.get("tracks")
+              && let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(raw)
+            {
+              for t in list {
+                if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
+                  out.push(p.to_string());
+                }
+              }
+            }
           }
           _ => {}
         }
@@ -633,7 +722,24 @@ impl Workspace {
     if let Some(n) = self.plan.node_mut(pm.node) {
       match pm.kind {
         crate::media::MediaKind::Music => {
+          // 播放器支持多条曲目（单选）：导入 = 加进列表并切到新曲目。
+          let mut tracks: Vec<serde_json::Value> = n
+            .params
+            .get("tracks")
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+          if !tracks
+            .iter()
+            .any(|t| t.get("path").and_then(|v| v.as_str()) == Some(path.as_str()))
+          {
+            tracks.push(serde_json::json!({ "name": name, "path": path }));
+          }
+          n.params.insert(
+            "tracks".into(),
+            serde_json::Value::Array(tracks).to_string(),
+          );
           n.params.insert("path".into(), path.clone());
+          n.params.insert("resume_sec".into(), "0.00".into());
         }
         crate::media::MediaKind::Soundpad => {
           let mut pads: Vec<serde_json::Value> = n
@@ -866,24 +972,15 @@ impl Workspace {
     (x, y)
   }
 
-  pub(super) fn free_spot(&self, w: f32, h: f32) -> (f32, f32) {
-    let mut x = 64.0;
-    let mut y = 72.0;
-    for _ in 0..400 {
-      let hit = self.plan.nodes().any(|n| {
-        let (nw, nh) = Self::card_size_for(n, self.show_vu);
-        x < n.x + nw + 16.0 && x + w + 16.0 > n.x && y < n.y + nh + 16.0 && y + h + 16.0 > n.y
-      });
-      if !hit {
-        return (x, y);
-      }
-      x += 232.0;
-      if x > 2600.0 {
-        x = 64.0;
-        y += 100.0;
-      }
+  pub(super) fn free_spot(&self, _w: f32, _h: f32) -> (f32, f32) {
+    // 新节点默认落在**第一列的新一行**：x 固定 48，y = 现有最低点再往下留 44 px。
+    // 不再往首行右侧铺（行越排越宽）；连线后「整理」会按上下游重新分行。
+    let mut bottom = 32.0f32;
+    for n in self.plan.nodes() {
+      let (_, nh) = Self::card_size_for(n, self.show_vu);
+      bottom = bottom.max(n.y + nh + 44.0);
     }
-    (64.0, 72.0)
+    (24.0, bottom)
   }
 
   /// 节点类型 → 行类型（调试 API / 菜单共用；未知类型按处理节点）。
@@ -990,6 +1087,15 @@ impl Workspace {
       }
       "remote_speaker" => device_name = Some("手机 / 客户端".into()),
       _ => {}
+    }
+    // 音效板 / 播放器：删节点时参数收了档（`settings.media_stash`），
+    // 重新添加同类节点原样恢复——音效列表 / 曲目列表 / 音量 / 热键都还在。
+    if matches!(ptype, "soundpad" | "player")
+      && let Some(stash) = self.settings.media_stash.get(ptype)
+    {
+      for (k, v) in stash {
+        params.insert(k.clone(), v.clone());
+      }
     }
     let mut node = RowSpec {
       kind,
@@ -1220,10 +1326,31 @@ impl Workspace {
   }
 
   pub(super) fn delete_node(&mut self, id: u32, cx: &mut Context<Self>) {
+    // 音效板 / 播放器：删节点 = 从画板拿掉，**不收走参数、不删库文件**。
+    // 参数收进 settings.media_stash（按类型），下次添加同类节点原样恢复。
+    // 具体某个音效 / 曲目的「删除」是另一条路，那边才同步删库文件。
+    let media_ptype = self
+      .plan
+      .node(id)
+      .map(|n| n.ptype.clone())
+      .filter(|t| matches!(t.as_str(), "soundpad" | "player"));
+    if let Some(ptype) = &media_ptype
+      && let Some(n) = self.plan.node(id)
+    {
+      self
+        .settings
+        .media_stash
+        .insert(ptype.clone(), n.params.clone());
+      let _ = crate::config::save_settings(&self.settings);
+    }
     self.snapshot();
     self.plan.remove_node(id);
     self.selected = None;
-    self.status = "已删除节点".into();
+    self.status = match media_ptype.as_deref() {
+      Some("player") => i18n::tr("已移除播放器节点（曲目保留，重新添加可恢复）").into(),
+      Some("soundpad") => i18n::tr("已移除音效板节点（音效保留，重新添加可恢复）").into(),
+      _ => "已删除节点".into(),
+    };
     self.apply_structure(cx);
   }
 
