@@ -186,15 +186,6 @@ impl Workspace {
       );
       if n.ptype == "player" {
         let cur = n.params.get("path").cloned().unwrap_or_default();
-        let shown = if cur.is_empty() {
-          "（未选择）".to_string()
-        } else {
-          std::path::Path::new(&cur)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&cur)
-            .to_string()
-        };
         let (pos, dur, playing) = self
           .pos(id)
           .and_then(|(ci, ri)| crate::engine::media::hub().slot(ci, ri))
@@ -214,7 +205,6 @@ impl Workspace {
           .get("volume_db")
           .and_then(|v| v.parse::<f64>().ok())
           .unwrap_or(0.0);
-        list = list.child(field("当前曲目", shown));
         // 多条曲目（单选）：点一条立刻换曲；删除同时删媒体库文件。
         let fname = |p: &str| {
           std::path::Path::new(p)
@@ -243,7 +233,6 @@ impl Workspace {
           tracks.push((fname(&cur), cur.clone()));
         }
         if !tracks.is_empty() {
-          list = list.child(hint("曲目（单选；删除会同时删库文件）"));
           for (i, (name, p)) in tracks.iter().enumerate() {
             let on = *p == cur;
             let p2 = p.clone();
