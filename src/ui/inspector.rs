@@ -242,7 +242,7 @@ impl Workspace {
         if tracks.is_empty() && !cur.is_empty() {
           tracks.push((fname(&cur), cur.clone()));
         }
-        if tracks.len() > 1 {
+        if !tracks.is_empty() {
           list = list.child(hint("曲目（单选；删除会同时删库文件）"));
           for (i, (name, p)) in tracks.iter().enumerate() {
             let on = *p == cur;
@@ -252,14 +252,17 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .gap_2()
+                // 名称占满剩余宽度并裁切；删除固定在最右，长文件名不会把它顶出去。
                 .child(
-                  choice_button(cx, format!("trk:{id}:{i}"), name.clone(), on).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                      this.set_player_track(id, p2.clone(), cx);
-                    }),
+                  div().flex_1().min_w_0().overflow_hidden().child(
+                    choice_button(cx, format!("trk:{id}:{i}"), name.clone(), on)
+                      .w_full()
+                      .min_w_0()
+                      .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_player_track(id, p2.clone(), cx);
+                      })),
                   ),
                 )
-                .child(div().flex_1())
                 .child(
                   danger_button(cx, format!("trkdel:{id}:{i}"), "删除").on_click(cx.listener(
                     move |this, _, _, cx| {
