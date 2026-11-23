@@ -27,7 +27,7 @@ rust-version = "1.95"
 
 [dependencies.purevox_denoise_rust]
 git = "https://github.com/a2heng/purevox_denoise_rust"
-rev = "34764375a9e9e01781f0d45e4c6b59b246d42a84"
+rev = "63f1fbf5087f0aed6a50b48b9af280ebbee2f887"
 
 [features]
 # 需要真实声卡的测量（时钟 ppm）：默认不编译，手动 `cargo test --features hw-tests`

@@ -61,7 +61,9 @@ impl Denoise {
 
   /// 会话/行重启：缓存与流式 DSP 状态一起归零（从零缓存起步即与模型契约一致）。
   pub fn reset(&mut self) {
-    self.engine.set_cache_flat(&vec![0.0; self.engine.cache_len()]);
+    self
+      .engine
+      .set_cache_flat(&vec![0.0; self.engine.cache_len()]);
     self.stft.reset();
   }
 
@@ -73,7 +75,10 @@ impl Denoise {
     let spec = self.stft.analyze(hop);
     let out = self.engine.process_hop(spec);
     if out.len() != SPEC_LEN {
-      return Err(format!("降噪输出维度异常：{}（期望 {SPEC_LEN}）", out.len()));
+      return Err(format!(
+        "降噪输出维度异常：{}（期望 {SPEC_LEN}）",
+        out.len()
+      ));
     }
     self.spec_out.copy_from_slice(&out);
     Ok(self.stft.synthesize(&self.spec_out[..]))
@@ -99,10 +104,7 @@ mod tests {
     let mut energy = 0.0f64;
     for _ in 0..20 {
       let hop: Vec<f32> = (0..HOP)
-        .map(|i| {
-          let x = (phase + i as f32 * 0.05).sin() * 0.1;
-          x
-        })
+        .map(|i| (phase + i as f32 * 0.05).sin() * 0.1)
         .collect();
       phase += HOP as f32 * 0.05;
       let out = d.process(&hop).expect("process hop");
