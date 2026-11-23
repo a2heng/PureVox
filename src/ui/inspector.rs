@@ -1707,18 +1707,19 @@ impl Workspace {
               _ => Vec::new(),
             };
             let key = p.key.to_string();
-            let mut row = div().flex().flex_wrap().gap_1();
+            // 一行一个：模型名较长（purevox_denoise_202605a），横排会换行错位
+            let mut row = div().flex().flex_col().items_start().gap_1();
             for (value, label) in choices {
               let v = value.clone();
               let k = key.clone();
               let on = cur == value;
               row = row.child(
-                choice_button(cx, format!("pm:{id}:{}:{}", p.key, value), label, on).on_click(
-                  cx.listener(move |this, _, _window, cx| {
+                choice_button(cx, format!("pm:{id}:{}:{}", p.key, value), label, on)
+                  .w_full()
+                  .on_click(cx.listener(move |this, _, _window, cx| {
                     this.snapshot();
                     this.set_param(id, &k, v.clone(), cx);
-                  }),
-                ),
+                  })),
               );
             }
             row.into_any_element()

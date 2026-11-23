@@ -507,7 +507,7 @@ pub fn preload_all() {
     .ok();
 }
 
-/// 降噪模型（`models/` 下的一个**目录**，界面直接显示原始模型名）。
+/// 降噪模型（`models/` 下的一个**目录**，界面直接显示完整目录名）。
 ///
 /// 2026-11-23 起降噪不再走 ONNX，改由开源库 `purevox_denoise_rust` 在进程内推理
 /// （BSD-3-Clause；模型与库同仓分发）。目录里是 `meta.json + weights.safetensors`，
@@ -523,7 +523,7 @@ pub const MODEL_DENOISE_D: &str = "purevox_denoise_202611d";
 /// 降噪 202611f（同 d，更宽通道 + 3 层双路径 GRU）。
 pub const MODEL_DENOISE_F: &str = "purevox_denoise_202611f";
 
-/// 可选降噪模型（目录名, 界面名）。**界面上就是原始模型名**，不再有"小/中/大"档位别名。
+/// 可选降噪模型（目录名, 界面名）。界面名就是完整目录名（`purevox_denoise_202605a`），一行一个。
 pub fn denoise_models() -> &'static [(&'static str, &'static str)] {
   &[
     (MODEL_DENOISE, "purevox_denoise_202605a"),
