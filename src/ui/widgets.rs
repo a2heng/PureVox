@@ -288,6 +288,72 @@ pub(super) fn status_chip(text: impl Into<SharedString>, level: &str) -> Div {
     )
 }
 
+/// 快捷键的键位徽标：录制中显示「按键…」，为空显示「未绑定」。
+///
+/// 只表达「这行绑定的是什么键」，不参与点击；录制 / 清除由同行的按钮负责。
+pub(super) fn key_chip(spec: &str, recording: bool) -> Div {
+  let (text, fg, border, bg) = if recording {
+    (
+      i18n::tr("按键…").to_string(),
+      t::ACCENT,
+      t::ACCENT,
+      t::ACCENT_SOFT,
+    )
+  } else if spec.is_empty() {
+    (
+      i18n::tr("未绑定").to_string(),
+      t::MUTED,
+      t::BORDER,
+      t::PANEL_HI,
+    )
+  } else {
+    (spec.to_string(), t::TEXT, t::BORDER, t::PANEL_HI)
+  };
+  div()
+    .flex()
+    .items_center()
+    .h(px(20.))
+    .px(px(t::SPACE_2))
+    .rounded(px(t::RADIUS_SM))
+    .border_1()
+    .border_color(rgb(border))
+    .bg(rgb(bg))
+    .text_size(px(t::TEXT_XS))
+    .text_color(rgb(fg))
+    .child(text)
+}
+
+/// 一行快捷键：左侧名称（占满剩余宽度）、右侧键位徽标 + 调用点给的按钮（录制 / 清除）。
+///
+/// 设置页与节点检查器共用这一份排版，避免两边各写一套。
+pub(super) fn hotkey_row(
+  label: impl Into<SharedString>,
+  spec: &str,
+  recording: bool,
+  actions: Vec<AnyElement>,
+) -> Div {
+  let label: SharedString = label.into();
+  let mut row = div()
+    .flex()
+    .items_center()
+    .gap_2()
+    .min_h(px(24.))
+    .child(
+      div()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .text_size(px(t::TEXT_SM))
+        .text_color(rgb(t::TEXT))
+        .child(label),
+    )
+    .child(key_chip(spec, recording));
+  for a in actions {
+    row = row.child(a);
+  }
+  row
+}
+
 /// 一行「标签 → 值」。值右对齐并截断，长度变化时不推挤左列。
 pub(super) fn field(label: &str, value: String) -> Div {
   field_color(label, value, t::TEXT)

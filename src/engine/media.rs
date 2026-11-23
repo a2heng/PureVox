@@ -39,6 +39,10 @@ pub enum MediaCmd {
   PlayerPlay,
   /// 播放器：暂停（位置与缓冲保留）
   PlayerPause,
+  /// 播放器：播放/暂停切换（全局热键用；暂停中续播、播放中暂停）
+  PlayerToggle,
+  /// 音效板：单个音效的开关（关掉 = 点播与热键都不触发，在播声部淡出）
+  PadEnabled { index: usize, on: bool },
   /// 播放器：定位到 `sec` 秒
   PlayerSeek(f64),
   /// 行内增益（dB）。音效板：`index` = 音效序号（实时更新在播声部）；
@@ -54,6 +58,8 @@ pub struct PadStatus {
   pub name: String,
   pub playing: bool,
   pub volume_db: f64,
+  /// 这个音效自己的开关（关掉 = 不触发；界面据此显示灰态）
+  pub enabled: bool,
 }
 
 /// 媒体行的状态快照（界面 2 Hz 轮询 `media_status`）。

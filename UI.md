@@ -53,7 +53,7 @@
 
 - `src/ui/widgets.rs` 是界面原语的唯一入口：`add_button` / `toolbar_icon` / `toolbar_text` /
   `quiet_button` / `choice_button` / `ghost_button` / `danger_button` / `switch_row` / `switch_control` /
-  `mini_switch` / `hint` / `field` / `section` / `probe_rate`。页面里不要复制一套按钮或字段样式。
+  `mini_switch` / `hint` / `field` / `section` / `probe_rate` / `key_chip` / `hotkey_row`。页面里不要复制一套按钮或字段样式。
 - **按钮必须分层，不能所有命令都长一样**：
   - `add_button`：顶栏「添加节点」，强调描边 + 加号，是工具栏唯一的结构性入口；
   - `toolbar_icon`：整理 / 撤销 / 重做 / 刷新 / 设置 / 调试，ghost 图标，必须带 tooltip 与可访问名；

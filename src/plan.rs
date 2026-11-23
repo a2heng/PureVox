@@ -793,6 +793,9 @@ pub fn pad_hotkeys(plan: &Plan, hub: crate::debug::SharedHub) -> Vec<crate::hotk
         Err(_) => continue, // 列表坏了不该拖垮热键（会话那边会报参数问题）
       };
       for (i, pad) in pads.iter().enumerate() {
+        if !pad.enabled {
+          continue; // 关掉的音效不绑热键
+        }
         let spec = crate::hotkey::normalize_spec(&pad.hotkey);
         if spec.is_empty() {
           continue;
@@ -813,6 +816,35 @@ pub fn pad_hotkeys(plan: &Plan, hub: crate::debug::SharedHub) -> Vec<crate::hotk
           }) as Arc<dyn Fn() + Send + Sync>,
         ));
       }
+    }
+  }
+  out
+}
+
+/// 计划里所有 `player` 行的「播放 / 暂停」热键（节点参数 `hotkey`）。
+/// 与 [`pad_hotkeys`] 同一条注册链：`restart_hotkeys` 把两组绑在一起起停。
+pub fn player_hotkeys(plan: &Plan, hub: crate::debug::SharedHub) -> Vec<crate::hotkey::Binding> {
+  let mut out = Vec::new();
+  for (ci, c) in plan.columns.iter().enumerate() {
+    for (ri, r) in c.rows.iter().enumerate() {
+      if r.kind != RowKind::Process || r.ptype != "player" || !r.enabled {
+        continue;
+      }
+      let spec =
+        crate::hotkey::normalize_spec(r.params.get("hotkey").map(|s| s.as_str()).unwrap_or(""));
+      if spec.is_empty() {
+        continue;
+      }
+      let hub2 = hub.clone();
+      out.push((
+        spec,
+        Arc::new(move || {
+          crate::engine::media::hub()
+            .slot(ci, ri)
+            .inspect(|s| s.send(crate::engine::media::MediaCmd::PlayerToggle));
+          hub2.push_ui("info", "热键：播放器 播放/暂停".into());
+        }) as Arc<dyn Fn() + Send + Sync>,
+      ));
     }
   }
   out
@@ -859,6 +891,31 @@ mod tests {
     assert!(!node.params.contains_key("aec"));
     assert!(!node.params.contains_key("far_device"));
     assert!(!node.params.contains_key("mic_gain_db"));
+  }
+
+  #[test]
+  fn player_hotkeys_skips_unbound_and_disabled() {
+    let mk = |enabled: bool, hot: &str| RowSpec {
+      kind: RowKind::Process,
+      ptype: "player".into(),
+      enabled,
+      params: BTreeMap::from([("hotkey".to_string(), hot.to_string())]),
+      ..Default::default()
+    };
+    let plan = Plan {
+      v: VERSION,
+      columns: vec![ColumnSpec {
+        rows: vec![
+          mk(true, "ctrl+alt+p"),
+          mk(true, ""),
+          mk(false, "Ctrl+Alt+O"),
+        ],
+        enabled: true,
+      }],
+    };
+    let bindings = player_hotkeys(&plan, crate::debug::DebugHub::new());
+    assert_eq!(bindings.len(), 1, "只注册启用且绑定了键位的播放器");
+    assert_eq!(bindings[0].0, "Ctrl+Alt+P");
   }
 
   #[test]

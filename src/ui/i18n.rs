@@ -547,9 +547,28 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("播放一段系统声音，让麦克风听到", "Play some system audio so the mic can hear it");
     m.insert("界面语言", "Language");
     m.insert("全局热键", "Global hotkey");
+    m.insert("快捷键", "Shortcuts");
     m.insert("当前键位", "Key");
     m.insert("热键", "Hotkey");
     m.insert("热键 —", "Hotkey —");
+    m.insert("引擎", "Engine");
+    m.insert("播放器", "Player");
+    m.insert("启动 / 停止", "Start / Stop");
+    m.insert("播放 / 暂停", "Play / Pause");
+    m.insert("按键…", "Press key…");
+    m.insert("未绑定", "Unbound");
+    m.insert("清除", "Clear");
+    m.insert("已清除热键", "Hotkey cleared");
+    m.insert("音效已启用", "Pad enabled");
+    m.insert("音效已关闭", "Pad disabled");
+    m.insert("音量", "Volume");
+    m.insert("（已关闭）", " (off)");
+    m.insert("播放/暂停热键：", "Play/pause hotkey: ");
+    m.insert("按下播放/暂停热键…（Esc 取消）", "Press the play/pause hotkey… (Esc to cancel)");
+    m.insert(
+      "热键全局生效：窗口在后台或收进托盘也能用；点「录制」后按键，Esc 取消。",
+      "Hotkeys work globally, even when the window is in the background or tray; click Record, then press a key. Esc cancels.",
+    );
     m.insert("响度", "Loudness");
     m.insert("低切 80 Hz", "Low cut 80 Hz");
     m.insert("高切 16 kHz", "High cut 16 kHz");

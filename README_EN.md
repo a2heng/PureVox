@@ -27,8 +27,8 @@ A1/A2. It is not a VoiceMeeter clone; AI processing and low latency come first.
 - **Virtual microphone**: VB-CABLE on Windows, self-created `purevox_mic` on Linux — pick it in OBS,
   a browser or a meeting app.
 - **Phone as mic / speaker**: HTTPS + Opus over LAN (web client or Android APK). Audio only.
-- **Settings page**: language (Chinese / English), start with Windows, global hotkey and cue-sound
-  toggles, hotkey recording, and cue preset previews. Each soundpad pad can record its own hotkey.
+- **Settings page**: language (Chinese / English), start with Windows, a full shortcut table — engine start/stop, player play/pause, and one hotkey per soundpad pad, each with record/clear (global; works when the window is in the background or tray) — plus cue-sound
+  toggles and preset previews.
 - **System tray**: minimize (-) and close (×) both go to the tray; the menu shows/hides the window,
   toggles the engine, and quits.
 - **Debug-first**: a separate debug window and the read-only HTTP endpoint

@@ -142,6 +142,7 @@ enum DockPage {
 enum RecordTarget {
   EngineHotkey,
   Pad { node: u32, index: usize },
+  Player { node: u32 },
 }
 
 /// EQ 画布在窗口里的逻辑像素矩形（prepaint 时写入，鼠标事件读）。

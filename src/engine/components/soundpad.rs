@@ -20,7 +20,7 @@
 //! 移植 legacy `SoundPadPlugin` 的语义：
 //! - 音效整段入内存（库内 48k 单声道 WAV，短音效起播零延迟），首次播放才读文件；
 //! - 起播 / 结束 / 手动停止 / 重播一律 **hop 内线性淡变**（杜绝硬切咔哒）；
-//! - 重播同一音效 = 旧声部淡出、新声部从**开头**起播（不叠加并行声部）；
+//! - 重播同一音效 = **旧声部立即丢掉**（含淡出尾巴）、新声部从**开头**起播（不叠加）；
 //! - 音量**每个音效一个**（±10 dB），拖动实时更新正在播的声部；
 //! - 行启用开关关断 = 在播声部淡出后结束（衔接无缝）。
 //!
@@ -50,14 +50,23 @@ pub struct PadCfg {
   pub path: String,
   #[serde(default)]
   pub volume_db: f64,
+  /// 这个音效自己的开关（关掉 = 点播与热键都不触发；不影响同行其它音效）。
+  #[serde(default = "d_true")]
+  pub enabled: bool,
   /// 全局热键（规范串，空 = 不绑；见 `hotkey::normalize_spec`）。
   /// **跟着计划走**：热键注册由 `plan::pad_hotkeys` 统一收口（`apply_plan` 时重注册）。
   #[serde(default)]
   pub hotkey: String,
 }
 
+fn d_true() -> bool {
+  true
+}
+
 /// 一次播放的声部（`data` 只读共享；`pos` 仅音频线程推进）。
 struct Voice {
+  /// 属于哪个音效（重播时按它清掉旧声部 / 淡出尾巴，避免叠加）
+  pad: usize,
   data: Arc<Vec<f32>>,
   pos: usize,
   vol: f32,
@@ -105,7 +114,7 @@ impl SoundpadStage {
   // ── 控制面（命令来自界面 / 热键线程，在音频线程 drain 执行）──
 
   fn play(&mut self, index: usize) {
-    if index >= self.pads.len() {
+    if index >= self.pads.len() || !self.pads[index].enabled {
       return;
     }
     let path = self.pads[index].path.clone();
@@ -117,16 +126,17 @@ impl SoundpadStage {
       self.cache.insert(path.clone(), loaded.ok());
     }
     let data = self.cache.get(&path).cloned().flatten();
-    // 旧声部（若有）转淡出，新声部从头起播
-    if let Some(old) = self.voices.get_mut(index).and_then(|v| v.take()) {
-      self.fading.push(old);
-    }
+    // 重播 = **从头开始、不叠加**：旧声部连同它的淡出尾巴一起丢掉，
+    // 再起一个新声部（起播有 hop 内淡入，首样本恒为 0）。
+    self.voices.get_mut(index).and_then(|v| v.take());
+    self.fading.retain(|v| v.pad != index);
     match data {
       Some(d) if !d.is_empty() => {
         if self.voices.len() < self.pads.len() {
           self.voices.resize_with(self.pads.len(), || None);
         }
         self.voices[index] = Some(Voice {
+          pad: index,
           data: d,
           pos: 0,
           vol: vol_gain(self.pads[index].volume_db),
@@ -161,6 +171,14 @@ impl SoundpadStage {
         MediaCmd::SoundpadPlay(i) => self.play(i),
         MediaCmd::SoundpadStop(i) => self.stop_one(i),
         MediaCmd::SoundpadStopAll => self.stop_all(),
+        MediaCmd::PadEnabled { index, on } => {
+          if let Some(p) = self.pads.get_mut(index) {
+            p.enabled = on;
+          }
+          if !on {
+            self.stop_one(index);
+          }
+        }
         MediaCmd::Volume { index: Some(i), db } => {
           if let Some(p) = self.pads.get_mut(i) {
             p.volume_db = db;
@@ -192,6 +210,7 @@ impl SoundpadStage {
         name: p.name.clone(),
         playing: self.voices.get(i).map(|v| v.is_some()).unwrap_or(false),
         volume_db: p.volume_db,
+        enabled: p.enabled,
       })
       .collect();
     let err = self.load_error.clone();
@@ -321,6 +340,7 @@ mod tests {
       name: path.to_string(),
       path: path.to_string(),
       volume_db: db,
+      enabled: true,
       hotkey: String::new(),
     }
   }
@@ -350,6 +370,28 @@ mod tests {
     let s = st.status().unwrap();
     assert!(s.contains("加载失败"), "状态必须带出原因：{s}");
     assert!(st.slot.status().error.is_some());
+  }
+
+  #[test]
+  fn disabled_pad_ignores_play_until_enabled() {
+    let dir = std::env::temp_dir().join("pv_soundpad_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("tone-disabled.wav");
+    let samples: Vec<f32> = (0..HOP).map(|i| (i as f32 / HOP as f32) - 0.5).collect();
+    crate::wav::write_mono_16(&p, &samples, 48_000).unwrap();
+    let mut cfg = pad(p.to_str().unwrap(), 0.0);
+    cfg.enabled = false;
+    let mut st = stage_with(vec![cfg]);
+    let mut frame = [0.0f32; HOP];
+    st.slot.send(MediaCmd::SoundpadPlay(0));
+    st.process(&mut frame, &FrameContext::default()).unwrap();
+    assert!(frame.iter().all(|&x| x == 0.0), "关掉的音效不得出声");
+    st.slot.send(MediaCmd::PadEnabled { index: 0, on: true });
+    st.slot.send(MediaCmd::SoundpadPlay(0));
+    let mut frame2 = [0.0f32; HOP];
+    st.process(&mut frame2, &FrameContext::default()).unwrap();
+    assert!(frame2.iter().any(|&x| x != 0.0), "打开后应能播放");
+    let _ = std::fs::remove_file(&p);
   }
 
   #[test]
@@ -405,7 +447,7 @@ mod tests {
     let mut f2 = [0.0f32; HOP];
     st.process(&mut f2, &FrameContext::default()).unwrap();
     assert!(f2[mid] > 0.0, "第二 hop 中点应为正斜坡");
-    // 重播：旧声部淡出、新声部从头起播 → 又回到负斜坡
+    // 重播：旧声部立即丢掉、新声部从头起播 → 又回到负斜坡
     st.slot.send(MediaCmd::SoundpadPlay(0));
     let mut f3 = [0.0f32; HOP];
     st.process(&mut f3, &FrameContext::default()).unwrap();

@@ -250,34 +250,242 @@ impl Workspace {
         };
       }
       RecordTarget::Pad { node, index } => {
-        let mut changed = false;
-        if let Some(n) = self.plan.node_mut(node) {
-          let mut pads: Vec<serde_json::Value> = n
-            .params
-            .get("pads")
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default();
-          if let Some(pad) = pads.get_mut(index)
-            && let Some(obj) = pad.as_object_mut()
-          {
-            obj.insert("hotkey".into(), serde_json::Value::String(norm.clone()));
-            changed = true;
-          }
-          if changed {
-            n.params
-              .insert("pads".into(), serde_json::Value::Array(pads).to_string());
-          }
-        }
-        if changed {
-          self.snapshot();
-          self.status = format!("{}{norm}", i18n::tr("音效热键："));
-          self.apply_structure(cx);
-        } else {
-          self.status = i18n::tr("没能写入这个音效的热键").into();
-        }
+        self.set_pad_hotkey(node, index, norm.clone(), cx);
+      }
+      RecordTarget::Player { node } => {
+        self.set_node_hotkey(node, norm.clone(), cx);
       }
     }
     self.end_record();
+    cx.notify();
+  }
+
+  /// 写节点自己的热键参数（播放器「播放 / 暂停」）：**只换键位，不重建会话**。
+  ///
+  /// 先落盘计划再重注册：热键线程只读内存里的绑定，音频侧下次重建时也会拿到新参数。
+  /// 传空串 = 清除绑定。
+  pub(super) fn set_node_hotkey(&mut self, node: u32, spec: String, cx: &mut Context<Self>) {
+    if self.plan.node(node).is_none() {
+      return;
+    }
+    self.snapshot();
+    if let Some(n) = self.plan.node_mut(node) {
+      n.params.insert("hotkey".into(), spec.clone());
+    }
+    let _ = self.audio.persist_plan(self.plan.clone());
+    self.restart_hotkeys();
+    self.status = if spec.is_empty() {
+      i18n::tr("已清除热键").into()
+    } else {
+      format!("{}{spec}", i18n::tr("播放/暂停热键："))
+    };
+    cx.notify();
+  }
+
+  /// 写音效板里第 `index` 个音效的热键（`pads` 参数的 `hotkey` 字段）。
+  /// 与 [`Self::set_node_hotkey`] 同理：不重建会话，只重注册热键。传空串 = 清除绑定。
+  pub(super) fn set_pad_hotkey(
+    &mut self,
+    node: u32,
+    index: usize,
+    spec: String,
+    cx: &mut Context<Self>,
+  ) {
+    let Some(n) = self.plan.node(node) else {
+      return;
+    };
+    let mut pads: Vec<serde_json::Value> = n
+      .params
+      .get("pads")
+      .and_then(|s| serde_json::from_str(s).ok())
+      .unwrap_or_default();
+    let Some(pad) = pads.get_mut(index).and_then(|p| p.as_object_mut()) else {
+      self.status = i18n::tr("没能写入这个音效的热键").into();
+      cx.notify();
+      return;
+    };
+    self.snapshot();
+    pad.insert("hotkey".into(), serde_json::Value::String(spec.clone()));
+    if let Some(n) = self.plan.node_mut(node) {
+      n.params
+        .insert("pads".into(), serde_json::Value::Array(pads).to_string());
+    }
+    let _ = self.audio.persist_plan(self.plan.clone());
+    self.restart_hotkeys();
+    self.status = if spec.is_empty() {
+      i18n::tr("已清除热键").into()
+    } else {
+      format!("{}{spec}", i18n::tr("音效热键："))
+    };
+    cx.notify();
+  }
+
+  /// 单个音效的开关：写回 `pads` JSON（持久化），运行中同时发运行时命令，
+  /// **不重建会话**；关掉时在播声部淡出，热键也一起失效。
+  pub(super) fn set_pad_enabled(
+    &mut self,
+    node: u32,
+    index: usize,
+    on: bool,
+    cx: &mut Context<Self>,
+  ) {
+    let Some(n) = self.plan.node(node) else {
+      return;
+    };
+    let mut pads: Vec<serde_json::Value> = n
+      .params
+      .get("pads")
+      .and_then(|s| serde_json::from_str(s).ok())
+      .unwrap_or_default();
+    let Some(pad) = pads.get_mut(index).and_then(|p| p.as_object_mut()) else {
+      return;
+    };
+    self.snapshot();
+    pad.insert("enabled".into(), serde_json::Value::Bool(on));
+    if let Some(n) = self.plan.node_mut(node) {
+      n.params
+        .insert("pads".into(), serde_json::Value::Array(pads).to_string());
+    }
+    let _ = self.audio.persist_plan(self.plan.clone());
+    if self.audio.is_running()
+      && let Some((ci, ri)) = self.pos(node)
+      && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+    {
+      s.send(crate::engine::media::MediaCmd::PadEnabled { index, on });
+    }
+    self.restart_hotkeys();
+    self.status = if on {
+      i18n::tr("音效已启用").into()
+    } else {
+      i18n::tr("音效已关闭").into()
+    };
+    cx.notify();
+  }
+
+  /// 单个音效的音量（±10 dB）：拖动实时改在播声部 + 计划 JSON，松手才落盘。
+  ///
+  /// 与 [`MediaCmd::Volume`] 同一路径；不重建会话。
+  pub(super) fn set_pad_volume(
+    &mut self,
+    node: u32,
+    index: usize,
+    db: f64,
+    persist: bool,
+    cx: &mut Context<Self>,
+  ) {
+    if let Some(n) = self.plan.node_mut(node) {
+      let mut pads: Vec<serde_json::Value> = n
+        .params
+        .get("pads")
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+      if let Some(pad) = pads.get_mut(index).and_then(|p| p.as_object_mut()) {
+        pad.insert("volume_db".into(), serde_json::json!(db));
+        n.params
+          .insert("pads".into(), serde_json::Value::Array(pads).to_string());
+      }
+    }
+    if self.audio.is_running()
+      && let Some((ci, ri)) = self.pos(node)
+      && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+    {
+      s.send(crate::engine::media::MediaCmd::Volume {
+        index: Some(index),
+        db,
+      });
+    }
+    if persist {
+      let _ = self.audio.persist_plan(self.plan.clone());
+    }
+    self.status = format!("音效音量 = {db:+.1} dB");
+    cx.notify();
+  }
+
+  /// 删除一个音效：从 `pads` 里移除，并且**删掉媒体库里复制的那份文件**。
+  ///
+  /// 库文件可能被别的音效 / 播放器引用（同内容幂等复用 → 同一条路径），
+  /// 整份计划里还有引用时只去掉列表项、不删文件。外部路径永不碰（`media::discard` 兜底）。
+  pub(super) fn remove_pad(&mut self, node: u32, index: usize, cx: &mut Context<Self>) {
+    let Some(n) = self.plan.node(node) else {
+      return;
+    };
+    let mut pads: Vec<serde_json::Value> = n
+      .params
+      .get("pads")
+      .and_then(|s| serde_json::from_str(s).ok())
+      .unwrap_or_default();
+    if index >= pads.len() {
+      return;
+    }
+    let path = pads[index]
+      .get("path")
+      .and_then(|v| v.as_str())
+      .unwrap_or("")
+      .to_string();
+    self.snapshot();
+    pads.remove(index);
+    if let Some(n) = self.plan.node_mut(node) {
+      n.params
+        .insert("pads".into(), serde_json::Value::Array(pads).to_string());
+    }
+    let still_used = self.plan_media_paths().contains(&path);
+    let removed = if path.is_empty() || still_used {
+      false
+    } else {
+      crate::media::discard(&path).is_ok()
+    };
+    self.status = if removed {
+      format!("已删除音效与库文件：{path}")
+    } else if still_used {
+      "已删除音效（库文件仍被其它节点引用，保留）".into()
+    } else {
+      "已删除音效".into()
+    };
+    self.apply_structure(cx);
+    cx.notify();
+  }
+
+  /// 计划里所有媒体文件路径（音效板每个音效 + 播放器当前曲目）。
+  fn plan_media_paths(&self) -> Vec<String> {
+    let mut out = Vec::new();
+    for c in &self.plan.columns {
+      for r in &c.rows {
+        match r.ptype.as_str() {
+          "soundpad" => {
+            if let Some(raw) = r.params.get("pads")
+              && let Ok(pads) = serde_json::from_str::<Vec<serde_json::Value>>(raw)
+            {
+              for pad in pads {
+                if let Some(p) = pad.get("path").and_then(|v| v.as_str()) {
+                  out.push(p.to_string());
+                }
+              }
+            }
+          }
+          "player" => {
+            if let Some(p) = r.params.get("path")
+              && !p.trim().is_empty()
+            {
+              out.push(p.clone());
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+    out
+  }
+
+  /// 清除引擎启停热键（设置页的「清除」）。空串即不监听，见 `hotkey::parse_spec`。
+  pub(super) fn clear_engine_hotkey(&mut self, cx: &mut Context<Self>) {
+    self.settings.hotkey.clear();
+    self.status = match crate::config::save_settings(&self.settings) {
+      Ok(()) => {
+        self.restart_hotkeys();
+        i18n::tr("已清除热键").into()
+      }
+      Err(e) => format!("{}{e}", i18n::tr("保存热键失败：")),
+    };
     cx.notify();
   }
 
@@ -291,6 +499,7 @@ impl Workspace {
       return;
     }
     let mut bindings = crate::plan::pad_hotkeys(&self.plan, self.hub.clone());
+    bindings.extend(crate::plan::player_hotkeys(&self.plan, self.hub.clone()));
     let spec = crate::hotkey::normalize_spec(&self.settings.hotkey);
     if !spec.is_empty() {
       let audio = self.audio.clone();
@@ -389,6 +598,7 @@ impl Workspace {
             "name": name,
             "path": path,
             "volume_db": 0.0,
+            "enabled": true,
             "hotkey": "",
           }));
           n.params

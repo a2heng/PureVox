@@ -658,6 +658,12 @@ static SPECS: &[NodeSpec] = &[
           step: 1.0,
         },
       },
+      // 全局「播放/暂停」热键（规范串，空 = 不绑）；见 hotkey.rs
+      ParamSpec {
+        key: "hotkey",
+        label: "播放 / 暂停",
+        kind: ParamKind::Text { default: "" },
+      },
     ],
   },
   // 输出行（汇）

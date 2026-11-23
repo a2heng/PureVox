@@ -265,6 +265,7 @@ impl PlayerStage {
       match cmd {
         MediaCmd::PlayerPlay => self.paused = false,
         MediaCmd::PlayerPause => self.paused = true,
+        MediaCmd::PlayerToggle => self.paused = !self.paused,
         MediaCmd::PlayerSeek(sec) => {
           self.pos = (sec.max(0.0) * SAMPLE_RATE as f64) as u64;
           *self.shared.seek.lock().unwrap() = Some(sec.max(0.0));
@@ -517,6 +518,22 @@ mod tests {
     }
     assert_eq!(st.pos, p1, "暂停后位置必须冻结");
     assert!(st.slot.status().paused);
+    let _ = std::fs::remove_file(&path);
+  }
+
+  #[test]
+  fn toggle_flips_pause() {
+    let path = write_lib_wav("toggle-0.3s.wav", 0.3, 440.0);
+    let mut st = PlayerStage::load(&path, 0.0, 0.0, slot());
+    let mut frame = [0.0f32; HOP];
+    st.process(&mut frame, &FrameContext::default()).unwrap();
+    assert!(!st.paused, "默认在播");
+    st.slot.send(MediaCmd::PlayerToggle);
+    st.process(&mut frame, &FrameContext::default()).unwrap();
+    assert!(st.paused, "第一次切换 = 暂停");
+    st.slot.send(MediaCmd::PlayerToggle);
+    st.process(&mut frame, &FrameContext::default()).unwrap();
+    assert!(!st.paused, "第二次切换 = 续播");
     let _ = std::fs::remove_file(&path);
   }
 

@@ -220,6 +220,40 @@ impl Workspace {
               )),
             ),
         );
+        // 播放 / 暂停热键：全局生效（窗口在后台也行），录制完立即重注册。
+        let hk = n.params.get("hotkey").cloned().unwrap_or_default();
+        let recording = matches!(self.recording, Some(RecordTarget::Player { node }) if node == id);
+        let mut actions = vec![
+          quiet_button(
+            cx,
+            format!("pkey:{id}"),
+            if recording { "按键…" } else { "录制" },
+          )
+          .on_click(cx.listener(move |this, _, _, cx| {
+            if recording {
+              this.end_record();
+              this.status = i18n::tr("已取消录制热键").into();
+            } else {
+              this.begin_record(
+                RecordTarget::Player { node: id },
+                "按下播放/暂停热键…（Esc 取消）",
+                cx,
+              );
+            }
+            cx.notify();
+          }))
+          .into_any_element(),
+        ];
+        if !hk.is_empty() && !recording {
+          actions.push(
+            ghost_button(cx, format!("pkeyclear:{id}"), "清除")
+              .on_click(cx.listener(move |this, _, _, cx| {
+                this.set_node_hotkey(id, String::new(), cx);
+              }))
+              .into_any_element(),
+          );
+        }
+        list = list.child(hotkey_row(i18n::tr("播放 / 暂停"), &hk, recording, actions));
       } else {
         let pads: Vec<serde_json::Value> = n
           .params
@@ -240,82 +274,133 @@ impl Workspace {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+          let volume = pad.get("volume_db").and_then(|v| v.as_f64()).unwrap_or(0.0);
+          let enabled = pad.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
           let recording = matches!(
             self.recording,
             Some(RecordTarget::Pad { node, index }) if node == id && index == i
+          );
+          let entity = cx.entity();
+          let toggle = switch_control(
+            format!("paden:{id}:{i}"),
+            "启用",
+            enabled,
+            move |next, _, cx| {
+              let on = *next;
+              entity.update(cx, |this, cx| this.set_pad_enabled(id, i, on, cx));
+            },
           );
           list = list.child(
             div()
               .flex()
               .flex_col()
               .gap_1()
+              .p(px(t::SPACE_2))
+              .rounded(px(t::RADIUS_MD))
+              .border_1()
+              .border_color(rgb(t::BORDER))
+              .bg(rgb(t::PANEL))
               .child(
-                quiet_button(cx, format!("pad:{id}:{i}"), format!("▶ {name}")).on_click(
-                  cx.listener(move |this, _, _, cx| {
-                    if let Some((ci, ri)) = this.pos(id)
-                      && let Some(s) = crate::engine::media::hub().slot(ci, ri)
-                    {
-                      s.send(crate::engine::media::MediaCmd::SoundpadPlay(i));
-                      this.status = format!("播放音效：{name}");
-                    } else {
-                      this.status = "引擎未运行：先启动再播放".into();
-                    }
-                    cx.notify();
-                  }),
-                ),
+                div()
+                  .flex()
+                  .items_center()
+                  .gap_2()
+                  .child(toggle)
+                  .child(
+                    div()
+                      .flex_1()
+                      .min_w_0()
+                      .overflow_hidden()
+                      .text_size(px(t::TEXT_SM))
+                      .text_color(rgb(if enabled { t::TEXT } else { t::MUTED }))
+                      .child(if enabled {
+                        name.clone()
+                      } else {
+                        format!("{name}{}", i18n::tr("（已关闭）"))
+                      }),
+                  )
+                  .child(
+                    quiet_button(cx, format!("pad:{id}:{i}"), "▶").on_click(cx.listener(
+                      move |this, _, _, cx| {
+                        if !enabled {
+                          this.status = i18n::tr("音效已关闭").into();
+                          cx.notify();
+                          return;
+                        }
+                        if let Some((ci, ri)) = this.pos(id)
+                          && let Some(s) = crate::engine::media::hub().slot(ci, ri)
+                        {
+                          s.send(crate::engine::media::MediaCmd::SoundpadPlay(i));
+                          this.status = format!("播放音效：{name}");
+                        } else {
+                          this.status = "引擎未运行：先启动再播放".into();
+                        }
+                        cx.notify();
+                      },
+                    )),
+                  )
+                  .child(
+                    danger_button(cx, format!("paddel:{id}:{i}"), "删除").on_click(cx.listener(
+                      move |this, _, _, cx| {
+                        this.remove_pad(id, i, cx);
+                      },
+                    )),
+                  ),
               )
               .child(
                 div()
                   .flex()
                   .items_center()
-                  .gap_1()
+                  .gap_2()
                   .child(
                     div()
-                      .flex_1()
+                      .w(px(28.))
                       .text_size(px(t::TEXT_XS))
                       .text_color(rgb(t::MUTED))
-                      .child(if hotkey.is_empty() {
-                        i18n::tr("热键 —").to_string()
-                      } else {
-                        format!("{} {hotkey}", i18n::tr("热键"))
-                      }),
+                      .child(i18n::tr("音量").to_string()),
                   )
+                  .child(self.pad_volume_slider(id, i, volume, window, cx))
                   .child(
-                    quiet_button(
-                      cx,
-                      format!("padkey:{id}:{i}"),
-                      if recording { "按键…" } else { "录制" },
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                      if recording {
-                        this.end_record();
-                        this.status = i18n::tr("已取消录制热键").into();
-                        cx.notify();
-                      } else {
-                        this.begin_record(
-                          RecordTarget::Pad { node: id, index: i },
-                          "按下这个音效的热键…（Esc 取消）",
-                          cx,
-                        );
-                      }
-                    })),
+                    div()
+                      .w(px(46.))
+                      .text_size(px(t::TEXT_XS))
+                      .text_color(rgb(t::MUTED))
+                      .child(format!("{volume:+.1} dB")),
                   ),
-              ),
-          );
-        }
-        if !pads.is_empty() {
-          list = list.child(
-            ghost_button(cx, format!("padstop:{id}"), "全部停止").on_click(cx.listener(
-              move |this, _, _, cx| {
-                if let Some((ci, ri)) = this.pos(id)
-                  && let Some(s) = crate::engine::media::hub().slot(ci, ri)
-                {
-                  s.send(crate::engine::media::MediaCmd::SoundpadStopAll);
-                  this.status = "音效板：全部停止".into();
+              )
+              .child({
+                let mut actions = vec![
+                  quiet_button(
+                    cx,
+                    format!("padkey:{id}:{i}"),
+                    if recording { "按键…" } else { "录制" },
+                  )
+                  .on_click(cx.listener(move |this, _, _, cx| {
+                    if recording {
+                      this.end_record();
+                      this.status = i18n::tr("已取消录制热键").into();
+                      cx.notify();
+                    } else {
+                      this.begin_record(
+                        RecordTarget::Pad { node: id, index: i },
+                        "按下这个音效的热键…（Esc 取消）",
+                        cx,
+                      );
+                    }
+                  }))
+                  .into_any_element(),
+                ];
+                if !hotkey.is_empty() && !recording {
+                  actions.push(
+                    ghost_button(cx, format!("padkeyclear:{id}:{i}"), "清除")
+                      .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_pad_hotkey(id, i, String::new(), cx);
+                      }))
+                      .into_any_element(),
+                  );
                 }
-                cx.notify();
-              },
-            )),
+                hotkey_row(i18n::tr("热键"), &hotkey, recording, actions)
+              }),
           );
         }
       }
@@ -1599,6 +1684,67 @@ impl Workspace {
       .into_any_element()
   }
 
+  /// 音效板里单个音效的音量滑杆（±10 dB）：拖动实时改在播声部，松手落盘。
+  pub(super) fn pad_volume_slider(
+    &mut self,
+    node: u32,
+    index: usize,
+    value: f64,
+    window: &mut Window,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    let skey = (node, format!("padvol:{index}"));
+    let drag_key = format!("padvol:{node}:{index}");
+    let state = match self.sliders.get(&skey) {
+      Some(s) => s.clone(),
+      None => {
+        let state = cx.new(|_| {
+          SliderState::new()
+            .min(-10.0)
+            .max(10.0)
+            .step(1.0)
+            .scale(SliderScale::Linear)
+            .default_value(value as f32)
+        });
+        let dk = drag_key.clone();
+        let sub = cx.subscribe(
+          &state,
+          move |this: &mut Workspace, _state, event: &SliderEvent, cx| match event {
+            SliderEvent::Change(SliderValue::Single(v)) => {
+              if this.slider_drag.as_deref() != Some(&dk) {
+                this.snapshot();
+                this.slider_drag = Some(dk.clone());
+              }
+              this.set_pad_volume(node, index, *v as f64, false, cx);
+            }
+            SliderEvent::Release(SliderValue::Single(v)) => {
+              this.slider_drag = None;
+              this.set_pad_volume(node, index, *v as f64, true, cx);
+            }
+            _ => {}
+          },
+        );
+        self.subs.push(sub);
+        self.sliders.insert(skey, state.clone());
+        state
+      }
+    };
+    let current = state.read(cx).value().end();
+    if (current - value as f32).abs() > 0.01 {
+      state.update(cx, |state, cx| state.set_value(value as f32, window, cx));
+    }
+    div()
+      .flex_1()
+      .min_w_0()
+      .child(
+        Slider::new(&state)
+          .horizontal()
+          .bg(rgb(t::ACCENT))
+          .text_color(rgb(t::TEXT)),
+      )
+      .into_any_element()
+  }
+
   pub(super) fn params_editor(
     &mut self,
     id: u32,
@@ -1616,7 +1762,8 @@ impl Workspace {
       return list;
     };
     for p in spec.params {
-      if p.key == "far_device" {
+      // `far_device` 自己选（AEC 卡片）；`hotkey` 是热键参数，用录制行编辑，不当文本显示。
+      if p.key == "far_device" || p.key == "hotkey" {
         continue;
       }
       let cur = n

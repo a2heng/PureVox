@@ -700,6 +700,210 @@ impl Workspace {
     };
 
     let entity = cx.entity();
+
+    // ── 快捷键列表：引擎启停 / 播放器播放暂停 / 音效板每个音效 ──────────────
+    // 录制与清除都走 Workspace 的热键方法：只重注册绑定，不重建音频会话。
+    // 名称取「能认出来的东西」：播放器用曲目名、音效用音效名，不摆行号。
+    let group = |title: &'static str| {
+      div()
+        .pt(px(t::SPACE_1))
+        .text_size(px(t::TEXT_XS))
+        .text_color(rgb(t::MUTED))
+        .child(i18n::tr(title).to_string())
+    };
+    let mut shortcut_rows: Vec<AnyElement> = Vec::new();
+    {
+      let recording = matches!(self.recording, Some(RecordTarget::EngineHotkey));
+      let mut actions = vec![
+        quiet_button(
+          cx,
+          "sk:rec:engine",
+          if recording { "按键…" } else { "录制" },
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+          if matches!(this.recording, Some(RecordTarget::EngineHotkey)) {
+            this.end_record();
+            this.status = i18n::tr("已取消录制热键").into();
+          } else {
+            this.begin_record(
+              RecordTarget::EngineHotkey,
+              "按下新的全局热键…（Esc 取消）",
+              cx,
+            );
+          }
+          cx.notify();
+        }))
+        .into_any_element(),
+      ];
+      if !hot_spec.is_empty() && !recording {
+        actions.push(
+          ghost_button(cx, "sk:clear:engine", "清除")
+            .on_click(cx.listener(|this, _, _, cx| this.clear_engine_hotkey(cx)))
+            .into_any_element(),
+        );
+      }
+      shortcut_rows.push(group("引擎").into_any_element());
+      shortcut_rows.push(
+        hotkey_row(i18n::tr("启动 / 停止"), &hot_spec, recording, actions).into_any_element(),
+      );
+    }
+    let mut player_rows: Vec<AnyElement> = Vec::new();
+    let mut pad_rows: Vec<AnyElement> = Vec::new();
+    for c in &self.plan.columns {
+      for r in &c.rows {
+        if r.kind != crate::plan::RowKind::Process {
+          continue;
+        }
+        match r.ptype.as_str() {
+          "player" => {
+            if !r.enabled {
+              continue;
+            }
+            let node = r.id;
+            let name = r
+              .params
+              .get("path")
+              .filter(|p| !p.trim().is_empty())
+              .and_then(|p| std::path::Path::new(p).file_name())
+              .and_then(|s| s.to_str())
+              .map(|s| s.to_string())
+              .unwrap_or_else(|| i18n::tr("音乐播放器").to_string());
+            let spec = r.params.get("hotkey").cloned().unwrap_or_default();
+            let recording =
+              matches!(self.recording, Some(RecordTarget::Player { node: n }) if n == node);
+            let mut actions = vec![
+              quiet_button(
+                cx,
+                format!("sk:rec:player:{node}"),
+                if recording { "按键…" } else { "录制" },
+              )
+              .on_click(cx.listener(move |this, _, _, cx| {
+                if matches!(this.recording, Some(RecordTarget::Player { node: n }) if n == node) {
+                  this.end_record();
+                  this.status = i18n::tr("已取消录制热键").into();
+                } else {
+                  this.begin_record(
+                    RecordTarget::Player { node },
+                    "按下播放/暂停热键…（Esc 取消）",
+                    cx,
+                  );
+                }
+                cx.notify();
+              }))
+              .into_any_element(),
+            ];
+            if !spec.is_empty() && !recording {
+              actions.push(
+                ghost_button(cx, format!("sk:clear:player:{node}"), "清除")
+                  .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_node_hotkey(node, String::new(), cx);
+                  }))
+                  .into_any_element(),
+              );
+            }
+            player_rows.push(
+              hotkey_row(
+                format!("{} · {name}", i18n::tr("播放 / 暂停")),
+                &spec,
+                recording,
+                actions,
+              )
+              .into_any_element(),
+            );
+          }
+          "soundpad" => {
+            if !r.enabled {
+              continue;
+            }
+            let node = r.id;
+            let pads: Vec<serde_json::Value> = r
+              .params
+              .get("pads")
+              .and_then(|s| serde_json::from_str(s).ok())
+              .unwrap_or_default();
+            for (i, pad) in pads.iter().enumerate() {
+              if !pad.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true) {
+                continue; // 关掉的音效不注册热键，也不列进快捷键表
+              }
+              let name = pad
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("音效")
+                .to_string();
+              let spec = pad
+                .get("hotkey")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+              let recording = matches!(
+                self.recording,
+                Some(RecordTarget::Pad { node: n, index }) if n == node && index == i
+              );
+              let mut actions = vec![
+                quiet_button(
+                  cx,
+                  format!("sk:rec:pad:{node}:{i}"),
+                  if recording { "按键…" } else { "录制" },
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                  if matches!(this.recording, Some(RecordTarget::Pad { node: n, index }) if n == node && index == i)
+                  {
+                    this.end_record();
+                    this.status = i18n::tr("已取消录制热键").into();
+                  } else {
+                    this.begin_record(
+                      RecordTarget::Pad { node, index: i },
+                      "按下这个音效的热键…（Esc 取消）",
+                      cx,
+                    );
+                  }
+                  cx.notify();
+                }))
+                .into_any_element(),
+              ];
+              if !spec.is_empty() && !recording {
+                actions.push(
+                  ghost_button(cx, format!("sk:clear:pad:{node}:{i}"), "清除")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                      this.set_pad_hotkey(node, i, String::new(), cx);
+                    }))
+                    .into_any_element(),
+                );
+              }
+              pad_rows.push(
+                hotkey_row(
+                  format!("{} · {name}", i18n::tr("音效")),
+                  &spec,
+                  recording,
+                  actions,
+                )
+                .into_any_element(),
+              );
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+    if !player_rows.is_empty() {
+      shortcut_rows.push(group("播放器").into_any_element());
+      shortcut_rows.extend(player_rows);
+    }
+    if !pad_rows.is_empty() {
+      shortcut_rows.push(group("音效板").into_any_element());
+      shortcut_rows.extend(pad_rows);
+    }
+    let shortcut_block = div()
+      .flex()
+      .flex_col()
+      .gap_1()
+      .p(px(t::SPACE_2))
+      .rounded(px(t::RADIUS_MD))
+      .border_1()
+      .border_color(rgb(t::BORDER))
+      .bg(rgb(t::PANEL))
+      .children(shortcut_rows);
+
     let mut list = div()
       .flex()
       .flex_col()
@@ -743,6 +947,7 @@ impl Workspace {
         },
       ))
       .child(hint("登录后自动运行引擎并隐藏到托盘；点托盘图标显示窗口。"))
+      .child(section("快捷键"))
       .child(switch_row("hotkey-toggle", "全局热键", hot, {
         let entity = entity.clone();
         move |next, _, cx| {
@@ -764,43 +969,10 @@ impl Workspace {
           });
         }
       }))
-      .child(
-        div()
-          .flex()
-          .items_center()
-          .justify_between()
-          .gap_2()
-          .child(
-            div()
-              .flex()
-              .items_center()
-              .gap_2()
-              .text_size(px(t::TEXT_SM))
-              .child(
-                div()
-                  .text_color(rgb(t::MUTED))
-                  .child(i18n::tr("当前键位").to_string()),
-              )
-              .child(
-                div()
-                  .text_color(rgb(t::TEXT))
-                  .child(if hot_spec.is_empty() {
-                    "—".to_string()
-                  } else {
-                    hot_spec
-                  }),
-              ),
-          )
-          .child(
-            quiet_button(cx, "hotkey-record", "录制").on_click(cx.listener(|this, _, _, cx| {
-              this.begin_record(
-                RecordTarget::EngineHotkey,
-                "按下新的全局热键…（Esc 取消）",
-                cx,
-              );
-            })),
-          ),
-      )
+      .child(hint(
+        "热键全局生效：窗口在后台或收进托盘也能用；点「录制」后按键，Esc 取消。",
+      ))
+      .child(shortcut_block)
       .child(switch_row("cue-toggle", "提示音", cue, {
         let entity = entity.clone();
         move |next, _, cx| {
