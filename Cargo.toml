@@ -43,6 +43,10 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.gpui-kit-assets]
 opt-level = 3
+# 降噪推理：调试构建不优化会 60 ms/hop（预算 10 ms），音频线程追不上就是持续爆音；
+# 这里只给推理库开 O3，应用代码仍是 Debug。
+[profile.dev.package.purevox_denoise_rust]
+opt-level = 3
 [profile.dev.package.gpui-pre-platform]
 opt-level = 3
 [profile.dev.package.rustybuzz]

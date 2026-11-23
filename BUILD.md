@@ -94,6 +94,8 @@ Linux 托盘（ksni，无 GTK）提供「显示窗口 / 启停引擎 / 退出」
 ## 6. 常见坑
 
 - 运行中的 exe 会锁住 `target/debug/purevox.exe`：用独立 `CARGO_TARGET_DIR` 构建。
+- 降噪是纯 Rust 推理（`purevox_denoise_rust`）：**dev 构建不优化是 ~60 ms/hop**（预算 10 ms），
+  表现就是持续爆音/撕裂，别当成 OLA 问题查。`Cargo.toml` 已给该 crate 单独 `opt-level = 3`，不要删。
 - 改完界面直接跑旧二进制是没用的（GPUI 原生，没有前端热更新）；重新 `cargo build`。
 - 模型目录：开发态用 `PUREVOX_MODEL_DIR` 指向仓库 `models/`；打包后放 exe 同级 `models/`。
 - 调试接口固定 `47821`，隔离实例用 `PUREVOX_DEBUG_PORT` 改端口。
