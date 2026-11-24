@@ -153,7 +153,13 @@ impl Workspace {
       .clone()
       .unwrap_or_else(|| crate::net::hub().stats());
     let running = st.running;
-    let dot = if running { t::OK } else { t::MUTED };
+    let dot = if running {
+      t::OK
+    } else if st.last_error.is_some() {
+      t::DANGER
+    } else {
+      t::MUTED
+    };
     let mut list = div().flex().flex_col().gap_2().child(
       div()
         .flex()
@@ -171,72 +177,20 @@ impl Workspace {
               } else {
                 crate::net::start()
               };
-              this.status = match r {
-                Ok(m) => format!("网络服务：{m}"),
-                Err(e) => format!("网络服务：{e}"),
+              this.status = match &r {
+                Ok(_) => format!("网络服务已启动（端口 {}）", crate::net::hub().port()),
+                Err(e) => format!("网络服务启动失败：{e}"),
               };
-              this.net_last = Instant::now() - Duration::from_secs(2);
+              // 状态栏与卡片都要立刻反映结果，不等下一次 1 s 轮询
+              this.net_stats = Some(crate::net::hub().stats());
+              this.net_last = Instant::now();
               cx.notify();
             }),
           ),
         ),
     );
-    if !running {
-      return list
-        .child(hint("服务未启动：启动后手机 / 网页才能连。"))
-        .into_any_element();
-    }
     let port = st.port;
-    // ── 第二行：左边说明、右边二维码（横向排，省掉原来竖着堆的高度）─────────
-    let mut qr_box = div()
-      .flex()
-      .flex_col()
-      .items_center()
-      .gap_1()
-      .w(px(128.))
-      .flex_shrink_0();
-    match &self.net_qr {
-      Some(path) => {
-        qr_box = qr_box
-          .child(gpui_kit::img(path.clone()).w(px(120.)).h(px(120.)))
-          .child(
-            div()
-              .text_size(px(t::TEXT_XS))
-              .text_color(rgb(t::MUTED))
-              .child(i18n::tr("手机扫码连接")),
-          );
-      }
-      None => {
-        qr_box = qr_box.child(
-          div()
-            .text_size(px(t::TEXT_XS))
-            .text_color(rgb(t::MUTED))
-            .child(i18n::tr("二维码生成中…")),
-        );
-      }
-    }
-    list = list.child(
-      div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(
-          div()
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .flex_col()
-            .gap_1()
-            .child(hint(
-              "手机和电脑连同一个 Wi-Fi：用 App 扫右边的码，或用浏览器打开下面的地址。",
-            ))
-            .child(hint(
-              "浏览器首次访问会提示证书不安全：点「CA 说明」安装一次本地 CA。",
-            )),
-        )
-        .child(qr_box),
-    );
-    // ── 第三行：地址:可编辑端口 · 复制 · CA 说明 ─────────────────────
+    // ── 端口行：**紧贴启动按钮常驻**，服务起停时位置不跳 ──────────────
     let port_state = match self.net_port_input.clone() {
       Some(s) => s,
       None => {
@@ -319,50 +273,6 @@ impl Workspace {
         ))),
     );
     // ── 第四行：紧凑的网卡选择卡片（一行一个网卡，不再铺 IPv6）──────────
-    if st.clients == 0 {
-      list = list.child(hint(i18n::tr(
-        "服务在运行，但还没有手机连上。一直连不上的话：确认手机与电脑在同一 Wi-Fi；确认电脑防火墙放行本机网络端口（Linux 常见 ufw / firewalld，Windows 首次监听会弹窗）；部分公司 / 公共 Wi-Fi 禁止设备互访。",
-      )));
-      if let Some(fw) = crate::net::firewall::status(port) {
-        let state = i18n::tr(match fw.allowed {
-          Some(true) => "端口已放行",
-          Some(false) => "未看到放行规则",
-          None => "需要 root 才能确认",
-        });
-        list = list.child(hint(format!(
-          "{} {} · {} {port} · {state}",
-          i18n::tr("Linux 防火墙"),
-          fw.kind.name(),
-          i18n::tr("端口"),
-        )));
-        let (open, revert) = crate::net::firewall::commands(fw.kind, port);
-        for (id, cmd) in [("net-fw-open", open), ("net-fw-revert", revert)] {
-          let copy = cmd.clone();
-          list = list.child(
-            div()
-              .flex()
-              .items_center()
-              .gap_1()
-              .min_w(px(0.))
-              .child(
-                div()
-                  .flex_1()
-                  .min_w(px(0.))
-                  .text_size(px(t::TEXT_XS))
-                  .text_color(rgb(t::MUTED))
-                  .child(cmd),
-              )
-              .child(
-                quiet_button(cx, id, "复制").on_click(cx.listener(move |this, _, _, cx| {
-                  cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
-                  this.status = format!("已复制：{copy}");
-                  cx.notify();
-                })),
-              ),
-          );
-        }
-      }
-    }
     if self.net_ifaces.len() > 1 {
       let mut row = div().flex().flex_wrap().gap_1().w_full();
       for i in self.net_ifaces.clone() {
@@ -427,6 +337,126 @@ impl Workspace {
         );
       }
       list = list.child(row);
+    }
+    if !running {
+      list = list.child(hint("服务未启动：填好上面的端口后点右上角「启动」。"));
+      // 启动失败（端口被占 / 被系统保留 / 缺 opus.dll）必须**在卡片里**看见，
+      // 不能只在底栏一闪而过——用户下一步要做的就是按这里的说明改端口。
+      if let Some(err) = st.last_error.clone() {
+        list = list.child(
+          div()
+            .text_size(px(t::TEXT_SM))
+            .text_color(rgb(t::DANGER))
+            .child(err),
+        );
+        if let Some(p) = crate::net::suggest_port() {
+          list = list.child(field("可用端口", p.to_string())).child(
+            quiet_button(cx, "net-alt-port", "换端口并启动").on_click(cx.listener(
+              move |this, _, _, cx| {
+                this.apply_net_port_value(p, cx);
+                cx.notify();
+              },
+            )),
+          );
+        }
+      }
+      return list.into_any_element();
+    }
+
+    // ── 服务在跑：左边说明、右边二维码（端口 / 网卡行在上面，位置不跳）──
+    let mut qr_box = div()
+      .flex()
+      .flex_col()
+      .items_center()
+      .gap_1()
+      .w(px(128.))
+      .flex_shrink_0();
+    match &self.net_qr {
+      Some(path) => {
+        qr_box = qr_box
+          .child(gpui_kit::img(path.clone()).w(px(120.)).h(px(120.)))
+          .child(
+            div()
+              .text_size(px(t::TEXT_XS))
+              .text_color(rgb(t::MUTED))
+              .child(i18n::tr("手机扫码连接")),
+          );
+      }
+      None => {
+        qr_box = qr_box.child(
+          div()
+            .text_size(px(t::TEXT_XS))
+            .text_color(rgb(t::MUTED))
+            .child(i18n::tr("二维码生成中…")),
+        );
+      }
+    }
+    list = list.child(
+      div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+          div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .flex_col()
+            .gap_1()
+            .child(hint(
+              "手机和电脑连同一个 Wi-Fi：用 App 扫右边的码，或用浏览器打开上面的地址。",
+            ))
+            .child(hint(
+              "浏览器首次访问会提示证书不安全：点「CA 说明」安装一次本地 CA。",
+            )),
+        )
+        .child(qr_box),
+    );
+
+    // ── 服务在跑但还没有客户端：连不上时按这几条排查（Linux 防火墙等）────
+    if st.clients == 0 {
+      list = list.child(hint(i18n::tr(
+        "服务在运行，但还没有手机连上。一直连不上的话：确认手机与电脑在同一 Wi-Fi；确认电脑防火墙放行本机网络端口（Linux 常见 ufw / firewalld，Windows 首次监听会弹窗）；部分公司 / 公共 Wi-Fi 禁止设备互访。",
+      )));
+      if let Some(fw) = crate::net::firewall::status(port) {
+        let state = i18n::tr(match fw.allowed {
+          Some(true) => "端口已放行",
+          Some(false) => "未看到放行规则",
+          None => "需要 root 才能确认",
+        });
+        list = list.child(hint(format!(
+          "{} {} · {} {port} · {state}",
+          i18n::tr("Linux 防火墙"),
+          fw.kind.name(),
+          i18n::tr("端口"),
+        )));
+        let (open, revert) = crate::net::firewall::commands(fw.kind, port);
+        for (id, cmd) in [("net-fw-open", open), ("net-fw-revert", revert)] {
+          let copy = cmd.clone();
+          list = list.child(
+            div()
+              .flex()
+              .items_center()
+              .gap_1()
+              .min_w(px(0.))
+              .child(
+                div()
+                  .flex_1()
+                  .min_w(px(0.))
+                  .text_size(px(t::TEXT_XS))
+                  .text_color(rgb(t::MUTED))
+                  .child(cmd),
+              )
+              .child(
+                quiet_button(cx, id, "复制").on_click(cx.listener(move |this, _, _, cx| {
+                  cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
+                  this.status = format!("已复制：{copy}");
+                  cx.notify();
+                })),
+              ),
+          );
+        }
+      }
     }
 
     // ── 连上之后发生了什么 ──────────────────────────────────────────
@@ -522,6 +552,9 @@ impl Workspace {
 
   fn apply_net_port_value(&mut self, p: u16, cx: &mut Context<Self>) {
     self.net_port_draft = Some(p);
+    // 输入框按旧端口建的：换端口（含「换端口并启动」按钮）后丢掉状态，下一次渲染
+    // 会用新端口重建，否则界面上显示的还是改之前的数字。
+    self.net_port_input = None;
     if self.settings.net_port == p {
       return;
     }
@@ -529,12 +562,13 @@ impl Workspace {
     let saved = crate::config::save_settings(&self.settings);
     crate::net::hub().set_port(p);
     let r = crate::net::restart();
-    self.status = match (saved, r) {
+    self.status = match (saved, &r) {
       (Err(e), _) => format!("端口已应用，但设置保存失败：{e}"),
-      (_, Ok(m)) => format!("端口 {p}：{m}"),
+      (_, Ok(_)) => format!("端口 {p} 已生效"),
       (_, Err(e)) => format!("端口 {p} 启动失败：{e}"),
     };
-    self.net_last = Instant::now() - Duration::from_secs(2);
+    self.net_stats = Some(crate::net::hub().stats());
+    self.net_last = Instant::now();
     self.net_qr_url.clear();
     self.net_qr = None;
     cx.notify();

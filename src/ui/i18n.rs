@@ -310,6 +310,9 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("端口", "Port");
     m.insert("抖动缓冲（手机缓冲帧数，1 帧 = 10 ms）", "Jitter buffer (frames on the phone, 1 frame = 10 ms)");
     m.insert("端口被占用", "Port already in use");
+    m.insert("可用端口", "Available port");
+    m.insert("换端口并启动", "Use that port and start");
+    m.insert("服务未启动：启动后手机 / 网页才能连。", "Service is not running: start it so the phone / browser can connect.");
     m.insert("向远端送扫频探针，测出延时与两端电平并回填", "Send a sweep to the far end; measures delay and both levels, then fills them in");
     m.insert("参数控件未就绪", "Parameter controls not ready");
     m.insert("模型", "Model");
@@ -655,6 +658,9 @@ fn table() -> &'static HashMap<&'static str, &'static str> {
     m.insert("内容", "Content");
     m.insert("引擎运行中", "Engine running");
     m.insert("引擎已停止", "Engine stopped");
+    m.insert("网络已启动", "Network started");
+    m.insert("网络未启动", "Network stopped");
+    m.insert("网络启动失败", "Network failed to start");
     m.insert("启动引擎", "Start engine");
     m.insert("停止引擎", "Stop engine");
     m.insert("整理", "Arrange");

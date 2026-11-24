@@ -511,6 +511,15 @@ python tools/automation/net_loopback.py --mode roundtrip --seconds 10 --json rt.
 **端口固定但可编辑**：默认 `59123`（`proto::PORT`），界面可改并**持久化到
 `~/.purevox/settings.json`**。改完走「重启服务」生效。
 
+- **绑定是同步的**：`start()` 里先 `TcpListener::bind`，失败立刻返回错误（`last_error`
+  同时写进 `/debug`），**不会**再出现「底栏说已启动、浏览器却连不上」。端口行在服务
+  没起时也显示，用户可以直接改端口重试。
+- **Windows 保留端口（`WSAEACCES`，os error 10013）**：装了 Hyper-V / WSL2 / Docker
+  的机器，WinNAT 会预留大段动态端口（默认端口 59123 很容易落在里面）。卡片红字给出
+  `netsh interface ipv4 show excludedportrange protocol=tcp`，并探测一个当前能绑的
+  空闲端口（47831 起）给「换端口并启动」按钮——不自动改用户设置。
+- 端口被普通程序占用（`AddrInUse`）给的是「关掉它或换端口」，同样在卡片里可见。
+
 **Linux 防火墙（只提示，不代执行）**：服务绑 `0.0.0.0`，但 ufw / firewalld 默认丢入站，
 本机 `https://127.0.0.1:59123` 能开、手机连不上。网络卡片在没有客户端时显示
 `net::firewall` 的探测结果：识别 ufw（`/etc/ufw/ufw.conf`）或 firewalld

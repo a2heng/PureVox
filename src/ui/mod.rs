@@ -1627,37 +1627,142 @@ impl Workspace {
 }
 
 impl Workspace {
+  /// 状态栏一句话是否在报问题。
+  ///
+  /// 状态文本来自几十处，逐处加级别不现实；这里按措辞判定（「失败 / 出错 / 不可用 /
+  /// 必须…」）。宁可多标红，也不能把失败当普通提示：网络服务启动失败时，用户第一眼
+  /// 看到的应该是红字原因，而不是一句灰字。
+  fn status_is_error(&self) -> bool {
+    const BAD: [&str; 10] = [
+      "失败",
+      "出错",
+      "错误",
+      "不可用",
+      "拒绝",
+      "没能",
+      "无法",
+      "没有可用",
+      "无效",
+      "必须",
+    ];
+    BAD.iter().any(|k| self.status.contains(k))
+  }
+
   fn status_bar(&self) -> impl IntoElement {
     let running = self.audio.is_running();
+    let (net_running, net_failed, net_port) = match self.net_stats.as_ref() {
+      Some(s) => (s.running, !s.running && s.last_error.is_some(), s.port),
+      None => (
+        crate::net::hub().is_running(),
+        false,
+        crate::net::hub().port(),
+      ),
+    };
+    let bad = self.status_is_error();
+    let msg_color = if bad {
+      t::DANGER
+    } else if running {
+      t::TEXT
+    } else {
+      t::MUTED
+    };
+    let dot = if bad {
+      t::DANGER
+    } else if running {
+      t::OK
+    } else {
+      t::MUTED
+    };
+    let net_color = if net_failed {
+      t::DANGER
+    } else if net_running {
+      t::OK
+    } else {
+      t::MUTED
+    };
+    let net_label = if net_failed {
+      i18n::tr("网络启动失败").to_string()
+    } else if net_running {
+      format!("{} :{net_port}", i18n::tr("网络已启动"))
+    } else {
+      i18n::tr("网络未启动").to_string()
+    };
+    let message = if self.job.is_some() {
+      i18n::tr("应用图中…").to_string()
+    } else {
+      self.status.clone()
+    };
     div()
       .flex()
       .items_center()
-      .gap_3()
+      .gap_2()
       .h(px(t::STATUS_H))
       .px(px(t::SPACE_3))
       .bg(rgb(t::PANEL))
       .border_t_1()
       .border_color(rgb(t::BORDER))
       .text_size(px(t::TEXT_SM))
-      .text_color(rgb(if running { t::TEXT } else { t::MUTED }))
-      .child(if self.job.is_some() {
-        i18n::tr("应用图中…").to_string()
-      } else {
-        self.status.clone()
-      })
-      .child(div().flex_1())
-      .child(format!(
-        "{} {} · {} {} · {}",
-        self.plan.nodes().count(),
-        i18n::tr("节点"),
-        self.plan.nodes().map(|n| n.inputs.len()).sum::<usize>(),
-        i18n::tr("条线"),
-        if running {
-          i18n::tr("引擎运行中")
-        } else {
-          i18n::tr("引擎已停止")
-        }
-      ))
+      // 左边：本次操作的结果 / 遇到的问题。一颗状态点 + 正文，问题用危险色。
+      .child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(dot)))
+      .child(
+        div()
+          .flex_1()
+          .min_w(px(0.))
+          .truncate()
+          .text_color(rgb(msg_color))
+          .child(message),
+      )
+      // 右边：**当前状态**（不是历史消息）：网络服务 + 引擎，颜色和状态一致。
+      .child(
+        div()
+          .flex_shrink_0()
+          .text_color(rgb(t::MUTED))
+          .child(format!(
+            "{} · {}",
+            self.plan.nodes().count(),
+            i18n::tr("节点"),
+          )),
+      )
+      .child(
+        div()
+          .flex_shrink_0()
+          .text_color(rgb(t::MUTED))
+          .child(format!(
+            "{} · {}",
+            self.plan.nodes().map(|n| n.inputs.len()).sum::<usize>(),
+            i18n::tr("条线"),
+          )),
+      )
+      .child(
+        div()
+          .flex_shrink_0()
+          .flex()
+          .items_center()
+          .gap_1()
+          .child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(net_color)))
+          .child(div().text_color(rgb(net_color)).child(net_label)),
+      )
+      .child(
+        div()
+          .flex_shrink_0()
+          .flex()
+          .items_center()
+          .gap_1()
+          .child(div().w(px(6.)).h(px(6.)).rounded_full().bg(rgb(if running {
+            t::OK
+          } else {
+            t::MUTED
+          })))
+          .child(
+            div()
+              .text_color(rgb(if running { t::TEXT } else { t::MUTED }))
+              .child(if running {
+                i18n::tr("引擎运行中")
+              } else {
+                i18n::tr("引擎已停止")
+              }),
+          ),
+      )
   }
 }
 

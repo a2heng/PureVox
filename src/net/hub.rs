@@ -656,6 +656,10 @@ impl NetHub {
     lock(&self.stats).last_error = Some(e.into());
   }
 
+  pub fn clear_last_error(&self) {
+    lock(&self.stats).last_error = None;
+  }
+
   pub fn set_rtt(&self, ms: f64) {
     lock(&self.stats).rtt_ms = Some(ms);
   }

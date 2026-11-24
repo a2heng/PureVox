@@ -85,48 +85,61 @@ pub fn start() -> Result<String, String> {
   let app = server::router(h.clone(), ca_pem.clone());
   let port = h.port();
   let addr = std::net::SocketAddr::from((BIND_ADDR, port));
+
+  // **同步绑定**：端口占用 / 被系统保留必须在这里就失败并返回错误。
+  // 以前 bind 在后台任务里，`start()` 先返回 Ok，界面底栏照报「已启动」——用户看到
+  // 的就是「说启动成功，浏览器却连不上」，而真正的原因只躺在 `/debug` 里。
+  let std_listener = std::net::TcpListener::bind(addr).map_err(|e| {
+    let msg = bind_error(port, &e);
+    h.set_last_error(msg.clone());
+    h.set_running(false);
+    msg
+  })?;
+  std_listener
+    .set_nonblocking(true)
+    .map_err(|e| format!("端口 {port} 设置非阻塞失败：{e}"))?;
+  let listener = {
+    // `from_std` 必须在 tokio 运行时上下文里调用（它要向当前 IO driver 注册）
+    let _guard = crate::rt::handle().enter();
+    tokio::net::TcpListener::from_std(std_listener)
+      .map_err(|e| format!("端口 {port} 注册到异步运行时失败：{e}"))?
+  };
+
+  h.set_running(true);
+  h.set_ca_pem(ca_pem);
+  // 广告跟着服务起停：服务没开就搜不到，这是**预期行为**（界面要写明），
+  // 总比「搜到了却连不上」好排查
+  match mdns::advertise(&ips, port) {
+    Ok(m) => h.set_last_error(m),
+    Err(e) => h.set_last_error(format!("mDNS 广播失败：{e}")),
+  }
+
   let hh = h.clone();
   let handle = crate::rt::spawn(async move {
-    match tokio::net::TcpListener::bind(addr).await {
-      Ok(listener) => {
-        hh.set_running(true);
-        hh.set_ca_pem(ca_pem);
-        // 广告跟着服务起停：服务没开就搜不到，这是**预期行为**（界面要写明），
-        // 总比「搜到了却连不上」好排查
-        match mdns::advertise(&ips, port) {
-          Ok(m) => hh.set_last_error(m),
-          Err(e) => hh.set_last_error(format!("mDNS 广播失败：{e}")),
-        }
-        loop {
-          // 单次 accept 失败（连接被 RST、fd 紧张）不该拖垮整个服务
-          let Ok((tcp, _peer)) = listener.accept().await else {
-            continue;
-          };
-          // **必须关 Nagle**：音频是每 10 ms 一个 ~40 字节的小包，Nagle 会「等上一个包
-          // 被 ACK 再发」，把它们攒成 40~60 ms 一批。实测症状：手机侧 RTT 恒 57 ms、
-          // 最大到达间隔 154 ms、一批 2~4 个包同时到 → 20 ms 的环冲爆（`trims` 9.5/s）
-          // 又饿死（补 PLC 3.9/s），听感就是「一直在抖」。
-          // 手机端（OkHttp）早已 `TCP_NODELAY`，这里是**服务端漏掉的那一半**。
-          if let Err(e) = tcp.set_nodelay(true) {
-            hh.set_last_error(format!("设置 TCP_NODELAY 失败：{e}"));
-          }
-          let acceptor = acceptor.clone();
-          let app = app.clone();
-          let hh = hh.clone();
-          crate::rt::spawn(async move {
-            // 握手失败只影响这一个客户端（多半是有人拿 http:// 探了一下这个端口）
-            if let Ok(stream) = acceptor.accept(tcp).await
-              && let Err(e) = serve_conn(stream, app).await
-            {
-              hh.set_last_error(format!("连接出错：{e}"));
-            }
-          });
-        }
+    loop {
+      // 单次 accept 失败（连接被 RST、fd 紧张）不该拖垮整个服务
+      let Ok((tcp, _peer)) = listener.accept().await else {
+        continue;
+      };
+      // **必须关 Nagle**：音频是每 10 ms 一个 ~40 字节的小包，Nagle 会「等上一个包
+      // 被 ACK 再发」，把它们攒成 40~60 ms 一批。实测症状：手机侧 RTT 恒 57 ms、
+      // 最大到达间隔 154 ms、一批 2~4 个包同时到 → 20 ms 的环冲爆（`trims` 9.5/s）
+      // 又饿死（补 PLC 3.9/s），听感就是「一直在抖」。
+      // 手机端（OkHttp）早已 `TCP_NODELAY`，这里是**服务端漏掉的那一半**。
+      if let Err(e) = tcp.set_nodelay(true) {
+        hh.set_last_error(format!("设置 TCP_NODELAY 失败：{e}"));
       }
-      Err(e) => {
-        hh.set_last_error(format!("端口 {} 绑定失败：{e}", port));
-        hh.set_running(false);
-      }
+      let acceptor = acceptor.clone();
+      let app = app.clone();
+      let hh = hh.clone();
+      crate::rt::spawn(async move {
+        // 握手失败只影响这一个客户端（多半是有人拿 http:// 探了一下这个端口）
+        if let Ok(stream) = acceptor.accept(tcp).await
+          && let Err(e) = serve_conn(stream, app).await
+        {
+          hh.set_last_error(format!("连接出错：{e}"));
+        }
+      });
     }
   });
   *TASK.lock().map_err(|_| "服务锁已中毒".to_string())? = Some(handle);
@@ -167,10 +180,44 @@ async fn serve_conn(
     .await
 }
 
+/// 端口绑定失败的说明（含**能照着做**的原因，不是一句 `os error 10013`）。
+///
+/// 默认端口 59123 落在 Windows 的动态端口段（49152–65535）。装了 Hyper-V / WSL2 /
+/// Docker Desktop 的机器，WinNAT 会把其中大段端口标成**系统保留**，此时 bind 报
+/// WSAEACCES(10013)，表现形式就是「界面说启动成功、手机/浏览器却说连接被拒绝」。
+fn bind_error(port: u16, e: &std::io::Error) -> String {
+  let mut msg = format!("端口 {port} 绑定失败：{e}");
+  match e.kind() {
+    std::io::ErrorKind::PermissionDenied => msg.push_str(if cfg!(windows) {
+      "。这个端口在本机的系统保留范围里（Hyper-V / WSL2 / Docker 的 WinNAT 会预留大段端口）。\
+       用 `netsh interface ipv4 show excludedportrange protocol=tcp` 可查保留范围，\
+       换一个不在范围内的端口（1024–49151 之间最稳）即可"
+    } else {
+      "。1024 以下的端口需要 root；换一个 1024 以上的端口即可"
+    }),
+    std::io::ErrorKind::AddrInUse => msg.push_str("。端口被别的程序占用了：关掉它，或者换一个端口"),
+    _ => {}
+  }
+  msg
+}
+
+/// 找一个现在真的能 bind 的空闲端口，给「启动失败 → 一键换端口」用。
+///
+/// **不自动改**用户填的端口（端口是用户可见配置，二维码/地址都跟着它走）；
+/// 只在端口绑不上时把候选端口的按钮摆出来。从 47831 起试：低于 Windows 动态端口段，
+/// 也避开本机调试 HTTP 的 47821。可用与否以实际 bind 结果为准，不维护端口白名单。
+pub fn suggest_port() -> Option<u16> {
+  let current = hub().port();
+  let any = std::net::Ipv4Addr::UNSPECIFIED;
+  (47_831..=48_400).find(|p| *p != current && std::net::TcpListener::bind((any, *p)).is_ok())
+}
+
 /// 停服务（幂等）：真的 abort 掉监听任务，不只是清状态位。
 pub fn stop() {
   let h = hub();
   h.set_running(false);
+  // 上一次启动失败的说明不能留到下一次：手动停止之后再看到「端口绑定失败」会误判
+  h.clear_last_error();
   // 广告必须跟着停：常驻广播会让「明明没跑服务却搜得到」，连过去必然失败，比搜不到更难排查
   mdns::unregister();
   // 锁中毒时不能 panic：停服务是在退出路径上调用的，宁可漏停也不能崩。
