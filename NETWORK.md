@@ -584,6 +584,13 @@ wasm 只要浏览器有 `WebAssembly` 就行。帧长按引擎 hop 配（`channe
 - `/ca-cert` 下载 CA、`/libopus-wasm.js` 与 `/generated/libopus.generated.mjs` 提供编解码器。
   后两者**必须长缓存**（编译期产物，运行期不变），而网页 `/` 反过来**必须不缓存**。
 
+**网页版界面（2026-11-24）**：与手机版同一套 COUI 观感（色板对齐
+`android/app/src/main/java/com/purevox/mic/ui/PvTheme.kt`：24 px 圆角分组卡片、整行可点开关、
+头图 + 状态点），全部手写在 `src/net/webclient.rs` 的 `PAGE` 里，**不引任何前端框架 / 外链**。
+两个容易踩的点：① 状态圆点用 `dot warn`，提示框**不能**再叫 `.warn`（padding/margin 会把
+9 px 圆点撑成一块胶囊）；② AudioWorklet 源码是反引号模板字符串，里面不能出现反引号。
+改完跑 `cargo test --bin purevox net::webclient`，再用真浏览器看一眼控制台与移动端宽度。
+
 **APK 走同一个 HTTPS 端口**，但**只对私有网段放行自签证书**（`LocalTls.kt`）：`10/8`、
 `172.16/12`、`192.168/16`、`127/8`、`169.254/16`、IPv6 的 `::1` / `fe80::/10` / `fc00::/7`。
 **不用「无条件信任所有证书」**——那是安全反模式，会让这个 app 在任何域名上都丧失 TLS 的意义。

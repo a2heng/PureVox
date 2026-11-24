@@ -40,49 +40,156 @@ pub const PAGE: &str = r##"<!doctype html>
 <html lang="zh-CN">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#101418">
+<meta name="theme-color" content="#132C50">
 <link rel="icon" href="data:,">
 <title>PureVox</title>
 <style>
-:root{--bg:#101418;--fg:#e8edf2;--mut:#93a1b0;--ok:#3ddc84;--warn:#ffb454;--err:#ff5f56;--line:#26313d}
+/* COUI（ColorOS 17）观感：头图 + 24px 圆角分组卡片 + 列表行 + 跑道开关。
+   全部手写，不引第三方 UI 库；手机版是同一套色板（android/ui/PvTheme.kt）。 */
+:root{
+  color-scheme:light dark;
+  --accent:#0A6CFF;--on-accent:#fff;
+  --bg:#F2F4F8;--card:#fff;--fg:#17191C;--mut:#6B7280;--line:#E2E7F0;
+  --accent-weak:rgba(10,108,255,.12);
+  --ok:#22C55E;--warn:#F0C46A;--err:#E5484D;
+  --hero-top:#132C50;--hero-bottom:#2C5C9F;--hero-mut:#B9D2F5;--hero-ready:#C7F7DA;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --accent:#9BC2FF;--on-accent:#0A1F3A;
+    --bg:#0E1014;--card:#171A20;--fg:#ECEEF2;--mut:#9AA4B2;--line:#2A303A;
+    --accent-weak:rgba(155,194,255,.16);
+    --ok:#7CE3A8;--err:#FF8A85;
+  }
+}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
-  padding:max(12px,env(safe-area-inset-top)) 12px calc(20px + env(safe-area-inset-bottom))}
-h1{font-size:17px;margin:0 0 2px}
-.sub{color:var(--mut);font-size:12px;margin-bottom:12px}
-.bar{display:flex;align-items:center;gap:8px;background:#18202a;border:1px solid var(--line);
-  border-radius:10px;padding:9px 11px;margin-bottom:10px}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--mut);flex:0 0 auto}
-.dot.on{background:var(--ok)} .dot.err{background:var(--err)} .dot.warn{background:var(--warn)}
-#st{font-size:12px;color:var(--mut);min-width:0;overflow-wrap:anywhere}
-.rtt{margin-left:auto;color:var(--mut);font-size:11px;flex:0 0 auto}
-button{font:inherit;color:var(--fg);background:#202a36;border:1px solid var(--line);
-  border-radius:9px;padding:10px 12px;cursor:pointer;flex:1 1 0;min-width:0}
-button:active{transform:translateY(1px)}
-button.pri{background:#1d5c3a;border-color:#2b7d51}
-button[aria-pressed=true]{background:#1d5c3a;border-color:#2b7d51}
-button:disabled{opacity:.45}
-.row{display:flex;gap:8px;margin-bottom:10px}
-.note{color:var(--mut);font-size:12px;margin:10px 2px 4px}
-.warnbox{border:1px solid #5a4a20;background:#241f12;color:#f0d9a8;border-radius:10px;
-  padding:10px 11px;font-size:12px;margin-bottom:10px}
+html{background:var(--bg)}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.5 system-ui,-apple-system,"Segoe UI","Noto Sans SC",sans-serif;
+  padding-bottom:calc(24px + env(safe-area-inset-bottom))}
+.hero{background:linear-gradient(180deg,var(--hero-top),var(--hero-bottom));
+  border-radius:0 0 24px 24px;padding:max(14px,env(safe-area-inset-top)) 20px 16px}
+.hero-inner{max-width:560px;margin:0 auto}
+.brand{display:flex;align-items:baseline;gap:6px}
+.mark{font-size:26px;font-weight:800;line-height:1;color:#fff}
+.wordmark{font-size:24px;font-weight:700;letter-spacing:.5px;color:#fff}
+.tag{margin-left:auto;font-size:11px;letter-spacing:.2px;color:var(--hero-mut)}
+.state{display:flex;align-items:center;gap:9px;margin-top:10px;min-height:24px}
+.dot{width:9px;height:9px;border-radius:50%;background:#B9C6DA;flex:0 0 auto}
+.dot.on{background:#7CE3A8}.dot.warn{background:#F0C46A}.dot.err{background:#FF8A85}
+#st{font-size:17px;font-weight:700;line-height:1.35;color:#fff;
+  min-width:0;overflow-wrap:anywhere}
+body[data-state=on] #st{color:var(--hero-ready)}
+body[data-state=err] #st,body[data-state=warn] #st{font-size:13px;font-weight:600}
+.rtt{margin-left:auto;flex:0 0 auto;font-size:11px;color:var(--hero-mut);
+  font-variant-numeric:tabular-nums}
+.host{margin-top:6px;font-size:11px;color:var(--hero-mut);overflow-wrap:anywhere;
+  font-variant-numeric:tabular-nums}
+main{max-width:560px;margin:0 auto;padding-bottom:4px}
+.group{margin:16px 16px 0}
+.group-title{font-size:12px;letter-spacing:.2px;color:var(--mut);padding:0 16px 8px}
+.group-head{display:flex;align-items:center;gap:8px;padding:0 16px 8px}
+.group-head .group-title{padding:0}
+.card{background:var(--card);border-radius:24px;overflow:hidden}
+.item{display:flex;align-items:center;gap:12px;min-height:56px;padding:10px 16px;
+  cursor:pointer;user-select:none;outline:none}
+.item:not([role=switch]){cursor:default}
+.item:focus-visible{box-shadow:inset 0 0 0 2px var(--accent)}
+.item.disabled{cursor:default}
+.item-title{font-size:16px;line-height:1.3}
+.item-sub{font-size:12px;line-height:1.35;color:var(--mut);margin-top:2px}
+.item-value{margin-left:auto;flex:0 0 auto;text-align:right;font-size:13px;
+  color:var(--mut);font-variant-numeric:tabular-nums}
+.divider{height:1px;background:var(--line);margin:0 16px}
+.item .switch{margin-left:auto}
+.switch{position:relative;flex:0 0 auto;width:52px;height:32px;border-radius:16px;
+  background:var(--line);transition:background .18s ease}
+.switch::after{content:"";position:absolute;top:4px;left:4px;width:24px;height:24px;
+  border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.22);
+  transition:transform .18s ease}
+.item.on .switch{background:var(--accent)}
+.item.on .switch::after{transform:translateX(20px)}
+.item.disabled .switch,.item.disabled .item-title,.item.disabled .item-sub{opacity:.45}
+.badge{margin-left:auto;padding:2px 9px;border-radius:999px;font-size:11px;
+  font-weight:600;color:var(--accent);background:var(--accent-weak)}
+/* 注意：提示框**不能**叫 `.warn` —— 状态圆点也有 `warn` 这个状态类，
+   `.warn` 的 padding/margin 会把 9px 的圆点撑成一大块（2026-11-24 实测）。 */
+.warnbox{margin:16px 16px 0;padding:10px 14px;border-radius:16px;font-size:11px;
+  line-height:1.6;color:var(--mut);background:var(--accent-weak)}
+.warnbox strong{color:var(--fg)}
+.note{max-width:560px;margin:14px 24px 0;font-size:11px;line-height:1.6;
+  color:var(--mut);text-align:center}
 </style>
 
-<h1>PureVox</h1>
-<div class="sub" id="pc"></div>
+<header class="hero">
+  <div class="hero-inner">
+    <div class="brand">
+      <span class="mark">P</span><span class="wordmark">PureVox</span>
+      <span class="tag">网页版</span>
+    </div>
+    <div class="state">
+      <span class="dot" id="dot"></span>
+      <span id="st">未连接</span>
+      <span class="rtt" id="rtt"></span>
+    </div>
+    <div class="host" id="pc"></div>
+  </div>
+</header>
 
-<div class="bar"><span class="dot" id="dot"></span><span id="st">未连接</span><span class="rtt" id="rtt"></span></div>
+<main>
+  <section class="group">
+    <div class="card">
+      <div class="item on" id="rowConn" role="switch" aria-checked="true" tabindex="0">
+        <div><div class="item-title">网络连接</div><div class="item-sub">连上电脑才能传输音频</div></div>
+        <span class="switch"></span>
+      </div>
+      <div class="divider"></div>
+      <div class="item disabled" id="rowMic" role="switch" aria-checked="false" tabindex="0">
+        <div><div class="item-title">麦克风</div><div class="item-sub">上行 · 手机 → 电脑</div></div>
+        <span class="switch"></span>
+      </div>
+      <div class="divider"></div>
+      <div class="item disabled" id="rowSpk" role="switch" aria-checked="false" tabindex="0">
+        <div><div class="item-title">扬声器</div><div class="item-sub">下行 · 电脑 → 手机</div></div>
+        <span class="switch"></span>
+      </div>
+    </div>
+  </section>
 
-<div class="warnbox" id="warn">
-  同网段直连且<strong>无鉴权</strong>：只用于音频；手机是麦克风 + 扬声器两端。
-</div>
+  <section class="group">
+    <div class="group-title">连接</div>
+    <div class="card">
+      <div class="item"><div class="item-title">状态</div><div class="item-value" id="netState">未连接</div></div>
+      <div class="divider"></div>
+      <div class="item"><div class="item-title">延迟 RTT</div><div class="item-value" id="netRtt">—</div></div>
+      <div class="divider"></div>
+      <div class="item"><div class="item-title">音频参数</div><div class="item-value" id="netAudio">48 kHz · 10 ms</div></div>
+    </div>
+  </section>
 
-<div class="row">
-  <button id="bMic" aria-pressed="false">麦克风</button>
-  <button id="bSpk" aria-pressed="false">扬声器</button>
-</div>
-<div class="note" id="hint"></div>
-<div class="note" id="caps"></div>
+  <section class="group">
+    <div class="group-head">
+      <span class="group-title">下行缓冲</span><span class="badge" id="bufBadge">未开启</span>
+    </div>
+    <div class="card">
+      <div class="item"><div class="item-title">缓冲深度</div><div class="item-value" id="bufDepth">—</div></div>
+      <div class="divider"></div>
+      <div class="item"><div class="item-title">当前水位</div><div class="item-value" id="bufLevel">—</div></div>
+      <div class="divider"></div>
+      <div class="item"><div class="item-title">欠载 / 晚到</div><div class="item-value" id="bufUnder">—</div></div>
+      <div class="divider"></div>
+      <div class="item"><div class="item-title">抖动 / 最大间隔</div><div class="item-value" id="bufJitter">—</div></div>
+      <div class="divider"></div>
+      <div class="item"><div class="item-title">单向延迟</div><div class="item-value" id="bufOneWay">—</div></div>
+    </div>
+  </section>
+
+  <div class="warnbox" id="warn">
+    同网段直连且<strong>无鉴权</strong>：只用于音频；手机是麦克风 + 扬声器两端。
+  </div>
+  <div class="note" id="caps"></div>
+  <div class="note" id="hint">必须用 https:// 打开才能使用麦克风；证书只需安装一次。</div>
+</main>
 
 <script>
 "use strict";
@@ -95,8 +202,40 @@ function usDiff(now, then) { return (now - then) | 0; }
 /** 与电脑的时钟偏移（µs，网页 − 电脑）；没同步过是 null。 */
 let clockOffsetUs = null;
 const st = document.getElementById('st'), dot = document.getElementById('dot');
-const hint = document.getElementById('hint');
 document.getElementById('pc').textContent = location.host;
+// COUI 列表里的尾部数值（连接信息 / 下行缓冲）
+const netStateEl = document.getElementById('netState');
+const netRttEl = document.getElementById('netRtt');
+const netAudioEl = document.getElementById('netAudio');
+const bufBadgeEl = document.getElementById('bufBadge');
+const bufDepthEl = document.getElementById('bufDepth');
+const bufLevelEl = document.getElementById('bufLevel');
+const bufUnderEl = document.getElementById('bufUnder');
+const bufJitterEl = document.getElementById('bufJitter');
+const bufOneWayEl = document.getElementById('bufOneWay');
+
+/** 开关行：整行可点，视觉与手机版 `PvSwitch` 一致。 */
+function setSwitch(id, on, disabled) {
+  const row = document.getElementById(id);
+  row.classList.toggle('on', !!on);
+  row.setAttribute('aria-checked', String(!!on));
+  if (disabled !== undefined) row.classList.toggle('disabled', !!disabled);
+}
+
+/** 把开关行接到一个异步动作上；处理中忽略重复点击，键盘也走同一条路径。 */
+function bindSwitch(id, fn) {
+  const row = document.getElementById(id);
+  const act = async () => {
+    if (row.classList.contains('disabled') || row.dataset.busy) return;
+    row.dataset.busy = '1';
+    try { await fn(); } catch (e) { say(String(e && e.message ? e.message : e), 'err'); }
+    finally { delete row.dataset.busy; }
+  };
+  row.addEventListener('click', act);
+  row.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); act(); }
+  });
+}
 
 let ws = null, micOn = false, spkOn = false;
 /** 自动申请麦克风只试一次：用户拒了之后不该在每次重连时反复弹框骚扰。 */
@@ -139,42 +278,69 @@ let frameMs = 10, ready = false;
 /** 上行包序号（与 Rust 侧同口径：每包 +1，只用于判丢包）。 */
 let micSeq = 0;
 
-function say(t, cls) { st.textContent = t; dot.className = 'dot ' + (cls || ''); }
-function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+/** 状态行：`cls` 同时驱动圆点颜色与长错误的字号（`body[data-state]`）。 */
+function say(t, cls) {
+  st.textContent = t;
+  dot.className = 'dot ' + (cls || '');
+  document.body.dataset.state = cls || '';
+}
+/** 返回是否真的发出去了（没连上时调用方可以据此不置位）。 */
+function send(o) {
+  if (ws && ws.readyState === 1) { ws.send(JSON.stringify(o)); return true; }
+  return false;
+}
 function sendBin(b) { if (ws && ws.readyState === 1 && b) ws.send(b); }
 
 // ---- 连接 ----
+/** 连接开关的意图 + 自动重连定时器（关掉开关后不再重连）。 */
+let connectOn = true, retryTimer = null;
+
 function connect() {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   const u = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
   say('连接中…', 'warn');
+  netStateEl.textContent = '连接中';
   ready = false;
-  ws = new WebSocket(u);
-  ws.binaryType = 'arraybuffer';
-  ws.onopen = () => {
+  const sock = new WebSocket(u);
+  ws = sock;
+  sock.binaryType = 'arraybuffer';
+  sock.onopen = () => {
+    // 服务端的订阅随连接销毁：重连后要重新 `sub`（`startSpk` 会看这个标志）。
+    spkSub = false;
     // 握手是**必须**的（proto.rs：`proto` 不等于 PROTO 服务端直接回 err 断开）。
     send({ t: 'hello', proto: 3 });
   };
-  ws.onclose = () => {
+  sock.onclose = () => {
+    // 旧连接（手动断开 / 重连替换）的回调不再处理，避免多出一个重连定时器。
+    if (ws !== sock) return;
+    ws = null;
     // 连接断了，服务端的订阅随连接销毁；本地播放节点也收掉，重连后按 spkOn 重新订阅。
     stopSpkNode(false);
+    ready = false;
+    netStateEl.textContent = '未连接';
+    netRttEl.textContent = '—';
+    rttEl.textContent = '';
+    if (!connectOn) { say('已断开', ''); return; }
     say('已断开，3 秒后重连', 'err');
-    setTimeout(connect, 3000);
+    retryTimer = setTimeout(connect, 3000);
   };
-  ws.onerror = () => { /* onclose 会接手 */ };
-  ws.onmessage = (ev) => {
+  sock.onerror = () => { /* onclose 会接手 */ };
+  sock.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if (m.t === 'ready') {
         ready = true; frameMs = m.frame_ms || 10;
-        say('已连接 · ' + m.rate + ' Hz · ' + m.frame_ms + ' ms/帧', 'on');
+        netStateEl.textContent = '已连接';
+        netAudioEl.textContent = (m.rate || SR) + ' Hz · ' + frameMs + ' ms';
+        say('已连接', 'on');
         // **连上就自动申请麦克风**（用户扫码进来的意图就是要用麦克风，不该再点一次按钮）。
         // 浏览器会弹权限框；被拒时麦克风不可用，扬声器照常。
         if (!micOn && !micAsked) {
           micAsked = true;
           autoMic().catch(() => {});
         }
-        if (micOn && !enc) startMic();
-        if (spkOn) startSpk();
+        if (micOn && !enc) startMic().catch(() => {});
+        if (spkOn) startSpk().catch(() => {});
       } else if (m.t === 'sync') {
         // NTP 四时戳：t1 = 收到、t2 = 回（都用网页自己的单调时钟，µs）
         const t1 = nowUs();
@@ -185,7 +351,8 @@ function connect() {
       } else if (m.t === 'pong') {
         const t0 = pingAt[m.id];
         if (t0) { const rtt = Math.round(performance.now() - t0);
-                  pingAt[m.id] = 0; send({ t: 'rtt', ms: rtt }); rttEl.textContent = rtt + ' ms'; }
+                  pingAt[m.id] = 0; send({ t: 'rtt', ms: rtt });
+                  rttEl.textContent = rtt + ' ms'; netRttEl.textContent = rtt + ' ms'; }
       } else if (m.t === 'err') {
         say('服务端拒绝：' + m.msg, 'err');
       }
@@ -347,12 +514,14 @@ async function startMic() {
     say(msg, 'err');
     throw e;
   }
+  // 权限框开着的时候用户可能已经把开关关掉：这时别建节点，直接把刚拿到的流还回去。
+  if (!micOn) { stream.getTracks().forEach((t) => t.stop()); return; }
   if (!actx) actx = new AudioContext({ sampleRate: SR });
   if (actx.state === 'suspended') await actx.resume();
   await actx.audioWorklet.addModule(worklet());
   micNode = new AudioWorkletNode(actx, 'hop', { numberOfInputs: 1, numberOfOutputs: 0 });
   micNode.port.onmessage = (e) => {
-    if (!enc) return;
+    if (!micOn || !enc) return;
     // 每 hop 一帧 Opus（10 ms），前面加 8 字节帧头：seq + **采集时刻**（电脑用它算单向延迟）
     const f = new Float32Array(e.data);
     try {
@@ -388,6 +557,7 @@ async function startSpk() {
     spkNode = new AudioWorkletNode(actx, 'spk', {
       numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1],
     });
+    bufDepthEl.textContent = '20 ms';   // worklet 的固定深度；有包后按实际值刷新
     spkNode.port.onmessage = (e) => {
       const d = e.data;
       if (d && typeof d.level === 'number') {
@@ -398,15 +568,18 @@ async function startSpk() {
         spkTrims = d.trims || 0;
         spkJitter = d.jitter || 0;
         spkMaxGap = d.maxGap || 0;
+        // worklet 里的样本数换算成毫秒，直接写进 COUI 列表的尾部数值
+        bufDepthEl.textContent = spkTarget ? (spkTarget * 1000 / SR).toFixed(0) + ' ms' : '—';
+        bufLevelEl.textContent = (spkBuffered * 1000 / SR).toFixed(1) + ' ms';
+        bufUnderEl.textContent = spkUnderruns + ' / ' + spkLate;
+        bufJitterEl.textContent = spkJitter.toFixed(1) + ' / ' + spkMaxGap.toFixed(1) + ' ms';
       }
     };
     spkNode.connect(spkGain);
   }
   // `Sub` 是**无负载**的单位变体，只能发 {"t":"sub"}；带额外字段服务端解析不出来。
-  if (!spkSub) {
-    send({ t: 'sub' });
-    spkSub = true;
-  }
+  if (!spkSub) spkSub = send({ t: 'sub' });
+  bufBadgeEl.textContent = spkSub ? '运行中' : '等待连接';
 }
 
 /** 收掉本地下行节点；`unsub` = 还要告诉服务端退订（连接断开时服务端自己会清）。 */
@@ -418,6 +591,12 @@ function stopSpkNode(unsub) {
   }
   spkSub = false;
   spkBuffered = 0;
+  bufBadgeEl.textContent = '未开启';
+  bufDepthEl.textContent = '—';
+  bufLevelEl.textContent = '—';
+  bufUnderEl.textContent = '—';
+  bufJitterEl.textContent = '—';
+  bufOneWayEl.textContent = '—';
 }
 
 /** 一个收到的 Opus 包 → 解码 → 塞进 worklet 的环形缓冲（缓冲只在接收方）。 */
@@ -426,7 +605,10 @@ function playPacket(bytes, tsUs) {
   // 单向延迟：收到时刻（换算到电脑时钟）− 电脑发出时刻。需要 offset，没有就只算抖动。
   if (clockOffsetUs != null && tsUs) {
     const us = usDiff(nowUs(), tsUs) + clockOffsetUs;
-    if (us >= 0 && us < 5000000) spkOneWay = us / 1000;
+    if (us >= 0 && us < 5000000) {
+      spkOneWay = us / 1000;
+      bufOneWayEl.textContent = spkOneWay.toFixed(1) + ' ms';
+    }
   }
   let pcm;
   try { pcm = dec.decodeFloat(bytes, { frameSize: HOP }); }
@@ -438,30 +620,64 @@ function playPacket(bytes, tsUs) {
 }
 
 // ---- UI ----
-function bind(id, fn) {
-  const b = document.getElementById(id);
-  b.addEventListener('click', async () => { b.disabled = true; try { await fn(b); } catch (e) { say(String(e), 'err'); } finally { b.disabled = false; } });
-}
-bind('bMic', async (b) => {
-  micOn = !micOn; b.setAttribute('aria-pressed', String(micOn));
-  if (micOn) { await startMic(); say('麦克风已开', 'on'); }
-  else if (micNode) { micNode.disconnect(); micNode = null; say('麦克风已关'); }
+// 三个开关 = 三个「现在要不要发生」，整行可点（开关本体不再接第二份点击）。
+bindSwitch('rowConn', async () => {
+  if (connectOn) {
+    connectOn = false;
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    // 先清掉全局 `ws`：旧连接迟到的 onclose 会因 `ws !== sock` 直接返回，不会再挂重连。
+    if (ws) { const old = ws; ws = null; try { old.close(); } catch (e) { /* 已断开 */ } }
+    ready = false;
+    stopSpkNode(false);
+    netStateEl.textContent = '未连接';
+    say('已断开', '');
+  } else {
+    connectOn = true;
+    connect();
+  }
+  setSwitch('rowConn', connectOn);
+});
+
+bindSwitch('rowMic', async () => {
+  if (!micOn) {
+    // 先置位再 await：权限框还开着时用户又点一次关掉，`startMic` 里能看到 micOn 已变。
+    micOn = true;
+    try { await startMic(); } catch (e) { micOn = false; throw e; }
+    if (!micOn) return;   // 申请期间被关掉了，界面已经是关，别再报「已开」
+    setSwitch('rowMic', true);
+    say('麦克风已开', 'on');
+  } else {
+    micOn = false;
+    if (micNode) { micNode.disconnect(); micNode = null; }
+    setSwitch('rowMic', false);
+    say('麦克风已关', '');
+  }
 });
 
 /**
- * 自动开麦：把按钮状态、开关变量一起设好，免得用户看按钮还是「关」而实际已经在推流。
+ * 自动开麦：把开关状态、变量一起设好，免得用户看开关还是「关」而实际已经在推流。
  * 失败时 `startMic` 已经在状态行说明了原因，这里只负责把界面恢复原状。
  */
 async function autoMic() {
   micOn = true;
-  document.getElementById('bMic').setAttribute('aria-pressed', 'true');
-  try { await startMic(); say('麦克风已开（连上就自动申请了权限）', 'on'); }
-  catch (e) { micOn = false; document.getElementById('bMic').setAttribute('aria-pressed', 'false'); }
+  setSwitch('rowMic', true);
+  try { await startMic(); if (!micOn) return; say('麦克风已开（连上就自动申请了权限）', 'on'); }
+  catch (e) { micOn = false; setSwitch('rowMic', false); }
 }
-bind('bSpk', async (b) => {
-  spkOn = !spkOn; b.setAttribute('aria-pressed', String(spkOn));
-  if (spkOn) { await startSpk(); say('扬声器已开（自适应缓冲）', 'on'); }
-  else { stopSpkNode(true); say('扬声器已关'); }
+
+bindSwitch('rowSpk', async () => {
+  if (!spkOn) {
+    spkOn = true;
+    try { await startSpk(); } catch (e) { spkOn = false; throw e; }
+    if (!spkOn) { stopSpkNode(true); return; }   // 初始化期间被关掉了
+    setSwitch('rowSpk', true);
+    say('扬声器已开', 'on');
+  } else {
+    spkOn = false;
+    stopSpkNode(true);
+    setSwitch('rowSpk', false);
+    say('扬声器已关', '');
+  }
 });
 // ---- 能力实测：真的把 Opus 编解码器**加载起来**跑一帧，而不是只看 API 在不在 ----
 // 之前只看 `typeof AudioEncoder`，那既会误判（API 存在 ≠ 支持 opus 配置），也漏掉了真正
@@ -514,12 +730,16 @@ probeCaps().then((c) => {
   } catch (e) { /* 上报失败不影响使用 */ }
 
   if (!c.opus) {
-    say('这个浏览器用不了 Opus 编解码器：' + c.why +
-        '。', 'err');
-    document.getElementById('bMic').disabled = true;
-    document.getElementById('bSpk').disabled = true;
+    say('这个浏览器用不了 Opus 编解码器：' + c.why + '。', 'err');
+    setSwitch('rowMic', false, true);
+    setSwitch('rowSpk', false, true);
+    connectOn = false;
+    setSwitch('rowConn', false, true);
     return;   // 编解码不可用就别连了，连上也传不了音频
   }
+  // 能力探测通过后再放开两个音频开关（未就绪时点它们只会报错）。
+  setSwitch('rowMic', false, false);
+  setSwitch('rowSpk', false, false);
   connect();
 });
 </script>
@@ -543,6 +763,20 @@ mod tests {
     assert!(
       !rest[..end].contains('`'),
       "worklet 模板字符串里出现了反引号，会把整页 <script> 打断"
+    );
+  }
+
+  /// 状态圆点的状态类叫 `warn`，提示框如果也叫 `.warn`，它的 padding / margin
+  /// 会把 9 px 的圆点撑成一大块胶囊（2026-11-24 实测）。提示框固定用 `.warnbox`。
+  #[test]
+  fn 提示框不占用状态圆点的样式名() {
+    assert!(
+      PAGE.contains(r#"<div class="warnbox" id="warn">"#),
+      "提示框必须用 .warnbox，不能和 .dot.warn 抢样式"
+    );
+    assert!(
+      !PAGE.contains(r#"<div class="warn" id="warn">"#),
+      "提示框不能叫 .warn（会把状态圆点撑大）"
     );
   }
 
